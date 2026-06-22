@@ -36,7 +36,7 @@ Mark each phase as `execution-ready: false` until a second-model review passes.
 
 ```bash
 plan-review register ~/tinker-ai-configs/thoughts/plans/<slug>.html \
-  --repo auto --branch auto --commit auto --execution-ready false
+  --repo auto --branch auto --commit auto
 plan-review index
 ```
 

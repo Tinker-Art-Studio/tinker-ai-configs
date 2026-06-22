@@ -17,7 +17,7 @@ Store all plans in: `~/tinker-ai-configs/thoughts/plans/<slug>.html`
 
 ```bash
 plan-review register ~/tinker-ai-configs/thoughts/plans/<slug>.html \
-  --repo auto --branch auto --commit auto --execution-ready false
+  --repo auto --branch auto --commit auto
 plan-review index
 ```
 
