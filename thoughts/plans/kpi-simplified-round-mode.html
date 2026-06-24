@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Plan: KPI Simplified Round Mode</title>
+<title>Plan: KPI Active-Round Checklist</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
   h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
@@ -14,6 +14,7 @@
   .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
   .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
   .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .change { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
   code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
   table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
   th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; }
@@ -22,133 +23,114 @@
 </head>
 <body>
 
-<h1 id="plan-title">Plan: KPI Simplified Round Mode</h1>
+<h1 id="plan-title">Plan: KPI Active-Round Checklist</h1>
 
 <div class="meta" id="plan-meta">
-  <strong>Goal:</strong> Add a "Simplified Round" toggle to Settings so this assessment round only shows and scores Set &amp; Reflect, Leadership Score (if applicable), and Student Attrition — without losing any of the full KPI framework for the future.<br>
+  <strong>Goal:</strong> Add a "KPIs Active This Round" checklist to Settings. Only checked KPIs are shown, scored, and counted toward bonuses. Unchecking a KPI hides it — no data lost. Add more KPIs to future rounds just by checking boxes — no code changes ever needed.<br>
   <strong>App:</strong> tinker-kpi — <code>~/tinker-kpi/js/app.js</code><br>
-  <strong>Risk:</strong> Low — UI filter only, no data deleted, no schema migration, one boolean saved to Firestore<br>
-  <strong>Reversible:</strong> Yes — toggle it off to return to full view instantly
+  <strong>Risk:</strong> Low — UI filter only. No KPI data deleted. One array saved to Firestore via updateDoc.<br>
+  <strong>Reversible:</strong> Yes — check all boxes to restore full view instantly.<br>
+  <strong>This round:</strong> Start with <code>set-reflect</code>, <code>leadership-score</code>, <code>survey-churn</code> checked. Add more next round.
 </div>
 
-<h2 id="context">What exists today</h2>
+<div class="change">
+  📝 <strong>Plan updated Jun 24</strong> after reviewer comments: original approach (hardcoded toggle for 3 KPIs) replaced with a per-KPI checklist. Christie confirmed bonus should be computed from active KPIs only.
+</div>
 
-<p>The KPI app has two separate KPI systems:</p>
+<h2 id="design">How it works</h2>
 
-<table>
-  <tr><th>System</th><th>What it is</th><th>Defined in</th></tr>
-  <tr><td><strong>Per-staff KPIs</strong></td><td>Individual staff assessments computed from Google Sheets CSVs</td><td><code>KPI_DEFINITIONS</code> (line 9)</td></tr>
-  <tr><td><strong>Studio KPIs</strong></td><td>Big-picture business metrics (Fulfillment, Operations, etc.)</td><td><code>STUDIO_KPI_DEFINITIONS</code> (line 50)</td></tr>
-</table>
+<p>Settings gains a new section: <strong>"KPIs Active This Round."</strong> It shows every KPI from <code>KPI_DEFINITIONS</code> as a labeled checkbox row. Checked = counts this round. Unchecked = hidden from cards and excluded from bonus.</p>
 
-<p>The three KPIs Christie wants for <em>this round</em> are all in <code>KPI_DEFINITIONS</code>:</p>
+<p>Firestore stores the active list as <code>activeKpiIds: ['set-reflect', 'survey-churn', 'leadership-score']</code> in the existing <code>kpiData</code> document. Default when the field is absent = all KPIs active (so existing sessions are unaffected until you uncheck something).</p>
 
 <table>
-  <tr><th>KPI ID</th><th>Label</th><th>Who it applies to</th><th>How computed</th></tr>
-  <tr><td><code>set-reflect</code></td><td>Set &amp; Reflect</td><td>All roles</td><td>Auto from Google Sheets CSV</td></tr>
-  <tr><td><code>leadership-score</code></td><td>Leadership KPI Score</td><td><code>leadership</code> role only</td><td>Auto from leadership KPI form</td></tr>
-  <tr><td><code>survey-churn</code></td><td>Student Attrition</td><td><code>lead-teacher</code> only</td><td>Auto from parent survey</td></tr>
+  <tr><th>KPI ID</th><th>Label</th><th>Check this round?</th></tr>
+  <tr><td><code>set-reflect</code></td><td>Set &amp; Reflect</td><td>✅ Yes</td></tr>
+  <tr><td><code>leadership-score</code></td><td>Leadership KPI Score</td><td>✅ Yes (leadership role only)</td></tr>
+  <tr><td><code>survey-churn</code></td><td>Student Attrition</td><td>✅ Yes (lead-teacher only)</td></tr>
+  <tr><td><code>shift-reports</code></td><td>End of Shift Reports</td><td>☐ Not this round</td></tr>
+  <tr><td><code>pottery-turnaround</code></td><td>Pottery Turnaround</td><td>☐ Not this round</td></tr>
+  <tr><td>…all other KPIs…</td><td>—</td><td>☐ Not this round</td></tr>
 </table>
 
-<p>The function <code>getPersonKPIs(member)</code> (line 2767) builds the list of KPI IDs for each member based on their roles. This is the single place to apply the filter — touching it here means the filter flows automatically through card rendering, the "KPIs met" badge, and the bonus calculation.</p>
-
-<h2 id="approach">Approach</h2>
-
-<p><strong>Add a <code>simplifiedRoundMode</code> boolean</strong> to the Firestore <code>kpiData</code> document (alongside existing settings like <code>thresholds</code>, <code>semesters</code>, etc.). When <code>true</code>:</p>
-<ul>
-  <li><code>getPersonKPIs()</code> filters its result to only <code>set-reflect</code>, <code>leadership-score</code> (if applicable to member), and <code>survey-churn</code> (if applicable)</li>
-  <li>The "KPIs met" badge and bonus calculation naturally reflect only these KPIs</li>
-  <li>All other KPI definitions, data, and overrides stay untouched in the background</li>
-</ul>
-
-<div class="safe">✅ No data is deleted. No definitions are removed. Studio KPIs are unaffected. Toggle off → full view returns instantly.</div>
+<div class="safe">✅ Nothing is deleted. Unchecked KPIs still exist in KPI_DEFINITIONS, their data still loads from CSVs, and any saved overrides are preserved. They just don't appear on cards or count toward bonuses.</div>
 
 <h2 id="phases">Phases</h2>
 
 <div class="phase" id="phase-1">
-  <h3>Phase 1 — Settings toggle (UI + Firestore save)</h3>
-  <p><strong>Acceptance criteria:</strong> A "Simplified Round Mode" toggle appears in the Settings tab. Turning it on saves <code>simplifiedRoundMode: true</code> to Firestore. Turning it off saves <code>false</code>. The saved value persists across page reloads.</p>
+  <h3>Phase 1 — Firestore field + Settings checklist UI</h3>
+  <p><strong>Acceptance criteria:</strong> A "KPIs Active This Round" section appears in Settings. Each KPI has a labeled checkbox. Toggling any checkbox immediately saves the updated <code>activeKpiIds</code> array to Firestore via <code>updateDoc</code>. The saved state survives a page reload.</p>
 
   <div class="bdd">Given: Admin opens Settings tab
-When: They see "Simplified Round Mode" toggle (off by default)
-Then: The toggle shows the current saved state from Firestore
+When: They scroll to "KPIs Active This Round"
+Then: Every KPI from KPI_DEFINITIONS appears as a labeled checkbox row
+  AND checked state reflects what's saved in Firestore (or all checked if field absent)
 
-Given: Admin turns the toggle ON
-When: They click it
-Then: updateDoc saves { simplifiedRoundMode: true } to kpiData doc
-  AND the page reflects the change immediately (no full reload needed)
+Given: Admin unchecks "End of Shift Reports"
+When: They click the checkbox
+Then: updateDoc({ activeKpiIds: [...remaining] }) fires immediately
+  AND on page reload, "End of Shift Reports" is still unchecked
 
-Given: Admin turns the toggle OFF
-When: They click it
-Then: updateDoc saves { simplifiedRoundMode: false } to kpiData doc</div>
+Given: activeKpiIds field does not exist in kpiData yet (existing sessions)
+When: The app loads
+Then: All KPIs are treated as active — no regression for existing users</div>
 
-  <div class="note">⚠️ Firestore safety: use <code>updateDoc</code> not <code>setDoc</code>. The <code>kpiData</code> doc holds semesters, thresholds, overrides, and other critical data — a full overwrite would destroy it.</div>
+  <div class="note">⚠️ Firestore: use <code>updateDoc</code> only — the kpiData doc contains semesters, thresholds, overrides, and other critical data. Never setDoc.</div>
 
-  <p><strong>Where in code:</strong> Add toggle near the Thresholds section in Settings (~line 1724). Save via the same <code>updateDoc</code> pattern used elsewhere in the file.</p>
+  <p><strong>Where:</strong> Add after the Thresholds section in Settings (~line 1750). Read <code>data.activeKpiIds</code>; default to all KPI IDs if absent.</p>
 </div>
 
 <div class="phase" id="phase-2">
-  <h3>Phase 2 — Filter getPersonKPIs() when mode is active</h3>
-  <p><strong>Acceptance criteria:</strong> When Simplified Round Mode is on, each staff card shows only the KPIs relevant to them from the three allowed: set-reflect, leadership-score, survey-churn. The "X/Y KPIs met" badge reflects only those KPIs. Staff with no applicable KPI from the three (edge case) show a clear "No KPIs this round" message rather than a broken card.</p>
+  <h3>Phase 2 — Filter getPersonKPIs() by active list</h3>
+  <p><strong>Acceptance criteria:</strong> Each staff card shows only KPIs that are both (a) applicable to the member's roles AND (b) in the active list. The "X/Y KPIs met" badge and bonus calculation reflect only those KPIs. Full regression test: with all KPIs active, cards look identical to today.</p>
 
-  <div class="bdd">Given: Simplified Round Mode is ON
+  <div class="bdd">Given: activeKpiIds = ['set-reflect', 'survey-churn', 'leadership-score']
 When: I view a lead-teacher's card
-Then: I see set-reflect + survey-churn only (not shift-reports or any manual KPIs)
-  AND the badge says "X/2 KPIs met"
+Then: I see set-reflect + survey-churn (not shift-reports or manual KPIs)
+  AND badge says "X/2 KPIs met"
+  AND bonus is calculated from those 2 KPIs only
 
-Given: Simplified Round Mode is ON
-When: I view a leadership-role member's card
-Then: I see set-reflect + leadership-score only
-  AND the badge says "X/2 KPIs met"
+Given: activeKpiIds = ['set-reflect', 'survey-churn', 'leadership-score']
+When: I view a leadership-role member
+Then: I see set-reflect + leadership-score
+  AND badge says "X/2 KPIs met"
 
-Given: Simplified Round Mode is ON
-When: I view a lead-teacher who also has leadership role
-Then: I see set-reflect + survey-churn + leadership-score
-  AND the badge says "X/3 KPIs met"
+Given: activeKpiIds = all KPI IDs (or field absent)
+When: I view any card
+Then: Output is identical to the app before this change (no regression)</div>
 
-Given: Simplified Round Mode is OFF
-When: I view any staff card
-Then: All KPIs appear exactly as they did before (no regression)</div>
-
-  <p><strong>Where in code:</strong> Modify <code>getPersonKPIs(member)</code> (line 2767) to accept a <code>simplified</code> boolean parameter and filter accordingly. Pass the current mode value when calling it (~lines 3080, 3291).</p>
+  <p><strong>Where:</strong> Modify <code>getPersonKPIs(member)</code> (line 2767) to accept the active list and filter. Pass active list at all call sites (~lines 3080, 3291).</p>
 </div>
 
 <div class="phase" id="phase-3">
-  <h3>Phase 3 — Visual indicator that simplified mode is active</h3>
-  <p><strong>Acceptance criteria:</strong> When Simplified Round Mode is ON, a small banner or pill appears at the top of the Staff KPIs tab so it's obvious the view is filtered. No banner when mode is off.</p>
+  <h3>Phase 3 — Active-round banner on Staff KPIs tab</h3>
+  <p><strong>Acceptance criteria:</strong> When fewer than all KPIs are active, a banner at the top of the Staff KPIs tab says which KPIs are being assessed this round. No banner when all KPIs are active.</p>
 
-  <div class="bdd">Given: Simplified Round Mode is ON
+  <div class="bdd">Given: 3 of 8 KPIs are active
 When: I open the Staff KPIs tab
-Then: A banner reads "Simplified Round — showing Set & Reflect, Leadership Score, and Student Attrition only"
-  AND a link/button in the banner goes directly to Settings to toggle it off
+Then: Banner reads "This round: Set & Reflect · Student Attrition · Leadership KPI Score"
+  AND a "Change in Settings →" link opens the Settings tab directly
 
-Given: Simplified Round Mode is OFF
+Given: All KPIs are active
 When: I open the Staff KPIs tab
 Then: No banner appears</div>
 </div>
 
-<h2 id="out-of-scope">What this does NOT change</h2>
+<h2 id="out-of-scope">Not changed</h2>
 <ul>
-  <li>Studio KPIs tab — unaffected</li>
-  <li>Leadership tab — unaffected</li>
-  <li>Incident Log tab — unaffected</li>
-  <li>Customer Survey tab — unaffected</li>
-  <li>Any KPI definitions, thresholds, or historical data</li>
-  <li>Manual KPI overrides already saved — they persist, just hidden in simplified mode</li>
+  <li>Studio KPIs tab, Leadership tab, Incident Log, Customer Survey — all unaffected</li>
+  <li>KPI definitions, CSV data loading, historical overrides — all preserved</li>
+  <li>No new Firestore collections — <code>activeKpiIds</code> is a field on the existing <code>kpiData</code> doc</li>
 </ul>
-
-<h2 id="open-questions">One question before executing</h2>
-<div class="note">
-  <strong>Bonus calculation in simplified mode:</strong> When mode is ON, the bonus shown on each card will be computed from only the 3 simplified KPIs. Is that correct — or should the bonus column be hidden entirely during simplified rounds?
-</div>
 
 <h2 id="decisions-log">Decisions / Deviations Log</h2>
 <ul>
-  <li><strong>Jun 24:</strong> Approach chosen: boolean flag in existing kpiData doc, filter in getPersonKPIs(). Rejected alternative of separate "round config" collection — unnecessary complexity for a toggle.</li>
+  <li><strong>Jun 24 (original):</strong> Approach was a simple hardcoded toggle for 3 KPIs.</li>
+  <li><strong>Jun 24 (revised):</strong> Christie changed to per-KPI checklist so future rounds can add KPIs without code changes. Bonus computed from active KPIs only (confirmed in reviewer).</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
-<p>Read this plan. Check Christie's answer on the bonus question above. Then execute Phase 1 → 2 → 3 in order. Commit after each phase. No deploy until all three phases are verified locally.</p>
+<p>Plan is approved — no open questions. Execute Phase 1 → 2 → 3 in order. Commit after each. Test locally at localhost:8089 before any deploy. After phase 3 is verified, ask Christie before running <code>netlify deploy --prod</code>.</p>
 
 </body>
 </html>
