@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Bonus Lock + Accountant Copy + Employee Email Preview</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; }
+  th { background: #f9fafb; }
+  .mock { background: #f9fafb; border: 1px solid #d1d5db; border-radius: 6px; padding: 1rem; font-size: .88rem; }
+  .mock table { font-size: .82rem; }
+  .mock .em-header td { background: #3b4a9e; color: white; font-weight: 700; padding: 4px 8px; }
+  .mock .em-subhead td { background: #6052C8; color: white; font-weight: 600; padding: 3px 8px; }
+  .mock .em-row td { padding: 3px 8px; border: 1px solid #ccc; }
+  .mock .met { background: #d1fae5; color: #065f46; text-align:center; }
+  .mock .miss { background: #fee2e2; color: #991b1b; text-align:center; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Bonus Lock + Accountant Copy + Employee Email Preview</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Three related features for end-of-semester bonus workflow:<br>
+  1. <strong>Lock bonuses</strong> per semester — freezes amounts, signals "done"<br>
+  2. <strong>Copy for Accountant</strong> — one-click clipboard list of name + amount<br>
+  3. <strong>Email Preview modal</strong> — generates formatted bonus email per employee; Christie copies HTML and pastes into Gmail<br>
+  <strong>App:</strong> tinker-kpi — <code>~/tinker-kpi/js/app.js</code><br>
+  <strong>Risk:</strong> Low — no new Firestore collections; lock is a field on existing kpiData doc<br>
+  <strong>Email sending:</strong> Copy-paste into Gmail (no backend needed)
+</div>
+
+<h2 id="phase1">Phase 1 — Lock Bonuses</h2>
+
+<div class="phase" id="phase-1">
+  <h3>What it does</h3>
+  <p>A "Lock Bonuses" button in the KPI Review tab header. Locking a semester freezes its bonus display and unlocks the Accountant Copy and Email buttons. An admin can unlock to make corrections.</p>
+
+  <div class="bdd">Given: Bonuses are not locked for the current semester
+When: Admin clicks "Lock Bonuses"
+Then: A confirmation dialog appears: "Lock Spring 2026 bonuses? You can unlock later if needed."
+  AND on confirm, lockedBonusSemesters array is updated in kpiData via updateDoc
+  AND the button changes to "🔒 Locked — Unlock" with muted styling
+  AND "Copy for Accountant" and "Email All" buttons appear
+
+Given: Bonuses are locked
+When: Admin clicks "Unlock"
+Then: Semester is removed from lockedBonusSemesters
+  AND buttons revert to pre-lock state</div>
+
+  <div class="note">⚠️ Firestore: updateDoc only. Field: <code>lockedBonusSemesters: ['spring-2026', ...]</code> — array of semester IDs added to existing kpiData doc.</div>
+</div>
+
+<h2 id="phase2">Phase 2 — Copy for Accountant</h2>
+
+<div class="phase" id="phase-2">
+  <h3>What it does</h3>
+  <p>Appears once bonuses are locked. Copies a plain-text summary to the clipboard.</p>
+
+  <div class="bdd">Given: Bonuses are locked for Spring 2026
+When: Admin clicks "Copy for Accountant"
+Then: Clipboard receives:
+
+Spring 2026 KPI Bonuses
+────────────────────────────
+Kathy Martin          $264.96
+Negeen Samimi          $83.00
+Mackenzie Reinhart     $31.80
+────────────────────────────
+Total                 $379.76
+
+  AND a toast message says "Copied to clipboard"</div>
+
+  <p>Only includes members with a non-zero bonus earned. Inactive members included if they have wages entered for the semester.</p>
+</div>
+
+<h2 id="phase3">Phase 3 — Email Preview Modal</h2>
+
+<div class="phase" id="phase-3">
+  <h3>What it does</h3>
+  <p>A "Preview Email" button on each staff card (visible when bonuses are locked). Opens a modal showing the fully formatted email — ready to copy and paste into Gmail.</p>
+
+  <h3>Modal layout</h3>
+  <ul>
+    <li>Subject line shown at top (auto-filled, copyable separately)</li>
+    <li>Recipient email shown (from <code>member.emails[0]</code>)</li>
+    <li>Formatted email preview exactly matching Christie's past emails</li>
+    <li>Editable message area for the personal paragraph (pre-filled with a template)</li>
+    <li>"Copy Email Body" button — copies the full HTML for pasting into Gmail</li>
+    <li>"Copy Subject" button</li>
+  </ul>
+
+  <h3>Email structure</h3>
+
+  <div class="mock">
+    <p><strong>Subject:</strong> Your Spring 2026 KPI Bonus</p>
+    <p>Hi [First Name],</p>
+    <p><em>[If all KPIs met:]</em> I'm excited to share your Spring 2026 KPI results — you hit all your targets! Here's your breakdown:</p>
+    <p><em>[If partial:]</em> I wanted to share your Spring 2026 KPI results with you. Here's your breakdown:</p>
+    <table>
+      <tr class="em-header">
+        <td><strong>Kathy Martin</strong></td>
+        <td>Points: 3/3</td>
+        <td>Gross Wages:</td>
+        <td>$17,663.79</td>
+        <td>Max (1.5%):</td>
+        <td>$264.96</td>
+        <td><strong>Bonus Earned:</strong></td>
+        <td><strong>$264.96</strong></td>
+      </tr>
+      <tr class="em-subhead">
+        <td>KPI</td><td colspan="2">Your Result</td><td colspan="2">Threshold</td><td colspan="3">Met?</td>
+      </tr>
+      <tr class="em-row">
+        <td>Set &amp; Reflect</td><td colspan="2">91.2%</td><td colspan="2">≥ 90%</td><td colspan="3" class="met">✓</td>
+      </tr>
+      <tr class="em-row">
+        <td>Student Attrition</td><td colspan="2">0</td><td colspan="2">≤ 1</td><td colspan="3" class="met">✓</td>
+      </tr>
+    </table>
+    <p><em>[Editable personal paragraph — pre-filled, Christie can customize before copying]</em></p>
+    <p><em>[If all met pre-fill:]</em> Congrats on earning your full bonus! This will be included in your next paycheck. Thank you for all your hard work this semester!</p>
+    <p><em>[If partial pre-fill:]</em> Thank you for everything you do — your contributions go far beyond what any metric can capture. These KPIs are one tool to help us set clear goals and grow together. Some semesters are tougher than others, and that's okay. If you'd like to talk through your results or brainstorm strategies, please reach out. I'm grateful to have you with us!</p>
+    <p>Warmly,</p>
+    <p><em>Christie Hubley<br>M.Ed. Integrated Teaching through the Arts<br>Founder, Tinker Art Studio &amp; Clay Hub<br>(she/her)<br>www.tinkerartstudio.com<br>Studio: 303-503-1902</em></p>
+  </div>
+
+  <div class="safe">✅ No email is ever sent from the app. Christie copies the HTML body, opens Gmail, creates a new email to the recipient, and pastes. Gmail renders the HTML table correctly on paste.</div>
+
+  <div class="bdd">Given: Bonuses are locked and I click "Preview Email" on Kathy's card
+When: The modal opens
+Then: I see the subject "Your Spring 2026 KPI Bonus"
+  AND I see Kathy's email address
+  AND I see the formatted KPI table with her results
+  AND the personal paragraph is pre-filled (editable)
+  AND "Copy Email Body" copies the full HTML
+  AND "Copy Subject" copies just the subject line
+
+Given: Kathy met all her KPIs
+Then: Opening line is "I'm excited to share..." and closing is the congrats message
+
+Given: An employee only met 1 of 2 KPIs
+Then: Opening line is "I wanted to share..." and closing is the empathetic paragraph</div>
+
+  <h3>Grace Pass handling</h3>
+  <p>If a KPI result has <code>status === 'grace'</code>, the "Met?" cell shows "Grace Pass ✓" in the gold color (matching Christie's past emails). The KPI is counted as met for bonus purposes.</p>
+</div>
+
+<h2 id="out-of-scope">Not in scope</h2>
+<ul>
+  <li>Actually sending emails from the app — Preview &amp; Copy only</li>
+  <li>"Email All" batch button — one at a time via Preview modal (intentional: Christie personalizes each)</li>
+  <li>Storing which emails have been sent</li>
+</ul>
+
+<h2 id="decisions">Decisions Log</h2>
+<ul>
+  <li><strong>Jun 24:</strong> Email method = Preview &amp; Copy (Christie's choice). No backend needed.</li>
+  <li><strong>Jun 24:</strong> Personal paragraph is editable in the modal — auto-filled template but Christie can tweak before copying. Matches her existing practice of personalizing each email.</li>
+  <li><strong>Jun 24:</strong> Lock is per-semester (not global). Multiple semesters can be locked simultaneously.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<p>No open questions. Execute Phase 1 → 2 → 3 in order. Commit after each. Test locally at localhost:8089. Ask Christie before Netlify deploy.</p>
+
+</body>
+</html>
