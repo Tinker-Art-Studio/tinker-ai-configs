@@ -1,0 +1,1356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tinker Firebase Backend Resilience & Continuity Report</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2f;
+      --panel-2: #17213a;
+      --text: #eef4ff;
+      --muted: #a8b3c7;
+      --line: #2a3654;
+      --accent: #7dd3fc;
+      --accent-2: #c084fc;
+      --ok: #86efac;
+      --warn: #fde68a;
+      --danger: #fca5a5;
+      --info: #93c5fd;
+      --code: #09111f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, rgba(125,211,252,.16), transparent 34rem), var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 48px 24px 80px; }
+    h1, h2, h3, h4 { line-height: 1.15; margin: 0 0 14px; }
+    h1 { font-size: clamp(2.1rem, 4vw, 4rem); letter-spacing: -0.045em; }
+    h2 { margin-top: 42px; font-size: 1.85rem; letter-spacing: -0.025em; }
+    h3 { margin-top: 28px; color: #dbeafe; }
+    p { margin: 0 0 14px; }
+    a { color: var(--accent); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow:auto; background: var(--code); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 24px; font-size: 0.94rem; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; vertical-align: top; }
+    th { background: #1d2947; color: #e0f2fe; text-align: left; }
+    tr:nth-child(even) td { background: rgba(255,255,255,.025); }
+    ul, ol { margin-top: 6px; }
+    li { margin: 5px 0; }
+    .hero { padding: 30px; border: 1px solid var(--line); border-radius: 24px; background: linear-gradient(135deg, rgba(23,33,58,.92), rgba(18,26,47,.86)); box-shadow: 0 24px 80px rgba(0,0,0,.35); }
+    .eyebrow { color: var(--accent); text-transform: uppercase; font-size: .78rem; font-weight: 800; letter-spacing: .12em; margin-bottom: 12px; }
+    .subtitle { color: var(--muted); font-size: 1.08rem; max-width: 78ch; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .card { background: rgba(18,26,47,.84); border: 1px solid var(--line); border-radius: 18px; padding: 18px; }
+    .span-3 { grid-column: span 3; } .span-4 { grid-column: span 4; } .span-6 { grid-column: span 6; } .span-12 { grid-column: span 12; }
+    .metric { font-size: 2.2rem; font-weight: 850; letter-spacing: -0.04em; }
+    .muted { color: var(--muted); }
+    .tag { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:2px 8px; margin:2px 4px 2px 0; color:#dbeafe; background:#111a31; font-size:.82rem; white-space:nowrap; }
+    .sev-critical { color: var(--danger); font-weight: 800; }
+    .sev-high { color: var(--warn); font-weight: 800; }
+    .sev-medium { color: var(--info); font-weight: 800; }
+    .ok { color: var(--ok); font-weight: 700; }
+    .callout { border-left: 4px solid var(--accent); background: rgba(125,211,252,.08); padding: 14px 16px; border-radius: 12px; margin: 16px 0; }
+    .danger { border-left-color: var(--danger); background: rgba(252,165,165,.08); }
+    .warn { border-left-color: var(--warn); background: rgba(253,230,138,.08); }
+    .roadmap-step input { transform: translateY(1px); }
+    @media (max-width: 860px) { .span-3, .span-4, .span-6 { grid-column: span 12; } main { padding: 28px 14px 60px; } }
+    .toc { margin-top: 26px; }
+    .toc .toc-title { font-size: 1.18rem; font-weight: 850; letter-spacing: -0.01em; margin: 0 0 6px; color: #dbeafe; }
+    .toc .toc-lead { color: var(--muted); font-size: .9rem; margin: 0 0 14px; }
+    .toc ol { margin: 0; padding-left: 1.5em; }
+    .toc > ol > li { margin: 7px 0; font-weight: 650; }
+    .toc > ol > li > a { color: var(--text); text-decoration: none; }
+    .toc > ol > li > a:hover { color: var(--accent); text-decoration: underline; }
+    .toc ul { list-style: none; margin: 5px 0 4px; padding-left: 4px; }
+    .toc ul li { margin: 3px 0; font-weight: 400; font-size: .9rem; }
+    .toc ul li a { color: var(--muted); text-decoration: none; }
+    .toc ul li a:hover { color: var(--accent); text-decoration: underline; }
+  </style>
+</head>
+<body>
+<main>
+  <header class="hero" id="top">
+    <div class="eyebrow">Firebase backend resilience report · Tinker Art Studio</div>
+    <h1 id="title">Backup, continuity, and agent-defense report for the four priority apps</h1>
+    <p class="subtitle" id="subtitle">Scope: <strong>Classbook</strong>, <strong>Summer Camp App</strong>, <strong>Tinker Ticker</strong>, and <strong>Training Hub</strong>. This report is based on local repository review plus Firebase disaster-recovery/security guidance. The Firebase console itself was not inspected because `firebase`, `gcloud`, and `gsutil` CLIs are not installed/authenticated on this machine.</p>
+  </header>
+
+  <nav class="card toc" id="toc" aria-label="Table of contents">
+    <p class="toc-title">Contents</p>
+    <p class="toc-lead">Jump to any section. The two most detailed sections are expanded.</p>
+    <ol>
+      <li><a href="#executive-summary">Executive summary</a></li>
+      <li><a href="#current-resilience-status">Where the resilience work stands today — and what to fix first</a>
+        <ul>
+          <li><a href="#status-priority-order">Most urgent Firebase work, in priority order</a></li>
+          <li><a href="#status-by-app">What's working today vs. still open, by area</a></li>
+        </ul>
+      </li>
+      <li><a href="#current-architecture">Observed Firebase architecture</a></li>
+      <li><a href="#app-inventory">Priority app data inventory</a></li>
+      <li><a href="#recommended-target-state">Recommended backend continuity target state</a></li>
+      <li><a href="#firebase-console-checklist">Firebase / Google Cloud console checklist</a></li>
+      <li><a href="#app-specific-continuity">App-specific continuity recommendations</a></li>
+      <li><a href="#agent-defense-model">Defending against AI-agent development risk</a></li>
+      <li><a href="#tdd-bdd">Adopting test-first development (TDD) and behavior specs (BDD)</a></li>
+      <li><a href="#dev-process">Development process and practice</a>
+        <ul>
+          <li><a href="#dev-skills-layer">1. A shared skills layer across every repo</a></li>
+          <li><a href="#dev-skills-repo">2. Keep skills in their own repo (no drift)</a></li>
+          <li><a href="#dev-plan-review">3. Plan first — with the HTML plan reviewer</a></li>
+          <li><a href="#dev-second-model">4. Independent second-model review</a></li>
+          <li><a href="#dev-architecture">5. Document the architecture as living docs</a></li>
+          <li><a href="#dev-per-app-recovery">6. Per-app recovery within one Firebase instance</a></li>
+          <li><a href="#dev-operating-habits">7. Operating habits that keep agents thorough</a></li>
+          <li><a href="#dev-setup-prompt">One-time setup prompt for Claude</a></li>
+        </ul>
+      </li>
+      <li><a href="#implementation-roadmap">Suggested resilience roadmap</a></li>
+      <li><a href="#claude-code-instructions">Claude Code-ready instructions for each roadmap step</a></li>
+      <li><a href="#acceptance-criteria">Acceptance criteria</a></li>
+      <li><a href="#evidence-and-sources">Evidence and source notes</a></li>
+      <li><a href="#glossary">Glossary of terms</a>
+        <ul>
+          <li><a href="#glossary-backup">Backup and recovery</a></li>
+          <li><a href="#glossary-firebase">Firebase and how the data is organized</a></li>
+          <li><a href="#glossary-saving">How data is saved — and lost</a></li>
+          <li><a href="#glossary-access">Access and security</a></li>
+          <li><a href="#glossary-ops">Shipping changes safely, cost, and operations</a></li>
+        </ul>
+      </li>
+    </ol>
+  </nav>
+
+  <section id="executive-summary">
+    <h2>1. Executive summary</h2>
+    <div class="grid" id="summary-cards">
+      <article class="card span-3" id="metric-shared-project"><div class="metric">1</div><p class="muted">Shared Firebase project observed in code: <code>tinker-hq-apps</code></p></article>
+      <article class="card span-3" id="metric-priority-apps"><div class="metric">4</div><p class="muted">Priority apps all depend on Auth + Firestore</p></article>
+      <article class="card span-3" id="metric-storage-apps"><div class="metric">3</div><p class="muted">Priority apps with Storage usage: Classbook, Summer Camp App, Training Hub</p></article>
+      <article class="card span-3" id="metric-current-gap"><div class="metric sev-critical">0</div><p class="muted">Automatic, managed Firebase backups (PITR/scheduled) found in the code — recovery depends on manual, local backups</p></article>
+    </div>
+    <div class="callout danger" id="headline-risk">
+      <strong>Highest risk:</strong> if the data is lost or corrupted today, recovery depends on manual backups and scattered in-app safeguards — not on a single, owned, tested recovery plan. The stakes are concrete: Classbook has already lost teacher content twice, Tinker Ticker is the source of truth for payroll, Summer Camp can overwrite or delete shared data in bulk, and Training Hub holds staff compliance records that cannot be recreated.
+    </div>
+    <p id="headline-recommendation">In plain terms, the goal is to: turn on Firebase's built-in automatic backups (PITR plus scheduled backups); keep a second backup copy somewhere normal app or agent credentials cannot delete; confirm that deleted photos and files can actually be recovered; write down and practice how to restore; limit who — and which AI agents — can change production; and add automated tests — written test-first (TDD) and as plain-language behavior specs (BDD); see <a href="#tdd-bdd">Adopting TDD and BDD</a> — that assume an agent will eventually attempt an unsafe change unless something stops it.</p>
+  </section>
+
+  <section id="current-resilience-status">
+    <h2>2. Where the resilience work stands today — and what to fix first</h2>
+    <p id="status-intro">Plain summary: some good safety work has already started, mostly in Classbook. But the backbone of any recovery plan — a real, automatic, off-machine backup — does not exist yet. Almost everything that protects this data today depends on a person remembering to run something by hand, or on safety code that has not been finished. This section lays out what is actually done, what is still open, and the order to tackle it. It is the prioritized view; the sections that follow give the full target state and the step-by-step roadmap.</p>
+
+    <div class="callout danger" id="status-backup-truth">
+      <strong>The single most important fact:</strong> there is no managed, automatic backup of the Firebase data. The only backup tool in the code is a script an admin has to paste into a browser by hand, roughly once a week. The 30-minute automatic backup that rescued Classbook during the May data loss ran on one person's Mac as a local scheduled job — and it is not even present on this machine. <strong>If that one Mac is lost, wiped, or simply not run, there is currently no way to recover.</strong> Confirming what exists in the Firebase console and replacing this with a managed backup is the highest priority, ahead of everything else below.
+    </div>
+
+    <h3 id="status-priority-order">Most urgent Firebase work, in priority order</h3>
+    <table id="priority-table">
+      <thead><tr><th>#</th><th>Priority</th><th>Work to do</th><th>App(s)</th><th>Why it can't wait</th></tr></thead>
+      <tbody>
+        <tr id="prio-1">
+          <td>1</td><td class="sev-critical">P0 — now</td>
+          <td>Confirm in the Firebase/Google Cloud console whether Firestore <strong>Point-in-Time Recovery (PITR)</strong> and <strong>scheduled backups</strong> are turned on, and turn them on if not. Add one independent, locked backup copy that normal app or agent credentials cannot delete. Because all four apps share one database, this one setting protects them all; pair it with <strong>per-app/collection-scoped restore</strong> so a single app can be recovered without overwriting the others (see <a href="#per-app-recovery-model">One backup, but per-app recovery</a>).</td>
+          <td>All four</td>
+          <td>Today, recovery depends on a manual weekly script plus a local Mac job that isn't here. There is no automatic safety net for any app. Everything else assumes a backup exists to restore from.</td>
+        </tr>
+        <tr id="prio-2">
+          <td>2</td><td class="sev-critical">P0 — now</td>
+          <td>Make Tinker Ticker payroll writes safe: (a) wait for Firestore to confirm clock-in/out and admin edits before showing "saved," and (b) make the pay-period <strong>lock actually block edits</strong> and save an unchangeable snapshot when a period closes.</td>
+          <td>Tinker Ticker</td>
+          <td>Payroll is the legal record. Right now the "lock" only shows a banner — locked entries can still be edited or deleted — and several writes report success even when they silently failed, which can underpay staff with no trace.</td>
+        </tr>
+        <tr id="prio-3">
+          <td>3</td><td class="sev-high">P1 — soon</td>
+          <td>Require an automatic backup/snapshot <strong>before any bulk delete or import</strong>. Start with Summer Camp's curriculum import, which erases the entire (Classbook-shared) curriculum collection before reloading it.</td>
+          <td>Summer Camp · Classbook</td>
+          <td>One bad import or misclick destroys shared camp and curriculum data with no undo. This is the same kind of path behind the May 14 data loss, and it is still unguarded.</td>
+        </tr>
+        <tr id="prio-4">
+          <td>4</td><td class="sev-high">P1 — soon</td>
+          <td>Finish Classbook's started safety plan: photo upload-before-delete (Stage 1C), safe admin move/swap (2A/2B), the Plan Complete photo fix (2C), spring-lesson field protection (2D), and post-save read-back checks (2E).</td>
+          <td>Classbook</td>
+          <td>Stages 0/1A/1B are done, but the remaining stages cover known data-loss paths — including the exact photo and Plan-Complete cases that already have failing tests standing as proof of the gap.</td>
+        </tr>
+        <tr id="prio-5">
+          <td>5</td><td class="sev-high">P1 — soon</td>
+          <td>Protect Training Hub compliance records — onboarding checklists (which track background-check and CampSafe status), observations, and assignments: add backup retention and switch permanent hard deletes to soft delete / archive.</td>
+          <td>Training Hub</td>
+          <td>These are compliance evidence that cannot be recreated, yet a single confirmation dialog followed by a permanent delete is all that protects them.</td>
+        </tr>
+        <tr id="prio-6">
+          <td>6</td><td class="sev-medium">P2 — next</td>
+          <td>Tighten and test the Firestore/Storage rules: close the fully public <code>materials</code> rule, move Classbook teacher isolation into the rules (not just the UI), and add rules tests for Classbook bulk delete and all Training collections.</td>
+          <td>All four</td>
+          <td>Rules are the backstop when app code or an AI agent misbehaves. The riskiest delete paths currently have no rules test, so a bad change could ship unnoticed.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="muted" id="priority-note">"Now / soon / next" describes sequence and risk, not calendar dates — set real dates with the named continuity owner. Items 1 and 2 can run in parallel; both are the floor the rest of the work builds on.</p>
+
+    <h3 id="status-by-app">What's working today vs. still open, by area</h3>
+    <table id="status-by-app-table">
+      <thead><tr><th>Area</th><th>Working today</th><th>Still open (most urgent first)</th></tr></thead>
+      <tbody>
+        <tr id="status-backups">
+          <td><strong>Backups (all apps)</strong></td>
+          <td>A manual, read-only browser script (in Summer Camp) can export ~75 collections to a single JSON file.</td>
+          <td>No automatic schedule and no off-machine copy. Whether Firebase's built-in PITR/scheduled backups are on is <strong>unconfirmed</strong>. The 30-minute local backup that recovered Classbook in May is not present on this machine. <span class="sev-critical">P0.</span></td>
+        </tr>
+        <tr id="status-classbook">
+          <td><strong>Classbook</strong></td>
+          <td>Safety test suite, load-failure save blocking, Cmd+S stale-data fix, and empty-field stripping on summer lesson saves (Stages 0/1A/1B). 5 of 7 safety tests pass.</td>
+          <td>Photos are still deleted before re-upload and aren't backed up at all, so a failed upload is permanent loss (1C, test failing). Admin move/swap deletes the original with no verification (2A/2B). "Plan Complete" can wipe a photo URL (2C, test failing). Spring lessons have none of the empty-field protections (2D). Nothing reads a save back to confirm it landed (2E — the only check that catches a wipe as it happens). No in-app backup-health or sudden-drop alert (4A/4B).</td>
+        </tr>
+        <tr id="status-summer-camp">
+          <td><strong>Summer Camp</strong></td>
+          <td>The manual export script covers all camp and shared collections.</td>
+          <td>Bulk import/delete paths take no snapshot first. The curriculum import erases the entire shared curriculum collection before reloading it. The Classbook sync that runs after a destructive change is not awaited and swallows errors, so Classbook can be silently left stale.</td>
+        </tr>
+        <tr id="status-ticker">
+          <td><strong>Tinker Ticker</strong></td>
+          <td>Kiosk clock writes and a few helpers (time-off, HFWA, roster) correctly wait for confirmation.</td>
+          <td>Employee clock-in/out and admin edits do <strong>not</strong> wait for Firestore to confirm — a failed write still looks successful. The pay-period "lock" only shows a banner and takes no snapshot, so locked payroll stays editable and deletable. No payroll-specific backup. <span class="sev-critical">Highest-stakes data, weakest protection.</span></td>
+        </tr>
+        <tr id="status-training">
+          <td><strong>Training Hub</strong></td>
+          <td>Deletes are limited to managers in the rules, failed progress writes roll back the on-screen state, and reproducible seed data is clearly separated from compliance data.</td>
+          <td>No managed backup of compliance records (onboarding checklists with background-check/CampSafe status, observations, assignments). No test reads data back to prove it actually saved (current tests only check mocks). Every delete is a permanent hard delete behind a single confirm dialog.</td>
+        </tr>
+        <tr id="status-rules">
+          <td><strong>Rules (studio-hub)</strong></td>
+          <td>An emulator-backed rules test suite (~29 tests) covers timeclock ownership, the finance lock, and default-deny.</td>
+          <td>A <code>materials</code> collection is open to anyone (public read + write). Classbook teacher isolation lives only in the UI, not in the rules, over shared lesson docs any Classbook user can delete. Storage lets any signed-in user delete social-media photos. No rules tests cover Classbook bulk delete or any Training collection.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="current-architecture">
+    <h2>3. Observed Firebase architecture</h2>
+    <table id="architecture-table">
+      <thead><tr><th>Area</th><th>Observed evidence</th><th>Continuity implication</th></tr></thead>
+      <tbody>
+        <tr id="arch-shared-project"><td>Firebase project</td><td>All four priority apps use config for <code>projectId: tinker-hq-apps</code>.</td><td>One shared backend means a rules mistake, bad service account, or destructive script can affect multiple business workflows.</td></tr>
+        <tr id="arch-rules-source"><td>Rules source</td><td><code>studio-hub/firestore.rules</code> contains rules for Classbook, Summer Camp, Timeclock, and Training. Priority repos do not carry their own active rules files.</td><td>Rules deployment ownership must be centralized and protected. Agents editing app repos may not see or update the actual backend access contract.</td></tr>
+        <tr id="arch-backups"><td>Backups</td><td><code>summer-camp-app/scripts/backup-firestore.js</code> is a browser-console, manual, read-only JSON export. <code>classbook/CLASSBOOK-DATA-SAFETY-PLAN.md</code> references <code>~/tinker-backups</code> and a LaunchAgent, but those files were not present on this machine.</td><td>Existing backups are not proven as managed, monitored, restorable production backups.</td></tr>
+        <tr id="arch-storage"><td>Storage</td><td>Classbook and Summer Camp use Firebase Storage for lesson/project photos; Training Hub has <code>src/lib/storageUpload.ts</code>. <code>studio-hub/storage.rules</code> defines shared bucket rules.</td><td>Firestore backups do not protect binary objects. Storage retention/versioning must be verified separately.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="app-inventory">
+    <h2>4. Priority app data inventory</h2>
+    <table id="app-inventory-table">
+      <thead><tr><th>App</th><th>Primary Firebase data</th><th>Business criticality</th><th>Main continuity risk</th></tr></thead>
+      <tbody>
+        <tr id="app-classbook"><td><strong>Classbook</strong></td><td><span class="tag">curriculum</span><span class="tag">summerCamps_lessonData</span><span class="tag">summerCamps_prepHelpQueue</span><span class="tag">summerCamps_campComplete</span><span class="tag">Storage photos</span></td><td>Teacher lesson plans and summer camp curriculum delivery.</td><td>Known prior wipe events from empty-field writes; teacher-entered content can be overwritten by stale client state.</td></tr>
+        <tr id="app-summer-camp"><td><strong>Summer Camp App</strong></td><td><span class="tag">summerCamps_curriculum</span><span class="tag">projectDetails</span><span class="tag">materialsHub</span><span class="tag">schedule</span><span class="tag">kidNotes</span><span class="tag">openStudio</span><span class="tag">team</span><span class="tag">Storage photos</span></td><td>Camp operations, prep, staffing, materials, student notes.</td><td>Large client-side app with many write/delete/import paths; accidental bulk overwrite/delete would disrupt active camp operations.</td></tr>
+        <tr id="app-tinker-ticker"><td><strong>Tinker Ticker</strong></td><td><span class="tag">timeclock_entries</span><span class="tag">timeclock_schedules</span><span class="tag">timeclock_hfwa</span><span class="tag">timeclock_timeoff</span><span class="tag">timeclock_settings</span><span class="tag">timeclock_streaks</span><span class="tag">timeclock_overrides</span></td><td>Payroll/timekeeping and leave compliance.</td><td>Loss or silent corruption affects payroll accuracy. Several write helpers fire async writes without consistently awaiting success.</td></tr>
+        <tr id="app-training-hub"><td><strong>Training Hub</strong></td><td><span class="tag">trainingModules</span><span class="tag">trainingPrograms</span><span class="tag">trainingAssignments</span><span class="tag">trainingEmailLogs</span><span class="tag">trainingObservations</span><span class="tag">onboarding*</span><span class="tag">Storage uploads</span></td><td>Staff training, onboarding, assignments, observation records.</td><td>Manager workflows can delete modules/programs/observations/onboarding objects; compliance history needs recoverability and retention clarity.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="recommended-target-state">
+    <h2>5. Recommended backend continuity target state</h2>
+    <div class="callout" id="per-app-recovery-model">
+      <strong>One backup, but per-app recovery.</strong> All four apps share a single Firebase project and a single Firestore database, so Point-in-Time Recovery (PITR) and scheduled backups protect every app at the same time — there is no way to have them on for one app and off for another; they apply to the whole database. The catch is on the recovery side: a managed restore rebuilds the <em>entire</em> database into a new one, so you must <strong>never restore the whole database over production to fix a single app</strong> — that would overwrite the other three. To recover one app on its own, the plan is:
+      <ol>
+        <li><strong>Restore into an isolated sandbox</strong> — bring the full snapshot, or a PITR timestamp, back into a separate database/project (never production).</li>
+        <li><strong>Surgically copy back only the affected app's collections</strong> from that sandbox into production, leaving the other apps untouched.</li>
+        <li><strong>Keep per-app collection-scoped exports</strong> — schedule exports limited to each app's own collections to its own backup path, so a single app's data can also be re-imported independently without a full restore.</li>
+      </ol>
+      For very recent loss, PITR can additionally read specific documents as of a past time and write just those back. Net result: one database-wide safety net, plus the ability to recover Classbook, Summer Camp, Tinker Ticker, or Training Hub individually.
+    </div>
+    <div class="grid">
+      <article class="card span-6" id="target-firestore">
+        <h3>Firestore data protection</h3>
+        <ol>
+          <li>Enable <strong>Point-in-Time Recovery (PITR)</strong> on the default Firestore database for short-window accidental writes/deletes.</li>
+          <li>Enable <strong>scheduled Firestore backups</strong> with at least daily cadence and the maximum retention that fits budget/compliance needs. Firebase docs currently describe daily/weekly backup schedules with restore into a new database, and PITR up to a 7-day window.</li>
+          <li>Keep independent <strong>export copies</strong> in a locked Cloud Storage bucket or separate Google Cloud project/account so a compromised app deploy path cannot erase both production and backups.</li>
+          <li>Define RPO/RTO by data class: payroll/timeclock and active camp content should have RPO ≤ 1 hour during business operations; lower-critical seed/catalog data can tolerate daily RPO.</li>
+          <li><strong>Design for per-app recovery.</strong> All four apps share one database, so PITR/scheduled backups are database-wide (one setting protects everyone). To recover a single app without disturbing the others, do not restore the whole database over production; instead restore the snapshot or PITR timestamp into an isolated database, then copy back only that app's collections. Also run <strong>per-app collection-scoped exports</strong> (each app's collections to its own backup path) so one app can be re-imported independently. See the callout above.</li>
+        </ol>
+      </article>
+      <article class="card span-6" id="target-storage">
+        <h3>Cloud Storage protection</h3>
+        <ol>
+          <li>Verify Cloud Storage soft delete retention on the Firebase bucket and document exact retention days.</li>
+          <li>Enable object versioning or retention/lifecycle rules for high-value paths: <code>curriculum/</code>, <code>summerCamps/</code>, <code>projectDetailPhotos/</code>, and <code>training/</code>.</li>
+          <li>Run a separate scheduled object inventory/export for Storage metadata and object manifests, because Firestore exports only preserve references/URLs, not binary content.</li>
+          <li>Prohibit delete-before-upload replacement flows; upload new object, verify URL/readability, then remove old object after a grace period.</li>
+        </ol>
+      </article>
+      <article class="card span-6" id="target-security">
+        <h3>Security and agent-defense controls</h3>
+        <ol>
+          <li>Use least-privilege IAM, MFA, and a small human-only production owner group. Agents should not hold Owner/Editor or broad Firebase Admin rights.</li>
+          <li>Disable or tightly govern service-account key creation. Prefer Workload Identity / short-lived credentials for CI jobs.</li>
+          <li>Require PR review for <code>studio-hub/firestore.rules</code>, deploy scripts, Netlify env vars, backup scripts, and Firebase config changes.</li>
+          <li>Introduce an explicit emergency break-glass account owned by humans, not agents, with logged use and credential rotation after incidents.</li>
+        </ol>
+      </article>
+      <article class="card span-6" id="target-restore">
+        <h3>Restore readiness</h3>
+        <ol>
+          <li>Quarterly restore drills into a non-production Firestore database/project.</li>
+          <li>Per-app restore runbooks that identify collections, expected document counts, owner sign-off, and validation checks.</li>
+          <li>Read-only daily integrity reports: document counts, critical field non-empty counts, recent destructive writes, last backup age.</li>
+          <li>Incident checklist: freeze deploys, revoke suspect credentials, preserve audit logs, restore to staging first, then surgically patch production.</li>
+        </ol>
+      </article>
+    </div>
+  </section>
+
+  <section id="firebase-console-checklist">
+    <h2>6. Firebase / Google Cloud console checklist</h2>
+    <table id="console-checklist-table">
+      <thead><tr><th>Console area</th><th>What to verify</th><th>Cost / plan-level implications</th><th>Pass condition</th></tr></thead>
+      <tbody>
+        <tr id="check-firestore-pitr"><td>Firestore → Database → Disaster recovery</td><td>PITR enabled on <code>(default)</code>; scheduled backups configured; restore process understood.</td><td><strong>Requires Blaze for scheduled backups.</strong> Firestore scheduled backups charge for backup storage and restore operations based on backup size. PITR also carries storage/read cost implications because older document versions are retained and read/exported from the PITR window. Confirm current Firebase/GCP pricing before enabling.</td><td>PITR on; daily backups retained; last backup timestamp visible; restore drill record exists.</td></tr>
+        <tr id="check-firestore-location"><td>Firestore database settings</td><td>Database location and edition meet availability requirements.</td><td>Location choice can affect price, latency, and availability. Multi-region availability generally costs more than regional. Changing location later is not a simple toggle; plan before creating restore/staging targets.</td><td>Location documented; business accepts regional/multi-region availability tradeoff.</td></tr>
+        <tr id="check-storage-retention"><td>Cloud Storage bucket</td><td>Soft delete, versioning, lifecycle, retention policies, and object lock posture.</td><td><strong>Cloud Storage for Firebase generally requires Blaze for new default buckets.</strong> Storage charges apply to live objects, noncurrent object versions, and soft-deleted objects. Longer soft-delete/version retention improves recovery but increases storage cost; lifecycle rules can reduce cost by deleting or moving old versions.</td><td>Deleted/overwritten files recoverable for agreed window; backup copies cannot be deleted by normal app/deploy credentials.</td></tr>
+        <tr id="check-iam"><td>IAM & Admin</td><td>Project owners/editors, Firebase Admin, service-account users, key creators, deploy credentials.</td><td>IAM itself is not the cost driver, but least-privilege setup may require separate service accounts/projects and time to administer. Separate backup projects/buckets add storage/logging costs but reduce blast radius.</td><td>No agent or day-to-day dev identity has broad production rights; service account keys inventoried and rotated.</td></tr>
+        <tr id="check-auth"><td>Firebase Authentication</td><td>Sign-in providers, authorized domains, user lifecycle, MFA for admin/operator accounts.</td><td>Email/password and basic Auth usage may fit no-cost quotas, but SMS/phone auth and some identity features can create usage costs. MFA for Firebase app users can have provider-dependent constraints; Google account MFA for console admins is separate from Firebase app Auth.</td><td>Only required providers/domains enabled; admin accounts use MFA; departed staff disabled promptly.</td></tr>
+        <tr id="check-app-check"><td>Firebase App Check</td><td>Whether App Check is registered/enforced for web apps and Storage/Firestore where practical.</td><td>Firebase pricing lists App Check as no-cost, subject to quotas and attestation-provider limits. Enforcement can still create rollout cost/risk if legitimate clients are not registered correctly; use monitor mode before enforcement.</td><td>At minimum monitor mode; enforcement plan for production origins after testing.</td></tr>
+        <tr id="check-rules"><td>Firestore / Storage Rules</td><td>Rules source, deployed version, tests, public rules, delete grants.</td><td>Rules are not separately billed, but emulator/CI time and extra reads caused by rule helper checks can affect development effort and, at runtime, rule designs that require extra document reads can increase Firestore read costs.</td><td>Rules in source control match deployed rules; emulator tests pass; intentional public access documented.</td></tr>
+        <tr id="check-logs"><td>Cloud Logging / Audit Logs</td><td>Admin activity, data access logs for sensitive collections, alerting on destructive operations.</td><td>Admin Activity audit logs are generally available by default; Data Access logs and longer log retention can add Cloud Logging cost. Alerting/monitoring may also have usage costs depending on volume and channels.</td><td>Audit logs retained and queryable; alerts exist for backup failures, mass deletes, rule deploys, key creation.</td></tr>
+        <tr id="check-billing"><td>Billing / quotas / budgets</td><td>Budget alerts, quota alerts, write/read/storage spikes.</td><td>Budgets/alerts are control-plane safeguards, not backups. They require billing access and should be configured before enabling higher-retention backup/storage options so overruns are visible quickly.</td><td>Alerts route to humans; quota exhaustion cannot silently break business-critical workflows.</td></tr>
+      </tbody>
+    </table>
+
+    <section id="console-navigation-guide">
+      <h3>Where to find each status in Firebase / Google Cloud Console</h3>
+      <p class="muted">Console labels move over time, so use these as current navigation starting points and capture screenshots or copied setting text as evidence. If the Firebase Console does not show a setting, switch to the linked Google Cloud project in Google Cloud Console; many Firestore, Storage, IAM, Logging, and Billing controls live there.</p>
+      <table id="console-navigation-table">
+        <thead><tr><th>Checklist item</th><th>Console path to check</th><th>What to capture as evidence</th><th>If you cannot find it</th></tr></thead>
+        <tbody>
+          <tr id="nav-firestore-backups"><td>Firestore PITR and scheduled backups</td><td><strong>Google Cloud Console</strong> → select project <code>tinker-hq-apps</code> → Firestore → Databases. In the database row for <code>(default)</code>, look for the <strong>Scheduled backups</strong> column and click <strong>View backups</strong> or <strong>Edit settings</strong>. For PITR, select the database from the Databases page and review disaster recovery / point-in-time recovery settings.</td><td>Database name, location, PITR on/off, backup schedule daily/weekly, retention period, most recent backup, and whether restore is available.</td><td>Ask the agent/operator to run read-only commands such as <code>gcloud firestore databases describe --database='(default)' --project=tinker-hq-apps</code> and backup schedule listing commands, or use the Firestore docs for the current console link.</td></tr>
+          <tr id="nav-firestore-location"><td>Firestore database location and edition</td><td><strong>Google Cloud Console</strong> → Firestore → Databases → select <code>(default)</code>. The database list/details page shows location/region and database information.</td><td>Location/region, edition/mode if shown, database ID, and whether the business accepts the availability/cost tradeoff.</td><td>If location is unclear in Firebase Console, use Google Cloud Console Firestore Databases rather than Firebase’s simplified Firestore data viewer.</td></tr>
+          <tr id="nav-storage-retention"><td>Cloud Storage soft delete, versioning, lifecycle, retention</td><td><strong>Google Cloud Console</strong> → Cloud Storage → Buckets → open the Firebase bucket, likely <code>tinker-hq-apps.firebasestorage.app</code> or the project’s default Storage bucket. Check tabs/sections for <strong>Protection</strong>, <strong>Object versioning</strong>, <strong>Soft delete</strong>, <strong>Lifecycle</strong>, and <strong>Retention</strong>.</td><td>Bucket name, location, soft-delete retention days, object versioning enabled/disabled, lifecycle rules, retention policy, and high-value prefixes present: <code>curriculum/</code>, <code>summerCamps/</code>, <code>projectDetailPhotos/</code>, <code>training/</code>.</td><td>Use Google Cloud Console, not only Firebase Storage UI. Firebase Storage UI is best for browsing files; bucket protection settings are usually in Cloud Storage bucket details.</td></tr>
+          <tr id="nav-iam"><td>IAM, owners, service accounts, key creators</td><td><strong>Firebase Console</strong> → Project settings → Users and permissions for Firebase-visible members. Then <strong>Google Cloud Console</strong> → IAM & Admin → IAM for complete project principals; IAM & Admin → Service Accounts for service accounts and keys.</td><td>Owners/editors/admins, deploy/service accounts, which accounts can create keys, key ages, and whether any agent/dev identity has Owner/Editor or broad Firebase Admin access.</td><td>Firebase Console can omit some Google Cloud principals. Treat Google Cloud IAM as the source of truth for full access review.</td></tr>
+          <tr id="nav-auth"><td>Firebase Authentication providers, users, domains, MFA posture</td><td><strong>Firebase Console</strong> → Build → Authentication. Check <strong>Sign-in method</strong> for providers, <strong>Users</strong> for user lifecycle, and <strong>Settings</strong> / <strong>Authorized domains</strong> for allowed domains. For console-admin MFA, check the Google accounts / Workspace security posture outside Firebase app Auth.</td><td>Enabled providers, authorized domains, admin/operator accounts, disabled/departed users process, and whether admin Google accounts use MFA.</td><td>Do not confuse app-user MFA with Google account MFA for people who can access Firebase Console. Document both separately if relevant.</td></tr>
+          <tr id="nav-app-check"><td>Firebase App Check registration and enforcement</td><td><strong>Firebase Console</strong> → Build or Security → <strong>App Check</strong>. Review the Apps tab for registered web apps and provider setup. Review enforcement settings for Cloud Firestore, Cloud Storage, Authentication, and any other protected resources.</td><td>Registered app IDs/domains, provider type such as reCAPTCHA, monitor/enforced state per product, request metrics, and any enforcement rollout notes.</td><td>If no apps are registered, note “not configured” and keep enforcement off until legitimate production origins are registered and monitored.</td></tr>
+          <tr id="nav-rules"><td>Firestore and Storage rules</td><td><strong>Firebase Console</strong> → Build → Firestore Database → Rules for deployed Firestore rules. Firebase Console → Build → Storage → Rules for deployed Storage rules. Compare against source files <code>studio-hub/firestore.rules</code> and <code>studio-hub/storage.rules</code>.</td><td>Rules publish timestamp/version if shown, deployed rule text, source-control commit, emulator test output, and any intentional public rules.</td><td>If the console text differs from source control, treat it as a release risk and stop before deploying more changes.</td></tr>
+          <tr id="nav-logs"><td>Audit logs and destructive-operation monitoring</td><td><strong>Google Cloud Console</strong> → Logging → Logs Explorer. Query Admin Activity logs for Firestore, Storage, IAM, service account keys, rules deploys, and backup changes. For Data Access logs, check IAM & Admin → Audit Logs / Logs Router settings depending on console layout.</td><td>Queries or screenshots showing recent rule deploys, service-account-key creation, backup setting changes, mass deletes if logged, and log retention.</td><td>Admin Activity logs may be easier to find than Data Access logs. If Data Access logs are not enabled, document that cost/volume should be reviewed before enabling.</td></tr>
+          <tr id="nav-billing"><td>Billing, budgets, quotas, alerts</td><td><strong>Google Cloud Console</strong> → Billing → Budgets & alerts for budgets. Billing → Reports for current spend. IAM/Billing permissions may require billing-account access. For quotas, use IAM & Admin → Quotas or product-specific quota pages.</td><td>Billing account linked, budgets/alert thresholds, notification recipients, current monthly spend, backup/storage/logging spend if visible, and quota alerts.</td><td>If you cannot access Billing, ask a billing admin for screenshots or exported budget settings; Firebase project owners may not automatically have billing-account permissions.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </section>
+
+  <section id="app-specific-continuity">
+    <h2>7. App-specific continuity recommendations</h2>
+    <p class="muted" id="app-specific-intro">These are the full per-app action lists. For the short version of what is already done versus still open, and what to do first, see <a href="#status-by-app">What's working today vs. still open</a> above.</p>
+
+    <article class="card" id="classbook-recommendations">
+      <h3>Classbook</h3>
+      <p><strong>Risk posture:</strong> critical. The repo documents two prior Firestore wipe events in <code>CLASSBOOK-DATA-SAFETY-PLAN.md</code>, caused by empty client fields overwriting saved lesson content. This is the strongest evidence that agent/client mistakes can cause real production data loss.</p>
+      <h4 id="classbook-actions">Required actions</h4>
+      <ol>
+        <li>Make <code>summerCamps_lessonData</code>, <code>curriculum</code>, and photo Storage paths part of the highest-frequency backup set.</li>
+        <li>Keep or replace the documented 30-minute backup cadence during active camp/curriculum entry; do not rely on weekly manual browser export.</li>
+        <li>Implement or verify the data-safety plan stages: load-failure save guard, targeted saves, write read-back verification, content-count dashboard, and photo upload-before-delete.</li>
+        <li>Move backup status into a backend-readable health document or dashboard so backup failure is visible without SSH/local-file access.</li>
+        <li>Rules review: <code>appAccess('classbook')</code> can write broad Classbook data and <code>summerCamps_lessonData</code>. Decide whether teacher-level write boundaries can be represented in document IDs/rules instead of only UI filtering.</li>
+      </ol>
+    </article>
+
+    <article class="card" id="classbook-wipe-retrospective">
+      <h3>Classbook retrospective — what the repo shows about the two wipe events</h3>
+      <p class="muted">Scope note: this retrospective is based on repo evidence in <code>classbook/CLASSBOOK-DATA-SAFETY-PLAN.md</code>, git history, and current/blamed code. The referenced local backup file <code>~/tinker-backups/tinker-backup-2026-05-15T21-17-31.json</code> is not present under this session's user account, so the exact restored document contents were not independently re-read here.</p>
+      <table id="classbook-retro-table">
+        <thead><tr><th>Event</th><th>What happened</th><th>Repo evidence</th><th>Continuity lesson</th></tr></thead>
+        <tbody>
+          <tr><td>Wipe 1 — before May 14</td><td>The summer lesson modal saved one teacher/project edit by routing through a bulk save path. That path iterated over all generated lesson slots and wrote every doc in <code>summerCamps_lessonData</code>. If the in-memory lesson set was stale or only partially merged, empty lesson-plan fields were included in writes and overwrote real teacher content.</td><td>Commit <code>8d92218</code> changed the modal from <code>saveLessonData(semKey, allLessons)</code> to <code>saveSingleLesson(semKey, lessonKey, savedLesson)</code>. Commit message explicitly says saving one lesson could bulk-overwrite all ~87 lesson docs. Commit <code>190bf0a</code> then added <code>hasContent</code> guards to <code>saveSummerCampLessonData()</code>.</td><td>Never use a broad batch save when the user edited one record. Write only the affected document/fields, and prevent generated empty slots from touching persisted content.</td></tr>
+          <tr><td>Partial May 14 fix</td><td>The first fix reduced blast radius and added guardrails, but it did not cover every write path. Bulk writes gained <code>hasContent</code>, teacher-slot selection was corrected for shared camps, and edit permission checks were added. Later the same day, field stripping and <code>{ merge: true }</code> were added to the bulk writer and all-empty saves were blocked in <code>saveSingleLesson()</code>.</td><td>Commit <code>190bf0a</code> added teacher-slot selection, <code>canEditLesson</code> checks, and skipped no-content bulk writes. Commit <code>302481b</code> added field-level stripping in <code>saveSummerCampLessonData()</code> and changed batch writes to <code>set(..., { merge: true })</code>; it also blocked all-empty summer <code>saveSingleLesson()</code> calls.</td><td>Fixes must be applied by invariant across all save paths, not only the function involved in the first incident. Agent-written patches need a cross-path audit before being considered complete.</td></tr>
+          <tr><td>Wipe 2 — May 15, 3:51 PM MDT</td><td>The per-lesson save path still allowed empty string fields inside an otherwise non-empty lesson object. Firestore <code>set(data, { merge: true })</code> preserves fields omitted from the payload, but it does not ignore present empty strings. Therefore <code>{ introPitch: '' }</code> overwrote the real saved intro pitch with an empty value. The safety plan attributes the stale empty payload to silent load failure or stale merge state.</td><td><code>CLASSBOOK-DATA-SAFETY-PLAN.md</code> identifies <code>saveSingleLesson()</code> as the second vulnerable path and records the timestamp. Git blame shows the per-field stripping for <code>saveSingleLesson()</code> was added later in commit <code>ace1f7e</code> on May 18 at current <code>js/firebase-data.js</code> lines 674–680.</td><td><code>merge:true</code> is not a data-loss control. Any client payload containing empty values must be treated as destructive unless the user explicitly intended to clear that field.</td></tr>
+          <tr><td>Recovery</td><td>The team restored lesson-plan content from a pre-wipe backup taken at 3:17 PM on May 15, about 34 minutes before the recorded 3:51 PM wipe. Photo metadata/download tokens were recovered from Firebase Storage and the plan says 25 teacher photos returned HTTP 200.</td><td><code>CLASSBOOK-DATA-SAFETY-PLAN.md</code> names <code>~/tinker-backups/tinker-backup-2026-05-15T21-17-31.json</code>, describes restoration of all content, and documents 30-minute backups. The local backup path is referenced again as operational evidence, but it was not available from this account for direct inspection.</td><td>The 30-minute backup cadence materially limited data loss. This is the strongest argument for managed, observable, off-project backups with tested restore scripts.</td></tr>
+          <tr><td>Post-incident hardening</td><td>May 18 added a Playwright data-safety suite and load-failure save guard. June 3 documentation says Stage 1A and 1B were complete: load failure banner/save blocking and Cmd+S stale-closure fix. Tests 1–4 and 7 pass; photo upload order and Plan Complete/photo URL risks remain documented as expected failures.</td><td>Commit <code>ace1f7e</code> added <code>CLASSBOOK-DATA-SAFETY-PLAN.md</code>, <code>e2e/data-safety.spec.js</code>, Firestore helpers, and <code>lessonDataLoadedSuccessfully</code> blocking in <code>saveSingleLesson()</code>. Commit <code>03ec7e1</code> updates the plan/test comments to Stage 1B complete and lists remaining expected failures.</td><td>The response moved in the right direction: regression tests exercise real Firestore behavior rather than mocks. Remaining gaps should be closed before relying on Classbook during peak camp season.</td></tr>
+        </tbody>
+      </table>
+      <h4 id="classbook-retro-root-causes">Root causes and contributing factors</h4>
+      <ul>
+        <li><strong>Payload semantics misunderstood:</strong> Firestore merge does not protect fields included with empty strings.</li>
+        <li><strong>Over-broad writes:</strong> a one-lesson edit originally triggered a save path capable of touching many lesson documents.</li>
+        <li><strong>Generated empty state mixed with persisted authored state:</strong> generated lesson slots and teacher-authored content shared objects, making stale/blank client state dangerous.</li>
+        <li><strong>Silent load failure:</strong> before Stage 1A, failed reads could leave the UI apparently usable with blank content.</li>
+        <li><strong>Patch incompleteness:</strong> the first fix protected bulk saves but missed the single-lesson path until the second wipe forced a full save-path audit.</li>
+      </ul>
+      <h4 id="classbook-retro-recommendations">Retrospective recommendations</h4>
+      <ol>
+        <li>Finish the remaining safety-plan stages: photo upload-before-delete, Plan Complete targeted writes, admin move/swap read-back, non-summer stripping, post-save verification, backup health visibility, and content-count anomaly detection.</li>
+        <li>Promote the current local backup approach into managed Firestore backups/PITR plus an independent export with visible status; keep ≤30-minute effective RPO during active curriculum/camp editing until managed controls prove equivalent.</li>
+        <li>Make “no full-object writes for partial edits” a repository invariant enforced by tests and PR review.</li>
+        <li>Require any future agent touching Firebase write paths to run the Classbook data-safety Playwright suite and include the pass/fail output in review.</li>
+      </ol>
+    </article>
+
+    <article class="card" id="summer-camp-recommendations">
+      <h3>Summer Camp App</h3>
+      <p><strong>Risk posture:</strong> critical during camp season. The app writes many operational collections and has bulk import/delete code paths. Some data overlaps Classbook, so a bad change in one app can damage the other app's view of camp operations.</p>
+      <h4 id="summer-camp-actions">Required actions</h4>
+      <ol>
+        <li>Promote <code>scripts/backup-firestore.js</code> from a manual browser snippet into a scheduled, service-account-based export with verification and off-project storage.</li>
+        <li>Back up the operational set together: curriculum, project details, materials, stock/order queues, schedule, weekly prep, help queue, kid notes, team, open studio, and Storage photos.</li>
+        <li>Add pre-flight snapshots before any bulk import or destructive maintenance action; store snapshot ID in an audit document.</li>
+        <li>Rules review: staff can update several operational collections, while manager+ can delete/read/write more sensitive records. Confirm this matches actual seasonal roles.</li>
+        <li>Run a restore drill before peak season: restore last backup to staging, validate document counts and a sample of schedule/materials/project detail records.</li>
+      </ol>
+    </article>
+
+    <article class="card" id="tinker-ticker-recommendations">
+      <h3>Tinker Ticker</h3>
+      <p><strong>Risk posture:</strong> highest business-continuity priority because it affects payroll and leave records. It uses Firestore offline persistence, which helps temporary client connectivity but is not a backup.</p>
+      <h4 id="ticker-actions">Required actions</h4>
+      <ol>
+        <li>Set RPO target to ≤ 1 hour for <code>timeclock_entries</code>, <code>timeclock_hfwa</code>, <code>timeclock_timeoff</code>, <code>timeclock_schedules</code>, <code>timeclock_settings</code>, and <code>timeclock_overrides</code>.</li>
+        <li>Make pay-period close create an immutable export/snapshot of relevant entries/settings before locking.</li>
+        <li>Change non-awaited write helpers over time so critical writes return success/failure only after Firestore confirms persistence.</li>
+        <li>Rules review: staff can update their own timeclock entries; confirm allowed update fields cannot rewrite payroll-critical history outside intended correction workflows.</li>
+        <li>Have an offline continuity procedure: paper/timecard fallback template, who enters recovery data, and how entries are tagged after restoration.</li>
+      </ol>
+    </article>
+
+    <article class="card" id="training-hub-recommendations">
+      <h3>Training Hub</h3>
+      <p><strong>Risk posture:</strong> medium-high. Training modules/programs are partly reproducible from canonical seed files, but assignments, progress, observations, email logs, and onboarding checklists are operational/compliance evidence and need protected retention.</p>
+      <h4 id="training-actions">Required actions</h4>
+      <ol>
+        <li>Separate recoverable seed/catalog data from non-reproducible evidence data. The latter needs backups and retention policy: <code>trainingAssignments</code>, <code>trainingEmailLogs</code>, <code>trainingObservations</code>, <code>trainingObservationSchedule</code>, and <code>onboarding*</code>.</li>
+        <li>Include Training Hub Storage uploads in object retention/versioning checks.</li>
+        <li>Rules review: <code>hasAppAccess('training')</code> can create/update modules/programs; consider limiting curriculum authoring to managers if content integrity matters.</li>
+        <li>Keep existing production-readiness guardrails: do not use bare <code>firebase deploy</code>; rules source remains <code>studio-hub/firestore.rules</code>.</li>
+        <li>Add export/readback tests for assignment progress and observation records so a future agent cannot silently break persistence.</li>
+      </ol>
+    </article>
+  </section>
+
+  <section id="agent-defense-model">
+    <h2>8. Defending against AI-agent development risk</h2>
+    <div class="callout warn" id="agent-premise"><strong>Premise:</strong> if agents do 100% of software development, production Firebase must assume agents will eventually write unsafe code, unsafe rules, unsafe deploy scripts, or unsafe migration scripts. Continuity controls should not depend on every agent being careful.</div>
+    <table id="agent-defense-table">
+      <thead><tr><th>Threat</th><th>Control</th><th>Evidence to require</th></tr></thead>
+      <tbody>
+        <tr id="agent-threat-destructive-client"><td>Agent introduces client code that overwrites/deletes production data.</td><td>PITR, scheduled backups, read-back verification, destructive-action pre-snapshots, field-level allowlists in write helpers.</td><td>Tests that use real/emulated Firestore writes and fail on accidental empty-field overwrite or unintended delete.</td></tr>
+        <tr id="agent-threat-rules"><td>Agent broadens Firestore/Storage rules.</td><td>Rules PR gate, emulator tests, deployed-rules diff check, human-only deploy credentials.</td><td>CI artifact showing rules tests pass and rule diff reviewed.</td></tr>
+        <tr id="agent-threat-credentials"><td>Agent sees or creates service-account keys.</td><td>No long-lived keys in repos; disable key creation except break-glass; rotate existing keys; use short-lived CI auth.</td><td>IAM key inventory, secret scanning, zero committed keys.</td></tr>
+        <tr id="agent-threat-backups"><td>Agent deletes/overwrites backup scripts or backup storage.</td><td>Backups owned by separate project/account and not writable by app deploy credentials.</td><td>Backup bucket IAM proves prod app/admin service accounts cannot delete backup generations.</td></tr>
+        <tr id="agent-threat-deploy"><td>Agent deploys unreviewed code/rules to production.</td><td>Protected branches, required human approval, deploy tokens scoped per site/project, no local broad deploy from agent machines.</td><td>GitHub branch protection and Netlify/Firebase deploy audit logs.</td></tr>
+        <tr id="agent-threat-poor-history"><td>Agent makes vague commits that hide why risky Firebase/backend changes were made.</td><td>Treat git history as an operational system of record. Require atomic commits with detailed messages, linked evidence, test output, and explicit risk/rollback notes for data, rules, backup, IAM, deploy, or migration changes.</td><td>Commit history can reconstruct a Classbook-style retrospective: what changed, why, which files/collections were affected, what tests ran, who approved risk, and how to revert.</td></tr>
+        <tr id="agent-threat-stranded-work"><td>Agent leaves work uncommitted or unpushed, so a safety fix exists only on one machine — or not in production at all. This is the same failure mode as the local-only Classbook backup that wasn't on this machine.</td><td>Define "done" as committed, pushed, and (when applicable) deployed through the approved path — never a clean-looking local tree. End every task with a completeness check: working tree clean, no untracked files left behind, branch pushed, PR opened.</td><td>Clean <code>git status</code>, the pushed branch/PR link, and for data-path fixes the deployed commit SHA. CI/review rejects branches with stranded or untracked changes.</td></tr>
+        <tr id="agent-threat-inconsistent-guidance"><td>Repos lack consistent agent guidance, so agents follow different safety rules (or none) depending on which repo they are in.</td><td>Every repo carries current agent guidance (<code>CLAUDE.md</code> / <code>AGENTS.md</code>) stating the shared Firebase-safety invariants: no full-object writes for partial edits, backup-before-bulk, never bare <code>firebase deploy</code>, rules source is <code>studio-hub</code>, await critical writes. A periodic check verifies presence and currency across all repos.</td><td>Each repo contains a guidance file referencing the shared invariants; a cross-repo audit shows none missing or stale.</td></tr>
+        <tr id="agent-threat-inconsistent-skills"><td>Planning and execution differ per repo and per agent, so safeguards are applied unevenly and easy to skip.</td><td>Provide shared, reusable skills/commands for planning and execution (for example: a data-safety pre-flight, a backup-before-bulk gate, a pre-deploy checklist, a standard planning workflow) and require their use across all repos.</td><td>The work log/PR shows the shared skill was invoked; plans across repos follow the same structure and gates.</td></tr>
+      </tbody>
+    </table>
+
+    <article class="card" id="commit-history-system-of-record">
+      <h3>Commit history as a system of record</h3>
+      <p>The Classbook retrospective was possible because the repo had meaningful commit messages around the wipe fixes. That should become a formal continuity control: future agents must leave enough history for a human to reconstruct incidents, decisions, and backend risk without relying on chat transcripts that may be unavailable later.</p>
+      <h4 id="agent-commit-requirements">Required agent commit protocol</h4>
+      <ol>
+        <li><strong>Commit risky backend work separately.</strong> Firestore rules, Storage rules, backup scripts, restore tools, IAM/deploy config, migrations, destructive maintenance, and data-write helper changes should not be buried inside broad UI/refactor commits.</li>
+        <li><strong>Use a descriptive subject.</strong> Prefer <code>Protect Classbook lesson saves from empty-field overwrite</code> over <code>fix bug</code> or <code>updates</code>.</li>
+        <li><strong>Write a body that explains the decision.</strong> Include: problem observed, root cause or hypothesis, exact safety invariant, collections/buckets affected, user-facing impact, and why the chosen fix is safer than alternatives.</li>
+        <li><strong>Record verification evidence.</strong> Include test commands and results, emulator output, Playwright results, manual console checks, backup/restore drill IDs, or screenshots referenced in the collaboration document.</li>
+        <li><strong>Record rollback/recovery guidance.</strong> For changes touching production data paths, include how to revert the commit and what data or backup state should be checked after rollback.</li>
+        <li><strong>Reference approvals and constraints.</strong> If a human approved a production Firebase setting, billing change, rule deploy, or data migration, record the approver and approval source in the commit body or PR description.</li>
+        <li><strong>Never rewrite published history for continuity-sensitive branches.</strong> Use revert commits for corrections so the timeline remains auditable.</li>
+      </ol>
+      <h4 id="agent-commit-template">Suggested commit message template for agents</h4>
+      <pre><code>Short subject: imperative, specific, names the safety outcome
+
+Context:
+- What risk, incident, reviewer comment, or business need prompted this change?
+- Which apps/collections/buckets/rules/deploy paths are affected?
+
+Change:
+- What changed, at the level a future investigator needs?
+- What invariant should now hold?
+
+Verification:
+- Commands/tests run and exact pass/fail result.
+- Manual Firebase/GCP console evidence, if applicable.
+
+Risk and rollback:
+- Remaining risks or known gaps.
+- How to revert safely and what backup/restore state to check.
+
+Approval/evidence:
+- Human approval, ticket/comment/report section, or review URL.</code></pre>
+      <p><strong>Example from Classbook:</strong> commits such as <code>8d92218</code>, <code>190bf0a</code>, <code>302481b</code>, and <code>ace1f7e</code> made it possible to reconstruct the difference between the first bulk-write wipe, the partial fix, and the later per-lesson save-path fix. This is the level of evidence future Firebase-risk commits should preserve.</p>
+    </article>
+
+    <article class="card" id="repo-hygiene-consistency">
+      <h3>Repository hygiene and cross-repo consistency</h3>
+      <p>Good code that never leaves a laptop protects nothing. This report's headline failure — the backup that rescued Classbook living only on one person's Mac — is the same risk that applies to agent-written code: a fix that is never committed, pushed, and deployed is not a fix. With roughly two dozen Tinker repos, safeguards only hold if every repo carries the same guidance and every agent plans and executes the same way. These are three checks to make routine.</p>
+
+      <h4 id="repo-check-commit-push">1. Commit-and-push completeness check (end of every task)</h4>
+      <ol>
+        <li><strong>Working tree is clean.</strong> <code>git status</code> shows no modified, staged-but-uncommitted, or untracked files left behind. Generated artifacts are either committed or explicitly ignored — not silently abandoned.</li>
+        <li><strong>All work is committed in reviewable units</strong>, following the commit protocol above (risky backend changes in their own commits with evidence).</li>
+        <li><strong>The branch is pushed</strong> to the remote and a PR is opened; nothing important exists only in the local clone.</li>
+        <li><strong>"Done" includes the deploy path.</strong> For changes that must reach production (rules, data-safety fixes), the task is not complete until the approved deploy has run or is explicitly queued for human approval, with the deployed commit recorded.</li>
+        <li><strong>The agent states completion explicitly:</strong> branch name, PR link, clean-tree confirmation, and what remains for a human (review, deploy, console step).</li>
+      </ol>
+
+      <h4 id="repo-check-guidance">2. Per-repo guidance (<code>CLAUDE.md</code> / <code>AGENTS.md</code>) in every repo</h4>
+      <ol>
+        <li>Every repo contains an up-to-date guidance file stating the <strong>shared Firebase-safety invariants</strong>: no full-object writes for partial edits; strip empty fields; await critical writes; snapshot before bulk import/delete; never run bare <code>firebase deploy</code>; the authoritative rules source is <code>studio-hub</code>; how to run that repo's data-safety/rules tests.</li>
+        <li>The shared invariants live in one canonical place; each repo's file points to it rather than drifting into per-repo variants.</li>
+        <li>A periodic cross-repo audit confirms the guidance file is <strong>present and current</strong> in all repos, and flags any repo that is missing it or has fallen behind the canonical version.</li>
+      </ol>
+
+      <h4 id="repo-check-skills">3. Shared skills for consistent planning and execution</h4>
+      <ol>
+        <li>Build reusable skills/commands once and reuse them across all repos so planning and execution do not depend on which agent or repo is involved — for example: a <strong>data-safety pre-flight</strong>, a <strong>backup-before-bulk</strong> gate, a <strong>pre-deploy checklist</strong>, and a <strong>standard planning workflow</strong>.</li>
+        <li>Require these skills for any Firebase-risk work, and record in the PR/work log which skill was used.</li>
+        <li>Keep the skills versioned centrally so an improvement (a new safety check) propagates to every repo at once, instead of being re-implemented unevenly.</li>
+      </ol>
+    </article>
+  </section>
+
+  <section id="tdd-bdd">
+    <h2>9. Adopting test-first development (TDD) and behavior specs (BDD)</h2>
+    <p id="tdd-bdd-intro">This belongs in a continuity report for one reason: if AI agents write most of the code, the automated tests are the guardrail that survives a careless agent. Every data-loss incident in this report came from a write that did the wrong thing silently. A test that asserts the <em>right</em> behavior — and fails loudly when the behavior is wrong — is the cheapest, most durable defense available. <strong>TDD</strong> (test-driven development) and <strong>BDD</strong> (behavior-driven development) are two complementary disciplines for producing those tests.</p>
+
+    <div class="callout" id="tdd-bdd-already">
+      <strong>This is not a from-scratch ask.</strong> These projects already have the seeds of it: Classbook ships a Playwright data-safety suite where Tests 5 and 6 are written and <em>intentionally failing</em> to mark safeguards that haven't been built yet (that is TDD), and <code>studio-hub/rules.test.js</code> contains ~29 emulator-backed rules checks that read like behavior specifications (that is BDD in spirit). The recommendation is to make this the standard for every Firebase-risk change, and to fill the gaps where tests are missing or only check mocks.
+    </div>
+
+    <h3 id="tdd-what">What each one means here</h3>
+    <ul>
+      <li><strong>TDD — write the test first, watch it fail, then make it pass.</strong> The cycle is red → green → refactor: write a test that encodes a safety rule (for example, "a save containing an empty field must not erase saved content"), run it and confirm it fails (red), write the smallest code that makes it pass (green), then tidy up. The discipline guarantees the test actually catches the bug, because you watched it fail before the fix existed. Classbook's failing Tests 5 and 6 are exactly this: finishing those safeguards means turning red tests green.</li>
+      <li><strong>BDD — describe the behavior in plain language before building it.</strong> Each rule is written as a <code>Given / When / Then</code> scenario that a non-technical owner can read and confirm: it doubles as the specification and the test. Tools such as Cucumber/Gherkin formalize the format, but the real value is a shared, jargon-free description of what "correct" means, agreed before code is written and kept in sync with the test that enforces it.</li>
+    </ul>
+
+    <h3 id="tdd-example">Example behavior specs (BDD scenarios)</h3>
+    <p class="muted">These read the same to an engineer and to a business owner. Each one becomes an automated test that runs against the Firebase emulator or a real test project, and each maps directly to a risk named earlier in this report.</p>
+    <pre id="bdd-scenarios"><code>Feature: Lesson saves never erase existing content
+  Scenario: Saving one field leaves the others intact
+    Given a saved lesson with an intro pitch and a materials list
+    When a teacher saves an edit whose intro pitch field is empty
+    Then the stored intro pitch is unchanged
+    And the materials list is unchanged
+
+Feature: Locked pay periods cannot be altered
+  Scenario: Editing an entry in a locked period is rejected
+    Given a pay period that has been locked
+    When an admin tries to change a timeclock entry inside that period
+    Then the change is rejected
+    And the locked snapshot still matches the original entries
+
+Feature: Bulk imports are recoverable
+  Scenario: A curriculum re-import is preceded by a snapshot
+    Given the shared curriculum collection has content
+    When an admin runs the curriculum import
+    Then a recoverable snapshot of the previous curriculum exists
+    And the snapshot can be restored if the import is wrong
+
+Feature: Compliance records are not silently lost
+  Scenario: A written assignment-progress update is actually stored
+    Given a staff member completes a training assignment
+    When the app reports the progress as saved
+    Then re-reading that assignment from the database shows the new progress</code></pre>
+
+    <h3 id="tdd-per-app">How to apply it per app (each new test starts red, ships green)</h3>
+    <table id="tdd-per-app-table">
+      <thead><tr><th>App / area</th><th>Test framework already present</th><th>Test-first work to add</th></tr></thead>
+      <tbody>
+        <tr id="tdd-classbook"><td><strong>Classbook</strong></td><td>Playwright data-safety suite (<code>e2e/data-safety.spec.js</code>), 5 passing / 2 intentionally failing.</td><td>Keep Tests 5 and 6 red until the photo (1C) and Plan Complete (2C) safeguards ship. Before building each remaining stage, add a red test first: admin move/swap must verify the destination before deleting the source (2A/2B); spring-lesson saves must strip empty fields (2D); a save must be read back and confirmed (2E).</td></tr>
+        <tr id="tdd-rules"><td><strong>Shared rules (studio-hub)</strong></td><td>Emulator-backed <code>rules.test.js</code> (~29 behavior checks).</td><td>Add behavior specs (Given a role, When it deletes/updates X, Then allow or deny) for Classbook bulk delete blast radius and for every Training collection — these are untested today. Write the spec before tightening the rule, so the rule change is proven by a test that was red.</td></tr>
+        <tr id="tdd-ticker"><td><strong>Tinker Ticker</strong></td><td>No real persistence tests today (payroll source-of-truth).</td><td>Add emulator round-trip tests that a clock-in/out or admin edit is reported successful only after Firestore confirms it, and that a locked pay period rejects edits and preserves its snapshot. Both fail today, which is the point — the red test proves the gap before the fix.</td></tr>
+        <tr id="tdd-training"><td><strong>Training Hub</strong></td><td>Tests assert mocked calls only, never a real read-back.</td><td>Replace mock-only assertions with read-back/round-trip tests against the emulator for assignment progress, observations, and onboarding checklists — a mock can pass while real data is lost.</td></tr>
+        <tr id="tdd-summer"><td><strong>Summer Camp</strong></td><td>No automated tests around bulk/destructive paths.</td><td>Add a test that any bulk import or bulk delete first writes a recoverable snapshot, and that the Classbook-shared sync is awaited and its failure surfaced. Red until the snapshot and awaited-sync steps exist.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="tdd-standard">Proposed standard ("definition of done" for Firebase-risk changes)</h3>
+    <ol>
+      <li>Every change to a data-write, security-rule, backup, or delete path lands with at least one automated test that was <strong>red before the change and green after</strong>.</li>
+      <li>Anything asserting that data persisted must run against a <strong>real or emulated Firestore</strong>, not a mock — a mock can report success while production data is being lost.</li>
+      <li>Express the intended behavior as a <code>Given / When / Then</code> scenario a business owner can read and confirm before the code is written.</li>
+      <li>Agents must paste the <strong>red → green test output</strong> into the pull request or commit body, consistent with the commit-evidence protocol above.</li>
+      <li>Keep intentionally-failing tests for safeguards not yet built, clearly labeled, so the gap stays visible instead of being forgotten.</li>
+    </ol>
+    <p class="muted" id="tdd-roadmap-link">This discipline is how roadmap <a href="#roadmap-step-3">Step 3 (rules, IAM, agent gates)</a> and <a href="#roadmap-step-4">Step 4 (app-level data-loss detection)</a> should be carried out — not as a separate workstream, but as the way every safeguard in them is written.</p>
+  </section>
+
+  <section id="dev-process">
+    <h2>10. Development process and practice</h2>
+    <div class="callout" id="dev-process-scope-decision" style="border-color:#f59e0b;background:rgba(245,158,11,.1);margin-bottom:16px">
+      <strong>⚠️ Scope decision (Jun 25, 2026):</strong> The one-time setup prompt at the end of this section (repo-bootstrap across all repos) is explicitly <strong>out of scope for the resilience plan execution</strong>. It will be tackled as a separate workstream after backup/continuity work is complete. Reason: wide blast radius (touches all ~24 repos at once) and a different category of work from backups. Do not execute the Section 10 setup prompt as part of the resilience roadmap steps.
+    </div>
+    <p id="dev-process-intro">The earlier sections defined the safety <em>rules</em>: how agents should write, commit, and test risky changes (<a href="#agent-defense-model">agent-defense</a>, <a href="#commit-history-system-of-record">commit history as a record</a>, <a href="#repo-hygiene-consistency">repo hygiene</a>, <a href="#tdd-bdd">test-first development</a>). This section is the <em>operating model</em> that makes those rules hold across all of Tinker's roughly two dozen repositories at once — and ends with a single setup prompt to stand it up.</p>
+    <div class="callout danger" id="dev-process-why">
+      <strong>Why this is a continuity issue, not a developer-preference issue.</strong> The most important thing surfaced in the June 18 working session was not a specific bug — it was a pattern: <em>"it said it fixed it, it wasn't fixed; it said it fixed it, it wasn't fixed."</em> Classbook's second wipe happened because the first fix was never verified across every save path. When AI agents do nearly all the building, the <strong>process around the agent is the continuity control.</strong> A reliable process is what turns "the agent says it's safe" into "we can prove it's safe."
+    </div>
+    <p id="dev-process-framing">Framing (consistent with the April 2026 platform audit): this is <strong>phased hardening of the development operating system</strong>, not a rebuild. Each recommendation below states the practice and the continuity payoff. None of it has to be adopted all at once — the setup prompt installs the scaffolding, and the practices are adopted one app at a time.</p>
+
+    <h3 id="dev-skills-layer">1. A shared "skills" layer, applied across every repo</h3>
+    <p>In the working session, Christie named the core scaling problem directly: <em>"I'm like, wait, do I have Playwright tests for this one? And it's like, no, you only have it for this one."</em> Safeguards built per app do not carry over to the next app. The fix is to encode planning and development standards <strong>once</strong>, as reusable Claude <strong>skills</strong>, so every new (and inherently context-free) agent session starts with the same guardrails.</p>
+    <p>A practical starting set, modeled on the public reference set in Aaron's <a href="https://github.com/adnichols/ai-configs"><code>ai-configs</code></a> repository:</p>
+    <table id="dev-skills-table">
+      <thead><tr><th>Skill</th><th>What it does</th><th>Continuity payoff</th></tr></thead>
+      <tbody>
+        <tr id="skill-planning"><td><strong>Planning workflow</strong></td><td>Defines how a plan is structured and the sequence of work (research → plan → review → execute phase by phase, verifying each step). Ties into the HTML plan reviewer below.</td><td>Narrow, reviewed, phased plans prevent the "wide but shallow" agent work that silently breaks data paths.</td></tr>
+        <tr id="skill-dev"><td><strong>Development workflow</strong></td><td>Makes <a href="#tdd-bdd">test-first (TDD) and behavior specs (BDD)</a> the default for any data-write, rules, or delete change; requires reproduce → failing test → fix → green.</td><td>The automated test is the guardrail that survives a careless agent. Directly attacks the "said it fixed it, wasn't fixed" loop.</td></tr>
+        <tr id="skill-product"><td><strong>Product principles</strong></td><td>Captures Christie's defaults so agents don't re-decide them every time: preferred services (Netlify, Firebase), the design system/look, and behavior defaults (for example, "when the answer is obvious, just do it — don't ask").</td><td>Consistent, predictable builds; fewer surprises that introduce risk in a new app.</td></tr>
+        <tr id="skill-htmlreview"><td><strong>HTML plan review</strong></td><td>Knows how to publish a plan or document to the local plan reviewer and process the comments you leave in the browser.</td><td>Turns planning into a reviewable artifact you can harden <em>before</em> any risky code runs.</td></tr>
+        <tr id="skill-review"><td><strong>Second-model review</strong></td><td>Knows how to hand a plan or a finished change to an independent reviewer (Codex, a Claude review partner, or OMP) and act on the result.</td><td>An adversarial second pass catches the missed save path the first agent overlooked.</td></tr>
+        <tr id="skill-builder"><td><strong>Skill builder</strong></td><td>Builds and improves other skills; used whenever a skill is wrong or out of date.</td><td>Lets the operating system improve itself as new failure modes are found.</td></tr>
+        <tr id="skill-bootstrap"><td><strong>Repo bootstrap</strong></td><td>Stamps the standard into any repo — new or existing: a <code>CLAUDE.md</code>/<code>AGENTS.md</code> pointing at the shared Firebase-safety invariants, the standard directory structure, and references to the other skills.</td><td>Every repo gets the same safeguards on day one, instead of each app being hardened from scratch.</td></tr>
+        <tr id="skill-arch"><td><strong>Architecture docs</strong></td><td>Produces architecture diagrams and component/data-flow visuals, then distills them into a canonical document committed to the repo (see below).</td><td>You cannot recover or safely change what you do not understand; the diagrams also expose exactly where data is written and could be silently lost.</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Skills reference one another — the planning workflow can require the development workflow and the second-model review; the repo bootstrap pulls them all in — so a single instruction ("plan this out," "bootstrap this repo") brings the whole standard with it.</p>
+
+    <h3 id="dev-skills-repo">2. Keep the skills in their own repo, and never let them drift</h3>
+    <p>By default Claude writes skills into the local machine (<code>~/.claude</code> or <code>~/.agents</code>). That is the <strong>same single-machine failure mode as the Classbook backup that rescued production but lived only on one Mac</strong> — if the laptop is lost, the operating system that keeps the apps safe is lost with it.</p>
+    <ol id="dev-skills-repo-steps">
+      <li><strong>One dedicated skills repository</strong> (the <code>ai-configs</code> pattern), pushed to GitHub, is the source of truth for all skills, commands, and shared agent guidance.</li>
+      <li><strong>It installs into the agent directory</strong> (for example, the repo's <code>skills/</code> folder is symlinked into <code>~/.claude/skills</code>) so edits in the repo take effect immediately.</li>
+      <li><strong>Every change is committed and pushed</strong> — automatically. Because agents reliably drift back to "edit locally, forget to commit," add a real mechanism: a Claude <em>Stop</em> hook or a short "save skills" routine that, after any edit under the skills directory, commits and pushes. Treat a skill change that is not pushed as <strong>not done</strong>, exactly like the commit-and-push completeness check for app code.</li>
+    </ol>
+
+    <h3 id="dev-plan-review">3. Plan first — with the HTML plan reviewer in the loop</h3>
+    <p>Christie's stated blocker for the Classbook safety work was trust: <em>"I don't even know how to trust its safety plan."</em> The answer is to make the plan a reviewable artifact and harden it before any risky code runs — which is exactly how this report was produced.</p>
+    <ul>
+      <li><strong>Install the plan reviewer locally</strong> (it runs on the laptop; nothing is shared externally). It serves plans and documents to a browser where you highlight any element, leave a comment, and an agent picks the comment up and revises the document.</li>
+      <li><strong>Route non-trivial work through it.</strong> For anything touching a Firebase write path, Claude publishes a plan; Christie reviews and comments in the browser; Claude revises; only then is the plan executed — <strong>one change at a time, verified before the next</strong>, with discrete commits.</li>
+      <li><strong>Use it for "collaboration documents" too</strong> — audits and architecture explorations, not just plans. Repeatedly asking "explain this more, draw this out, how does this break, how do we recover" is how a one-pass shallow answer becomes the depth this report carries.</li>
+    </ul>
+    <p class="muted">Continuity payoff: a plan that has been read and questioned before execution is the difference between "the agent changed the data layer and hopefully it's fine" and "we agreed what correct means, proved it with a failing test, and watched it go green."</p>
+
+    <h3 id="dev-second-model">4. Independent second-model review before trusting a fix</h3>
+    <p>Christie connected the recurring-wipe problem to <em>"having two models talk to each other,"</em> and that instinct is correct. For any change that touches data safety, get a second, independent model to review the plan and the implementation before the change is considered done — Codex, a Claude review partner, or OMP, whichever is available. The reviewer's job is to <strong>try to refute</strong>: find the unverified claim, the save path that was missed, the test that only checks a mock. This is the most direct defense against "said it fixed it, wasn't fixed," because the model that wrote the fix is the worst judge of whether it worked.</p>
+
+    <h3 id="dev-architecture">5. Document the architecture as living docs</h3>
+    <p>Knowing the system's shape is itself a recovery asset. The mental model from the session: most of these apps are three tiers — a <strong>browser web app</strong> → <strong>Netlify</strong> (UI plus any API/functions) → <strong>Firebase / Firestore</strong> (the data store that must be backed up). With the repos (the code), the Firebase data (the state), and the Netlify configuration, an app can be reconstituted even if Netlify is lost. Capturing that — and the per-app write/validation/error-handling points this report cares about — should be a living document in each repo, not tribal knowledge.</p>
+    <p>Concrete prompts to produce these (paste into Claude in the relevant repo):</p>
+    <pre id="arch-prompt-system"><code>Produce a system architecture diagram for this app as an HTML document
+I can open in the plan reviewer.
+
+Show the three tiers and what runs in each:
+- Browser web app (what the user interacts with)
+- Netlify (static hosting, and any Netlify Functions / API layer)
+- Firebase: Firestore collections this app reads and writes, Storage
+  buckets/paths, Auth, and the shared studio-hub security rules
+
+Label every arrow with what data moves and in which direction. Mark
+clearly: where the app WRITES to Firestore, where those writes are
+validated, and where a failure could pass silently. Then list, below the
+diagram, the exact collections and Storage paths this app owns and the
+ones it shares with another app.</code></pre>
+    <pre id="arch-prompt-flow"><code>Produce a component and data-flow (traffic-flow) diagram for the single
+most data-sensitive user action in this app — for Tinker Ticker that is
+a clock-in/out; for Classbook a lesson save; for Summer Camp a bulk
+import; for Training Hub an assignment-progress update.
+
+Trace the request end to end: UI event → app.js handler → the
+firebase-data.js write helper → Firestore. At each hop, annotate:
+is the write awaited and confirmed? what happens on error — retry,
+surface, or fail silently? could an empty or stale field overwrite saved
+data? is there a snapshot/read-back before/after? Highlight every hop
+where data could be lost without anyone noticing.</code></pre>
+    <pre id="arch-prompt-canonical"><code>Take everything we explored above and write a single canonical
+architecture document for this repo (committed to the repo, not just the
+planner). It should let a future agent or a new person understand, on one
+read: the tiers and services, every collection/bucket this app touches,
+the data-flow for each risky write path, the known failure modes, and the
+recovery steps. Keep it current as the code changes.</code></pre>
+
+    <h3 id="dev-per-app-recovery">6. Per-app recovery within the single Firebase instance</h3>
+    <p>All four apps share one Firebase project, which is fine — but recovery must be <strong>surgical</strong>. From the session: if time tracking breaks and needs a one-day rollback, you must not be forced to roll <em>curriculum, camp, and training</em> back a day too, or you have traded one app's problem for three apps' data loss.</p>
+    <ul>
+      <li>Enable Point-in-Time Recovery and scheduled backups at the instance level (see <a href="#status-priority-order">priority #1</a>), but verify you can restore <strong>one app's collection groups</strong> to a point in time without touching the others.</li>
+      <li>Document, per app, exactly which collections belong to it (the inventory in this report is the starting point) and a per-app restore procedure into a non-production target.</li>
+      <li>Worth asking Claude explicitly: does the single Firebase instance support clean per-app recovery as configured, or is any separation warranted? This is architectural guidance to settle before an incident, not during one.</li>
+    </ul>
+
+    <h3 id="dev-operating-habits">7. Operating habits that keep agents thorough</h3>
+    <ul>
+      <li><strong>Stay on high or max effort.</strong> Lower thinking settings produce materially worse results; older sessions may have defaulted lower, so re-running important audits at high effort is worthwhile.</li>
+      <li><strong>Use deep multi-agent audits for thoroughness.</strong> For "audit this very thoroughly" work, the heaviest setting (which fans out subagents across the codebase) is far more complete than a single pass — a good use of end-of-week tokens that would otherwise go unused.</li>
+      <li><strong>Narrow asks go deep; wide asks stay shallow.</strong> Scope one row, one change, one write path at a time, verify it, commit it, then move on. The wider the body of work requested, the shallower the agent's coverage.</li>
+      <li><strong>Sweep regularly.</strong> The unguarded write paths in this report are found by deep, targeted audits, not one-pass skims — make periodic targeted sweeps a habit.</li>
+    </ul>
+
+    <article class="card" id="dev-setup-prompt-card">
+      <h3 id="dev-setup-prompt">One-time setup prompt for Claude</h3>
+      <p class="muted">Paste this into Claude Code (on extra-high or max effort) to stand up the whole development operating system. It deliberately front-loads the questions Claude will otherwise stop to ask — fill in the bracketed answers first, and Claude updates the prompt with anything it learns. It will not change production Firebase; it sets up local tooling, skills, and repo guidance.</p>
+      <pre id="dev-setup-prompt-text"><code>You are helping Christie at Tinker Art Studio set up a reliable, continuity-safe
+development operating system across all of her repositories. The goal is that
+every repo plans and builds the same safe way, the safeguards survive a lost
+laptop, and changes to data are proven correct before they are trusted. Work in
+small, verifiable steps. Do not change production Firebase, IAM, rules, or data.
+
+== ANSWER THESE FIRST (intake — fill in before running; ask me only for blanks) ==
+- GitHub account/org for repos and for the new skills repo: [____]
+- Name + location for the dedicated skills repo (the "ai-configs" pattern):
+  [e.g. tinker-ai-configs, cloned to ~/code/tinker-ai-configs]
+- Where skills should be active for Claude: [default ~/.claude/skills]
+- Reference set to study (do NOT copy blindly — adapt to my repos):
+  https://github.com/adnichols/ai-configs
+- Plan reviewer source (public): https://github.com/Nodaste-Lab/plan-reviewer
+- Is Homebrew installed? [yes/no]  (needed to install the plan reviewer)
+- Independent reviewers available to wire up: [Codex CLI? Claude? OMP? none]
+  Only configure the ones I actually have installed.
+- Do my repos already have CLAUDE.md / AGENTS.md? Do NOT overwrite — extend them.
+- My defaults for product principles: hosting = Netlify, backend = Firebase,
+  design system / look = [____], behavior defaults = [e.g. "when the answer is
+  obvious, just do it — don't ask"].
+- Approval phrase required before any change beyond local setup: [____]
+
+== TASKS ==
+0. Read first: the ai-configs reference repo above, and the Firebase resilience
+   report (the HTML/PDF I provide) so you understand the safety invariants you
+   are encoding.
+
+1. Install the HTML plan reviewer locally:
+   brew tap Nodaste-Lab/plan-reviewer https://github.com/Nodaste-Lab/plan-reviewer.git
+   brew install Nodaste-Lab/plan-reviewer/plan-reviewer
+   brew services start plan-reviewer
+   Verify it responds:  curl -fsS http://127.0.0.1:4317/health
+   Then add the plan-reviewer / html-plan-review skill (from the ai-configs
+   reference) to my skills so you know how to publish and monitor plans.
+
+2. Create the dedicated skills repo:
+   - Initialize it, push it to my GitHub account/org.
+   - Install it so its skills/ folder is active in ~/.claude/skills.
+   - Set up commit-and-push-on-change so a skill edit is never stranded locally:
+     prefer a Claude Stop hook (or a short "save skills" routine) that commits and
+     pushes anything changed under the skills directory. Treat an unpushed skill
+     change as not done.
+
+3. Build these skills (study the reference set, then adapt to MY repos and stack;
+   keep each one small and focused). Only build review skills for reviewers I have:
+   - planning-workflow ......... research → plan → review → execute, phase by
+                                 phase; ties into the plan reviewer
+   - development-workflow ...... TDD/BDD by default for any data-write, rules, or
+                                 delete change: reproduce → failing test → fix →
+                                 green; run against real/emulated Firestore, never
+                                 a mock
+   - product-principles ........ my services, design system, and behavior defaults
+   - html-plan-review .......... how to use the plan reviewer
+   - second-model-review ....... hand a plan/implementation to Codex / Claude / OMP
+                                 and act on the result (only those I have)
+   - skill-builder ............. build and fix skills
+   - repo-bootstrap ............ stamp the standard into any repo (CLAUDE.md/AGENTS.md
+                                 pointing at the shared Firebase-safety invariants,
+                                 standard structure, references to the other skills)
+   - architecture-docs ......... produce architecture + data-flow diagrams and a
+                                 canonical repo doc
+
+4. Run repo-bootstrap across my existing repos: ensure each has an up-to-date
+   CLAUDE.md/AGENTS.md that references the shared Firebase-safety invariants from
+   the resilience report (no full-object writes for partial edits; strip empty
+   fields; await critical writes; snapshot before bulk import/delete; never bare
+   `firebase deploy`; rules source is studio-hub). EXTEND existing files; do not
+   overwrite. Report any repo missing guidance or tests.
+
+5. Add the commit-and-push completeness check (clean working tree, branch pushed,
+   PR opened, deploy path noted) as a standard end-of-task step, and confirm the
+   skills repo itself follows the push discipline from task 2.
+
+6. Verify and report:
+   - each skill loads; publishing a sample plan to the reviewer works;
+   - CLAUDE.md/AGENTS.md is present in every repo;
+   - the skills repo is pushed to GitHub;
+   - then give me a short "how to use this day to day" cheat-sheet (how to plan
+     something, how to review a plan in the browser, how to ask for a second-model
+     review, how to bootstrap a new repo).
+
+Keep changes small and reversible. Use a plan in the reviewer for this setup
+itself, and check in with me before anything beyond local tooling and repo docs.</code></pre>
+    </article>
+  </section>
+
+  <section id="implementation-roadmap">
+    <h2>11. Suggested resilience roadmap</h2>
+    <p class="muted" id="roadmap-status-note">Status today: none of the steps below are complete. The fastest wins map to the priority order in <a href="#status-priority-order">Most urgent Firebase work</a> — confirm/enable managed backups (Step 1) and make payroll writes safe before anything else. Step 0 (console verification) and the first half of Step 4 (Classbook's started safety plan) can begin immediately because they need no new cloud spend or approvals.</p>
+    <div class="roadmap-step card" id="roadmap-step-0">
+      <h3><input type="checkbox" disabled> Step 0 — Console verification and ownership</h3>
+      <ul>
+        <li>Install/authenticate Firebase/Google Cloud CLI for a human operator or perform the checklist directly in Console.</li>
+        <li>Record current Firestore PITR, scheduled backup, Storage retention/versioning, IAM, App Check, Auth, and audit-log state.</li>
+        <li>Name one human accountable for Firebase continuity and one alternate.</li>
+      </ul>
+    </div>
+
+    <article class="card" id="step-0-human-walkthrough">
+      <h3>Step 0 human walkthrough — console verification for a non-technical owner</h3>
+      <p class="muted">Goal: collect screenshots and plain-English answers. Do not change settings in this step. If a screen offers a button such as “Enable,” “Edit,” “Delete,” or “Save,” do not click it unless a later approved step explicitly tells you to.</p>
+      <ol>
+        <li><strong>Confirm you are in the right project.</strong> Open <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer">Firebase Console</a>. Select the project that matches the app code: <code>tinker-hq-apps</code>. Screenshot the project name or project settings page.</li>
+        <li><strong>Write down the human owners.</strong> In this report, fill in: primary Firebase continuity owner, backup owner, billing owner, and alternate. If unsure, write “unknown” and the person who can decide.</li>
+        <li><strong>Check Firestore backup/PITR status.</strong> Open <a href="https://console.cloud.google.com/firestore/databases" target="_blank" rel="noreferrer">Google Cloud Console → Firestore → Databases</a>, select project <code>tinker-hq-apps</code>, and find database <code>(default)</code>. In the database row/details, look for <strong>Scheduled backups</strong>, <strong>View backups</strong>, <strong>Edit settings</strong>, or disaster recovery / point-in-time recovery settings. Record: PITR on/off, scheduled backups on/off, daily/weekly cadence, retention, last backup timestamp, and database location. Screenshot the database row/details.</li>
+        <li><strong>Check Cloud Storage protection.</strong> In Google Cloud Console, go to <strong>Cloud Storage → Buckets</strong>. Open the Firebase Storage bucket for <code>tinker-hq-apps</code>. Review bucket details for <strong>Protection</strong>, <strong>Soft delete</strong>, <strong>Object versioning</strong>, <strong>Lifecycle</strong>, and <strong>Retention</strong>. Record bucket name, location, soft-delete days, whether versioning is on, and any lifecycle/retention rules. Screenshot each relevant tab or setting.</li>
+        <li><strong>Check who has project access.</strong> In Firebase Console, go to <strong>Project settings → Users and permissions</strong>. Screenshot visible members/roles. Then in Google Cloud Console, go to <strong>IAM & Admin → IAM</strong> for the full access list. Record owners, editors, Firebase admins, deploy/service accounts, and any account that looks agent/dev/automation-controlled.</li>
+        <li><strong>Check service account keys.</strong> In Google Cloud Console, go to <strong>IAM & Admin → Service Accounts</strong>. Open each service account that appears related to Firebase deploys, backups, Netlify, GitHub, or agents. Check the <strong>Keys</strong> tab. Record whether keys exist and their creation dates. Screenshot the list; do not create or delete keys in Step 0.</li>
+        <li><strong>Check Firebase Authentication.</strong> In Firebase Console, go to <strong>Build → Authentication</strong>. Check <strong>Sign-in method</strong>, <strong>Users</strong>, and <strong>Settings / Authorized domains</strong>. Record enabled providers, authorized domains, whether departed staff are still active, and how admin/operator MFA is handled for the Google accounts that can access Firebase.</li>
+        <li><strong>Check App Check.</strong> In Firebase Console, go to <strong>Build</strong> or <strong>Security → App Check</strong>. Record whether the web apps are registered, which provider is used, and whether Firestore/Storage/Auth are in monitor mode, enforced mode, or not configured. Screenshot the Apps and enforcement/status views.</li>
+        <li><strong>Check deployed Firestore and Storage rules.</strong> In Firebase Console, go to <strong>Build → Firestore Database → Rules</strong> and <strong>Build → Storage → Rules</strong>. Screenshot the publish date/version if shown and save a copy of the deployed text. The technical reviewer should compare it with <code>studio-hub/firestore.rules</code> and <code>studio-hub/storage.rules</code>.</li>
+        <li><strong>Check logs for administrative changes.</strong> In Google Cloud Console, go to <strong>Logging → Logs Explorer</strong>. Search recent logs for Firestore, Storage, IAM, service account keys, Firebase rules deploys, backup setting changes, and large delete/update events. If this feels too technical, screenshot the Logs Explorer page and ask the agent to provide exact read-only queries.</li>
+        <li><strong>Check billing and alert recipients.</strong> In Google Cloud Console, go to <strong>Billing → Budgets & alerts</strong> and <strong>Billing → Reports</strong>. Record whether a billing account is linked, current monthly spend, budget thresholds, and who receives alerts. If you cannot access Billing, ask the billing admin for screenshots.</li>
+        <li><strong>Collect evidence in one folder.</strong> Save screenshots and copied text into a folder named <code>firebase-step-0-inventory-YYYY-MM-DD</code>. For each screenshot, include the date, project ID, and what setting it proves.</li>
+        <li><strong>Stop and summarize.</strong> Before changing anything, write a one-page summary: what is already protected, what is missing, who owns each decision, and which items require billing/Blaze/paid usage approval.</li>
+      </ol>
+    </article>
+    <div class="roadmap-step card" id="roadmap-step-1">
+      <h3><input type="checkbox" disabled> Step 1 — Managed backup baseline</h3>
+      <ul>
+        <li>Enable Firestore PITR and scheduled backups.</li>
+        <li>Create locked backup destination for exports/manifests outside normal app deploy credentials.</li>
+        <li>Define collection groups and backup cadence by priority app.</li>
+      </ul>
+    </div>
+    <div class="roadmap-step card" id="roadmap-step-2">
+      <h3><input type="checkbox" disabled> Step 2 — Restore drills and runbooks</h3>
+      <ul>
+        <li>Restore Firestore backup into non-production database/project.</li>
+        <li>Validate each app against restored data: login, read key records, sample write in staging only.</li>
+        <li>Document step-by-step partial restore for a single collection/document set.</li>
+      </ul>
+    </div>
+    <div class="roadmap-step card" id="roadmap-step-3">
+      <h3><input type="checkbox" disabled> Step 3 — Rules, IAM, and agent gates</h3>
+      <ul>
+        <li>Expand <code>studio-hub</code> rules tests for the four priority apps, especially delete/update boundaries.</li>
+        <li>Move production deploy ability behind human approval and least-privilege service accounts.</li>
+        <li>Adopt secret scanning and service-account-key inventory.</li>
+      </ul>
+    </div>
+    <div class="roadmap-step card" id="roadmap-step-4">
+      <h3><input type="checkbox" disabled> Step 4 — App-level data-loss detection</h3>
+      <ul>
+        <li>Classbook: complete existing data-safety plan, especially read-back verification and backup health display.</li>
+        <li>Summer Camp: add snapshots before imports/destructive maintenance.</li>
+        <li>Tinker Ticker: add immutable pay-period export and awaited critical writes.</li>
+        <li>Training Hub: add persistence tests and retention labels for compliance records.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="claude-code-instructions">
+    <h2>12. Claude Code-ready instructions for each roadmap step</h2>
+    <div class="callout" style="border-color:#22c55e;background:rgba(34,197,94,.1);margin-bottom:16px">
+      <strong>✅ EXECUTION-READY — Jun 25, 2026</strong><br>
+      Two independent second-model reviews completed. All 5 original blockers resolved. Plan is cleared to execute starting with Step 0. Approval phrase for any production change: <strong>"approved to change firebase"</strong>.
+    </div>
+    <p class="muted" id="instruction-context">These prompts are written for a client to paste into Claude Code. They assume Claude Code can inspect the cloned repos and, when the task requires live Firebase state, will ask the human operator to run or authenticate the required Firebase/Google Cloud commands rather than guessing.</p>
+
+    <article class="card" id="global-agent-intake-preamble">
+      <h3>Global agent intake preamble — answer before running any Claude Code prompt</h3>
+      <p class="muted">Most of the roadmap prompts will otherwise stop to ask the same setup questions. Fill this in once, then paste the completed answers at the top of every Claude Code prompt under “Global intake answers.” As answers become known, update the prompts so Claude Code starts with the resolved facts instead of rediscovering them.</p>
+      <table id="global-agent-intake-table">
+        <thead><tr><th>Question Claude Code will ask</th><th>Why it needs this</th><th>Answer to include in prompts</th></tr></thead>
+        <tbody>
+          <tr><td>What exact Firebase/GCP project is in scope?</td><td>Repos point to <code>tinker-hq-apps</code>, but the agent must not touch the wrong project.</td><td>Production project ID: <code>tinker-hq-apps</code>. Staging/test project ID: does not exist yet — must be created as part of Step 0.</td></tr>
+          <tr><td>Which apps are priority and which collections are in scope?</td><td>Prevents the agent from widening into all 23 repos or missing critical data.</td><td>Priority apps: Classbook, Summer Camp App, Tinker Ticker, Training Hub. Collections/paths: see backup.js in ~/tinker-backups for full collection list.</td></tr>
+          <tr><td>Is this task read-only, design-only, or approved to change Firebase?</td><td>Backup/IAM/rules work can mutate production configuration.</td><td>Default mode: design-only. Approval phrase required before ANY production change: "approved to change firebase" (Christie must type this explicitly).</td></tr>
+          <tr><td>Who can authenticate Firebase/GCP CLI or share Console screenshots?</td><td>Live state cannot be verified from source code alone.</td><td>Operator: Christie (Christie@tinkerartstudio.com) · Available tools: Firebase Console + Firebase CLI (CLI auth fixed Jun 26, 2026 — was broken invalid_rapt Jun 25) · NOTE: Google Workspace org policy blocks service account key creation — do not attempt to create service account keys.</td></tr>
+          <tr><td>Who owns continuity decisions?</td><td>The agent needs escalation paths for tradeoffs, cost, downtime, privacy, and risk acceptance.</td><td>Primary owner: Christie (Christie@tinkerartstudio.com) · Alternate: Anika · Business validators by app: Christie for all four apps.</td></tr>
+          <tr><td>What are the target RPO/RTO values?</td><td>Backup cadence and restore design depend on accepted data loss/downtime.</td><td>Tinker Ticker: RPO 1 day / RTO same day (can go manual for 1–2 days if needed) · Classbook + Summer Camp App: RPO 30 min / RTO ~15 min during peak windows (Apr 24–Jun 7, Aug 8–Sep 7, Dec 25–Jan 21) — outside peak: RPO daily, RTO flexible · Training Hub: RPO 30 min / RTO same day during peak (same windows as Classbook) — outside peak: RPO weekly, RTO flexible.</td></tr>
+          <tr><td>What retention and privacy constraints apply?</td><td>Payroll, kid notes, staff records, and observations may require restricted exports and cleanup.</td><td>Retention windows: to be determined in Step 1 design · Sensitive data never to leave Google Cloud or be shared outside Christie's control: kid notes (summerCamps_kidNotes) and incident reports · All other data: no formal restrictions, Christie owns and controls everything · Redaction rules: none at this time.</td></tr>
+          <tr><td>Where should backup/restore resources live?</td><td>Backups must not be deletable by normal app/deploy/agent credentials; restores need safe targets.</td><td>Backup project/bucket: to be determined in Step 0 — agent should recommend options within $20/month budget · Restore drill target: new staging Firebase project to be created (does not exist yet) · Cleanup deadline: to be set during Step 2.</td></tr>
+          <tr><td>What is the monthly budget or approval threshold?</td><td>PITR, scheduled backups, object versioning, exports, and restore drills can add cost.</td><td>Budget ceiling: $20/month · Cost approver: Christie — must approve any spend above $20/month before it is incurred.</td></tr>
+          <tr><td>Who receives alerts and incident communications?</td><td>Backups and restore readiness fail if failures are silent.</td><td>Alert channel: email to Christie@tinkerartstudio.com · Subject line must be loud/obvious (e.g. "⚠️ TINKER BACKUP FAILED") · Anika does not need alerts at this time.</td></tr>
+          <tr><td>What credentials/resources may Claude Code create or request?</td><td>Service accounts, buckets, schedulers, and deploy credentials require explicit boundaries.</td><td>Allowed without asking: read-only research, design docs, drafting commands for review, running firebase deploy after Christie has approved the change · Requires "approved to change firebase": creating GCP/Firebase projects, Cloud Storage buckets, enabling PITR/scheduled backups, changing IAM, enabling billable services, modifying Firestore rules · Never allowed: service account key creation (blocked by Google Workspace org policy) · Human approval required from: Christie.</td></tr>
+          <tr><td>Are there existing backups, scripts, or runbooks outside the repos?</td><td>Classbook references <code>~/tinker-backups</code>; the agent needs to integrate or retire existing systems.</td><td>Existing backup script: ~/tinker-backups/backup.js — runs on Christie's Mac, reads OAuth tokens from Firebase CLI config, backs up ~30 Firestore collections. CLI auth fixed Jun 26, 2026 (was broken invalid_rapt Jun 25) — backup.js should work again. Last successful backup: Jun 12, 2026. LaunchAgent scheduler status unknown.</td></tr>
+          <tr><td>What deploy/release controls are already in place?</td><td>Agent-defense work depends on GitHub, Netlify, Firebase, and IAM governance.</td><td>Branch protection: ____ · Netlify deploy owner: Christie (must explicitly approve all Netlify deploys — each costs credits) · Firebase deploy owner: Christie · Secret scanning: ____</td></tr>
+        </tbody>
+      </table>
+      <pre><code>Global intake answers to paste into each Claude Code prompt:
+- Production Firebase/GCP project: tinker-hq-apps
+- Staging/test project or restore target: does not exist yet — create as part of Step 0
+- Priority apps: Classbook, Summer Camp App, Tinker Ticker, Training Hub
+- Current task mode: design-only by default; production changes require explicit approval
+- Human approval required before production changes: YES — approval phrase: "approved to change firebase"
+- Firebase/GCP operator and available tools: Christie (Christie@tinkerartstudio.com) — Firebase Console + Firebase CLI (CLI auth fixed Jun 26, 2026). NOTE: service account key creation blocked by Google Workspace org policy.
+- Continuity owner / alternate: Christie / Anika
+- Business validators by app: Christie for all four apps
+- RPO/RTO: Tinker Ticker — RPO 1 day / RTO same day; Classbook+Summer Camp — RPO 30 min / RTO ~15 min during peak (Apr 24–Jun 7, Aug 8–Sep 7, Dec 25–Jan 21), daily/flexible outside peak; Training Hub — RPO 30 min / RTO same day during peak (same windows), weekly/flexible outside peak
+- Retention/privacy constraints: Kid notes (summerCamps_kidNotes) and incident reports — never included in test dumps, restore drills, or any export shared outside Christie's direct control. All other data: no formal restrictions, Christie owns and controls everything.
+- Backup destination and restore target: to be determined in Step 0; staging Firebase project must be created (does not exist yet)
+- Budget ceiling: $20/month · Cost approver: Christie — must approve any spend above $20/month before it is incurred
+- Alert/incident channels: email to Christie@tinkerartstudio.com with loud/obvious subject line (e.g. "⚠️ TINKER BACKUP FAILED") · Anika does not need alerts at this time
+- Resources Claude Code may create/request: MAY proceed without asking — read-only research, design documents, drafting commands for review, running firebase deploy after Christie has already approved the change. MUST ask first (requires "approved to change firebase") — creating GCP/Firebase projects, Cloud Storage buckets, enabling PITR or scheduled backups, changing IAM permissions, enabling billable GCP services, modifying Firestore rules. NOT allowed under any circumstances — service account key creation (blocked by Google Workspace org policy).
+- Existing backup jobs/files/runbooks: ~/tinker-backups/backup.js on Christie's Mac — CLI auth fixed Jun 26, 2026 (was broken invalid_rapt Jun 25); backup.js should work again. Last successful backup Jun 12, 2026. LaunchAgent scheduler status unknown.
+- Deploy/release controls already in place: Netlify deploys require Christie's explicit approval before every deploy (costs credits); Firebase deploy owner: Christie; branch protection and secret scanning status unknown — Step 0 will inventory.
+- Section 10 repo-bootstrap: OUT OF SCOPE for this plan — separate workstream to be tackled after backup/continuity work is complete.</code></pre>
+    </article>
+
+    <article class="card" id="instruction-step-0">
+      <h3>Instruction for Step 0 — Console verification and ownership</h3>
+      <pre><code>You are helping Tinker Art Studio assess Firebase backend continuity for the shared Firebase project used by Classbook, Summer Camp App, Tinker Ticker, and Training Hub.
+
+Start by reading the Global intake answers pasted above this prompt. If any answer needed for this step is blank, ask only for that missing answer before proceeding.
+
+Goal: produce a read-only current-state inventory. Do not change Firebase settings, IAM, rules, data, buckets, or deploy configuration.
+
+Repos to inspect locally:
+- classbook
+- summer-camp-app
+- tinker-ticker
+- training-hub
+- studio-hub, especially firestore.rules and storage.rules
+
+Live Firebase project expected from code: tinker-hq-apps.
+
+Tasks:
+1. Verify whether Firebase CLI and Google Cloud CLI are installed and authenticated. If they are not, give the human exact commands or Console screens to use; do not proceed by assumption.
+2. Inventory current Firestore disaster-recovery posture for the default database:
+   - PITR enabled/disabled
+   - scheduled backups enabled/disabled
+   - backup cadence and retention
+   - last successful backup timestamp if available
+   - restore target constraints
+3. Inventory Cloud Storage protection for the Firebase bucket:
+   - bucket name
+   - soft-delete retention
+   - object versioning status
+   - lifecycle/retention rules
+   - whether high-value paths exist: curriculum/, summerCamps/, projectDetailPhotos/, training/
+4. Inventory IAM and identity risk:
+   - project owners/editors/admins
+   - service accounts with Firebase/Firestore/Storage/admin rights
+   - existing service-account keys and their age
+   - who can create service-account keys
+   - whether agent/dev identities have production deploy or Owner/Editor access
+5. Inventory Firebase Auth and App Check:
+   - enabled sign-in providers
+   - authorized domains
+   - MFA posture for admin/operator users if visible
+   - App Check registration/enforcement/monitor status for web apps
+6. Confirm who owns continuity decisions: name one primary human owner and one alternate. If unknown, mark as unresolved.
+
+Deliverable: write a Markdown report named firebase-current-state-inventory.md with sections: Executive summary, Firestore DR, Storage DR, IAM/service accounts, Auth/App Check, Rules/deploy posture, Known unknowns, Recommended immediate actions. Include exact command output or Console evidence for every claim.</code></pre>
+    </article>
+
+    <article class="card" id="instruction-step-1-clarifications">
+      <h3>Pre-flight clarifications for Step 1 — answer before running the managed-backup prompt</h3>
+      <p class="muted">These are the questions Claude Code is likely to ask before it can produce an accurate backup baseline. They are written for a non-technical client: answer in plain English, use “unknown” when needed, and paste the completed answers into the Step 1 prompt under “Clarification answers.”</p>
+      <div class="callout" id="step-1-how-to-answer">
+        <strong>How to answer this section:</strong> You do not need to know Firebase terminology. For each row, write the person, date, budget, or preference the business wants. If the answer lives in Firebase or Google Cloud, write who has access to check it. If nobody knows, write “unknown — agent should investigate read-only.”
+      </div>
+      <table id="step-1-clarification-table">
+        <thead><tr><th>Question to answer</th><th>Plain-English explanation</th><th>Where/who to ask</th><th>Example answer format</th></tr></thead>
+        <tbody>
+          <tr><td>Who is responsible for Firebase and backups?</td><td>Name the humans who can make decisions if backups cost money, fail, or need a restore. Do not list an AI agent as owner.</td><td>Business owner, technical lead, or whoever owns Google/Firebase billing.</td><td>Primary: Christie. Alternate: Aaron. Emergency phone/email: ____.</td></tr>
+          <tr><td>Should the agent only design, or may it make changes?</td><td>“Design-only” means Claude Code writes recommendations and commands but does not click buttons or change Firebase. “Approved changes” means it may enable settings after explicit approval.</td><td>Project sponsor / owner.</td><td>Design-only for now. No production change without written approval phrase: “Approved to change Firebase backups.”</td></tr>
+          <tr><td>Who can log into Firebase or Google Cloud?</td><td>The agent may need screenshots or CLI output from someone with console access. It should not guess from source code.</td><td>Person with Firebase Console access.</td><td>Christie can open Firebase Console; Aaron can run CLI; agent should provide exact commands/screens.</td></tr>
+          <tr><td>Is billing enabled, and is there a budget limit?</td><td>Backups, storage retention, and restore drills can cost money. The agent needs the spend limit before proposing high-retention options.</td><td>Google Cloud Billing page or finance/admin owner.</td><td>Billing enabled: yes/unknown. Monthly ceiling: $____. Ask before any change over $____/month.</td></tr>
+          <tr><td>How much data loss is acceptable?</td><td>This is RPO. Example: if payroll entries are backed up hourly, worst-case loss is about one hour. If daily, worst-case loss is a day.</td><td>Business owner for each app.</td><td>Tinker Ticker: &lt;1 hour. Classbook/Summer Camp in season: &lt;1 hour. Training Hub: 24 hours.</td></tr>
+          <tr><td>How quickly must each app come back after data loss?</td><td>This is RTO. Example: “payroll must be usable same day” or “training can wait until tomorrow.”</td><td>Business owner / operations lead.</td><td>Tinker Ticker: same business day. Classbook/Summer Camp: 2 hours in season. Training Hub: next business day.</td></tr>
+          <tr><td>How long should backups be kept?</td><td>Short retention handles mistakes noticed quickly. Longer retention helps when corruption is discovered weeks later.</td><td>Business owner, legal/compliance if applicable.</td><td>Hourly/daily rollback for 7–14 days; weekly/monthly archive for 3–12 months; summer season archive through end of season + 90 days.</td></tr>
+          <tr><td>Where should independent backups live?</td><td>Backups are safer if stored somewhere normal app/deploy credentials cannot delete. This might be a separate Google Cloud project or locked bucket.</td><td>Technical owner / Google Cloud admin.</td><td>Create/use backup bucket/project named ____; only human owners can delete backup versions.</td></tr>
+          <tr><td>Who should be alerted if backups fail?</td><td>A backup system is not useful if failures go unnoticed.</td><td>Operations lead / technical owner.</td><td>Email ____ and ____; Slack channel ____; alert if no successful backup in ____ hours.</td></tr>
+          <tr><td>When is the business in peak season?</td><td>Camp season may need more frequent backups than off-season.</td><td>Operations/calendar owner.</td><td>Peak: May 15–Aug 31. During peak use hourly or better backups for Classbook/Summer Camp.</td></tr>
+          <tr><td>Are there existing backup jobs or files?</td><td>Classbook docs mention <code>~/tinker-backups</code>. The agent needs to know whether that is still real, where it runs, and whether it works.</td><td>Whoever previously set up backups; check the Mac/server where backups may run.</td><td>Existing backup location: ____. Last known successful backup: ____. Unknown: agent should investigate.</td></tr>
+          <tr><td>May Claude Code create cloud resources?</td><td>Creating service accounts, buckets, schedules, or Cloud Run jobs changes cloud configuration and may cost money.</td><td>Project owner / technical owner.</td><td>Allowed to draft commands only. Do not create resources until human approves exact command list.</td></tr>
+          <tr><td>What sensitive data restrictions apply?</td><td>Payroll/timeclock, children’s notes, staff records, training observations, and HR-adjacent information may need restricted access and should not be downloaded casually.</td><td>Business owner / privacy owner.</td><td>Do not export outside Google Cloud. No local downloads of kid notes/payroll unless explicitly approved. Redact ____ if sharing reports.</td></tr>
+          <tr><td>Where can restore drills happen safely?</td><td>A restore drill needs a non-production target so the team can prove recovery without touching live apps.</td><td>Technical owner / Firebase admin.</td><td>Use staging Firebase project/database: ____. Production apps must never point there automatically.</td></tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card" id="instruction-step-1">
+      <h3>Instruction for Step 1 — Managed backup baseline</h3>
+      <pre><code>You are helping Tinker Art Studio establish a managed Firebase backup baseline for Classbook, Summer Camp App, Tinker Ticker, and Training Hub.
+
+Goal: design and, only with explicit human approval, implement managed backups. Do not change production settings until you have shown the exact proposed commands/configuration and received approval.
+
+Inputs:
+- Global intake answers pasted above this prompt. If any global answer needed for this step is blank, ask only for that missing answer before proceeding.
+- firebase-current-state-inventory.md from Step 0
+- Repos: classbook, summer-camp-app, tinker-ticker, training-hub, studio-hub
+- Existing manual export reference: summer-camp-app/scripts/backup-firestore.js
+- Clarification answers from the “Pre-flight clarifications for Step 1” table in the collaboration document. If any required answer is blank or contradictory, stop and ask the human before designing or applying changes.
+
+Tasks:
+1. Define RPO/RTO tiers:
+   - Tier 1: Tinker Ticker payroll/timekeeping, active Classbook/Summer Camp teacher content and schedule/materials operations.
+   - Tier 2: Training Hub assignments/progress/observations/onboarding records.
+   - Tier 3: reproducible seed/catalog/config data.
+2. Create the Firestore backup design:
+   - PITR target state
+   - scheduled backup cadence and retention
+   - restore strategy into a new non-production database/project
+   - how backups are monitored
+3. Create the independent export design:
+   - destination bucket/project/account
+   - retention policy
+   - IAM so normal app/deploy/agent credentials cannot delete backup generations
+   - collection groups to export for each priority app
+4. Create the Cloud Storage backup/retention design:
+   - target high-value paths
+   - soft-delete/versioning/retention expectations
+   - object inventory manifest cadence
+5. Convert the manual browser backup script into a safer operational approach:
+   - scheduled service-account or Cloud Scheduler/Cloud Run approach, if appropriate
+   - read-only export credentials
+   - verification of document counts and error collections
+   - backup status document or dashboard entry
+6. Before applying anything, present exact commands/configuration and a rollback/no-op explanation. Wait for human approval.
+
+Deliverable: write firebase-managed-backup-baseline.md. If approved and implemented, append an Implementation evidence section with commands run, settings changed, last successful backup/export, and how to verify it tomorrow.</code></pre>
+    </article>
+
+    <article class="card" id="instruction-step-2-clarifications">
+      <h3>Pre-flight clarifications for Step 2 — answer before restore drills</h3>
+      <p class="muted">A restore drill needs more operational detail than a backup design. Answer these before asking Claude Code to run or document a restore drill.</p>
+      <table id="step-2-clarification-table">
+        <thead><tr><th>Clarification</th><th>Why it matters</th><th>Client answer to provide</th></tr></thead>
+        <tbody>
+          <tr><td>What restore target is approved?</td><td>Firestore managed backups restore to a new database/target; production must never be overwritten during a drill.</td><td>Project/database/bucket: ____</td></tr>
+          <tr><td>Who approves temporary restore resources and cost?</td><td>Restore targets, cloned buckets, reads, and validation runs may create cost.</td><td>Approver: ____ · Budget limit: ____</td></tr>
+          <tr><td>Which backup/export should be tested?</td><td>The agent needs a concrete backup ID, timestamp, export path, or object generation to restore.</td><td>Backup ID/path/timestamp: ____</td></tr>
+          <tr><td>What data may be copied into the restore target?</td><td>Payroll, child notes, staff records, and training observations may need privacy controls even in staging.</td><td>Allowed data/classes: ____ · Redaction needed: ____</td></tr>
+          <tr><td>Who can access the restored environment?</td><td>Restored production data should be limited to named operators.</td><td>Allowed users/service accounts: ____</td></tr>
+          <tr><td>How should restored apps point at the target?</td><td>Validation may require app config/env overrides so no production app accidentally writes to restored data.</td><td>Use local env/staging app/project config: ____</td></tr>
+          <tr><td>Which sample records prove each app recovered?</td><td>Concrete validation records avoid vague “looks good” restore drills.</td><td>Classbook samples: ____ · Summer Camp: ____ · Ticker: ____ · Training: ____</td></tr>
+          <tr><td>What operations are allowed during validation?</td><td>Some drills should be read-only; others may perform staging-only sample writes.</td><td>Read-only or staging writes allowed: ____</td></tr>
+          <tr><td>What is the maximum acceptable downtime for a real restore?</td><td>Runbooks need timing targets and decision points.</td><td>Classbook/Summer: ____ · Ticker: ____ · Training: ____</td></tr>
+          <tr><td>Who validates business correctness?</td><td>Technical restore success is not enough; operators must confirm data makes sense.</td><td>Business validators by app: ____</td></tr>
+          <tr><td>How long should restored resources be retained?</td><td>Restore targets containing sensitive data should be deleted or locked after the drill.</td><td>Retain until: ____ · Cleanup owner: ____</td></tr>
+          <tr><td>What incident communications should the runbook include?</td><td>A real restore needs freeze, status updates, and all-clear messages.</td><td>Audience/channels/templates: ____</td></tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card" id="instruction-step-2">
+      <h3>Instruction for Step 2 — Restore drills and runbooks</h3>
+      <pre><code>You are helping Tinker Art Studio prove Firebase recovery, not just configure backups.
+
+Goal: perform a non-production restore drill and create restore runbooks. Do not restore over production. Do not write to production data.
+
+Inputs:
+- Global intake answers pasted above this prompt. If any global answer needed for this step is blank, ask only for that missing answer before proceeding.
+- firebase-current-state-inventory.md
+- firebase-managed-backup-baseline.md
+- Repos: classbook, summer-camp-app, tinker-ticker, training-hub, studio-hub
+- Clarification answers from the “Pre-flight clarifications for Step 2” table in the collaboration document. If any restore target, backup source, privacy boundary, or validation owner is blank, stop and ask the human before proceeding.
+
+Tasks:
+1. Choose a restore target that is clearly non-production:
+   - separate Firebase/GCP project, or
+   - restored Firestore database that production apps cannot accidentally use.
+2. Restore the most recent backup/export into the target. If managed restore requires a new database, document the target database name and constraints.
+3. Validate restored Firestore data by app:
+   - Classbook: curriculum, summerCamps_lessonData, prep help queue, camp complete records.
+   - Summer Camp App: curriculum, projectDetails, materialsHub, schedule, kidNotes, team/openStudio where present.
+   - Tinker Ticker: entries, schedules, HFWA, timeoff, settings, overrides, locked periods.
+   - Training Hub: modules, programs, assignments, email logs, observations, observation schedule, onboarding collections.
+4. Validate Storage recovery:
+   - choose at least one object from each high-value path that exists
+   - prove a deleted/overwritten object can be recovered within the retention window, using a test object if needed.
+5. Create runbooks:
+   - full database restore to staging
+   - partial collection/document surgical recovery
+   - Storage object recovery
+   - incident freeze/revoke/deploy-stop sequence
+6. Define validation queries/checks for each app after restore.
+
+Deliverable: write firebase-restore-drill-report.md with evidence, timings, gaps, RPO/RTO measured, and clear runbooks. Include a final section called “Can we recover today?” with yes/no per app and blockers.</code></pre>
+    </article>
+
+    <article class="card" id="instruction-step-3">
+      <h3>Instruction for Step 3 — Rules, IAM, and agent gates</h3>
+      <pre><code>You are helping Tinker Art Studio harden Firebase against mistakes from AI-agent-driven development.
+
+Goal: make destructive backend changes difficult to ship accidentally. You may edit tests/docs/config proposals, but do not deploy production Firebase rules or change IAM without explicit human approval.
+
+Start by reading the Global intake answers pasted above this prompt. If any answer needed for rules/IAM/deploy gate work is blank, ask only for that missing answer before proceeding.
+
+Repos to inspect:
+- studio-hub: firestore.rules, storage.rules, rules.test.js, package.json
+- classbook
+- summer-camp-app
+- tinker-ticker
+- training-hub
+
+Tasks:
+1. Review firestore.rules and storage.rules for the four priority apps:
+   - delete permissions
+   - staff update permissions
+   - manager/admin boundaries
+   - kiosk/timeclock boundaries
+   - training appAccess boundaries
+   - Classbook teacher isolation gaps caused by UI-only filtering
+2. Expand emulator tests in studio-hub for priority-app rules:
+   - Classbook classbook/classbook-admin/manager cases
+   - Summer Camp staff vs manager create/update/delete cases
+   - Tinker Ticker staff own-entry vs other-entry, kiosk, manager cases
+   - Training manager vs staff self-assignment/progress vs no-access cases
+   - Storage read/write/delete cases for high-value paths if testable
+3. Add a deploy safety checklist/documentation:
+   - never run bare firebase deploy
+   - rules deploy command only
+   - tests required before deploy
+   - human approval required for production rule deploy
+4. Audit repo scripts and docs for dangerous commands:
+   - firebase deploy
+   - service account key paths
+   - scripts that delete Firestore docs or Storage objects
+5. Propose IAM/deploy controls:
+   - least-privilege deploy service account
+   - no agent Owner/Editor roles
+   - no long-lived service account keys in repos
+   - branch protection / PR review / secret scanning
+6. Run available local tests. If Firebase emulator or CLI is missing, document exact blocker and command needed.
+
+Deliverable: open a PR or write firebase-agent-defense-hardening.md with changes made, test results, unresolved risks, and exact production approval steps still required.</code></pre>
+    </article>
+
+    <article class="card" id="instruction-step-4">
+      <h3>Instruction for Step 4 — App-level data-loss detection</h3>
+      <pre><code>You are helping Tinker Art Studio add app-level detection and guardrails so Firebase data loss is noticed quickly.
+
+Goal: propose and implement scoped safeguards in app code/tests where safe. Do not deploy production. Do not change live Firebase data except through explicit test fixtures in a non-production environment.
+
+Start by reading the Global intake answers pasted above this prompt. If any answer needed for app-level detection or non-production testing is blank, ask only for that missing answer before proceeding.
+
+Repos to inspect:
+- classbook, especially CLASSBOOK-DATA-SAFETY-PLAN.md, js/firebase-data.js, js/app.js, e2e tests
+- summer-camp-app, especially js/app.js and scripts/backup-firestore.js
+- tinker-ticker, especially js/firebase-data.js and js/app.js
+- training-hub, especially src/lib/browserFirebaseAdapter.ts, src/lib/onboardingRepository.ts, tests
+
+Tasks by app:
+1. Classbook:
+   - Verify which items from CLASSBOOK-DATA-SAFETY-PLAN.md are implemented.
+   - Add or update tests for empty-field overwrite prevention, load-failure save blocking, targeted saves, photo replacement safety, and read-back verification.
+   - Add/describe backup health visibility and content-count anomaly detection.
+2. Summer Camp App:
+   - Identify bulk import/delete/destructive maintenance paths.
+   - Add pre-action snapshot/audit requirements before bulk writes/deletes.
+   - Add tests or safeguards for materials/projectDetails/schedule/kidNotes destructive paths.
+3. Tinker Ticker:
+   ⚠️ APPROVAL GATE: Before modifying ANY file in the tinker-ticker repo, stop and ask Christie for explicit written approval. Do not proceed until she types the phrase "approved to change firebase" in the session. "Where feasible" and "where safe" are not sufficient gates for payroll write paths — human sign-off is required first.
+   - Identify critical writes that are fire-and-forget or not awaited.
+   - Propose (do not implement) converting payroll/timekeeping critical writes to await confirmation. Present the proposal to Christie and wait for approval before touching any tinker-ticker code.
+   - Add pay-period immutable export/snapshot recommendation or implementation.
+   - Add validation for staff update boundaries and locked-period behavior.
+4. Training Hub:
+   - Add persistence tests for assignment progress, observation records, onboarding checklists, and manager delete behavior.
+   - Label which data is reproducible seed data vs compliance/evidence data needing backup retention.
+5. For each app, add a minimal incident indicator or admin check where feasible:
+   - last backup/export status
+   - document counts
+   - recent destructive writes
+   - anomalous drops in content-bearing records
+
+Deliverable: create app-data-loss-detection-report.md and, if code changes are made, include test results and a PR summary. Keep changes small and app-specific; do not bundle unrelated refactors.</code></pre>
+    </article>
+
+    <article class="card" id="instruction-diagrams">
+      <h3>Instruction prompts — architecture, component, and traffic-flow diagrams</h3>
+      <p class="muted">These four prompts ask Claude Code to produce diagrams as code (Mermaid), so the diagrams live in the repos, render on GitHub, and can be regenerated whenever the code changes. They are read-only/design: Claude derives the diagrams from the repos and, where live Firebase state is needed, asks the operator rather than guessing. Run them in order; each builds on the last. The example below shows the expected output format — Claude should replace it with detail derived from the actual code.</p>
+      <pre id="diagram-example"><code>graph TD
+  subgraph Clients["Web apps on Netlify"]
+    CB[Classbook]
+    SC[Summer Camp App]
+    TT[Tinker Ticker]
+    TH[Training Hub]
+  end
+  subgraph FB["Firebase project: tinker-hq-apps"]
+    AUTH[Authentication]
+    FS[(Firestore)]
+    ST[(Cloud Storage)]
+    RULES{{"Rules source: studio-hub"}}
+  end
+  CB --> AUTH
+  TT --> AUTH
+  CB -->|read/write| FS
+  TT -->|read/write| FS
+  CB -->|upload| ST
+  RULES -.enforces.-> FS
+  RULES -.enforces.-> ST
+  FS -.->|MISSING: PITR and scheduled backups| BKP[(Managed backups not configured)]</code></pre>
+
+      <h4 id="diagram-prompt-1">Prompt 1 — System architecture diagram</h4>
+      <pre><code>You are documenting the Firebase backend architecture for Tinker Art Studio.
+
+Start by reading the Global intake answers pasted above this prompt. If anything needed for this step is blank, ask only for that missing answer.
+
+Goal: produce a system architecture diagram as Mermaid. Read-only: do not change any Firebase setting, rule, or data.
+
+Repos to inspect: classbook, summer-camp-app, tinker-ticker, training-hub, studio-hub (firestore.rules, storage.rules), plus each app's Firebase config (firebaseConfig / projectId).
+
+Show:
+- the shared Firebase project (expected: tinker-hq-apps) and each app
+- where each app is hosted/deployed (e.g., Netlify) and how config selects the project
+- Firebase services in use: Authentication, Firestore, Cloud Storage
+- the rules source (studio-hub) and that it governs all apps
+- any backup destinations; if none exist in code, draw the gap explicitly and label the known local-only backup as not managed
+- trust note: which identities deploy (humans, CI, agents)
+
+Output: docs/architecture/system-architecture.md containing the Mermaid source, a one-paragraph plain-language description, and a legend. Mark the missing managed backup clearly. If you need live state (project, buckets, IAM) you cannot read from code, list the exact read-only commands or console screens for the operator instead of guessing.</code></pre>
+
+      <h4 id="diagram-prompt-2">Prompt 2 — Per-app component diagram</h4>
+      <pre><code>Goal: a component diagram for each priority app showing UI modules -> data-access layer -> Firestore collections and Storage paths. Read-only.
+
+For each app (classbook, summer-camp-app, tinker-ticker, training-hub):
+- identify the main UI components/screens
+- identify the data-access helpers they call (for example classbook js/firebase-data.js, tinker-ticker js/firebase-data.js, training-hub src/lib/* adapters/repositories)
+- map each helper to the exact Firestore collections and Storage paths it reads, writes, or deletes
+- mark collections shared by more than one app (for example summerCamps_lessonData and summerCamps_curriculum, used by Classbook and Summer Camp) as shared, since a change in one app affects the other
+
+Output: one Mermaid "graph LR" per app in docs/architecture/components-<app>.md, plus a short table per app listing component -> helper -> collection/path -> operation (read/write/delete). Derive everything from the code; do not invent collection names. Where a helper's target is dynamic, note it and cite the file and function.</code></pre>
+
+      <h4 id="diagram-prompt-3">Prompt 3 — Traffic / data-flow and destructive-path diagram</h4>
+      <pre><code>Goal: a data-flow (traffic) view of reads, writes, and deletes per app, explicitly flagging the dangerous paths this report identified. Read-only.
+
+Trace and diagram these flows, labeling each write/delete edge as guarded or unguarded:
+- Tinker Ticker: employee clock-in/out and admin entry edits; mark writes that are fire-and-forget (not awaited until Firestore confirms) and mark that the pay-period lock is cosmetic (no enforcement, no snapshot)
+- Classbook: saveSingleLesson and saveSummerCampLessonData; show merge:true behavior and the photo upload-before-delete ordering
+- Summer Camp: importCurriculumData (wipes the shared curriculum collection before reload) and the bulk import/delete/maintenance paths; show the Classbook sync that is not awaited
+- Training Hub: assignment/observation/onboarding writes and hard deletes
+
+Use Mermaid flowcharts or sequence diagrams. Visually distinguish: confirmed/awaited writes, fire-and-forget writes, bulk/batch operations, and deletes.
+
+Output: docs/architecture/data-flows.md with the diagrams plus one master table of every write/delete path: app, function (file:line), collection/path, awaited? (yes/no), snapshot-before? (yes/no), guard present? (describe). This table is itself a useful risk inventory.</code></pre>
+
+      <h4 id="diagram-prompt-4">Prompt 4 — Trust and permission boundary diagram</h4>
+      <pre><code>Goal: a trust-boundary diagram showing who and what can write or delete each class of data, and where that is enforced. Read-only.
+
+Include these actors: staff, manager, admin, kiosk/timeclock device, service accounts, CI/deploy, and AI agents. Map their ability to write/delete each data class against studio-hub firestore.rules and storage.rules.
+
+Show clearly:
+- where access is enforced in rules (for example timeclock entry ownership) versus enforced only in the UI (for example Classbook teacher isolation, which rules do not enforce)
+- any fully public rule (for example a materials collection open to all)
+- any path where an agent-controlled or normal app/deploy identity could delete BOTH production data and the backups needed to recover it (the must-not-exist condition)
+
+Output: docs/architecture/trust-boundaries.md with a Mermaid diagram and a findings list ranked by risk. For each rules claim, cite the rule file and line. Where you cannot confirm a live IAM grant from source, list the read-only console/CLI check for the operator.</code></pre>
+    </article>
+  </section>
+
+  <section id="acceptance-criteria">
+    <h2>13. Acceptance criteria</h2>
+    <ol>
+      <li id="ac-1">A human can point to the exact Firestore PITR/backups configuration for <code>tinker-hq-apps</code> and the last successful backup timestamp.</li>
+      <li id="ac-2">A restore drill has restored the default Firestore database to a non-production target and validated sample data from all four priority apps.</li>
+      <li id="ac-2b">Per-app recovery is proven: one app's collections (for example Classbook) can be restored from backup/PITR into production <strong>without altering the other three apps' data</strong>, via an isolated-restore-then-surgical-copy runbook and/or per-app collection-scoped exports.</li>
+      <li id="ac-3">Storage photos/files can be recovered after accidental delete/overwrite within the documented retention window.</li>
+      <li id="ac-4">Rules tests cover manager/staff/kiosk/training/classbook/summer-camp access boundaries and run before any rules deploy.</li>
+      <li id="ac-5">No agent-controlled identity can delete both production data and the backups needed to recover it.</li>
+      <li id="ac-6">Each app has a one-page incident runbook with owner, freeze steps, restore steps, and validation queries.</li>
+      <li id="ac-7">Every repo carries current agent guidance (<code>CLAUDE.md</code> / <code>AGENTS.md</code>) and the shared planning/execution skills, and agents finish tasks with all work committed, pushed, and (when applicable) deployed — no safety fix left stranded on a local machine.</li>
+    </ol>
+  </section>
+
+  <section id="evidence-and-sources">
+    <h2>14. Evidence and source notes</h2>
+    <ul>
+      <li id="evidence-code">Local code reviewed under <code>/Users/anichols/projects/Tinker-repos</code>, especially <code>classbook</code>, <code>summer-camp-app</code>, <code>tinker-ticker</code>, <code>training-hub</code>, and shared rules in <code>studio-hub/firestore.rules</code>.</li>
+      <li id="evidence-classbook">Classbook prior incident evidence: <code>classbook/CLASSBOOK-DATA-SAFETY-PLAN.md</code> documents wipe events, restore from <code>~/tinker-backups</code>, and planned safeguards.</li>
+      <li id="evidence-backup-script">Manual backup evidence: <code>summer-camp-app/scripts/backup-firestore.js</code> backs up many Tinker collections via browser console and recommends weekly manual use.</li>
+      <li id="evidence-training">Training Hub readiness evidence: <code>training-hub/docs/PRODUCTION-READINESS.md</code> confirms rules source and live Firestore hardening.</li>
+      <li id="source-firestore-dr">Firebase documentation: Firestore disaster recovery recommends scheduled backups and PITR for accidental deletion/modification; scheduled backups restore to a new database; PITR provides a short point-in-time window.</li>
+      <li id="source-storage">Google Cloud Storage documentation: soft delete preserves deleted/overwritten objects for a retention duration; lifecycle/versioning controls are separate from Firestore backups.</li>
+      <li id="source-security">Firebase security checklist emphasizes App Check, least-privilege IAM, and protecting service account private keys.</li>
+    </ul>
+  </section>
+
+  <section id="glossary">
+    <h2>15. Glossary of terms</h2>
+    <p id="glossary-intro">This report uses a number of acronyms and technical terms. Each is defined twice below: a precise <strong>technical meaning</strong> for an engineer, and a plain <strong>in-plain-terms</strong> description that avoids jargon. The terms are grouped by topic.</p>
+
+    <h3 id="glossary-backup">Backup and recovery</h3>
+    <table id="glossary-backup-table">
+      <thead><tr><th>Term</th><th>Technical meaning</th><th>In plain terms</th></tr></thead>
+      <tbody>
+        <tr id="g-backup"><td><strong>Backup / snapshot / export</strong></td><td>A point-in-time copy of data written somewhere it can be restored from later; an "export" writes data out to files or another storage location.</td><td>A saved copy of the data as it was at a certain moment, kept so you can put it back if the live data is lost or damaged.</td></tr>
+        <tr id="g-pitr"><td><strong>PITR — Point-in-Time Recovery</strong></td><td>A Firestore feature that can restore the database to its exact state at any chosen moment within a recent window (currently up to 7 days).</td><td>A rewind button for the database. If something is deleted or broken, you can return to how it looked a few minutes or days ago — but only within the last several days.</td></tr>
+        <tr id="g-scheduled-backups"><td><strong>Scheduled backups</strong></td><td>Firestore's managed feature that automatically saves backup copies on a set cadence (for example daily) with a chosen retention period.</td><td>Automatic copies of the database saved on a regular timetable, so a recent saved version always exists without anyone remembering to make one.</td></tr>
+        <tr id="g-restore"><td><strong>Restore / restore drill</strong></td><td>Loading a backup into a database to recover data; a "drill" is a rehearsed restore into a non-production target to prove recovery works.</td><td>Putting a saved copy back into use. A drill is a practice run that proves you can actually recover — instead of only assuming you can until a real emergency.</td></tr>
+        <tr id="g-runbook"><td><strong>Runbook</strong></td><td>A documented, step-by-step operational procedure for a specific task, such as restoring a collection after data loss.</td><td>A written checklist someone can follow under pressure, so recovery does not depend on one person remembering all the steps.</td></tr>
+        <tr id="g-rpo"><td><strong>RPO — Recovery Point Objective</strong></td><td>The maximum acceptable amount of data, measured in time, that may be lost in an incident; it sets how frequently backups must run.</td><td>How much recent work you can afford to lose. An RPO of one hour means backups run often enough that, at worst, about an hour of changes is lost.</td></tr>
+        <tr id="g-rto"><td><strong>RTO — Recovery Time Objective</strong></td><td>The maximum acceptable time to restore data or service after an incident; it shapes how the restore process is designed.</td><td>How long an app can be down after a problem before it must be working again.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="glossary-firebase">Firebase and how the data is organized</h3>
+    <table id="glossary-firebase-table">
+      <thead><tr><th>Term</th><th>Technical meaning</th><th>In plain terms</th></tr></thead>
+      <tbody>
+        <tr id="g-firebase"><td><strong>Firebase</strong></td><td>Google's app-development platform bundling Firestore, Authentication, Cloud Storage, and related backend services under one project.</td><td>The Google service that stores the apps' data and handles logins. Everything in this report lives inside one Firebase project, <code>tinker-hq-apps</code>.</td></tr>
+        <tr id="g-firestore"><td><strong>Firestore</strong></td><td>Firebase's NoSQL document database, organized as collections of documents.</td><td>The main database where the apps save their information — schedules, lesson plans, timeclock entries, and so on.</td></tr>
+        <tr id="g-collection-doc"><td><strong>Collection / document</strong></td><td>Firestore stores data as documents (records made of fields), grouped into named collections.</td><td>A collection is like a labeled drawer (for example, all timeclock entries); a document is one item in that drawer (one person's single clock-in).</td></tr>
+        <tr id="g-storage"><td><strong>Cloud Storage (Firebase Storage)</strong></td><td>Firebase's file/object store for binary content such as images and uploads, held in "buckets" separate from Firestore.</td><td>Where uploaded photos and files are kept. It is separate from the database, so backing up the database does not back up the photos.</td></tr>
+        <tr id="g-default-db"><td><strong>Default database / <code>(default)</code></strong></td><td>The primary Firestore database instance in the project, named <code>(default)</code>.</td><td>The main database the apps use. Firestore allows more than one database; this is the primary one.</td></tr>
+        <tr id="g-region"><td><strong>Region / multi-region</strong></td><td>The geographic location(s) where the database is hosted; multi-region adds redundancy at higher cost.</td><td>Where the data physically lives. Spreading it across regions survives more failures but costs more.</td></tr>
+        <tr id="g-offline"><td><strong>Offline persistence</strong></td><td>Firestore caching that lets an app keep working without a connection and sync changes once it reconnects.</td><td>Lets an app keep working when the internet drops and catch up afterward. Helpful, but it is <strong>not</strong> a backup.</td></tr>
+        <tr id="g-console"><td><strong>Console (Firebase / Google Cloud)</strong></td><td>The web dashboards used to manage Firebase and Google Cloud resources.</td><td>The websites where you click around to see and change settings, backups, permissions, and billing.</td></tr>
+        <tr id="g-cli"><td><strong>CLI (<code>firebase</code> / <code>gcloud</code> / <code>gsutil</code>)</strong></td><td>Command-line tools for managing Firebase and Google Cloud.</td><td>Text-command tools for inspecting and changing the backend. They are not installed on this machine, which is why parts of this review needed the console directly.</td></tr>
+        <tr id="g-emulator"><td><strong>Emulator (Firebase emulator)</strong></td><td>A local simulation of Firebase services used to test rules and code without touching production.</td><td>A practice copy of Firebase that runs on a developer's computer, so tests do not risk the real data.</td></tr>
+        <tr id="g-mermaid"><td><strong>Mermaid (diagram-as-code)</strong></td><td>A text syntax for describing diagrams (architecture, flowcharts, sequences) that render automatically in Markdown and on GitHub.</td><td>A way to write diagrams as plain text instead of drawing them by hand, so they live next to the code and update easily when the system changes.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="glossary-saving">How data is saved — and lost</h3>
+    <table id="glossary-saving-table">
+      <thead><tr><th>Term</th><th>Technical meaning</th><th>In plain terms</th></tr></thead>
+      <tbody>
+        <tr id="g-merge"><td><strong><code>merge: true</code> (Firestore set with merge)</strong></td><td>A write option that updates only the supplied fields and leaves unsupplied fields untouched — but still overwrites supplied fields, including ones sent as empty strings.</td><td>A save setting that only changes the fields you send. The catch behind Classbook's data loss: if a field is sent blank, it still replaces the real value with blank.</td></tr>
+        <tr id="g-batch"><td><strong>Batch / bulk write</strong></td><td>Writing many documents in a single operation.</td><td>Saving or changing many records at once. Efficient, but one mistake can affect a large amount of data at the same time.</td></tr>
+        <tr id="g-awaited"><td><strong>Awaited write vs. fire-and-forget</strong></td><td>An awaited write waits for the database to confirm the change persisted; a fire-and-forget write returns before confirmation, so failures go unnoticed.</td><td>"Awaited" means the app waits to hear that the save actually succeeded. "Fire-and-forget" means it assumes success and moves on — so a failed save can look fine while data is quietly lost.</td></tr>
+        <tr id="g-readback"><td><strong>Read-back verification</strong></td><td>After writing, re-reading the data to confirm it was stored as intended.</td><td>After saving, checking that the data really landed — catching a failed save immediately instead of days later.</td></tr>
+        <tr id="g-hard-delete"><td><strong>Hard delete</strong></td><td>Permanently removing a record with no retained, recoverable copy.</td><td>A permanent delete with no trash can. Once it is gone, it is gone.</td></tr>
+        <tr id="g-soft-delete"><td><strong>Soft delete</strong></td><td>Marking data as deleted but keeping it recoverable for a retention window instead of removing it immediately.</td><td>A trash can. Deleted items are held for a while so they can be brought back, rather than vanishing instantly.</td></tr>
+        <tr id="g-versioning"><td><strong>Object versioning</strong></td><td>Keeping previous versions of a file in Cloud Storage when it is overwritten or deleted.</td><td>Automatically keeping older copies of a file, so overwriting or deleting it does not lose the previous version.</td></tr>
+        <tr id="g-lifecycle"><td><strong>Lifecycle / retention rules</strong></td><td>Policies that automatically delete, archive, or move objects and old versions after set conditions.</td><td>Automatic housekeeping rules — for example "keep deleted files for 30 days, then remove them" — to control cost and how long things are kept.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="glossary-access">Access and security</h3>
+    <table id="glossary-access-table">
+      <thead><tr><th>Term</th><th>Technical meaning</th><th>In plain terms</th></tr></thead>
+      <tbody>
+        <tr id="g-iam"><td><strong>IAM — Identity and Access Management</strong></td><td>Google Cloud's system of roles and permissions controlling which people and service accounts can perform which actions on the project.</td><td>The master list of who is allowed to do what — read data, change settings, deploy, or delete things.</td></tr>
+        <tr id="g-least-privilege"><td><strong>Least privilege</strong></td><td>Granting each identity only the minimum permissions needed for its task.</td><td>Give every person and program only the access they actually need and nothing more, so a mistake or a leak cannot reach everything.</td></tr>
+        <tr id="g-service-account"><td><strong>Service account / service-account key</strong></td><td>A non-human identity used by code or automation to access Firebase; a key is its long-lived credential file.</td><td>A login used by programs rather than people. A key is its password saved in a file — dangerous if it leaks, because anyone holding it can act as that program.</td></tr>
+        <tr id="g-workload-identity"><td><strong>Workload Identity / short-lived credentials</strong></td><td>Mechanisms that grant temporary, automatically-rotated credentials instead of long-lived keys.</td><td>Temporary logins for automation that expire on their own, so there is no permanent password sitting in a file to be stolen.</td></tr>
+        <tr id="g-mfa"><td><strong>MFA — Multi-Factor Authentication</strong></td><td>Requiring a second verification factor (such as a code from an app) in addition to a password to sign in.</td><td>A second step at login, like a code from your phone, so a stolen password alone is not enough to get in.</td></tr>
+        <tr id="g-break-glass"><td><strong>Break-glass account</strong></td><td>A tightly controlled emergency account with elevated access, used only during incidents and audited and rotated afterward.</td><td>A sealed "in case of emergency" login kept for humans only, used rarely and watched closely.</td></tr>
+        <tr id="g-rules"><td><strong>Security rules (Firestore / Storage Rules)</strong></td><td>Server-enforced access policies that decide which reads, writes, and deletes are allowed, independent of the app's own code.</td><td>The backend's own rulebook for who may read, change, or delete data. It still applies even if the app's code has a bug.</td></tr>
+        <tr id="g-app-check"><td><strong>App Check</strong></td><td>A Firebase feature that verifies requests come from your genuine app before allowing access to Firestore or Storage.</td><td>A doorkeeper that checks requests are really coming from your real app, not from someone poking at the backend directly.</td></tr>
+        <tr id="g-auth"><td><strong>Authentication (Auth), providers, authorized domains</strong></td><td>Firebase's sign-in system; "providers" are login methods (email/password, Google), and "authorized domains" are the sites allowed to use it.</td><td>The login system. Providers are the ways people sign in; authorized domains are the web addresses permitted to log people in.</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="glossary-ops">Shipping changes safely, cost, and operations</h3>
+    <table id="glossary-ops-table">
+      <thead><tr><th>Term</th><th>Technical meaning</th><th>In plain terms</th></tr></thead>
+      <tbody>
+        <tr id="g-blaze"><td><strong>Blaze plan</strong></td><td>Firebase's pay-as-you-go pricing tier, required for certain features such as scheduled backups and new Storage buckets.</td><td>Firebase's paid billing level. Some backup and storage features only work once billing is turned on.</td></tr>
+        <tr id="g-netlify"><td><strong>Netlify</strong></td><td>The hosting/deploy platform serving the web apps; deploys can be gated with access controls.</td><td>The service that publishes the apps to the web. Controlling who can deploy there is part of keeping changes safe.</td></tr>
+        <tr id="g-deploy"><td><strong>Deploy / <code>firebase deploy</code></strong></td><td>Publishing code or rules to production; a bare <code>firebase deploy</code> can push more than intended, including overwriting rules.</td><td>Pushing changes live. A careless deploy command can change more than expected, which is why the apps require a narrower, reviewed deploy.</td></tr>
+        <tr id="g-branch-protection"><td><strong>Branch protection / PR review</strong></td><td>GitHub controls requiring review and approval before code merges into protected branches. "PR" means pull request.</td><td>Rules that require a second person to look before code changes go live, so risky edits are not shipped unchecked.</td></tr>
+        <tr id="g-secret-scanning"><td><strong>Secret scanning</strong></td><td>Automated detection of credentials or keys accidentally committed to source control.</td><td>Automatic checks that catch passwords or keys mistakenly saved into the code.</td></tr>
+        <tr id="g-tdd"><td><strong>TDD — Test-Driven Development</strong></td><td>A practice of writing an automated test for the desired behavior first, watching it fail, then writing the minimum code to make it pass (red → green → refactor).</td><td>Write the check before the code: describe what "correct" looks like as a test, confirm it currently fails, then build until it passes — which proves the test really catches the problem.</td></tr>
+        <tr id="g-bdd"><td><strong>BDD — Behavior-Driven Development</strong></td><td>Expressing required behavior as readable <code>Given / When / Then</code> scenarios agreed before coding, which serve as both specification and test.</td><td>Write down, in plain language, how something should behave before building it, so a non-technical owner can confirm the rule — and the same wording becomes the automated test.</td></tr>
+        <tr id="g-audit-logs"><td><strong>Audit logs (Admin Activity / Data Access)</strong></td><td>Google Cloud logs recording administrative changes and data access, used for review and alerting.</td><td>A record of who changed or accessed what, so problems can be investigated and dangerous actions can trigger alerts.</td></tr>
+        <tr id="g-quota-budget"><td><strong>Quota / budget alerts</strong></td><td>Usage limits and spending thresholds that trigger notifications.</td><td>Caps and spending alarms, so a runaway process or a surprise bill gets noticed quickly.</td></tr>
+        <tr id="g-blast-radius"><td><strong>Blast radius</strong></td><td>The scope of damage a single failure or bad change can cause.</td><td>How much can break from one mistake. A smaller blast radius means a single slip damages less.</td></tr>
+        <tr id="g-source-of-truth"><td><strong>Source of truth</strong></td><td>The authoritative system holding the canonical version of a piece of data.</td><td>The official record everyone trusts. For payroll, Tinker Ticker is it — so its data has to be correct.</td></tr>
+        <tr id="g-agent"><td><strong>AI agent</strong></td><td>An autonomous coding assistant that reads and writes code, rules, and configuration, potentially deploying changes.</td><td>A software assistant that writes and changes the apps' code. This report assumes such an assistant will eventually attempt an unsafe change unless something blocks it.</td></tr>
+        <tr id="g-repo-guidance"><td><strong>Repo guidance (<code>CLAUDE.md</code> / <code>AGENTS.md</code>)</strong></td><td>A file in a repository that gives an AI agent the project's rules, conventions, and safety constraints to follow while working in it.</td><td>An instructions file kept in each project so an assistant follows the same rules everywhere, instead of guessing differently in each repo.</td></tr>
+        <tr id="g-skill"><td><strong>Skill / command (agent)</strong></td><td>A reusable, named procedure an AI agent can invoke to perform a task consistently (for example a planning workflow or a pre-deploy checklist).</td><td>A saved, repeatable routine the assistant can run, so the same careful steps happen every time rather than being reinvented per task.</td></tr>
+        <tr id="g-commit-push"><td><strong>Commit / push / stranded work</strong></td><td>"Commit" records changes in git history; "push" sends them to the shared remote. Work that is committed only locally, or not committed at all, is stranded and invisible to others.</td><td>Saving changes to the project's shared history. If an assistant changes files but never saves and uploads them, the fix exists only on one machine — and effectively doesn't exist for everyone else.</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>
