@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Tinker Playbook — Concurrent-Edit Data Loss Fix</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Tinker Playbook — Concurrent-Edit Data Loss Fix</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Stop the Tinker Playbook app from silently overwriting other people's changes when two sessions edit the playbook data at different times.<br>
+  <strong>App:</strong> tinker-playbook — <code>~/tinker-playbook/js/firebase-data.js</code>, <code>js/app.js</code><br>
+  <strong>Incident:</strong> Anika (manager) added content to a role's playbook; two days later it was gone. No Firestore rules change and no app deploy occurred in that window, ruling out the two usual causes. Root cause traced to the write pattern below.<br>
+  <strong>Risk:</strong> Medium — touches the single write path used by every edit action in the app (11 call sites), but the fix itself is additive (a guard before an existing write), not a schema change.<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — pending review
+</div>
+
+<h2 id="root-cause">Root Cause</h2>
+<div class="phase">
+  <p>All playbook content — every role, section, and entry — lives in one Firestore document: <code>playbooks/rolesData</code>. The whole document is loaded into a single in-memory object (<code>_rolesData</code>) once per browser session. Every edit action (add/edit/delete a role, add/edit/delete an entry, add/delete an annual item, edit prompts, the Settings → "push current roles data to Firestore" button) mutates that in-memory object and then calls <code>saveRolesData(_rolesData)</code>, which does a full-document <code>.set(data)</code> — <strong>the entire document is replaced with whatever is currently in memory.</strong></p>
+  <p>A realtime <code>onSnapshot</code> listener is supposed to keep every open session's in-memory copy current. But there is no check, anywhere, that a session's copy is actually still current before it writes. If any session's copy goes stale — a tab left open across days, a dropped/errored listener, or simply two people editing around the same time — the next save from that session silently reverts everyone else's changes since that session's last sync. Nothing errors, nothing warns the user, and nothing in Firestore records that it happened.</p>
+  <div class="danger">The Settings → "Push current roles data to Firestore" button (<code>seedDataToFirestore</code>, wired to <code>settings-seed-btn</code>) is the sharpest version of this risk: it's a deliberate, one-click, unconditional full overwrite of live data, gated only by a generic <code>confirm()</code> dialog with no indication of what it will clobber.</div>
+  <p>This is the most plausible explanation for the incident: some session (Anika's own stale tab, another admin's tab, or the Settings seed button) saved from an outdated in-memory copy after her additions landed, wiping them out with no error message at all.</p>
+</div>
+
+<h2 id="phase1">Phase 1 — Optimistic-concurrency guard on the write path</h2>
+
+<div class="phase" id="phase-1">
+  <h3>What it does</h3>
+  <p>Add a version check to the one choke point all saves already go through: <code>saveRolesData()</code> in <code>firebase-data.js</code>. Wrap the write in a Firestore transaction that reads the live document, compares its version to the version the caller last loaded, and only writes if they match. If they don't match, the write is rejected — the caller is told there's a conflict instead of the document being silently clobbered.</p>
+  <p>Add a <code>_version</code> integer field to the <code>rolesData</code> document, incremented only inside this transaction. (Not reusing <code>lastUpdated</code> for this — client clocks can skew or collide; a server-incremented counter is unambiguous.)</p>
+
+  <div class="bdd">Given: Session A loaded rolesData at version 5
+When: Session A saves an edit
+Then: The transaction reads version 5 from Firestore, matches, writes version 6
+  AND Session A's local copy is updated to version 6
+
+Given: Session A and Session B both loaded rolesData at version 5
+When: Session A saves first (version 5 → 6), then Session B tries to save (still holding version 5 locally)
+Then: Session B's transaction reads version 6, sees it doesn't match its expected 5
+  AND Session B's write is rejected — Firestore still holds Session A's version-6 data unchanged
+  AND saveRolesData() resolves with { success: false, reason: 'conflict' } instead of throwing or silently succeeding
+
+Given: The device is offline when a save is attempted
+Then: saveRolesData() resolves with { success: false, reason: 'offline' } (existing local-storage fallback still fires so no data is lost locally)
+  AND the transaction is never attempted against a document that can't be reached</div>
+
+  <div class="safe">✅ No schema migration. No new collection. No rules change — <code>playbooks/{docId}</code> rule already covers this doc. The full-document <code>.set()</code> stays (it's a legitimate whole-object write, not a partial edit standing in for one) — the fix is gating it on a freshness check, not switching to <code>updateDoc</code>.</div>
+</div>
+
+<h2 id="phase2">Phase 2 — Make every call site handle a conflict instead of ignoring the result</h2>
+
+<div class="phase" id="phase-2">
+  <h3>What it does</h3>
+  <p>Today every call site does <code>saveRolesData(_rolesData).then(() => { render...; })</code> and never checks whether the save actually succeeded. Update all 11 call sites (<code>saveRole</code>, <code>confirmDeleteRole</code>, <code>backfillMissingSections</code>, <code>addInlineTask</code>, <code>deleteInlineTask</code>, <code>setTaskDay</code>, <code>saveEntry</code>, <code>deleteEntry</code>, <code>savePrompts</code>, <code>addAnnualItem</code>, <code>deleteAnnualItem</code>) plus <code>seedDataToFirestore</code> to check the result.</p>
+
+  <div class="bdd">Given: A builder clicks "Save" on an entry and the save comes back { success: false, reason: 'conflict' }
+When: The failure is handled
+Then: An alert explains someone else updated this playbook while they were working
+  AND the app reloads the latest rolesData from Firestore (via the existing realtime listener data, already current)
+  AND the modal stays open with their typed content intact so they can re-apply it and save again
+  AND their edit is NOT silently lost — they're told to retry, not left thinking it saved
+
+Given: Christie clicks Settings → "Push current roles data to Firestore"
+When: Another session has written since Christie's copy was loaded
+Then: The same conflict check fires (seedDataToFirestore routes through the same guarded save)
+  AND Christie sees "Someone else has updated the playbook since you last loaded it — refresh and try again" instead of the button silently overwriting their changes</div>
+
+  <div class="note">The confirm() copy on the seed button should also be tightened to state plainly what it does ("This replaces ALL roles data in Firestore with what's currently loaded in this browser tab") — it's a rarely-used escape hatch, not a normal save action, and should read like one.</div>
+</div>
+
+<h2 id="phase3">Phase 3 — Emulator test coverage</h2>
+
+<div class="phase" id="phase-3">
+  <h3>What it does</h3>
+  <p>Per this app's AGENTS.md, any data-write change needs a failing-then-green emulator test. Add tests against the Firestore emulator (<code>firebase emulators:start --only firestore</code> from studio-hub):</p>
+  <ul>
+    <li>Two sequential writes with the same starting version: second one is rejected, first one's data survives unchanged.</li>
+    <li>A single writer with the correct version: write succeeds, version increments by 1.</li>
+    <li>Existing Playwright suite (<code>e2e/admin.spec.js</code>, <code>e2e/smoke.spec.js</code>) — confirmed neither currently exercises concurrent-session saves; this is a real coverage gap being closed, not a regression risk in existing tests.</li>
+  </ul>
+</div>
+
+<h2 id="out-of-scope">Not in scope</h2>
+<ul>
+  <li><strong>Splitting <code>rolesData</code> into one Firestore document per role.</strong> Would shrink the blast radius further (an edit to Role A could never touch Role B's data) but is a real data migration touching every read/write in the app, for a team small enough that concurrent edits to the <em>same</em> role are rare. The version guard directly fixes the incident; revisit this only if the app grows to a size where same-role concurrent editing becomes common.</li>
+  <li><strong>Applying the same version guard to <code>playbooks/progress_{uid}</code> docs</strong> (per-user onboarding progress). Collision there requires the same person editing from two devices at once — low likelihood, low impact (only their own progress). Not worth the extra complexity in this pass.</li>
+  <li><strong>Auto-merging</strong> a rejected edit against the freshly-loaded data automatically. Simpler and safer for v1: reject, reload, ask the user to redo the one small action (add a task, edit an entry, etc.) — every edit here is a small discrete action, so retrying is low-friction.</li>
+</ul>
+
+<h2 id="decisions">Decisions Log</h2>
+<ul>
+  <li><strong>Aug 2:</strong> Chose a transaction + version-counter guard over a per-role document schema migration. Rationale: fixes the actual incident (silent overwrite) with much less risk and no data migration; team size doesn't currently justify the bigger change.</li>
+  <li><strong>Aug 2:</strong> On conflict, reject and ask the user to retry rather than attempt an automatic merge. Rationale: every write in this app is a small, single-field-ish action — retrying costs the user one click, not a form's worth of re-entry.</li>
+  <li><strong>Aug 2:</strong> <code>playbooks</code> added to the automated backup script (<code>~/tinker-backups/backup.js</code>) as a prerequisite, independent of this plan — it was previously the only collection missing from backups, so there was no way to recover the lost content even after the fact.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<p>No open questions blocking start. Execute Phase 1 → 2 → 3 in order; commit after each. Test locally at localhost:8098 with the Firestore emulator, then against two real browser profiles to confirm the conflict path end-to-end before asking Christie about a Netlify deploy.</p>
+
+</body>
+</html>
