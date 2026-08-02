@@ -116,7 +116,7 @@
       <li><a href="#implementation-roadmap">Suggested resilience roadmap</a>
         <ul>
           <li>✅ <a href="#roadmap-step-0">Step 0 — Console verification and ownership</a></li>
-          <li>⬜ <a href="#roadmap-step-1">Step 1 — Managed backup baseline</a></li>
+          <li>✅ <a href="#roadmap-step-1">Step 1 — Managed backup baseline (designed, awaiting approval)</a></li>
           <li>⬜ <a href="#roadmap-step-2">Step 2 — Restore drills and runbooks</a></li>
           <li>⬜ <a href="#roadmap-step-3">Step 3 — Rules, IAM, and agent gates</a></li>
           <li>⬜ <a href="#roadmap-step-4">Step 4 — App-level data-loss detection</a></li>
@@ -126,6 +126,7 @@
         <ul>
           <li>✅ <a href="#step-0-deliverable">Step 0 results — firebase-current-state-inventory.md</a></li>
           <li>✅ <a href="#step-1-assembled-prompt">Step 1 prompt — assembled, ready to paste</a></li>
+          <li>✅ <a href="#step-1-deliverable">Step 1 results — firebase-managed-backup-baseline.md (read this to approve)</a></li>
         </ul>
       </li>
       <li><a href="#acceptance-criteria">Acceptance criteria</a></li>
@@ -790,7 +791,7 @@ itself, and check in with me before anything beyond local tooling and repo docs.
 
   <section id="implementation-roadmap">
     <h2>11. Suggested resilience roadmap</h2>
-    <p class="muted" id="roadmap-status-note">Status as of Aug 2, 2026: ✅ Step 0 complete. Step 1 prompt assembled and ready to paste (see <a href="#step-1-assembled-prompt">Step 1 prompt</a>). Next: run it in a new Claude Code session — confirm/enable managed backups and make payroll writes safe before anything else.</p>
+    <p class="muted" id="roadmap-status-note">Status as of Aug 2, 2026: ✅ Step 0 complete. ✅ Step 1 designed — see <a href="#step-1-deliverable">Step 1 Deliverable</a> below for the full design and the exact commands awaiting approval. Next: Christie reads the Step 1 Deliverable, approves some/all of the commands (type "approved to change firebase"), then Step 2 (restore drills) can begin.</p>
     <div class="roadmap-step card" id="roadmap-step-0">
       <h3>✅ Step 0 — Console verification and ownership</h3>
       <ul>
@@ -820,11 +821,11 @@ itself, and check in with me before anything beyond local tooling and repo docs.
       </ol>
     </article>
     <div class="roadmap-step card" id="roadmap-step-1">
-      <h3>⬜ Step 1 — Managed backup baseline</h3>
+      <h3>✅ Step 1 — Managed backup baseline (designed, awaiting approval to execute)</h3>
       <ul>
-        <li>Enable Firestore PITR and scheduled backups.</li>
-        <li>Create locked backup destination for exports/manifests outside normal app deploy credentials.</li>
-        <li>Define collection groups and backup cadence by priority app.</li>
+        <li>Enable Firestore PITR and scheduled backups. — designed, see <a href="#step-1-deliverable">Step 1 Deliverable</a></li>
+        <li>Create locked backup destination for exports/manifests outside normal app deploy credentials. — designed (new <code>tinker-hq-vault</code> project)</li>
+        <li>Define collection groups and backup cadence by priority app. — designed (Tier 1/2/3 mapping)</li>
       </ul>
     </div>
     <div class="roadmap-step card" id="roadmap-step-2">
@@ -1111,6 +1112,55 @@ Tasks:
 6. Before applying anything, present exact commands/configuration and a rollback/no-op explanation. Wait for human approval.
 
 Deliverable: write firebase-managed-backup-baseline.md. If approved and implemented, append an Implementation evidence section with commands run, settings changed, last successful backup/export, and how to verify it tomorrow.</code></pre>
+    </article>
+
+    <article class="card" id="step-1-deliverable">
+      <h3>✅ Step 1 Deliverable — firebase-managed-backup-baseline.md</h3>
+      <p class="muted">Completed Aug 2, 2026. Full detail (why each choice was made, cost math, exact CLI syntax verified against the installed Firebase CLI): <code>~/tinker-ai-configs/thoughts/firebase-managed-backup-baseline.md</code>. <strong>Nothing below has been run yet.</strong> This section has everything needed to decide what to approve — you shouldn't need to open the other file unless you want the extra rationale.</p>
+
+      <div class="callout" id="step-1-how-to-read">
+        <strong>How to read this section:</strong> "Decisions already made with you" were resolved together earlier today — no action needed. "What gets protected" is background. "Commands awaiting approval" is the actual approve/decline list — read that table, then reply with "approved to change firebase" for all of it, or name which rows to skip.
+      </div>
+
+      <h4>Decisions already made with you</h4>
+      <table>
+        <thead><tr><th>Open item</th><th>Decision</th></tr></thead>
+        <tbody>
+          <tr><td>Where should independent backups / restore-drill target live?</td><td>One new project, <code>tinker-hq-vault</code> — doubles as locked off-project backup storage and the Step 2 restore-drill target.</td></tr>
+          <tr><td>Retention windows</td><td>PITR: 7 days (fixed by GCP). Native managed backup: DAILY, 98-day/14-week retention (the GCP max). Off-project export: WEEKLY, keep last 8 + a permanent snapshot at the end of each peak season. Local <code>backup.js</code>: unchanged ~2-day rolling window, now a fallback rather than the primary safety net.</td></tr>
+        </tbody>
+      </table>
+
+      <h4>What gets protected (RPO/RTO tiers → collections)</h4>
+      <p class="muted">All Tinker HQ apps share one Firestore database, so native PITR and the managed backup schedule protect every tier equally and automatically — tiering mainly drives which collections the independent export/monitoring/restore-drill work prioritizes.</p>
+      <table>
+        <thead><tr><th>Tier</th><th>Apps / collections</th><th>Target RPO / RTO</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Tinker Ticker (<code>timeclock_*</code>, <code>payroll</code>) · Classbook/Summer Camp teacher content & ops (<code>summerCamps_*</code>, <code>curriculum</code>)</td><td>30 min / ~15 min in peak (Apr 24–Jun 7, Aug 8–Sep 7, Dec 25–Jan 21); Tinker Ticker 1 day / same day</td></tr>
+          <tr><td>2</td><td>Training Hub (<code>trainingAssignments</code>, <code>trainingModules</code>, <code>trainingPrograms</code>, <code>trainingEmailLogs</code>, <code>trainingObservations</code>, <code>trainingObservationSchedule</code>, <code>onboarding*</code>)</td><td>30 min in peak / weekly off-peak; same day / flexible</td></tr>
+          <tr><td>3</td><td>Reproducible seed/catalog/config data (rides along for free — same native backup, not a monitoring priority)</td><td>Flexible</td></tr>
+        </tbody>
+      </table>
+      <p class="muted"><strong>Privacy carve-out:</strong> <code>summerCamps_kidNotes</code> (and any future incident-report collection) stays inside native backups and the <code>tinker-hq-vault</code> export — both are still Google Cloud, still Christie-owned — but is excluded from restore-drill data anyone but Christie would see, and local <code>backup.js</code> will stop writing it to plaintext disk files.</p>
+
+      <h4>Commands / configuration awaiting approval</h4>
+      <table>
+        <thead><tr><th>#</th><th>Action</th><th>Command / where</th><th>Reversible?</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>Enable delete protection (carried over from Step 0, free)</td><td><code>firebase firestore:databases:update "(default)" --delete-protection ENABLED --project tinker-hq-apps</code></td><td>Yes — set back to DISABLED. No data touched.</td></tr>
+          <tr><td>2</td><td>Enable PITR</td><td><code>firebase firestore:databases:update "(default)" --point-in-time-recovery ENABLED --project tinker-hq-apps</code></td><td>Yes — set back to DISABLED. Only extends version-history retention going forward.</td></tr>
+          <tr><td>3</td><td>Create daily managed backup schedule, 98-day retention</td><td><code>firebase firestore:backups:schedules:create --database "(default)" --recurrence DAILY --retention 98d --project tinker-hq-apps</code></td><td>Yes — delete the schedule; existing backups already taken are untouched.</td></tr>
+          <tr><td>4</td><td>Create the <code>tinker-hq-vault</code> project</td><td><code>firebase projects:create tinker-hq-vault --display-name "Tinker HQ Vault"</code></td><td>Yes — new/empty project; nothing existing is modified.</td></tr>
+          <tr><td>5</td><td>Create the GCS bucket in <code>tinker-hq-vault</code></td><td>Console: Cloud Storage → Create bucket → <code>tinker-hq-vault-backups</code>, region us-central1</td><td>Yes — empty bucket, delete anytime.</td></tr>
+          <tr><td>6</td><td>Enable Storage object versioning (production bucket)</td><td>Console: <code>tinker-hq-apps.firebasestorage.app</code> → Protection tab → Object Versioning</td><td>Yes — can be turned back off.</td></tr>
+          <tr><td>7</td><td>Add lifecycle rule: expire noncurrent versions after 90 days</td><td>Console: same Protection tab → Lifecycle rule</td><td>Yes — edit or remove anytime.</td></tr>
+          <tr><td>8</td><td>Edit <code>~/tinker-backups/backup.js</code>: fix silent-alert bug, expand collection coverage, add weekly upload to vault, add status doc, add count-drop verification</td><td>Local file edit only — no Firebase state changes until it next runs</td><td>Yes — plain code change; review the diff before it's live.</td></tr>
+        </tbody>
+      </table>
+      <p class="muted"><strong>No-op if you decline everything:</strong> current state persists exactly as Step 0 documented it — nothing here self-executes.</p>
+
+      <h4>Cost estimate vs. $20/month ceiling</h4>
+      <p class="muted">Total estimate: comfortably under $5/month. PITR + daily backups: likely under $1/month combined (Firestore's total data is in the low hundreds of MB). <code>tinker-hq-vault</code> project: free. Weekly export storage: under $0.50/month. One open unknown: total Cloud Storage bucket size was never enumerated (no <code>gsutil</code>/<code>gcloud</code> installed) — checking Firebase Console → Storage → Usage before/after enabling versioning would close that gap.</p>
     </article>
 
     <article class="card" id="instruction-step-2-clarifications">
