@@ -45,25 +45,37 @@
   <p>This is the most plausible explanation for the incident: some session (Anika's own stale tab, another admin's tab, or the Settings seed button) saved from an outdated in-memory copy after her additions landed, wiping them out with no error message at all.</p>
 </div>
 
-<h2 id="phase1">Phase 1 — Make saveRolesData() report the truth, and add a concurrency guard</h2>
+<h2 id="phase1">Phase 1 — Make saveRolesData() report the truth, and add a concurrency guard (client + rules)</h2>
 
 <div class="phase" id="phase-1">
   <h3>What it does</h3>
-  <p>Two changes to the one choke point all saves already go through: <code>saveRolesData()</code> in <code>firebase-data.js</code>.</p>
-  <p><strong>1. Stop swallowing errors.</strong> Remove the catch-and-log-only behavior. Every outcome — success, conflict, offline, or a genuine write error (permission, network) — must resolve to an explicit <code>{ success, reason }</code> object that the caller actually inspects. No more "the promise resolved so it must be fine."</p>
-  <p><strong>2. Add a version check.</strong> Wrap the write in a Firestore transaction that reads the live document, compares its version to the version the caller last loaded, and only writes if they match. Add a <code>_version</code> integer field to the <code>rolesData</code> document, incremented only inside this transaction. (Not reusing <code>lastUpdated</code> for this — client clocks can skew or collide; a server-incremented counter is unambiguous.)</p>
+  <p>Three changes, all centered on the one choke point all saves already go through: <code>saveRolesData()</code> in <code>firebase-data.js</code>.</p>
+  <p><strong>1. Stop swallowing errors.</strong> Remove the catch-and-log-only behavior. Every outcome — success, conflict, offline, or a genuine write error (permission, network) — must resolve to an explicit <code>{ success, reason }</code> object that the caller actually inspects. On success, the object also carries the document's new <code>version</code>. No more "the promise resolved so it must be fine."</p>
+  <p><strong>2. Add a client-side version check.</strong> Wrap the write in a Firestore transaction that reads the live document, compares its version to the version the caller last loaded, and only writes if they match. Add a <code>_version</code> integer field to the <code>rolesData</code> document, incremented only inside this transaction. (Not reusing <code>lastUpdated</code> for this — client clocks can skew or collide; a server-incremented counter is unambiguous. A document with no <code>_version</code> field yet — the current live state — is treated as version 0.)</p>
+  <p><strong>3. Enforce the same invariant in Firestore rules, for the rollout window.</strong> A client-side guard only protects sessions running the new code. Any browser tab still holding the old <code>app.js</code>/<code>firebase-data.js</code> — open before this ships, or served from a stale cache — calls the old, unguarded <code>saveRolesData()</code> and would silently reintroduce Bug 1 for as long as that tab stays open. Add a rule on <code>playbooks/rolesData</code> requiring <code>request.resource.data._version == resource.data._version + 1</code> (treating a missing existing version as 0) so a stale client's write is rejected server-side regardless of what JS is running in that tab. This is additive to the existing <code>manager+/appAccess('playbook')</code> rule, not a replacement — authorization is unaffected, only the version-integrity check is new.</p>
+  <p><strong>4. Thread the new version back into memory explicitly — do not rely on the realtime listener for this.</strong> <code>app.js</code> already suppresses its own save's snapshot echo via a shared <code>_skipNextSnapshot</code> flag (used for both the roles and progress listeners), specifically so a save doesn't trigger a redundant re-render from its own write. That means a session cannot depend on the listener to learn its own new version — every call site must take the <code>version</code> returned by a successful <code>saveRolesData()</code> and assign it directly onto <code>_rolesData._version</code> before the next edit. Skipping this would make a session's <em>second</em> save in a row falsely reject as a conflict against its own prior write.</p>
 
   <div class="bdd">Given: Session A loaded rolesData at version 5
 When: Session A saves an edit
 Then: The transaction reads version 5 from Firestore, matches, writes version 6
-  AND Session A's local copy is updated to version 6
-  AND saveRolesData() resolves with { success: true }
+  AND saveRolesData() resolves with { success: true, version: 6 }
+  AND the call site assigns _rolesData._version = 6 immediately (not via the snapshot listener, which this save's own _skipNextSnapshot suppresses)
+
+Given: Session A just completed the save above (local _version is now 6)
+When: Session A saves a second edit right after, with no listener update in between
+Then: The transaction reads version 6, matches Session A's locally-held 6, writes version 7
+  AND this save succeeds — it is NOT falsely rejected as a conflict against Session A's own prior write
 
 Given: Session A and Session B both loaded rolesData at version 5
 When: Session A saves first (version 5 → 6), then Session B tries to save (still holding version 5 locally)
 Then: Session B's transaction reads version 6, sees it doesn't match its expected 5
   AND Session B's write is rejected — Firestore still holds Session A's version-6 data unchanged
   AND saveRolesData() resolves with { success: false, reason: 'conflict' } instead of throwing or silently succeeding
+
+Given: A browser tab is still running the pre-fix app.js/firebase-data.js (opened before this shipped) and calls the old, unguarded saveRolesData()
+When: That old code performs its bare .set() with a stale copy of the document
+Then: The new Firestore rule rejects the write server-side because request.resource.data._version does not equal resource.data._version + 1
+  AND the old client sees a permission-denied error from Firestore itself — the write does not silently succeed just because the old JS has no guard logic
 
 Given: The device is offline when a save is attempted
 Then: saveRolesData() resolves with { success: false, reason: 'offline' } (existing local-storage fallback still fires so no data is lost locally)
@@ -73,14 +85,15 @@ Given: The Firestore write itself throws for any other reason (permission hiccup
 Then: saveRolesData() resolves with { success: false, reason: 'error', message } — it does NOT just console.error and resolve as if nothing happened
   AND this is the exact gap that likely explains the incident: today this path is indistinguishable from success to every caller</div>
 
-  <div class="safe">✅ No schema migration. No new collection. No rules change — <code>playbooks/{docId}</code> rule already covers this doc. The full-document <code>.set()</code> stays (it's a legitimate whole-object write, not a partial edit standing in for one) — the fix is gating it on a freshness check and reporting real outcomes, not switching to <code>updateDoc</code>.</div>
+  <div class="note">⚠️ This phase now includes a small <code>firestore.rules</code> change (additive, same commit as the app fix per this app's own CLAUDE.md convention): the version-increment check on <code>playbooks/rolesData</code>. Run <code>cd ~/studio-hub && npm test</code> (must stay 29/29 plus the new rule test) before deploying with <code>firebase deploy --only firestore:rules</code>.</div>
+  <div class="safe">✅ No schema migration. No new collection. The existing <code>manager+/appAccess('playbook')</code> authorization rule is unchanged — this adds a data-integrity check alongside it. The full-document <code>.set()</code> stays (it's a legitimate whole-object write, not a partial edit standing in for one) — the fix is gating it on a freshness check and reporting real outcomes, not switching to <code>updateDoc</code>.</div>
 </div>
 
 <h2 id="phase2">Phase 2 — Make every call site handle a real failure instead of assuming success</h2>
 
 <div class="phase" id="phase-2">
   <h3>What it does</h3>
-  <p>Today every call site does <code>saveRolesData(_rolesData).then(() => { render...; })</code> and never checks whether the save actually succeeded. Update all 11 call sites (<code>saveRole</code>, <code>confirmDeleteRole</code>, <code>backfillMissingSections</code>, <code>addInlineTask</code>, <code>deleteInlineTask</code>, <code>setTaskDay</code>, <code>saveEntry</code>, <code>deleteEntry</code>, <code>savePrompts</code>, <code>addAnnualItem</code>, <code>deleteAnnualItem</code>) plus <code>seedDataToFirestore</code> to check the result — for all three failure reasons (<code>conflict</code>, <code>offline</code>, <code>error</code>), not just conflict.</p>
+  <p>Today every call site does <code>saveRolesData(_rolesData).then(() => { render...; })</code> and never checks whether the save actually succeeded. Update all 11 call sites (<code>saveRole</code>, <code>confirmDeleteRole</code>, <code>backfillMissingSections</code>, <code>addInlineTask</code>, <code>deleteInlineTask</code>, <code>setTaskDay</code>, <code>saveEntry</code>, <code>deleteEntry</code>, <code>savePrompts</code>, <code>addAnnualItem</code>, <code>deleteAnnualItem</code>) plus <code>seedDataToFirestore</code> to check the result — for all three failure reasons (<code>conflict</code>, <code>offline</code>, <code>error</code>), not just conflict. <code>seedDataToFirestore()</code> currently returns its own <code>{ success, message }</code> shape (predating this fix) — reconcile it to the same <code>{ success, reason }</code> contract as the other 10 sites rather than leaving it as a one-off.</p>
 
   <div class="bdd">Given: A builder clicks "Save" on an entry and the save comes back { success: false, reason: 'conflict' }
 When: The failure is handled
@@ -94,6 +107,12 @@ When: The failure is handled
 Then: An alert clearly states the save did NOT go through and why (offline / connection error)
   AND the modal stays open with their content intact so nothing is lost
   AND this never again looks identical to a successful save
+
+Given: backfillMissingSections() runs automatically on every app load (no modal, no user action triggered it) and hits a conflict
+When: The failure is handled
+Then: There is NO user-facing alert — nothing was actively being entered, so there's nothing to warn about losing
+  AND the app simply re-reads the current rolesData (already fresh via the realtime listener) and re-runs the backfill check against it on the next load or next listener update
+  AND this is a distinct case from the other 10 sites — it must not pop an alert a user never asked to see
 
 Given: Christie clicks Settings → "Push current roles data to Firestore"
 When: Another session has written since Christie's copy was loaded
@@ -111,8 +130,10 @@ Then: The same conflict check fires (seedDataToFirestore routes through the same
   <ul>
     <li>Two sequential writes with the same starting version: second one is rejected, first one's data survives unchanged.</li>
     <li>A single writer with the correct version: write succeeds, version increments by 1.</li>
+    <li><strong>Same session, two saves in a row:</strong> after a successful save, the caller's in-memory <code>_version</code> is updated from the returned value (not the suppressed listener echo) and a second immediate save succeeds — regression test for the self-conflict gap found in review.</li>
     <li>Existing Playwright suite (<code>e2e/admin.spec.js</code>, <code>e2e/smoke.spec.js</code>) — confirmed neither currently exercises concurrent-session saves; this is a real coverage gap being closed, not a regression risk in existing tests.</li>
     <li>A write that throws inside the transaction (simulate by temporarily denying access mid-test): <code>saveRolesData()</code> must resolve <code>{ success: false, reason: 'error' }</code>, never a bare resolved promise with no signal.</li>
+    <li><strong>Rules test (studio-hub's suite, currently zero coverage for <code>playbooks</code>):</strong> a write to <code>playbooks/rolesData</code> with a non-incremented (or missing/stale) <code>_version</code> is rejected by the rule; a write with the correct incremented version, from a manager or appAccess('playbook') user, succeeds. Must stay 29/29 (existing) + new test green before deploying rules.</li>
   </ul>
 </div>
 
@@ -129,6 +150,7 @@ Then: The same conflict check fires (seedDataToFirestore routes through the same
   <li><strong>Aug 2:</strong> On conflict, reject and ask the user to retry rather than attempt an automatic merge. Rationale: every write in this app is a small, single-field-ish action — retrying costs the user one click, not a form's worth of re-entry.</li>
   <li><strong>Aug 2:</strong> <code>playbooks</code> added to the automated backup script (<code>~/tinker-backups/backup.js</code>) as a prerequisite, independent of this plan — it was previously the only collection missing from backups, so there was no way to recover the lost content even after the fact.</li>
   <li><strong>Aug 3:</strong> Christie confirmed Anika's missing content was entries inside the existing Executive Assistant role (not a new role). Live backup data pulled the same day showed the Owns → "Payment Plans" entry's <code>updatedAt</code> exactly matches the document's top-level <code>lastUpdated</code> — the last write to the whole doc was a save of that one entry, with no trace of whatever else was added. This surfaced the swallowed-error bug in <code>saveRolesData()</code> as an equally plausible cause alongside the overwrite race, so Phase 1/2 scope was widened to cover both — see Root Cause section.</li>
+  <li><strong>Aug 3 — second-model-review:</strong> An independent Claude Code review of this plan (against the actual code) found two real gaps, both incorporated: (1) the plan didn't specify how a session learns its own new version after saving, and the natural-seeming approach (via the realtime listener) is exactly what <code>_skipNextSnapshot</code> suppresses for a session's own writes — would have caused a session's second save in a row to falsely conflict with itself. Fixed by having <code>saveRolesData()</code> return the new version directly. (2) The original "no rules change needed" call was reversed — it was true for authorization but not for data-integrity during a mixed-version rollout, where a stale browser tab running pre-fix code has no client-side guard at all. Added a Firestore rule enforcing the version-increment as a server-side backstop. Also added: a no-alert silent-retry path for <code>backfillMissingSections</code> (a background save, not a user action) and reconciling <code>seedDataToFirestore</code>'s pre-existing <code>{success, message}</code> return shape to match the other 10 call sites.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
