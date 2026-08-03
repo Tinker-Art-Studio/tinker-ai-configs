@@ -30,30 +30,34 @@
 <div class="meta" id="plan-meta">
   <strong>Goal:</strong> Stop the Tinker Playbook app from silently overwriting other people's changes when two sessions edit the playbook data at different times.<br>
   <strong>App:</strong> tinker-playbook — <code>~/tinker-playbook/js/firebase-data.js</code>, <code>js/app.js</code><br>
-  <strong>Incident:</strong> Anika (manager) added content to a role's playbook; two days later it was gone. No Firestore rules change and no app deploy occurred in that window, ruling out the two usual causes. Root cause traced to the write pattern below.<br>
-  <strong>Risk:</strong> Medium — touches the single write path used by every edit action in the app (11 call sites), but the fix itself is additive (a guard before an existing write), not a schema change.<br>
+  <strong>Incident:</strong> Anika (manager, admin-mode) added entries to the Executive Assistant role's playbook; two days later they were gone. No Firestore rules change and no app deploy occurred in that window, ruling out the two usual causes. Root cause traced to two compounding bugs in the write path below.<br>
+  <strong>Risk:</strong> Medium — touches the single write path used by every edit action in the app (11 call sites), but the fix itself is additive (a guard + error surfacing before an existing write), not a schema change.<br>
   <span class="status-tag not-ready">execution-ready: false</span> — pending review
 </div>
 
 <h2 id="root-cause">Root Cause</h2>
 <div class="phase">
-  <p>All playbook content — every role, section, and entry — lives in one Firestore document: <code>playbooks/rolesData</code>. The whole document is loaded into a single in-memory object (<code>_rolesData</code>) once per browser session. Every edit action (add/edit/delete a role, add/edit/delete an entry, add/delete an annual item, edit prompts, the Settings → "push current roles data to Firestore" button) mutates that in-memory object and then calls <code>saveRolesData(_rolesData)</code>, which does a full-document <code>.set(data)</code> — <strong>the entire document is replaced with whatever is currently in memory.</strong></p>
-  <p>A realtime <code>onSnapshot</code> listener is supposed to keep every open session's in-memory copy current. But there is no check, anywhere, that a session's copy is actually still current before it writes. If any session's copy goes stale — a tab left open across days, a dropped/errored listener, or simply two people editing around the same time — the next save from that session silently reverts everyone else's changes since that session's last sync. Nothing errors, nothing warns the user, and nothing in Firestore records that it happened.</p>
-  <div class="danger">The Settings → "Push current roles data to Firestore" button (<code>seedDataToFirestore</code>, wired to <code>settings-seed-btn</code>) is the sharpest version of this risk: it's a deliberate, one-click, unconditional full overwrite of live data, gated only by a generic <code>confirm()</code> dialog with no indication of what it will clobber.</div>
+  <p>All playbook content — every role, section, and entry — lives in one Firestore document: <code>playbooks/rolesData</code>. The whole document is loaded into a single in-memory object (<code>_rolesData</code>) once per browser session. Every edit action (add/edit/delete a role, add/edit/delete an entry, add/delete an annual item, edit prompts, the Settings → "push current roles data to Firestore" button) mutates that in-memory object <em>synchronously, before any network call</em>, and then calls <code>saveRolesData(_rolesData)</code>, which does a full-document <code>.set(data)</code> — <strong>the entire document is replaced with whatever is currently in memory.</strong> Two independent bugs make this dangerous:</p>
+  <p><strong>Bug 1 — no freshness check.</strong> A realtime <code>onSnapshot</code> listener is supposed to keep every open session's in-memory copy current, but nothing ever checks that a session's copy is actually still current before it writes. If any session's copy goes stale — a tab left open across days, a dropped/errored listener, or simply two people editing around the same time — the next save from that session silently reverts everyone else's changes since that session's last sync.</p>
+  <p><strong>Bug 2 — write failures are swallowed.</strong> <code>saveRolesData()</code> wraps the actual <code>.set()</code> call in a try/catch that only does <code>console.error</code> on failure — it never rethrows or returns a failure signal. Every one of the 11 call sites does <code>saveRolesData(_rolesData).then(() => render...)</code>, and that <code>.then()</code> fires unconditionally. Because the in-memory mutation already happened before the save call, the new content renders on screen immediately regardless of whether the network write actually succeeded. A transient network blip or permission hiccup during the write would show the user a normal, error-free "save" that was never persisted — no overwrite required at all for the data to vanish later.</p>
+  <div class="note"><strong>Live-data evidence (pulled from an Aug 3 backup):</strong> Only 2 roles currently exist in <code>rolesData</code> — Executive Assistant (Alexis) and the Playwright test role — and no role belongs to Anika. Within Executive Assistant → Owns, the "Payment Plans" entry shows <code>createdAt: 2026-07-21T20:53:46Z</code>, <code>updatedAt: 2026-07-22T20:00:33Z</code> — and that <code>updatedAt</code> is the exact same instant as the whole document's top-level <code>lastUpdated</code>. That means the last write to the <em>entire</em> playbook document was a save of this one entry, and whatever else Anika added around that window isn't reflected in it — consistent with either bug above.</div>
+  <div class="danger">The Settings → "Push current roles data to Firestore" button (<code>seedDataToFirestore</code>, wired to <code>settings-seed-btn</code>) is the sharpest version of Bug 1: it's a deliberate, one-click, unconditional full overwrite of live data, gated only by a generic <code>confirm()</code> dialog with no indication of what it will clobber.</div>
   <p>This is the most plausible explanation for the incident: some session (Anika's own stale tab, another admin's tab, or the Settings seed button) saved from an outdated in-memory copy after her additions landed, wiping them out with no error message at all.</p>
 </div>
 
-<h2 id="phase1">Phase 1 — Optimistic-concurrency guard on the write path</h2>
+<h2 id="phase1">Phase 1 — Make saveRolesData() report the truth, and add a concurrency guard</h2>
 
 <div class="phase" id="phase-1">
   <h3>What it does</h3>
-  <p>Add a version check to the one choke point all saves already go through: <code>saveRolesData()</code> in <code>firebase-data.js</code>. Wrap the write in a Firestore transaction that reads the live document, compares its version to the version the caller last loaded, and only writes if they match. If they don't match, the write is rejected — the caller is told there's a conflict instead of the document being silently clobbered.</p>
-  <p>Add a <code>_version</code> integer field to the <code>rolesData</code> document, incremented only inside this transaction. (Not reusing <code>lastUpdated</code> for this — client clocks can skew or collide; a server-incremented counter is unambiguous.)</p>
+  <p>Two changes to the one choke point all saves already go through: <code>saveRolesData()</code> in <code>firebase-data.js</code>.</p>
+  <p><strong>1. Stop swallowing errors.</strong> Remove the catch-and-log-only behavior. Every outcome — success, conflict, offline, or a genuine write error (permission, network) — must resolve to an explicit <code>{ success, reason }</code> object that the caller actually inspects. No more "the promise resolved so it must be fine."</p>
+  <p><strong>2. Add a version check.</strong> Wrap the write in a Firestore transaction that reads the live document, compares its version to the version the caller last loaded, and only writes if they match. Add a <code>_version</code> integer field to the <code>rolesData</code> document, incremented only inside this transaction. (Not reusing <code>lastUpdated</code> for this — client clocks can skew or collide; a server-incremented counter is unambiguous.)</p>
 
   <div class="bdd">Given: Session A loaded rolesData at version 5
 When: Session A saves an edit
 Then: The transaction reads version 5 from Firestore, matches, writes version 6
   AND Session A's local copy is updated to version 6
+  AND saveRolesData() resolves with { success: true }
 
 Given: Session A and Session B both loaded rolesData at version 5
 When: Session A saves first (version 5 → 6), then Session B tries to save (still holding version 5 locally)
@@ -63,16 +67,20 @@ Then: Session B's transaction reads version 6, sees it doesn't match its expecte
 
 Given: The device is offline when a save is attempted
 Then: saveRolesData() resolves with { success: false, reason: 'offline' } (existing local-storage fallback still fires so no data is lost locally)
-  AND the transaction is never attempted against a document that can't be reached</div>
+  AND the transaction is never attempted against a document that can't be reached
 
-  <div class="safe">✅ No schema migration. No new collection. No rules change — <code>playbooks/{docId}</code> rule already covers this doc. The full-document <code>.set()</code> stays (it's a legitimate whole-object write, not a partial edit standing in for one) — the fix is gating it on a freshness check, not switching to <code>updateDoc</code>.</div>
+Given: The Firestore write itself throws for any other reason (permission hiccup, transient network error mid-write)
+Then: saveRolesData() resolves with { success: false, reason: 'error', message } — it does NOT just console.error and resolve as if nothing happened
+  AND this is the exact gap that likely explains the incident: today this path is indistinguishable from success to every caller</div>
+
+  <div class="safe">✅ No schema migration. No new collection. No rules change — <code>playbooks/{docId}</code> rule already covers this doc. The full-document <code>.set()</code> stays (it's a legitimate whole-object write, not a partial edit standing in for one) — the fix is gating it on a freshness check and reporting real outcomes, not switching to <code>updateDoc</code>.</div>
 </div>
 
-<h2 id="phase2">Phase 2 — Make every call site handle a conflict instead of ignoring the result</h2>
+<h2 id="phase2">Phase 2 — Make every call site handle a real failure instead of assuming success</h2>
 
 <div class="phase" id="phase-2">
   <h3>What it does</h3>
-  <p>Today every call site does <code>saveRolesData(_rolesData).then(() => { render...; })</code> and never checks whether the save actually succeeded. Update all 11 call sites (<code>saveRole</code>, <code>confirmDeleteRole</code>, <code>backfillMissingSections</code>, <code>addInlineTask</code>, <code>deleteInlineTask</code>, <code>setTaskDay</code>, <code>saveEntry</code>, <code>deleteEntry</code>, <code>savePrompts</code>, <code>addAnnualItem</code>, <code>deleteAnnualItem</code>) plus <code>seedDataToFirestore</code> to check the result.</p>
+  <p>Today every call site does <code>saveRolesData(_rolesData).then(() => { render...; })</code> and never checks whether the save actually succeeded. Update all 11 call sites (<code>saveRole</code>, <code>confirmDeleteRole</code>, <code>backfillMissingSections</code>, <code>addInlineTask</code>, <code>deleteInlineTask</code>, <code>setTaskDay</code>, <code>saveEntry</code>, <code>deleteEntry</code>, <code>savePrompts</code>, <code>addAnnualItem</code>, <code>deleteAnnualItem</code>) plus <code>seedDataToFirestore</code> to check the result — for all three failure reasons (<code>conflict</code>, <code>offline</code>, <code>error</code>), not just conflict.</p>
 
   <div class="bdd">Given: A builder clicks "Save" on an entry and the save comes back { success: false, reason: 'conflict' }
 When: The failure is handled
@@ -80,6 +88,12 @@ Then: An alert explains someone else updated this playbook while they were worki
   AND the app reloads the latest rolesData from Firestore (via the existing realtime listener data, already current)
   AND the modal stays open with their typed content intact so they can re-apply it and save again
   AND their edit is NOT silently lost — they're told to retry, not left thinking it saved
+
+Given: A builder clicks "Save" and the save comes back { success: false, reason: 'error' } or { reason: 'offline' }
+When: The failure is handled
+Then: An alert clearly states the save did NOT go through and why (offline / connection error)
+  AND the modal stays open with their content intact so nothing is lost
+  AND this never again looks identical to a successful save
 
 Given: Christie clicks Settings → "Push current roles data to Firestore"
 When: Another session has written since Christie's copy was loaded
@@ -98,6 +112,7 @@ Then: The same conflict check fires (seedDataToFirestore routes through the same
     <li>Two sequential writes with the same starting version: second one is rejected, first one's data survives unchanged.</li>
     <li>A single writer with the correct version: write succeeds, version increments by 1.</li>
     <li>Existing Playwright suite (<code>e2e/admin.spec.js</code>, <code>e2e/smoke.spec.js</code>) — confirmed neither currently exercises concurrent-session saves; this is a real coverage gap being closed, not a regression risk in existing tests.</li>
+    <li>A write that throws inside the transaction (simulate by temporarily denying access mid-test): <code>saveRolesData()</code> must resolve <code>{ success: false, reason: 'error' }</code>, never a bare resolved promise with no signal.</li>
   </ul>
 </div>
 
@@ -113,6 +128,7 @@ Then: The same conflict check fires (seedDataToFirestore routes through the same
   <li><strong>Aug 2:</strong> Chose a transaction + version-counter guard over a per-role document schema migration. Rationale: fixes the actual incident (silent overwrite) with much less risk and no data migration; team size doesn't currently justify the bigger change.</li>
   <li><strong>Aug 2:</strong> On conflict, reject and ask the user to retry rather than attempt an automatic merge. Rationale: every write in this app is a small, single-field-ish action — retrying costs the user one click, not a form's worth of re-entry.</li>
   <li><strong>Aug 2:</strong> <code>playbooks</code> added to the automated backup script (<code>~/tinker-backups/backup.js</code>) as a prerequisite, independent of this plan — it was previously the only collection missing from backups, so there was no way to recover the lost content even after the fact.</li>
+  <li><strong>Aug 3:</strong> Christie confirmed Anika's missing content was entries inside the existing Executive Assistant role (not a new role). Live backup data pulled the same day showed the Owns → "Payment Plans" entry's <code>updatedAt</code> exactly matches the document's top-level <code>lastUpdated</code> — the last write to the whole doc was a save of that one entry, with no trace of whatever else was added. This surfaced the swallowed-error bug in <code>saveRolesData()</code> as an equally plausible cause alongside the overwrite race, so Phase 1/2 scope was widened to cover both — see Root Cause section.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
