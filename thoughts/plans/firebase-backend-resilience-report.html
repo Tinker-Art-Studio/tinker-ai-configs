@@ -792,7 +792,7 @@ itself, and check in with me before anything beyond local tooling and repo docs.
 
   <section id="implementation-roadmap">
     <h2>11. Suggested resilience roadmap</h2>
-    <p class="muted" id="roadmap-status-note">Status as of Aug 11, 2026: ✅ Step 0 complete. ✅ <strong>Step 1 fully complete</strong> — PITR, delete protection, the daily managed backup schedule (98-day retention), the <code>tinker-hq-vault</code> project + locked bucket, Storage object versioning + a correctly-configured 90-day lifecycle rule, and the upgraded <code>backup.js</code> (including its first successful weekly vault upload) are all live and verified (see <a href="#step-1-deliverable">Step 1 Deliverable</a>). A stale-login issue (same <code>invalid_rapt</code> error as the original June outage) surfaced and was fixed along the way — native cloud backups were unaffected throughout. Next: <a href="#roadmap-step-1b">Step 1b</a> (email alerting + reducing reauth dependency) is now tracked as its own follow-up, then Step 2 (restore drills) whenever Christie wants to schedule it.</p>
+    <p class="muted" id="roadmap-status-note">Status as of Aug 11, 2026: ✅ Step 0 complete. ✅ <strong>Step 1 fully complete</strong> — PITR, delete protection, the daily managed backup schedule (98-day retention), the <code>tinker-hq-vault</code> project + locked bucket, Storage object versioning + a correctly-configured 90-day lifecycle rule, and the upgraded <code>backup.js</code> (including its first successful weekly vault upload) are all live and verified (see <a href="#step-1-deliverable">Step 1 Deliverable</a>). A stale-login issue (same <code>invalid_rapt</code> error as the original June outage) surfaced and was fixed along the way — native cloud backups were unaffected throughout. Next: <a href="#roadmap-step-1b">Step 1b</a> — set up Resend email alerting (quick). The Cloud Scheduler/Cloud Run rework (to stop relying on Christie's personal login) is explicitly parked until she asks to scope it. Then Step 2 (restore drills) whenever Christie wants to schedule it.</p>
     <div class="roadmap-step card" id="roadmap-step-0">
       <h3>✅ Step 0 — Console verification and ownership</h3>
       <ul>
@@ -830,11 +830,24 @@ itself, and check in with me before anything beyond local tooling and repo docs.
       </ul>
     </div>
     <div class="roadmap-step card" id="roadmap-step-1b">
-      <h3>⬜ Step 1b — Operational hardening (follow-ups from Step 1, optional but recommended)</h3>
-      <ul>
-        <li><strong>Set up email alerting.</strong> <code>backup.js</code> already has a working <code>sendEmailAlert()</code> call via Resend — it's just not wired to a real API key yet, so today it silently no-ops and only the (now-fixed) local Mac desktop notification fires. Christie needs to sign up for a free Resend account and create <code>~/tinker-backups/alert-config.json</code> with <code>{ "resendApiKey": "...", "alertEmail": "Christie@tinkerartstudio.com" }</code>. No code changes needed once that file exists.</li>
-        <li><strong>Reduce dependence on Christie's personal login session.</strong> The <code>invalid_rapt</code> re-auth error has now recurred twice (14-day outage in June, 6-day gap in August) — both times because <code>backup.js</code> and the Firebase CLI ride on Christie's own Google OAuth session, which her Workspace's session-length security policy periodically invalidates regardless of what the script does. The durable fix, already scoped as a stretch goal in <code>firebase-managed-backup-baseline.md</code> Section 5c: move the scheduled run to Cloud Scheduler → Cloud Run (2nd gen), using Cloud Run's automatically-attached service identity — no downloadable key (stays inside the org policy blocking service-account key creation), and no human login session to go stale. Not started; worth prioritizing given this has now happened twice.</li>
-      </ul>
+      <h3>⬜ Step 1b — Operational hardening (follow-ups from Step 1)</h3>
+
+      <h4>1. Set up email alerting — quick, do this next</h4>
+      <p class="muted"><code>backup.js</code> already has a working <code>sendEmailAlert()</code> call via Resend — it's just not wired to a real API key yet, so today it silently no-ops and only the local Mac desktop notification fires (see open question below — that may not actually be reaching Christie). No code changes needed once the config file exists.</p>
+      <ol>
+        <li>Go to <a href="https://resend.com" target="_blank" rel="noreferrer">resend.com</a> → sign up for a free account (no credit card required on the free tier).</li>
+        <li>Verify your email if prompted.</li>
+        <li>Once logged in, go to <strong>API Keys</strong> in the left sidebar → <strong>Create API Key</strong> → name it something like "Tinker Backup Alerts" → permission: <strong>Sending access</strong> is enough, no need for full access → copy the key (starts with <code>re_</code>).</li>
+        <li>On the free plan, without verifying <code>tinkerartstudio.com</code>'s DNS in Resend, outgoing mail has to come <em>from</em> Resend's own sandbox address (<code>onboarding@resend.dev</code>) — that's already the default in the script, and mail can still be sent <em>to</em> any address including yours. Verifying your own domain (so alerts come from a tinkerartstudio.com address) is optional and can be done later — not needed for this to work.</li>
+        <li>Send the key to Claude Code (paste it in chat, or create the file yourself) so it can create <code>~/tinker-backups/alert-config.json</code>: <code>{ "resendApiKey": "re_...", "alertEmail": "Christie@tinkerartstudio.com" }</code>.</li>
+        <li>Claude Code sends a live test alert to confirm delivery.</li>
+      </ol>
+
+      <h4>2. Open question — are local desktop notifications actually reaching Christie?</h4>
+      <p class="muted">Unconfirmed as of Aug 11. The shell-quoting crash in <code>notify()</code> is fixed (it no longer throws), but Christie reported not seeing/hearing a live test notification fired from a Claude Code session. Suspected cause: macOS notification permissions for whatever process identity <code>osascript</code> runs under from a background LaunchAgent job (as opposed to an interactive Terminal session) may be disabled, or Focus/Do Not Disturb may be on. Needs Christie to check System Settings → Notifications, and a retest triggered by the actual LaunchAgent (not just an ad-hoc Claude Code command) to isolate the cause. Email alerting (above) matters more if this turns out to be unreliable.</p>
+
+      <h4>3. PARKED — do not start without Christie's explicit go-ahead: reduce dependence on her personal login session</h4>
+      <p class="muted">The <code>invalid_rapt</code> re-auth error has now recurred twice (14-day outage in June, 6-day gap in August) — both times because <code>backup.js</code> and the Firebase CLI ride on Christie's own Google OAuth session, which her Workspace's session-length security policy periodically invalidates regardless of what the script does. The durable fix, first flagged as a stretch goal in <code>firebase-managed-backup-baseline.md</code> Section 5c: move the scheduled run to Cloud Scheduler → Cloud Run (2nd gen), using Cloud Run's automatically-attached service identity — no downloadable key (stays inside the org policy blocking service-account key creation), and no human login session to go stale. <strong>Explicitly deferred at Christie's request on 2026-08-11</strong> — real scoping work, not a quick follow-up. Come back to this and fully scope it out as its own step when Christie is ready, rather than folding it in ad hoc.</p>
     </div>
     <div class="roadmap-step card" id="roadmap-step-2">
       <h3>⬜ Step 2 — Restore drills and runbooks</h3>
