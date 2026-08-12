@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Classbook Data Safety — Remaining Stages (2–5)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Classbook Data Safety — Remaining Stages (2–5)</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Close the two remaining HIGH-risk data-loss paths in Classbook's admin grid, fix the two known field-level wipe risks, add read-back verification, support intentional content clearing, add wipe detection, and backfill test coverage for all of it — so no save or admin action in this app can silently destroy real curriculum content.<br>
+  <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>js/app.js</code>, <code>js/firebase-data.js</code>, <code>e2e/data-safety.spec.js</code><br>
+  <strong>Context:</strong> Continuation of <code>/Users/christiehubley/tinker-spring-curriculum/CLASSBOOK-DATA-SAFETY-PLAN.md</code> (Stages 0, 1A, 1B, 1C already shipped — see Decisions Log). This plan covers that document's Stages 2 through 5 in full, restructured into 6 phases with BDD scenarios and a Firebase safety gate on every write-touching phase.<br>
+  <strong>Explicitly endorsed by:</strong> the Firebase Backend Resilience plan (<code>plan_QTCn4wTWpk-h</code>) lists finishing exactly these stages as one of its own action items — this plan does not compete with it; file scope never overlaps (that plan touches <code>tinker-ai-configs</code> + the <code>tinker-hq-vault</code> cloud project, never this repo's app code).<br>
+  <strong>Risk:</strong> Medium-High per phase — Phase 1 touches the admin grid's irreversible delete paths directly; the rest are additive guards, a new read path, and test-only work.<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — pending review
+</div>
+
+<h2 id="context">Context — what's already shipped vs. what remains</h2>
+<div class="phase">
+  <table>
+    <tr><th>Stage</th><th>What</th><th>Status</th></tr>
+    <tr><td>0</td><td>Playwright test infrastructure</td><td>✅ Shipped</td></tr>
+    <tr><td>1A</td><td>Load-failure banner + save guard</td><td>✅ Shipped</td></tr>
+    <tr><td>1B</td><td>Cmd+S stale-closure fix</td><td>✅ Shipped</td></tr>
+    <tr><td>1C</td><td>Photo upload-before-delete ordering</td><td>✅ Committed (73e3495), not yet deployed — fixed in 3 sites, not 2 (see Decisions Log)</td></tr>
+    <tr><td>2A</td><td>Admin grid move: verify destination before deleting source</td><td>❌ This plan, Phase 1</td></tr>
+    <tr><td>2B</td><td>Admin grid swap: targeted saves, not bulk overwrite</td><td>❌ This plan, Phase 1</td></tr>
+    <tr><td>2C</td><td>Plan Complete checkbox: don't pass full lesson object</td><td>❌ This plan, Phase 2 (Test 5 already red, proving the gap)</td></tr>
+    <tr><td>2D</td><td>Non-summer <code>saveSingleLesson</code> field stripping</td><td>❌ This plan, Phase 2</td></tr>
+    <tr><td>2E</td><td>Post-save read-back verification</td><td>❌ This plan, Phase 3</td></tr>
+    <tr><td>3</td><td>Intentional field clear support</td><td>❌ This plan, Phase 4</td></tr>
+    <tr><td>4</td><td>Detection and monitoring</td><td>❌ This plan, Phase 5</td></tr>
+    <tr><td>5</td><td>Expand test coverage for 2–4</td><td>❌ This plan, Phase 6</td></tr>
+  </table>
+</div>
+
+<h2 id="phase1">Phase 1 — Admin grid safety (Stage 2A + 2B)</h2>
+<div class="phase" id="phase-1">
+  <h3>What it does</h3>
+  <p><strong>2A (app.js, admin grid move, ~line 4578):</strong> After <code>saveSingleLesson(semKey, newDestKey, movedLesson)</code> succeeds, read back the destination doc. If the source lesson had real content but the destination read-back shows none, abort — do not delete the source. If the source had no content to begin with, proceed with the delete (not a false-positive block).</p>
+  <p><strong>2B (app.js, admin grid swap, ~line 4596):</strong> Replace the single <code>saveLessonData(semKey, lessons)</code> bulk overwrite with two targeted <code>saveSingleLesson()</code> calls, one per swapped slot.</p>
+  <div class="note">⚠️ <strong>Related finding from this session, not in the original vulnerability table:</strong> <code>saveAdminEdit()</code> (app.js, admin grid cell create/edit, ~line 4538) also ends with a full <code>saveLessonData(semKey, lessons)</code> bulk write — the exact same pattern 2B is fixing for swap, just on a different admin action. Decide during this phase whether it should also move to a targeted save, or whether editing one cell's full content genuinely needs the object it already builds in memory. Record the decision either way.</div>
+
+  <div class="bdd">Given: An admin drags a lesson with real content from Week 3 to Week 5
+When: The destination write completes and the read-back confirms matching content landed
+Then: The source lesson is deleted
+  AND if the read-back shows no content at the destination despite the source having content, the move is aborted with an alert, and the source is preserved untouched
+
+Given: The lesson being moved is an empty scaffold slot (no content fields)
+When: The move completes
+Then: The source is still deleted — this is not a false-positive block, since there was nothing to lose
+
+Given: The destination write itself throws (network error, permission)
+When: saveSingleLesson rejects
+Then: The delete of the source never executes — verify this explicitly with a test, even though it's already true by control flow today
+
+Given: An admin swaps two lessons in the grid, one with real content and one empty
+When: The swap saves
+Then: Two targeted saveSingleLesson calls run — not a full-semester saveLessonData overwrite
+  AND a canary lesson written to a third, unrelated slot before the swap is provably unchanged afterward</div>
+
+  <div class="safe">✅ Both fixes are additive verification/read-back before an existing delete, or a swap from one write shape to a narrower one. No schema change, no new collection.</div>
+</div>
+
+<h2 id="phase2">Phase 2 — Save-path field safety (Stage 2C + 2D)</h2>
+<div class="phase" id="phase-2">
+  <h3>What it does</h3>
+  <p><strong>2C (app.js, Plan Complete checkbox, lines 2003 &amp; 2449):</strong> Stop passing the full lesson object to <code>saveSingleLesson</code>. Pass only <code>{ planComplete, lastEditedBy, lastEditedAt }</code>. This requires a guard update: <code>saveSingleLesson</code>'s <code>hasContent</code> check currently blocks all-empty-content-field saves — add a bypass when the payload explicitly contains <code>planComplete</code>, so this narrower write isn't blocked by a guard meant for a different failure mode.</p>
+  <p><strong>2D (firebase-data.js, non-summer <code>saveSingleLesson</code>, lines 558–569):</strong> Apply the same content-field stripping already live on the summer path — strip empty <code>introPitch</code>/<code>processStep1–4</code>/<code>closure</code>/<code>dayOfMaterials</code> before the <code>update()</code> call.</p>
+
+  <div class="bdd">Given: A lesson has a real photoUrl, but the in-memory lesson object is stale (photoUrl blank from a failed load)
+When: An admin checks the Plan Complete checkbox
+Then: Only { planComplete: true, lastEditedBy, lastEditedAt } is written
+  AND photoUrl in Firestore is untouched regardless of the stale in-memory value
+  AND the hasContent guard does not block this write, because it explicitly recognizes a planComplete-only payload
+
+Given: A teacher saves real lesson content in the same session
+When: They separately check Plan Complete afterward (or vice versa)
+Then: Both saves land correctly — neither write shape clobbers fields the other one owns
+
+Given: A Spring/Fall (non-summer) lesson has real content in Firestore
+When: A save runs with some content fields empty in memory (stale load)
+Then: The non-summer path strips those empty fields before writing, exactly like the already-fixed summer path
+  AND existing Firestore content in untouched fields survives unchanged — this is the direct regression test for Test 1/2's logic, applied to the other save path</div>
+
+  <div class="safe">✅ 2C narrows a write's payload (strictly less data sent). 2D copies an already-shipped, already-tested stripping pattern to a second code path. Neither changes the target collection or its rules.</div>
+</div>
+
+<h2 id="phase3">Phase 3 — Post-save read-back verification (Stage 2E)</h2>
+<div class="phase" id="phase-3">
+  <h3>What it does</h3>
+  <p>After every summer-path <code>saveSingleLesson</code> write, read the doc back and confirm the content fields that were supposed to change actually landed. If any expected field reads back missing or empty, surface an error to the teacher within seconds — this is the single change that would have caught both original May 2026 wipe incidents immediately instead of days later.</p>
+
+  <div class="bdd">Given: A teacher saves real content to introPitch and processStep1
+When: The read-back runs immediately after the write
+Then: Both fields are confirmed present and non-empty in the read-back
+  AND the teacher sees the normal "✓ Saved" indicator with no extra friction
+
+Given: A write silently fails to persist a field (simulated in test by writing then externally clearing the field before read-back)
+When: The read-back detects the mismatch
+Then: The teacher sees an explicit error naming which field(s) may not have saved, within the same save flow — not a generic "saved" that's actually wrong
+
+Given: The write itself succeeded, but the read-back call fails for an unrelated reason (transient network blip immediately after)
+When: This is decided during execution
+Then: [decision needed — do not let a flaky read-back falsely alarm a teacher about a write that actually succeeded; likely resolution: one silent retry of the read-back before surfacing an error, log to console either way]</div>
+
+  <div class="note">Doubles Firestore reads on every save. Cost is trivial at this app's scale (~100 saves/day per the original plan doc) — explicitly accepted, not a concern to re-litigate during execution.</div>
+</div>
+
+<h2 id="phase4">Phase 4 — Intentional field clear support (Stage 3)</h2>
+<div class="phase" id="phase-4">
+  <h3>What it does</h3>
+  <p>The Stage 1 stripping fix protects against <em>accidental</em> overwrites but also silently blocks <em>intentional</em> clears — today, deleting all text from a field and saving does nothing; the old content reappears on reload with no explanation. Track which content fields had text when a modal opened (the non-summer modal already does this via <code>teOriginalData</code>; the summer modal needs the same tracking added). At save time, a field that was non-empty at open and is now empty is an intentional clear — use Firestore's <code>FieldValue.delete()</code> for it instead of omitting it from the payload.</p>
+
+  <div class="bdd">Given: A lesson has real content in processStep2 when the modal opens
+When: A teacher deletes all the text in processStep2 and saves
+Then: FieldValue.delete() is used for processStep2 (not silent omission)
+  AND a brief confirmation ("processStep2 cleared") appears, so the behavior is visible rather than silent
+  AND on reload, processStep2 is genuinely empty — the old content does not reappear
+
+Given: A lesson has an already-empty processStep3 when the modal opens (never filled in)
+When: A teacher saves without touching processStep3
+Then: Nothing is deleted — it was empty at open, so this is not a "clear," just an untouched empty field
+  AND existing Stage-1 stripping behavior for never-filled fields is unchanged</div>
+
+  <div class="note">Requires open-state snapshotting in the summer modal, which doesn't exist yet (non-summer modal already has it). This is the most UX-sensitive phase — get the confirmation copy right so a genuine clear reads as confirmed, not alarming.</div>
+</div>
+
+<h2 id="phase5">Phase 5 — Detection and monitoring (Stage 4)</h2>
+<div class="phase" id="phase-5">
+  <h3>What it does</h3>
+  <p><strong>4A:</strong> Admin dashboard section showing, per teacher, how many lesson docs have content today vs. yesterday's backup count — red highlight on an unexplained drop.</p>
+  <p><strong>4B:</strong> Backup health surfaced in-app. <span class="note" style="display:inline">Reconcile with what already exists: the Firebase Backend Resilience plan's Step 1 (completed Aug 11, 2026) already built managed daily cloud backups with the <code>tinker-hq-vault</code> project and email alerting — this phase should read from / link to that instead of re-inventing a local-log-only health check.</span></p>
+  <p><strong>4C:</strong> Extend <code>logTeacherEdit</code>'s existing field-change audit to record character counts (<code>{ field, before, after }</code>), flagging <code>after: 0 && before > 50</code> as a potential wipe, visible in the admin change-history view.</p>
+
+  <div class="bdd">Given: A save changes introPitch from 250 characters to 0
+When: logTeacherEdit records the change
+Then: The audit entry is flagged as a potential wipe (after:0 && before>50)
+  AND this flag is visible to admins in the existing Change History view, not a separate hidden log
+
+Given: The content-count dashboard loads
+Then: It shows each teacher's today's content count next to yesterday's backup-derived count
+  AND only an unexplained drop is red-highlighted — a drop matching a known curriculum change (e.g. a class was intentionally cut) is not falsely flagged</div>
+</div>
+
+<h2 id="phase6">Phase 6 — Expand test coverage (Stage 5)</h2>
+<div class="phase" id="phase-6">
+  <h3>What it does</h3>
+  <p>Add Playwright tests for Phases 1–5, extending <code>e2e/data-safety.spec.js</code>:</p>
+  <ul>
+    <li>Admin move aborts and preserves source when destination read-back shows no content</li>
+    <li>Admin swap writes correct content to both slots via two targeted saves; unrelated canary lesson is untouched</li>
+    <li>Plan Complete checkbox never wipes photoUrl (already exists as Test 5 — should flip from red to green here)</li>
+    <li>Non-summer save strips empty fields (mirrors Test 1/2 for the other path)</li>
+    <li>Read-back verification surfaces an error on a simulated silent write failure</li>
+    <li>Intentional field clear correctly issues FieldValue.delete() and the field reads back empty after reload</li>
+    <li>Content-count dashboard shows correct numbers for a seeded test teacher</li>
+  </ul>
+  <div class="safe">✅ Test-only phase. Run <code>npx playwright test e2e/data-safety.spec.js</code> — must be fully green before this stage, and this plan, closes.</div>
+</div>
+
+<h2 id="firebase-safety">Firebase Safety Checklist</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Rules:</strong> No new collections introduced by Phases 1–4 or 6. If Phase 5's backup-health display (4B) ends up needing a new Firestore path (rather than reading the resilience plan's existing cloud infra), add its rule in the same commit per this app's CLAUDE.md convention.</li>
+    <li><strong>updateDoc, not setDoc:</strong> All phases use <code>saveSingleLesson</code>'s existing targeted merge pattern. None introduce a full-document <code>.set()</code> — Phase 1 specifically <em>removes</em> the one remaining bulk-write path in the swap action (and possibly the admin-edit path, per the Phase 1 decision).</li>
+    <li><strong>Empty fields stripped:</strong> Phase 2's 2D is exactly this requirement, extended to the second (non-summer) save path.</li>
+    <li><strong>Snapshot before bulk ops:</strong> No bulk delete/import in this plan. Phase 1 testing against real semester data should still snapshot first per this app's standing invariant.</li>
+    <li><strong>Emulator/Playwright test before each write-touching phase ships:</strong> required by this app's own AGENTS.md and CLAUDE.md — Phases 1, 2, 3, and 4 each need a red test proving the gap before the fix, matching how Stage 1C's Test 6 was rewritten this session after it was found to never actually exercise the bug.</li>
+  </ul>
+</div>
+
+<h2 id="completeness">Completeness Check — mid-plan interruption</h2>
+<div class="phase">
+  <p>Each phase is independent and additive — none require a later phase to be functionally complete. If work stops after any phase, the app is left in a fully working, deployable state with strictly fewer known risks than before that phase started. There is no partial-phase state that leaves the app broken; a phase either ships complete (code + test + commit) or hasn't started.</p>
+</div>
+
+<h2 id="out-of-scope">Not in scope</h2>
+<ul>
+  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins").</strong> Explicitly Stage 4 in the original plan doc's own numbering but low-risk (single small team, low collision likelihood) — deferred past this plan; revisit only if reported as an actual incident.</li>
+  <li><strong>Migrating the non-summer semester's single-giant-document lesson storage to per-lesson documents</strong> (matching summer's <code>summerCamps_lessonData</code> collection shape). Would reduce blast radius further but is a real data migration outside this plan's scope — the fixes here work within the existing document shape.</li>
+</ul>
+
+<h2 id="decisions">Decisions Log</h2>
+<ul>
+  <li><strong>Aug 11, 2026:</strong> Stage 1C shipped (commit 73e3495) covering a third bug site not in the original vulnerability table: <code>saveAdminEdit()</code> had the identical upload-before-delete ordering as the two documented sites. Found and fixed during implementation, confirmed with Christie before including it in scope.</li>
+  <li><strong>Aug 11, 2026:</strong> Stage 1C's Test 6 was found to be non-functional as written — its <code>openModal()</code> helper called the wrong function (a read-only detail modal with no save button), so the test always timed out or, after a partial fix, passed regardless of code order because the save's try/catch skips the Firestore write entirely on a failed upload, meaning the Firestore field it checked could never reveal the bug either way. Rewritten to open the real edit modal and assert on whether a Storage DELETE request fires — this is now a real regression test. Flagged as a pattern to watch for in this plan's Phase 6: verify each new test actually goes red before its fix, not just that it goes green after.</li>
+  <li><strong>Aug 11, 2026:</strong> A stray <code>fall-2026</code> semester (mislabeled config copied from Spring, but with 480 real/scaffold lesson entries from a July 15 Google-Sheets import) was found and deleted from Firestore after Christie confirmed the imported data was not wanted. The Google Sheets "classbooks" import feature itself was fully removed from the app (commit 690cdb1) since it's no longer used — direct in-app lesson planning replaced it. Unrelated to this plan's scope but noted here since it happened in the same session and explains why the app's Settings panel looks different from the original May 2026 plan doc's description.</li>
+  <li><strong>Aug 11, 2026:</strong> A CSS regression (unrelated to this plan, found and fixed the same session) was hiding the entire Curriculum Admin semester bar — including the + New Semester button and Delete/Publish controls — instead of just the redundant per-tab dropdown it was meant to hide. Fixed locally, not yet deployed.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<p>No open questions blocking start beyond the Phase 1 decision on <code>saveAdminEdit()</code>'s bulk write (flagged inline, resolve during that phase). Start a session with <code>/start classbook</code>, then say "Open the Classbook Data Safety remaining-stages plan and let's work on Phase N." Execute phases in order 1→6; commit after each with tests green. This plan is a continuation of <code>CLASSBOOK-DATA-SAFETY-PLAN.md</code> — update that document's status table when each corresponding stage (2A/2B/2C/2D/2E/3/4/5) closes, same as Stage 1C was updated this session.</p>
+
+</body>
+</html>
