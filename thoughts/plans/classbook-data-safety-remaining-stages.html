@@ -35,9 +35,9 @@
   <strong>Explicitly endorsed by:</strong> the Firebase Backend Resilience plan (<code>plan_QTCn4wTWpk-h</code>) lists finishing exactly these stages as one of its own action items — this plan does not compete with it; file scope never overlaps (that plan touches <code>tinker-ai-configs</code> + the <code>tinker-hq-vault</code> cloud project, never this repo's app code).<br>
   <strong>Risk:</strong> Medium-High per phase — Phase 1 touches the admin grid's irreversible delete paths directly; the rest are additive guards, a new read path, and test-only work.<br>
   <span class="status-tag ready">execution-ready: true</span> — Phases 1–6 only. Approved by Christie via plan-reviewer comment, Aug 12, 2026. Phase 2 was redesigned after a critical second-model-review finding; the e2e test-helper prerequisite is built and committed (<code>7d108b0</code>); Phase 1's <code>saveAdminEdit()</code> decision is resolved and scoped in; a full adversarial re-review found and fixed two more concrete Phase 1 gaps (swap BDD ambiguity, swap partial-failure handling) plus a stale-reference cleanup. Phases 1–6 all shipped and deployed — see Decisions Log.<br>
-  <span class="status-tag not-ready">execution-ready: false</span> — Phases 7–8 (Vulnerability #11 Layer 1, added Aug 13, 2026). Two second-model-review passes done, both found and fixed real issues; a third editing surface (<code>saveAdminEdit()</code>) was found to have the same gap and is an open scope decision for Christie — see Phase 8's danger box and "Not in scope." Not execution-ready until that's resolved and Christie approves.<br><br>
+  <span class="status-tag not-ready">execution-ready: false</span> — Phases 7–9 (Vulnerability #11 Layer 1, added Aug 13, 2026). Two second-model-review passes done against Phases 7–8, both found and fixed real issues. Phase 9 (the admin edit popup, <code>saveAdminEdit()</code>) added at Christie's explicit request — she wants full completion, not a partial close — drafted with the same rigor but not yet independently reviewed. Not execution-ready until Phase 9 gets its own review pass and Christie approves.<br><br>
   <strong>Progress as of Aug 13, 2026:</strong> Phases 1–6 (Stages 2 through 5) shipped, tested, committed (<code>6d127c3</code>/<code>96f86d1</code>/<code>89b51e1</code>/<code>c6fdae8</code>/<code>e993634</code>/<code>a85055f</code>), and <strong>deployed to production</strong> (<code>tinker-classbook.netlify.app</code>, Aug 13, 2026). <code>e2e/data-safety.spec.js</code> has 35 passing tests. Combined with Stages 0/1A/1B/1C from the earlier markdown plan, that closed out the plan as originally scoped.<br><br>
-  <strong>Reopened same day:</strong> Christie asked what actually happens if two people edit the same lesson concurrently — this doc's own "Not in scope" had deferred Vulnerability #11 on a characterization ("same-instant race") that turned out to undersell the real mechanism. <strong>Phases 7–8</strong> below are a Layer-1 fix for that (Christie's explicit scope choice — see their Context section and Decisions Log for the full trail, including a separate registered plan that got merged back into this doc — see the last Decisions Log entry for why). Two second-model-review passes done, each catching a real issue; <strong>not yet execution-ready</strong> — a third-editor gap (<code>saveAdminEdit()</code>) was found and is a pending scope decision, not yet resolved.
+  <strong>Reopened same day:</strong> Christie asked what actually happens if two people edit the same lesson concurrently — this doc's own "Not in scope" had deferred Vulnerability #11 on a characterization ("same-instant race") that turned out to undersell the real mechanism. <strong>Phases 7–9</strong> below are a Layer-1 fix for that (Christie's explicit scope choice — see their Context section and Decisions Log for the full trail, including a separate registered plan that got merged back into this doc). Two second-model-review passes done against Phases 7–8, each catching a real issue. Phase 8's caller audit then found a third editing surface, <code>saveAdminEdit()</code>, with the identical gap — Christie's call: fold it in now as Phase 9 rather than leave it deferred, since her goal is full completion. <strong>Not yet execution-ready</strong> — Phase 9 needs its own review pass before any phase executes.
 </div>
 
 <h2 id="context">Context — what's already shipped vs. what remains</h2>
@@ -340,7 +340,7 @@ if (contentFieldsInPayload.length > 0 && !hasContent && clearedContentFields.len
   <p>This also folds away the now-redundant <code>!('planComplete' in lessonData)</code> special case from Stage 2C — a <code>planComplete</code>-only payload already has zero <code>CONTENT_FIELDS</code> keys, so the general "no content keys touched" condition covers it for free.</p>
   </div>
 
-  <div class="danger">🛑 <strong>Caller audit, corrected — an earlier draft's claim here was wrong:</strong> the summer branch of <code>saveSingleLesson</code> is reached from more than just <code>saveLesson()</code> and the Plan Complete checkboxes (<code>app.js:1988</code>, <code>2435</code>, which already send zero <code>CONTENT_FIELDS</code> keys and are unaffected either way). The admin grid's own move/swap paths (<code>app.js:4651</code>, <code>4703-4717</code>) are correctly unreachable for summer — <code>renderAdminGrid()</code> routes summer semesters to <code>renderSummerCA()</code> instead. But <strong><code>saveAdminEdit()</code> (<code>app.js:4486</code>) is reachable</strong>: <code>renderSummerCA()</code>'s own admin popup (<code>buildSummerScheduleGridHtml</code> → <code>openSummerCampPopup</code>, and <code>buildSummerByWeekHtml</code>) calls <code>showAdminEdit(...)</code> on summer lessons too, which saves via <code>saveAdminEdit()</code> → <code>saveSingleLesson(semKey, key, lessons[key])</code> with <code>semKey = 'summer-2026'</code> — a real, current caller, not a hypothetical one. <code>saveAdminEdit()</code> builds its payload fresh from DOM form fields every time with <strong>no diffing at all</strong> (no open-time snapshot to compare against, unlike <code>teOriginalData</code>/<code>summerLessonOriginalData</code>) — so an admin editing a lesson through this popup, whether summer or non-summer, can still silently overwrite a teacher's concurrent edit to an untouched field, the exact mechanism Phases 7–8 exist to close. <strong>Neither Phase 7 nor Phase 8 touches <code>saveAdminEdit()</code></strong> — see "Not in scope" below. The BDD scenario about a stale full-empty object below is real, not hypothetical, given this caller exists.</div>
+  <div class="danger">🛑 <strong>Caller audit, corrected — an earlier draft's claim here was wrong:</strong> the summer branch of <code>saveSingleLesson</code> is reached from more than just <code>saveLesson()</code> and the Plan Complete checkboxes (<code>app.js:1988</code>, <code>2435</code>, which already send zero <code>CONTENT_FIELDS</code> keys and are unaffected either way). The admin grid's own move/swap paths (<code>app.js:4651</code>, <code>4703-4717</code>) are correctly unreachable for summer — <code>renderAdminGrid()</code> routes summer semesters to <code>renderSummerCA()</code> instead. But <strong><code>saveAdminEdit()</code> (<code>app.js:4486</code>) is reachable</strong>: <code>renderSummerCA()</code>'s own admin popup (<code>buildSummerScheduleGridHtml</code> → <code>openSummerCampPopup</code>, and <code>buildSummerByWeekHtml</code>) calls <code>showAdminEdit(...)</code> on summer lessons too, which saves via <code>saveAdminEdit()</code> → <code>saveSingleLesson(semKey, key, lessons[key])</code> with <code>semKey = 'summer-2026'</code> — a real, current caller, not a hypothetical one. <code>saveAdminEdit()</code> builds its payload fresh from DOM form fields every time with <strong>no diffing at all</strong> (no open-time snapshot to compare against, unlike <code>teOriginalData</code>/<code>summerLessonOriginalData</code>) — so an admin editing a lesson through this popup, whether summer or non-summer, can still silently overwrite a teacher's concurrent edit to an untouched field, the exact mechanism Phases 7–8 exist to close. <strong>Neither Phase 7 nor Phase 8 touches <code>saveAdminEdit()</code> — Christie chose to fold it in as Phase 9 rather than defer it, see below.</strong> The BDD scenario about a stale full-empty object below is real, not hypothetical, given this caller exists.</div>
 
   <div class="bdd">Given: Two teachers/admins both open the same summer lesson, both loading processStep2="Old step 2"
 When: One edits and saves processStep2, then the other (whose local `lesson` variable is now stale, and stays stale — there is no listener to eventually correct it) edits only introPitch and saves
@@ -361,6 +361,164 @@ Then: FieldValue.delete() is still used for that field exactly as before — cle
   AND the local savedLesson still reflects the clear correctly (savedLesson intentionally keeps the full merge-for-display pattern, unaffected by the Firestore-payload split above)</div>
 </div>
 
+<h2 id="phase9">Phase 9 — Admin edit popup (saveAdminEdit): diff-only payload + intentional-clear support</h2>
+<div class="phase" id="phase-9">
+  <div class="note">⚠️ <strong>Added Aug 13, 2026 at Christie's explicit request — folded in rather than left deferred.</strong> Christie's goal is full completion, not a partial close on Vulnerability #11. This phase closes the gap Phase 8's caller audit found: <code>saveAdminEdit()</code> (<code>app.js:4486</code>), reachable for both summer and non-summer lessons via the admin's own edit popup, resends every form field on every save with no open-time snapshot to diff against at all — unlike the two teacher editors Phases 7–8 already fix. <strong>Dependency: this phase must ship after Phase 8, not before or in parallel</strong> — see the guard-interaction note below.</div>
+
+  <h3>What it does</h3>
+  <p><strong>Files:</strong> <code>js/app.js</code> — <code>showAdminEdit()</code> (<code>4464-4484</code>), <code>saveAdminEdit()</code> (<code>4486-4549</code>), <code>closeAdminModal()</code> (<code>4368-4370</code>).</p>
+
+  <p><strong>Step 1 — add an open-time snapshot, the same pattern <code>teOriginalData</code>/<code>summerLessonOriginalData</code> already use, but this modal has never had one.</strong> A new module-level <code>caEditOriginalData</code>, captured in <code>showAdminEdit()</code> when the form renders, covering exactly the 11 fields this form actually lets an admin edit (per <code>renderAdminEditForm()</code>, <code>app.js:4379-4462</code> — confirmed by reading its inputs directly: <code>projectTitle</code>, <code>shortDetails</code>, <code>inspoLink</code>, <code>introPitch</code>, <code>processStep1-4</code>, <code>closure</code>, <code>materials</code>, <code>dayOfMaterials</code>. Notably absent from this form: <code>planComplete</code> and <code>materialsList</code> aren't editable here at all — only shown read-only in the reference section — so they're not part of the snapshot or the diff):</p>
+  <pre><code>let caEditOriginalData = null; // near teOriginalData's declaration
+
+function showAdminEdit(key, teacher, className, weekNum) {
+  const semKey = getAdminSemKey();
+  const lesson = currentLessonData?.[semKey]?.[key] || null;
+  const l = lesson || {};
+
+  caEditOriginalData = {
+    projectTitle: l.projectTitle || '',
+    shortDetails: l.shortDetails || '',
+    inspoLink: l.inspoLink || '',
+    introPitch: l.introPitch || '',
+    processStep1: l.processStep1 || '',
+    processStep2: l.processStep2 || '',
+    processStep3: l.processStep3 || '',
+    processStep4: l.processStep4 || '',
+    closure: l.closure || '',
+    materials: l.materials || '',
+    dayOfMaterials: l.dayOfMaterials || '',
+  };
+
+  // ...rest of showAdminEdit unchanged
+}</code></pre>
+  <p>Also reset it to <code>null</code> in <code>closeAdminModal()</code> (Cancel or closing without saving) — good hygiene matching the other two editors' lifecycle, though <code>showAdminEdit()</code> already overwrites it fresh on every open regardless.</p>
+
+  <div class="danger">🛑 <strong>Why this can't just spread the existing lesson like the pre-Phase-8 code did — same underlying reasoning as Phase 8, re-derived for this specific function's data flow:</strong> <code>saveAdminEdit()</code>'s <code>existing</code> variable (<code>lessons[key] || {}</code>, where <code>lessons = {...currentLessonData[semKey]}</code>) IS re-read fresh from the local cache at save time, not frozen at modal-open time — on its face this looks like Phase 7's "safe because it's live-refreshed" case, not Phase 8's "frozen closure" case. But <code>currentLessonData[semKey]</code> itself is only kept fresh by a live listener for the <strong>non-summer</strong> schema (<code>curriculum/lessonData</code>'s <code>onSnapshot</code>) — <code>summerCamps_lessonData</code> has no such listener (confirmed in Phase 8's Context). So for a <strong>summer</strong> admin edit specifically, <code>existing</code> inherits the same staleness Phase 8 found in <code>lesson</code>: it reflects whatever this admin's page loaded once, with no guaranteed refresh. Since <code>saveAdminEdit()</code> is one shared function serving both schemas, applying Phase 7's "spread the fresh local copy" reasoning unconditionally would be wrong for the summer half of its callers. Apply Phase 8's split uniformly instead — never spread <code>existing</code>'s content fields into what's sent to Firestore, regardless of which schema this particular call is for. This is simpler than branching the fix by semester type inside one shared function, and correct for both.</div>
+
+  <p><strong>Step 2 — diff, and split the Firestore-bound payload from the local-display object, exactly like Phase 8:</strong></p>
+  <pre><code>async function saveAdminEdit(key, teacher, className, weekNum) {
+  const title = document.getElementById('ca-edit-title')?.value.trim();
+  if (!title) { alert('Project title is required.'); return; }
+
+  const semKey = getAdminSemKey();
+  const lessons = { ...(currentLessonData?.[semKey] || {}) };
+  const existing = lessons[key] || {};
+
+  const raw = {
+    projectTitle: title,
+    shortDetails: document.getElementById('ca-edit-details')?.value.trim() || '',
+    inspoLink: document.getElementById('ca-edit-inspo')?.value.trim() || '',
+    introPitch: document.getElementById('ca-edit-intro')?.value.trim() || '',
+    processStep1: document.getElementById('ca-edit-step1')?.value.trim() || '',
+    processStep2: document.getElementById('ca-edit-step2')?.value.trim() || '',
+    processStep3: document.getElementById('ca-edit-step3')?.value.trim() || '',
+    processStep4: document.getElementById('ca-edit-step4')?.value.trim() || '',
+    closure: document.getElementById('ca-edit-closure')?.value.trim() || '',
+    materials: document.getElementById('ca-edit-materials')?.value.trim() || '',
+    dayOfMaterials: document.getElementById('ca-edit-dayof')?.value.trim() || '',
+  };
+
+  const baseline = caEditOriginalData || {};
+  const changedFields = Object.keys(raw).filter(f => raw[f] !== (baseline[f] || ''));
+  const fieldsToClear = Object.keys(raw).filter(f =>
+    (baseline[f] || '').trim() !== '' && raw[f] === ''
+  );
+  const changedData = {};
+  changedFields.forEach(f => { changedData[f] = raw[f]; });
+
+  // Handle photo upload/removal — bare locals, same ordering fix as Phase 8,
+  // so the async upload always resolves before either payload is built.
+  const photoInput = document.getElementById('ca-edit-photo-input');
+  let photoUrl = null, photoPath = null;
+  if (photoInput?.files?.length > 0) {
+    const file = photoInput.files[0];
+    if (file.size > 5 * 1024 * 1024) { alert('Photo must be under 5MB.'); return; }
+    const result = await uploadLessonPhoto(semKey, key, file);
+    if (existing.photoPath) await deleteLessonPhoto(existing.photoPath);
+    photoUrl = result.url;
+    photoPath = result.path;
+  } else if (photoInput?.dataset?.pendingRemove === 'true' && existing.photoUrl) {
+    if (existing.photoPath) await deleteLessonPhoto(existing.photoPath);
+    photoUrl = '';
+    photoPath = '';
+  }
+
+  // Firestore-bound payload — never spreads existing's content fields (see the
+  // danger box above). teacher/className/weekNum/weekDate/classSize are
+  // identity/scheduling fields with no editable input in this form at all —
+  // always resent from `existing`, same as today; nothing else in this
+  // codebase concurrently modifies them, so this is a deliberate, narrow
+  // exception to "never resend a stale field," not an oversight.
+  const firestorePayload = {
+    teacher, className, weekNum,
+    weekDate: existing.weekDate || '',
+    classSize: existing.classSize || 0,
+    ...changedData,
+    lastImported: new Date().toISOString(),
+  };
+  if (photoUrl !== null) {
+    firestorePayload.photoUrl = photoUrl;
+    firestorePayload.photoPath = photoPath;
+  }
+  await saveSingleLesson(semKey, key, firestorePayload, fieldsToClear);
+
+  // Local display/cache only — safe to keep the full merge, same reasoning as
+  // Phase 8: never sent to Firestore, so staleness here is cosmetic.
+  lessons[key] = {
+    ...existing,
+    teacher, className, weekNum,
+    weekDate: existing.weekDate || '',
+    classSize: existing.classSize || 0,
+    ...changedData,
+    lastImported: firestorePayload.lastImported,
+  };
+  if (photoUrl !== null) { lessons[key].photoUrl = photoUrl; lessons[key].photoPath = photoPath; }
+  fieldsToClear.forEach(f => { lessons[key][f] = ''; });
+  currentLessonData[semKey] = lessons;
+
+  caEditOriginalData = null;
+  closeAdminModal();
+  renderAdminGrid();
+  renderChangeHistory();
+
+  try {
+    await appendChangeLogEntry(semKey, {
+      action: existing.projectTitle ? 'edit' : 'create',
+      details: { projectTitle: title, teacher, className, weekNum }
+    });
+    renderChangeHistory();
+  } catch (e) { console.warn('Could not write change log entry:', e); }
+}</code></pre>
+
+  <div class="note">⚠️ <strong>Included, scoped deliberately — a second, related gap found in the same function while designing this fix, not silently added:</strong> <code>saveAdminEdit()</code> never passed a <code>fieldsToClear</code> argument to <code>saveSingleLesson</code> at all — meaning an admin who intentionally deletes all text from a field and saves has that clear silently discarded today (the stripping logic drops the empty field from the payload; Firestore's old content stays untouched, so it reappears on reload with no explanation). This is Stage 3 (Phase 4) never having been extended to this third editor. Since this phase already builds the exact open-time-snapshot-vs-current-value diff needed to detect a clear — the same diff needed for the core concurrent-edit fix — closing this adjacent gap costs nothing extra and leaves the app in a more consistent state across all three editors. Included above (<code>fieldsToClear</code> computed and passed through). Flagged explicitly here in case Christie would rather this be split into its own phase.</div>
+
+  <div class="note">⚠️ <strong>Guard interaction — this is why Phase 9 must ship after Phase 8, not before:</strong> an admin editing only <code>projectTitle</code> (touching no <code>CONTENT_FIELDS</code> member) on a summer lesson produces a <code>firestorePayload</code> with zero content-field keys, same shape as Phase 8's photo-only scenario. Without Phase 8's guard rewrite already live, <code>saveSingleLesson</code>'s summer-branch guard would incorrectly block this save. With Phase 8 shipped first, it's already handled — Phase 9 doesn't need its own guard change, only Phase 8's to already be in place.</div>
+
+  <div class="safe">✅ <strong>Not extended to this phase, deliberately — a different feature, not part of Vulnerability #11:</strong> Phase 5's audit-trail wipe-flagging (<code>logTeacherEdit</code>/<code>getTeChangedFields</code>, <code>{field, before, after, potentialWipe}</code>) doesn't apply to admin edits — <code>saveAdminEdit()</code> calls <code>appendChangeLogEntry</code> directly with a plain <code>{action, details}</code> object, not <code>logTeacherEdit</code>. Extending Phase 5's wipe-detection to admin edits would be a reasonable future enhancement but is a detection/audit feature, not a concurrent-edit-safety fix — out of scope here, not silently bundled in.</div>
+
+  <div class="bdd">Given: Teacher A and Admin B both have the same summer lesson open — A in the teacher edit modal, B in the admin popup — both loading processStep3="Old step 3"
+When: A edits and saves processStep3 to "New step 3", then B (whose admin popup shows the same stale load, since summerCamps_lessonData has no live listener) edits only the project title and saves
+Then: Firestore's processStep3 remains "New step 3" — B's stale, untouched copy is never sent, because the Firestore-bound payload never includes existing's content fields to begin with
+  AND B's title edit lands correctly
+
+Given: The same scenario on a non-summer lesson
+When: B's admin popup save fires after A's edit
+Then: The outcome is the same — processStep3 survives — this time because saveAdminEdit's Firestore payload never spreads existing's content fields regardless of schema, not because of any listener-freshness argument
+
+Given: An admin deletes all text from a field that had real content when the popup opened, and saves
+When: saveAdminEdit runs
+Then: FieldValue.delete() is used for that field (via fieldsToClear) — it does not silently reappear on reload
+
+Given: An admin edits only the project title on a summer lesson that already has real content in other fields (Phase 8 already shipped)
+When: They save
+Then: The save is not blocked by the hasContent guard — zero content keys in the payload, exactly the case Phase 8's guard rewrite handles
+
+Given: An admin creates a brand-new lesson in an empty grid slot (no existing lesson data, caEditOriginalData captured as all-empty)
+When: They fill in some fields and save
+Then: Every field they typed is treated as "changed" against the empty baseline and saved correctly — the diff logic requires no special-casing for creation vs. edit</div>
+</div>
+
 <h2 id="firebase-safety">Firebase Safety Checklist</h2>
 <div class="phase">
   <ul>
@@ -374,6 +532,7 @@ Then: FieldValue.delete() is still used for that field exactly as before — cle
       <ul>
         <li><strong>Phase 7 (non-summer):</strong> a real-Firestore-write-then-save design has a genuine timing race, because Phase 7's safety depends on the live <code>currentLessonData</code> listener having delivered the concurrent write before the second save fires. Mirror the existing, already-proven pattern instead: <code>e2e/data-safety.spec.js</code>'s Test 7 (Stage 1B) simulates "the concurrent state already landed" by directly mutating <code>currentLessonData</code> in the page context via <code>page.evaluate()</code>, deterministically, no timing dependency.</li>
         <li><strong>Phase 8 (summer):</strong> the corrected design has no listener to race against at all — the Firestore-bound payload never includes <code>lesson</code>'s fields regardless of timing — so a real-Firestore-write test design is fine and simpler here: write an initial value via the test helpers, open the modal (establishing that as the page's stale baseline), overwrite the same field in Firestore again via the test helpers (simulating a concurrent save), edit a <em>different</em> field via the real UI and save, then read back and confirm the field changed via the test helper still holds its value.</li>
+        <li><strong>Phase 9 (admin popup):</strong> same reasoning as Phase 8 applies to both schemas here — <code>saveAdminEdit()</code>'s Firestore payload never spreads <code>existing</code>'s content fields regardless of timing, so the real-Firestore-write design works for both the summer and non-summer variant of this test, no listener-timing dependency either way. Use <code>showAdminEdit(key, ...)</code>/<code>saveAdminEdit(key, ...)</code> directly via <code>page.evaluate()</code> rather than clicking through the grid, matching how existing admin-grid tests already drive these functions.</li>
       </ul>
     </li>
   </ul>
@@ -383,17 +542,17 @@ Then: FieldValue.delete() is still used for that field exactly as before — cle
 <div class="phase">
   <p>Each phase is independent and additive — none require a later phase to be functionally complete. If work stops after any phase, the app is left in a fully working, deployable state with strictly fewer known risks than before that phase started. There is no partial-phase state that leaves the app broken; a phase either ships complete (code + test + commit) or hasn't started.</p>
   <p>Phase 7 (non-summer) is fully independent and self-contained — it can ship, be tested, and deploy on its own with no guard interaction at all. Phase 8 (summer) depends on nothing from Phase 7 either, but its three parts — the diff, the Firestore-payload/local-cache split, and the guard fix — must ship together in the same commit: the diff alone (without the payload split) is a no-op, per the second-model-review finding that drove this phase's redesign; the payload split without the guard fix would incorrectly block legitimate photo-only saves. If work stops after Phase 7 only, the app is left fully working with the non-summer editor's concurrent-edit gap closed and the summer editor's gap still open exactly as it is today — not worse.</p>
+  <p><strong>Phase 9 is the one genuine ordering dependency in this set — it must ship after Phase 8, not before or standalone.</strong> Phase 9's payload for a title-only (or otherwise content-field-free) summer admin edit relies on Phase 8's guard rewrite already being live; shipping Phase 9 first (or alone) would incorrectly block that class of save on summer lessons. Phase 9's own three parts (snapshot capture, diff + payload split, fieldsToClear support) ship together in one commit for the same reason Phase 8's do — the snapshot alone accomplishes nothing until the payload actually uses it. If work stops after Phase 7+8 but before Phase 9, the app is fully working with two of three editing surfaces closed and the admin popup's gap documented and open — not worse than today, and not silently unaddressed either, since Phase 9 exists in this doc as known, scoped, pending work.</p>
 </div>
 
 <h2 id="out-of-scope">Not in scope</h2>
 <ul>
-  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins") — reopened, see Phases 7–8 above.</strong> This item was originally deferred here as low-risk on a "same-instant race" characterization. Reinvestigated Aug 13, 2026 after Christie asked directly what happens on a real concurrent edit — the actual mechanism was broader than that characterization (see the Context section above Phase 7). Phases 7–8 close it for the two teacher-facing editors (Layer 1, Christie's explicit scope choice). What remains genuinely deferred after Phases 7–8:
+  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins") — reopened, see Phases 7–9 above.</strong> This item was originally deferred here as low-risk on a "same-instant race" characterization. Reinvestigated Aug 13, 2026 after Christie asked directly what happens on a real concurrent edit — the actual mechanism was broader than that characterization (see the Context section above Phase 7). Phases 7–9 close it for all three editing surfaces (both teacher-facing editors, and the admin edit popup — Christie explicitly chose to fold the admin popup in as Phase 9 rather than leave it deferred). What remains genuinely deferred after Phases 7–9:
     <ul>
       <li><strong>Layer 2 — optimistic same-field collision detection.</strong> The narrower residual case: two people editing the <em>literal same field</em> at the <em>literal same moment</em>, where whoever saves last still silently wins for that one field. Closing it needs reading each field's current server value before writing and warning the user if it's changed since their form loaded — its own UX design, plus a Firestore read per save. Deferred, not abandoned — revisit if reported as an actual incident.</li>
-      <li><strong><code>saveAdminEdit()</code> — found by the second-model review, genuinely open, not fixed by Phases 7–8.</strong> The admin's own edit popup (reachable for both summer and non-summer lessons) has the identical vulnerability Phases 7–8 exist to close — it resends every form field on every save, with no open-time snapshot to diff against at all, unlike the two teacher editors those phases fix. Closing it needs its own snapshot-and-diff mechanism added to a third modal (<code>showAdminEdit</code>/<code>saveAdminEdit</code>), which is real, separate work — deliberately not folded into Phase 7 or 8 without Christie's explicit go-ahead on the added scope. <strong>This means Vulnerability #11 is closed only for the two teacher-facing editors, not for admin-initiated edits</strong> — an open scope decision, not an oversight.</li>
     </ul>
   </li>
-  <li><strong>The non-summer branch's missing "block if all-empty" guard</strong> (see the Context section above Phase 7). Pre-existing, unrelated to concurrent-edit safety, not touched by Phase 7 or 8.</li>
+  <li><strong>The non-summer branch's missing "block if all-empty" guard</strong> (see the Context section above Phase 7). Pre-existing, unrelated to concurrent-edit safety, not touched by Phase 7, 8, or 9.</li>
   <li><strong>Migrating the non-summer semester's single-giant-document lesson storage to per-lesson documents</strong> (matching summer's <code>summerCamps_lessonData</code> collection shape). Would reduce blast radius further but is a real data migration outside this plan's scope — the fixes here work within the existing document shape.</li>
 </ul>
 
@@ -425,11 +584,12 @@ Then: FieldValue.delete() is still used for that field exactly as before — cle
   <li><strong>Aug 13, 2026 (same day):</strong> Christie asked directly what happens today if two people edit the same lesson concurrently, questioning the Vuln #11 deferral above. Investigated both save paths directly against current code (not against the prior characterization) and found the actual mechanism is broader than "same-instant race": any two overlapping edit sessions on the same lesson can clobber each other's field edits, because both editors resend every non-empty form field on every save, not just touched ones. Presented this with the concrete two-person scenario and an honest accounting of why it wasn't caught (an early "out of scope" resolution meant no later review was ever pointed back at it — see the Context section above Phase 7). Offered two fix options — Layer 1 (diff-only payload) alone, or Layer 1 + Layer 2 (same-field collision detection). Christie chose Layer 1. She then asked why this gap survived multiple second-model reviews and said she was leaning toward scoping it as its own reviewed plan rather than executing ad hoc — agreed, and drafted it as a <strong>separate</strong> registered plan (<code>classbook-concurrent-edit-safety.html</code>, <code>plan_3Xabg_ZU2A_u</code>) rather than reopening this one, reasoning that this doc's title and "PLAN COMPLETE" framing made reopening it feel stylistically wrong. That reasoning turned out to be a mistake — see two entries down.</li>
   <li><strong>Aug 13, 2026 (same day):</strong> Two second-model-review passes run against the separate plan, each catching a real issue. First pass: Phase 2 (now Phase 8 here)'s original draft computed a correct content-field diff but then re-spread the stale <code>lesson</code> closure variable underneath it in the actual Firestore write, discarding the diff entirely — the phase's own headline BDD scenario would have failed if tested as written. Also found Phase 1 (now Phase 7)'s stated safety rationale was correct in outcome but wrong in stated reason (the real mechanism is Stage 1B's live <code>currentLessonData</code> re-read, not "DOM and originalLesson are identical," which is false during a real concurrent edit). Redesigned Phase 8 to split the Firestore-bound payload from the local-display object, rather than adding a listener/freshness fix. Second pass (validating the redesign): found a real ordering bug in the corrected Phase 8 snippet that would have silently dropped photo saves as literally shown, and found the caller-audit claim "no real caller sends a stale full object to the summer branch" was wrong — <code>saveAdminEdit()</code> does exactly that today, with no diffing of its own. Both fixed; <code>saveAdminEdit()</code> added as an explicit, documented "Not in scope" item and the plan's stated Goal narrowed to match reality rather than overclaiming. See the danger/note boxes in Phase 8 above for the full detail preserved from that plan.</li>
   <li><strong>Aug 13, 2026 (same day):</strong> Christie flagged that having two separate plan-reviewer entries for what is, from her perspective, one ongoing project was cumbersome — she now had two places to check instead of one. Agreed this was the wrong call: archived the separate plan (<code>plan_3Xabg_ZU2A_u</code>, via the plan-reviewer's archive API) and merged its full content back into this doc as Phases 7–8, preserving every review finding, danger/note box, and BDD scenario verbatim (only renumbering Phase 1→7, Phase 2→8, and updating internal cross-references). Deleted the standalone <code>classbook-concurrent-edit-safety.html</code> file from the repo. Lesson for future plans in this project: prefer reopening/extending an existing plan doc for closely-related follow-on work, even one marked complete, over registering a new one — a "complete" doc can still grow a new phase; the cost of one doc temporarily saying both "complete" and "phase 7 pending" is much lower than the cost of the reviewer index fragmenting into multiple entries per project.</li>
+  <li><strong>Aug 13, 2026 (same day):</strong> Christie chose to fold <code>saveAdminEdit()</code> in as Phase 9 now, rather than leave it deferred — "my goal is to have this thing all complete by the end of this so I don't see any point in deferring." Designed with the same rigor as Phases 7–8: added <code>caEditOriginalData</code> as a new open-time snapshot (this modal never had one, unlike the two teacher editors), traced why <code>existing</code>'s apparent freshness (re-read from <code>currentLessonData</code> at save time, unlike the frozen <code>lesson</code> that caused Phase 8's original bug) doesn't actually make it safe to spread into the Firestore payload for the summer schema specifically, since <code>currentLessonData['summer-2026']</code> itself has no live listener — applied Phase 8's payload/cache split uniformly to both schemas rather than branching the fix by semester type inside one shared function. Also closed an adjacent gap found while designing this: <code>saveAdminEdit()</code> never had Stage 3 (Phase 4) intentional-clear support at all — since the exact snapshot needed for the concurrent-edit diff is also exactly what clear-detection needs, included <code>fieldsToClear</code> support in the same phase rather than opening a fourth gap right next to the one being closed, flagged explicitly in Phase 9's own text in case Christie would rather it be split out. Documented one real ordering dependency: Phase 9 must ship after Phase 8, since a content-field-free summer admin save needs Phase 8's guard rewrite already live to not be incorrectly blocked. Phase 9 not yet independently reviewed — see Resume Instructions.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
 <div class="phase">
-  <p><strong>Status: Phases 1–6 (Stages 2–5) complete, deployed. Phases 7–8 (Vulnerability #11 Layer 1) drafted and twice-reviewed, not yet execution-ready.</strong> Open item before Phase 7 can start: Christie needs to decide whether <code>saveAdminEdit()</code>'s identical gap (see "Not in scope") gets folded in as a Phase 9 now, or stays explicitly deferred. Once that's resolved and Christie approves (flip the relevant <code>execution-ready</code> tag near the top of this doc), execute Phase 7 then Phase 8 in order — Phase 8 must ship its diff, payload/cache split, and guard fix together in one commit, per its Completeness Check note above. Write the red test first for each phase's BDD scenarios (see the Firebase Safety Checklist's Phase 7/8-specific test-design guidance — the two phases need different techniques), commit after each phase with tests green, and do not deploy to Netlify without Christie's explicit "okay to deploy."</p>
+  <p><strong>Status: Phases 1–6 (Stages 2–5) complete, deployed. Phases 7–9 (Vulnerability #11 Layer 1, all three editing surfaces) drafted; Phases 7–8 twice-reviewed, Phase 9 not yet independently reviewed.</strong> Christie chose to fold <code>saveAdminEdit()</code> in as Phase 9 rather than leave it deferred — her goal is full completion. <strong>Next step: run a second-model-review on Phase 9</strong> specifically (it was designed with the same rigor as Phases 7–8 and pre-emptively documents its own reasoning for the payload/cache split and the Phase 8 dependency, but hasn't had independent verification the way Phases 7–8 did — both of those needed real fixes after review, so don't skip this). Once Phase 9 passes review and Christie approves (flip the relevant <code>execution-ready</code> tag near the top of this doc), execute in order: Phase 7, then Phase 8 (its three parts ship together — see Completeness Check), then Phase 9 (must ship after Phase 8, not before — see Completeness Check). Write the red test first for each phase's BDD scenarios (see the Firebase Safety Checklist's Phase 7/8/9-specific test-design guidance — each needs a different technique), commit after each phase with tests green, and do not deploy to Netlify without Christie's explicit "okay to deploy."</p>
 
   <p><strong>Final state of the codebase, for reference by any future work in this app</strong> (not a to-do list — everything below is already shipped and deployed):</p>
   <ul>
