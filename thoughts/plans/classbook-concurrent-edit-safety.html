@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Classbook Concurrent-Edit Safety — Vulnerability #11 (Layer 1)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #dcfce7; color: #166534; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Classbook Concurrent-Edit Safety — Vulnerability #11 (Layer 1)</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> When two people have the same lesson open at once, saving your own edits never silently reverts someone else's concurrent edits to a different field.<br>
+  <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>js/app.js</code> (<code>saveTeacherEdit</code>, <code>saveLesson</code>), <code>js/firebase-data.js</code> (<code>saveSingleLesson</code>), <code>e2e/data-safety.spec.js</code><br>
+  <strong>Context:</strong> The Classbook Data Safety Plan (<code>CLASSBOOK-DATA-SAFETY-PLAN.md</code>) and its execution plan (<code>classbook-data-safety-remaining-stages.html</code>, <code>plan_jrhp-GpcSGph</code>) are both complete and deployed as of Aug 13, 2026. That plan's "Not in scope" section deferred Vulnerability #11 ("last write wins" on concurrent sessions) as low-risk, on the strength of a plan-reviewer comment resolution that characterized it narrowly as "the same-lesson-same-instant race" and concluded Christie's actual May 2026 incident was a different, already-fixed bug (the stale-load bulk-overwrite case). Both of those specific claims are true. What they missed: there's a third, broader mechanism neither the original vulnerability table nor that resolution named — see Context below. This plan exists because Christie asked directly what happens today if two people edit the same lesson concurrently, and the honest investigation surfaced this gap.<br>
+  <strong>Scope decision:</strong> Christie chose <strong>Layer 1 only</strong> — stop resending untouched fields on every save. Layer 2 (detecting and warning on a true same-field collision) is explicitly deferred; see Not in Scope.<br>
+  <strong>Risk:</strong> Medium — touches the core save payload construction for both lesson editors, the exact surface the whole prior plan was built to make safer. Both phases are additive/narrowing (send less, not more) and every existing safety mechanism (stripping, read-back verification, intentional-clear support) is left in place underneath.<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — awaiting review. Christie asked for a second-model-review before any execution starts, matching how every phase of the prior plan was handled.
+</div>
+
+<h2 id="context">Context — the mechanism that was missed, and why</h2>
+<div class="phase">
+  <p>Both lesson editors (<code>saveTeacherEdit()</code> for non-summer, <code>saveLesson()</code> for summer camp) build their Firestore write payload from <strong>every currently non-empty field in the open form</strong>, not just the field(s) the user actually typed into this session. Neither modal re-syncs its open form against live Firestore data while it's open — a live re-sync mid-typing would risk clobbering the user's own in-progress edit, so the form is effectively a point-in-time snapshot for as long as it stays open.</p>
+
+  <p><strong>Concrete failure:</strong> Teacher A and Admin B both open the same lesson. Both load <code>processStep1: "Old step 1"</code>. B edits <code>processStep1</code> → "New step 1" and saves; Firestore now has "New step 1". A, still viewing their now-stale-loaded form, edits only <code>projectTitle</code> — never touching <code>processStep1</code> — and saves. A's save payload still includes A's stale copy, <code>processStep1: "Old step 1"</code>, because the payload is built from "every non-empty field currently in the form," not "every field this user changed." B's edit is silently reverted, even though A never opened that field.</p>
+
+  <p><strong>Why this wasn't caught by the prior plan's reviews:</strong> Vulnerability #11 was marked "deferred, not in scope" early — <code>plan_jrhp-GpcSGph</code>'s Aug 12 comment thread, resolved same-day — before Phase 1 of that plan had even started. Every later second-model-review in that plan was scoped to verifying the <em>specific phase under execution</em> (Phase 2's merge-vs-update semantics, Phase 3's cache-read bug, etc.). None were asked to re-derive Vuln #11 from the actual code, because it had already been closed as a scoping decision — a review only re-examines what it's pointed at. The resolution's own framing ("same-instant race") also didn't name the actual mechanism above, so there was no prompt to look again. This is a process gap worth remembering for future plans: an "out of scope" decision made before the relevant code exists (or before anyone has traced the actual mechanism) can go unexamined by every subsequent review indefinitely.</p>
+
+  <div class="note">⚠️ <strong>The blocking guard is asymmetric between the two save paths, found while tracing this — not a new issue, unrelated to this plan's fix, noted for awareness:</strong> <code>saveSingleLesson()</code>'s "block if all content fields are empty" guard (<code>firebase-data.js:712</code>) exists <em>only</em> inside the summer branch. The non-summer branch has no equivalent blocking check at all — it always writes whatever's in the cleaned payload, empty or not (protected only by field-level stripping, not a whole-save block). This predates this plan and isn't something Layer 1 introduces or worsens on either path — flagging it here so it isn't mistaken for something this plan should also fix. Worth a look in a future session if it ever seems relevant.</div>
+</div>
+
+<h2 id="phase1">Phase 1 — Non-summer editor: diff-only payload</h2>
+<div class="phase" id="phase-1">
+  <h3>What it does</h3>
+  <p><strong>File:</strong> <code>js/app.js</code>, <code>saveTeacherEdit(lessonKey, originalLesson)</code>, around the line building <code>updatedLesson</code> (currently <code>const updatedLesson = { ...originalLesson, ...formData };</code>).</p>
+  <p>Build the Firestore-bound payload from only the fields <code>getTeChangedFields()</code> already reports as changed, not the full <code>formData</code> snapshot. <code>getTeChangedFields()</code> already covers every field this modal lets a teacher edit — <code>projectTitle</code>, <code>shortDetails</code>, <code>inspoLink</code>, the content fields, <code>materials</code>, <code>materialsList</code>, <code>planComplete</code> — not just the 7 content fields, so this closes the gap for all of them uniformly, not only introPitch/processStep1-4/closure/dayOfMaterials.</p>
+  <pre><code>const changedFormData = {};
+changedFields.forEach(f => {
+  if (f === 'photo') return; // handled separately via photoUrl/photoPath below
+  changedFormData[f] = formData[f];
+});
+const updatedLesson = { ...originalLesson, ...changedFormData };</code></pre>
+  <p>Everything downstream is unaffected: <code>fieldsToClear</code> is computed independently and still works identically (a field that was non-empty at open and is now empty is still detected the same way, regardless of what else is in the payload); the audit-trail entries built from <code>changedFields</code> (Phase 5/4C, before/after char counts) are untouched since <code>changedFields</code> itself isn't changing, only what gets sent to Firestore is narrower now; the local <code>currentLessonData[semKey][lessonKey] = updatedLesson</code> cache is unaffected for untouched fields, since <code>originalLesson</code>'s copy of an untouched field and the DOM's copy of that same untouched field are identical (the user never changed it) — same cached value either way, just reached without resending it to Firestore.</p>
+  <div class="safe">✅ No guard interaction to worry about here — the non-summer branch of <code>saveSingleLesson</code> has no "block if empty" check at all (see Context note above), so a narrower payload can't trip a guard that doesn't exist on this path.</div>
+
+  <div class="bdd">Given: Teacher A and Admin B both open the same non-summer lesson, both loading processStep1="Old step 1"
+When: B edits processStep1 to "New step 1" and saves, then A (still on the stale load) edits only projectTitle and saves
+Then: Firestore's processStep1 remains "New step 1" — A's stale, untouched copy of processStep1 is never sent
+  AND A's projectTitle edit lands correctly
+
+Given: A teacher edits the lesson title (projectTitle) only, touching no content field
+When: They save
+Then: The save succeeds and only projectTitle is written — no content field's dotted path appears in the update() call at all, touched or not
+
+Given: A teacher clears a content field that had real text (an intentional clear, Stage 3 behavior)
+When: They save
+Then: FieldValue.delete() is still used for that field exactly as before — fieldsToClear's computation doesn't depend on what's in changedFormData
+
+Given: The admin grid moves/swaps/edits a lesson — a different caller of saveSingleLesson that still sends a full lesson object, not a diffed one
+When: That full object arrives with stale-empty content fields from a stale grid load
+Then: The existing stripping/read-back protections from the prior plan are completely unaffected — this phase only changes what saveTeacherEdit sends, not saveSingleLesson itself or any other caller</div>
+</div>
+
+<h2 id="phase2">Phase 2 — Summer editor: diff-only payload + guard widening</h2>
+<div class="phase" id="phase-2">
+  <h3>What it does</h3>
+  <p><strong>File:</strong> <code>js/app.js</code>, <code>saveLesson()</code> inside the summer lesson modal (currently builds <code>contentUpdates</code> from every non-empty <code>rawContentFields</code> entry, filtered only by non-emptiness, not by whether it changed).</p>
+  <p>Diff <code>rawContentFields</code> against <code>summerLessonOriginalData</code> (the existing open-time/last-save snapshot, already used for Stage 3's clear detection) and only include a field in <code>contentUpdates</code> if it's both non-empty <em>and</em> different from the baseline:</p>
+  <pre><code>const touchedContentFields = Object.keys(rawContentFields).filter(
+  f => rawContentFields[f] !== summerLessonOriginalData[f]
+);
+const contentUpdates = Object.fromEntries(
+  Object.entries(rawContentFields).filter(([f, v]) => v !== '' && touchedContentFields.includes(f))
+);</code></pre>
+
+  <div class="danger">🛑 <strong>This phase's payload change directly triggers a real interaction with the existing "block if all content empty" guard — must ship together with the guard fix, not as a separate follow-up:</strong> today, a photo-only save (no text field touched) still passes <code>hasContent</code> in practice, because the OLD payload resends whatever's currently non-empty in the form — if the lesson already has real content, <code>hasContent</code> comes back true purely as a side effect, even though the user only uploaded a photo. Once Phase 2 ships the diff-only payload, a photo-only save produces a <code>contentUpdates</code> with <em>zero</em> content-field keys at all. <code>saveSingleLesson()</code>'s guard (<code>firebase-data.js:712</code>, <code>if (!hasContent && !('planComplete' in lessonData) && clearedContentFields.length === 0) return;</code>) would then incorrectly block the save — <code>hasContent</code> is false, there's no <code>planComplete</code> key, and nothing's being cleared, so the photo-only save gets silently refused.</div>
+
+  <p><strong>Fix, in the same phase:</strong> change the guard from "is there real content anywhere in the payload" to "does the payload attempt to touch any content field at all" — block only when content-field keys are <em>present but empty</em>, not when they're simply absent from an intentionally narrow save:</p>
+  <pre><code>// Before:
+if (!hasContent && !('planComplete' in lessonData) && clearedContentFields.length === 0) { return; }
+
+// After:
+const contentFieldsInPayload = CONTENT_FIELDS.filter(f => f in lessonData);
+if (contentFieldsInPayload.length > 0 && !hasContent && clearedContentFields.length === 0) { return; }</code></pre>
+  <p>This also lets the now-redundant <code>!('planComplete' in lessonData)</code> special case (added for Stage 2C) fold away — a <code>planComplete</code>-only payload already has zero <code>CONTENT_FIELDS</code> keys in it, so the general "no content keys touched" condition covers that case for free. Net effect: an admin-grid or bulk caller sending a full, stale, all-empty lesson object is still blocked exactly as before (content keys ARE present, just empty); a narrow, intentional save that never touches content at all — photo-only, planComplete-only, title-only-on-non-summer's future equivalent — is never blocked.</p>
+
+  <div class="bdd">Given: Two teachers/admins both open the same summer lesson, both loading processStep2="Old step 2"
+When: One edits and saves processStep2, then the other (still on the stale load) edits only introPitch and saves
+Then: Firestore's processStep2 keeps the first person's edit — the second person's stale, untouched copy is never resent
+
+Given: A teacher uploads a new photo without touching any text field, on a lesson that already has real content in Firestore
+When: They save
+Then: The save is NOT blocked by the hasContent guard
+  AND no content field's dotted path/merge key is sent at all — read back Firestore afterward and confirm all existing content fields are byte-for-byte unchanged
+
+Given: An admin-grid caller sends a full lesson object with all content fields genuinely empty (stale grid load, not this phase's diff logic)
+When: saveSingleLesson runs
+Then: The save is still blocked exactly as before — the guard's widened condition only changes behavior when content keys are absent, not when they're present-but-empty
+
+Given: A teacher clears a content field that had real text (Stage 3 intentional clear)
+When: They save
+Then: FieldValue.delete() is still used for that field exactly as before — clearedContentFields.length > 0 still bypasses the guard as it always did</div>
+</div>
+
+<h2 id="firebase-safety">Firebase Safety Checklist</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Rules:</strong> No new collections, no rule changes — both phases only narrow what's already being written to <code>summerCamps_lessonData</code> and <code>curriculum/lessonData</code>, both already covered.</li>
+    <li><strong>updateDoc, not setDoc:</strong> Unaffected — summer keeps its existing <code>.set(merge:true)</code>, non-summer keeps its existing per-field dotted-path <code>update()</code>. Neither phase changes the write mechanism, only which fields make it into the payload.</li>
+    <li><strong>Empty fields stripped:</strong> Still true, and more so — <code>saveSingleLesson</code>'s existing <code>CONTENT_FIELDS.forEach</code> stripping stays completely unchanged as a second, independent layer of protection under both callers' new narrower payloads.</li>
+    <li><strong>Test coverage — this is the whole point of the plan, so it needs real Firestore coverage, not mocks:</strong> each phase's first BDD scenario (the two-overlapping-sessions case) is testable without two real simultaneous browser sessions — write an initial value via the existing test helpers (simulating "B's earlier state"), open the modal in one page (simulating "A's session," loading that state as A's baseline), then directly overwrite that same field in Firestore via the test helpers (simulating "B's concurrent save landing after A's load," bypassing A's page entirely so A's in-page state goes stale relative to the server), then have A's page edit a <em>different</em> field and save, then read back and assert the field B "changed" still holds B's value. This exercises the real mechanism without needing two live sessions or real timing coordination.</li>
+    <li><strong>Emulator/Playwright test before each phase ships:</strong> required by this app's own AGENTS.md/CLAUDE.md and this project's own established pattern — write the test first, confirm it fails against pre-fix code for the right reason, implement, confirm green, run the full suite.</li>
+  </ul>
+</div>
+
+<h2 id="completeness">Completeness Check — mid-plan interruption</h2>
+<div class="phase">
+  <p>Phase 1 (non-summer) is fully independent and self-contained — it can ship, be tested, and deploy on its own with no guard interaction at all. Phase 2 (summer) depends on nothing from Phase 1 either, but its payload change and its guard fix must ship together in the same commit — shipping the payload change without the guard fix would incorrectly block legitimate photo-only (and any future non-content-only) summer saves. If work stops after Phase 1 only, the app is left fully working with the non-summer editor's concurrent-edit gap closed and the summer editor's gap still open exactly as it is today — not worse.</p>
+</div>
+
+<h2 id="out-of-scope">Not in scope</h2>
+<ul>
+  <li><strong>Layer 2 — optimistic same-field collision detection.</strong> Christie's explicit choice: Layer 1 (this plan) closes the broader, more damaging mechanism (stale untouched fields silently reverting someone else's concurrent edits to those fields). What remains after Layer 1 is the narrower case — two people editing the <em>literal same field</em> at the <em>literal same moment</em> — where whoever saves last still silently wins for that one field. Closing that fully would mean reading each field's current server value before writing and warning the user if it's changed since their form loaded, which needs its own UX design (what does the warning look like, what does the user do next) and adds a Firestore read per save. Deferred, not abandoned — revisit if this narrower case is ever reported as an actual incident, same standard this project has used for every other deferred item.</li>
+  <li><strong>The non-summer branch's missing "block if all-empty" guard</strong> (see Context note). Pre-existing, unrelated to concurrent-edit safety, not touched by either phase here.</li>
+</ul>
+
+<h2 id="decisions">Decisions Log</h2>
+<ul>
+  <li><strong>Aug 13, 2026:</strong> Christie asked directly what happens today if two people edit the same lesson concurrently, after questioning why Vulnerability #11 was marked out of scope in the prior plan. Investigated both save paths directly against current code (not against the prior plan's characterization) and found the actual mechanism is broader than "same-instant race": any two overlapping edit sessions on the same lesson can clobber each other's field edits, because both editors resend every non-empty form field on every save, not just touched ones. Presented this to Christie with the concrete two-person scenario, along with an honest accounting of why it wasn't caught by prior reviews (an early "out of scope" resolution meant no later review was ever pointed back at it). Offered two fix options — Layer 1 (diff-only payload) alone, or Layer 1 + Layer 2 (same-field collision detection). Christie chose Layer 1, then asked why this gap survived multiple second-model reviews and said she's leaning toward scoping it as its own reviewed plan rather than executing ad hoc. Agreed — this plan is that scoping, not yet executed.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<div class="phase">
+  <p><strong>Status: Drafted, not yet reviewed, not execution-ready.</strong> Christie wants a second-model-review before any execution starts. Next step: run <code>/second-model-review</code> against this plan (or have Christie review it directly in the browser at its plan-reviewer URL), address any findings, then get Christie's explicit approval to flip <code>execution-ready</code> to <code>true</code> before starting Phase 1. Once approved, execute phases in order, write the red test first for each phase's BDD scenarios, commit after each phase with tests green, and do not deploy to Netlify without Christie's explicit "okay to deploy" per this repo's CLAUDE.md.</p>
+</div>
+
+</body>
+</html>
