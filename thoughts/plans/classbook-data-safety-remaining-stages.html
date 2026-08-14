@@ -517,6 +517,20 @@ async function adminLessonStillExistsWithRetry(semKey, key) {
 async function saveAdminEdit(key, teacher, className, weekNum) {
   const semKey = getAdminSemKey();
 
+  // Fail closed if the initial load failed — saveSingleLesson() already
+  // refuses to write in this state, but checking here too means this
+  // function never proceeds through the existence check, photo upload, or
+  // local cache mutation on the strength of unconfirmed local state, only to
+  // have the eventual save silently no-op. Found by a second Codex review
+  // round, Aug 14, 2026 — the same gap Phase 14 already closed for its own
+  // direct-write path, applicable here too since saveSingleLesson's own
+  // internal check doesn't help a caller that acts on the assumption of
+  // success before ever calling it.
+  if (lessonDataLoadedSuccessfully === false) {
+    alert("Lesson data failed to load earlier — refusing to save to avoid writing over unconfirmed server state. Reload and try again.");
+    return;
+  }
+
   // Step 1 — move/delete existence check, before any other work (including
   // photo upload) — a clean early exit with zero side effects if the lesson's
   // gone, not an abort partway through. Only runs when caEditLessonExisted is
@@ -657,9 +671,13 @@ Given: The same scenario on a non-summer lesson
 When: B's admin popup save fires after A's edit
 Then: The outcome is the same — processStep3 survives — this time because saveAdminEdit's Firestore payload never spreads existing's content fields regardless of schema, not because of any listener-freshness argument
 
-Given: An admin deletes all text from a field that had real content when the popup opened, and saves
+Given: An admin deletes all text from a CONTENT_FIELDS member (e.g. processStep2) that had real content when the popup opened, and saves
 When: saveAdminEdit runs
-Then: FieldValue.delete() is used for that field (via fieldsToClear) — it does not silently reappear on reload
+Then: FieldValue.delete() is used for that field (via fieldsToClear, filtered to CONTENT_FIELDS inside saveSingleLesson) — it does not silently reappear on reload
+
+Given: The same scenario, but for a field NOT in CONTENT_FIELDS (shortDetails, inspoLink, or materials) — corrected Aug 14, 2026 after a second Codex review round found the original BDD text here overclaimed FieldValue.delete() for every cleared field
+When: saveAdminEdit runs
+Then: The clear still persists — but via changedData carrying the field's new empty-string value through the merge/update, not via a FieldValue.delete() sentinel, since saveSingleLesson only routes fieldsToClear entries that are CONTENT_FIELDS members through delete() — either mechanism reaches the same correct outcome, it does not silently reappear on reload
 
 Given: An admin edits only the project title on a summer lesson that already has real content in other fields (Phase 8 already shipped)
 When: They save
@@ -817,8 +835,8 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   if (!response) return;
 
   const semKey = getAdminSemKey();
-  const existing = currentLessonData?.[semKey]?.[key];
-  if (!existing) return;
+  const cachedExisting = currentLessonData?.[semKey]?.[key];
+  if (!cachedExisting) return;
 
   // Move/delete existence check — shared helper from Phase 9. Summer's own
   // per-doc update() would fail closed on its own even without this (see the
@@ -837,6 +855,11 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
     alert('This lesson was moved or removed elsewhere. Your response was not sent — please close this and check the grid for its new location.');
     return;
   }
+  // Use the check's own fresh server read for the local cache update below,
+  // not the earlier local-cache read — mirrors sendQaReply's identical fix
+  // this round (a second Claude review pass found the original draft here
+  // paid for a fresh read via the existence check and then didn't use it).
+  const existing = check.data || cachedExisting;
 
   const user = getAuthUser();
   const newEntry = {
@@ -1012,6 +1035,16 @@ Then: The migration decision uses the existence check's own fresh server read, n
   <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — both an independent Codex pass and a fourth Claude pass, run in parallel, found the same real bug: this phase's own BDD scenario claimed a behavior the code didn't implement.</strong> The original draft called <code>saveSingleLesson(semKey, targetKey, { ...fields })</code> with no 4th argument, while its own BDD text asserted <code>FieldValue.delete()</code> would clear a target field the source leaves empty — false, because <code>saveSingleLesson</code> strips empty <code>CONTENT_FIELDS</code> from the payload rather than clearing them (<code>firebase-data.js:716</code>); only fields explicitly listed in <code>fieldsToClear</code> get <code>FieldValue.delete()</code>. This is the exact "adjacent gap" Phase 13 already identifies and fixes for paste — Phase 12 has the identical exposure (both routes newly go through <code>saveSingleLesson</code>) but the original draft didn't apply the same fix. <strong>Two more real issues found in the same round, both about the loop's failure handling:</strong> (1) logging happened in a separate loop <em>after</em> every target was attempted, so if target 2 failed, target 1's already-successful save was never logged — contradicting the BDD's own "1st target is saved and logged" claim; fixed by logging immediately after each successful save. (2) <code>saveSingleLesson()</code> can silently no-op (its own internal safety gate or, for summer, its content guard) by returning without throwing — the original draft had no way to detect this and would count that target as copied anyway, a false success. Fixed by replicating the summer guard's own condition at this call site before saving, so a target that WOULD be silently blocked is skipped and reported honestly instead of counted as copied.</div>
   <pre><code>async function executeCopyPlan(sourceKey) {
   const semKey = getAdminSemKey();
+
+  // Fail closed if the initial load failed — same reasoning as Phase 9/14.
+  // Found by a second Codex review round: saveSingleLesson()'s own internal
+  // check doesn't help here, since this function already reads/mutates local
+  // state and reports success before ever calling it.
+  if (lessonDataLoadedSuccessfully === false) {
+    alert("Lesson data failed to load earlier — refusing to copy to avoid writing over unconfirmed server state. Reload and try again.");
+    return;
+  }
+
   const lessons = { ...currentLessonData[semKey] }; // local display/cache only from here — never sent to Firestore as a whole object
   const source = lessons[sourceKey];
   if (!source) return;
@@ -1085,7 +1118,14 @@ Then: The migration decision uses the existence check's own fresh server read, n
 
     // Log immediately after this target's successful save — not in a
     // separate loop after every target is attempted, so an already-saved
-    // target is never left unlogged if a later target fails.
+    // target is never left unlogged if a later target fails. Wrapped in its
+    // own try/catch (found missing by both an independent Codex pass and a
+    // fourth Claude pass this round) — appendChangeLogEntry() is a real
+    // Firestore write that can fail independently of the lesson save above;
+    // matches the same defensive pattern every other caller of this function
+    // already uses (e.g. saveAdminEdit, Phase 9), so a log failure here
+    // doesn't abort the loop or leave the admin with an uncaught rejection
+    // and no explanation for an otherwise-successful lesson save.
     const logEntry = {
       action: 'copy',
       details: {
@@ -1095,7 +1135,9 @@ Then: The migration decision uses the existence check's own fresh server read, n
       }
     };
     if (previousContent[targetKey]) logEntry.details.previousPlan = previousContent[targetKey];
-    await appendChangeLogEntry(semKey, logEntry);
+    try {
+      await appendChangeLogEntry(semKey, logEntry);
+    } catch (e) { console.warn('Could not write change log entry for', targetKey, e); }
   }
 
   currentLessonData[semKey] = lessons;
@@ -1138,6 +1180,12 @@ Then: The guard pre-check correctly identifies this target would be silently blo
   <div class="note">⚠️ <strong>Adjacent gap closed in the same phase — found while designing this fix, cheap to close since the exact diff needed is already available.</strong> Both functions build a complete replacement lesson object with every content field explicitly set (empty string if the source project doesn't have it) — meaning if the PASTE TARGET already had real content in a field the incoming project doesn't (e.g. pasting a Cut Bank project with no <code>dayOfMaterials</code> over a slot that already had real <code>dayOfMaterials</code> text), the admin's clear intent (replace this slot's plan entirely) would be silently defeated by <code>saveSingleLesson</code>'s stripping logic, which omits empty fields rather than clearing them — the exact class of bug Phase 4 exists to prevent, newly exposed here because this fix routes through <code>saveSingleLesson</code> for the first time. Fixed by computing <code>fieldsToClear</code> the same way the two edit modals already do, using the pre-paste target as the baseline.</div>
   <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — an independent Codex pass found a real ordering bug in <code>pasteFromIdeaBank()</code>'s original draft, and confirmed (by tracing <code>renderAdminGrid()</code>/<code>renderSummerCA()</code> directly) that neither function is actually reachable for summer semesters via today's UI at all.</strong> The original draft removed the Idea Bank entry and persisted that removal (<code>await saveFutureProjects(...)</code>) <em>before</em> attempting the lesson save — so a save that threw, or (for a hypothetical future summer UI) was silently blocked by the content guard, would permanently discard the idea with no lesson ever created. <code>pasteFromCutBank()</code>'s original ordering happened to already avoid this specific failure mode (its persisted removal, <code>saveCutProjects()</code>, was already last), but had no explicit error handling — a thrown save would surface as an uncaught rejection rather than a clear message, and the optimistic local removal would never get reconciled with what Firestore actually has. Both functions now save the lesson first, with explicit error handling, and only remove/persist the source entry after that succeeds — consistent between the two, and no longer dependent on incidental ordering to avoid data loss. Separately: grepped every call site of <code>openCopyPlanUI</code>/<code>showPasteFromCutBank</code>/<code>showPasteFromIdeaBank</code> (all three: only inside <code>openDetailModal()</code>'s <code>hasProject</code> branch, <code>app.js:4350/4359/4360</code>) and confirmed <code>renderAdminGrid()</code> diverts summer semesters to <code>renderSummerCA()</code> (<code>app.js:4077-4082</code>) instead, whose own cells only ever call <code>showAdminEdit()</code> and <code>openSummerCampPopup()</code> (<code>app.js:3752</code> area) — never <code>openDetailModal()</code>. <strong>Copy Plan, Paste from Cut Bank, and Paste from Idea Bank (Phases 12 and 13) are therefore not reachable for summer semesters in the app today.</strong> The summer branches below are kept correct anyway (including a guard pre-check mirroring Phase 12's) rather than removed, so this doesn't become a second landmine if a future summer UI adds these actions — but the summer BDD scenarios below are marked accordingly, not claimed as live-exercised behavior.</div>
   <pre><code>async function pasteFromCutBank(cutIndex, teacher, className, weekNum, sourceSemKey) {
+  // Fail closed if the initial load failed — same reasoning as Phase 9/12/14.
+  if (lessonDataLoadedSuccessfully === false) {
+    alert("Lesson data failed to load earlier — refusing to paste to avoid writing over unconfirmed server state. Reload and try again.");
+    return;
+  }
+
   const destSemKey = getAdminSemKey();
   const srcSemKey = sourceSemKey || destSemKey;
   const cutProjects = [...(currentCutProjects?.[srcSemKey] || [])];
@@ -1210,19 +1258,37 @@ Then: The guard pre-check correctly identifies this target would be silently blo
   renderCutBank();
   renderChangeHistory();
 
-  await saveCutProjects(srcSemKey, cutProjects);
-  await appendChangeLogEntry(destSemKey, {
-    action: 'paste',
-    details: {
-      projectTitle: proj.projectTitle, teacher, className, toWeek: weekNum, fromCutBank: true,
-      crossSemester: isCrossSemester || undefined,
-      sourceSemester: isCrossSemester ? srcSemName : undefined,
-      originalTeacher: proj.originalTeacher, originalWeek: proj.originalWeek
-    }
-  });
+  // The lesson is already safely saved at this point — everything below is
+  // secondary persistence (removing the bank entry, logging). Wrapped
+  // separately, found missing by both an independent Codex pass and a fourth
+  // Claude pass this round: a failure here previously surfaced as a bare
+  // uncaught rejection, with no distinction from a lesson-save failure and
+  // no indication that the lesson itself had actually already saved fine.
+  try {
+    await saveCutProjects(srcSemKey, cutProjects);
+  } catch (err) {
+    console.error('❌ Lesson saved, but failed to persist Cut Bank removal:', err);
+    alert('The lesson saved successfully, but this project could not be removed from the Cut Bank — it may still appear there. Reload to check.');
+  }
+  try {
+    await appendChangeLogEntry(destSemKey, {
+      action: 'paste',
+      details: {
+        projectTitle: proj.projectTitle, teacher, className, toWeek: weekNum, fromCutBank: true,
+        crossSemester: isCrossSemester || undefined,
+        sourceSemester: isCrossSemester ? srcSemName : undefined,
+        originalTeacher: proj.originalTeacher, originalWeek: proj.originalWeek
+      }
+    });
+  } catch (e) { console.warn('Could not write change log entry:', e); }
 }
 
 async function pasteFromIdeaBank(idx, teacher, className, weekNum) {
+  if (lessonDataLoadedSuccessfully === false) {
+    alert("Lesson data failed to load earlier — refusing to paste to avoid writing over unconfirmed server state. Reload and try again.");
+    return;
+  }
+
   const projects = currentFutureProjects?.projects || [];
   const proj = projects[idx];
   if (!proj) return;
