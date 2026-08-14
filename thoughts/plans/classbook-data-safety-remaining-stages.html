@@ -1136,6 +1136,7 @@ Then: The guard pre-check correctly identifies this target would be silently blo
   <p><strong>Files:</strong> <code>js/app.js</code>, <code>pasteFromCutBank(cutIndex, teacher, className, weekNum, sourceSemKey)</code> and <code>pasteFromIdeaBank(idx, teacher, className, weekNum)</code>. <strong>No ordering dependency on Phases 7-12</strong> — reuses only already-shipped <code>saveSingleLesson()</code> and <code>fieldsToClear</code> (Phase 4).</p>
   <p>Replace the bulk <code>saveLessonData()</code> call with a single targeted <code>saveSingleLesson(semKey, key, newLesson, fieldsToClear)</code> call for the one key each function actually touches.</p>
   <div class="note">⚠️ <strong>Adjacent gap closed in the same phase — found while designing this fix, cheap to close since the exact diff needed is already available.</strong> Both functions build a complete replacement lesson object with every content field explicitly set (empty string if the source project doesn't have it) — meaning if the PASTE TARGET already had real content in a field the incoming project doesn't (e.g. pasting a Cut Bank project with no <code>dayOfMaterials</code> over a slot that already had real <code>dayOfMaterials</code> text), the admin's clear intent (replace this slot's plan entirely) would be silently defeated by <code>saveSingleLesson</code>'s stripping logic, which omits empty fields rather than clearing them — the exact class of bug Phase 4 exists to prevent, newly exposed here because this fix routes through <code>saveSingleLesson</code> for the first time. Fixed by computing <code>fieldsToClear</code> the same way the two edit modals already do, using the pre-paste target as the baseline.</div>
+  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — an independent Codex pass found a real ordering bug in <code>pasteFromIdeaBank()</code>'s original draft, and confirmed (by tracing <code>renderAdminGrid()</code>/<code>renderSummerCA()</code> directly) that neither function is actually reachable for summer semesters via today's UI at all.</strong> The original draft removed the Idea Bank entry and persisted that removal (<code>await saveFutureProjects(...)</code>) <em>before</em> attempting the lesson save — so a save that threw, or (for a hypothetical future summer UI) was silently blocked by the content guard, would permanently discard the idea with no lesson ever created. <code>pasteFromCutBank()</code>'s original ordering happened to already avoid this specific failure mode (its persisted removal, <code>saveCutProjects()</code>, was already last), but had no explicit error handling — a thrown save would surface as an uncaught rejection rather than a clear message, and the optimistic local removal would never get reconciled with what Firestore actually has. Both functions now save the lesson first, with explicit error handling, and only remove/persist the source entry after that succeeds — consistent between the two, and no longer dependent on incidental ordering to avoid data loss. Separately: grepped every call site of <code>openCopyPlanUI</code>/<code>showPasteFromCutBank</code>/<code>showPasteFromIdeaBank</code> (all three: only inside <code>openDetailModal()</code>'s <code>hasProject</code> branch, <code>app.js:4350/4359/4360</code>) and confirmed <code>renderAdminGrid()</code> diverts summer semesters to <code>renderSummerCA()</code> (<code>app.js:4077-4082</code>) instead, whose own cells only ever call <code>showAdminEdit()</code> and <code>openSummerCampPopup()</code> (<code>app.js:3752</code> area) — never <code>openDetailModal()</code>. <strong>Copy Plan, Paste from Cut Bank, and Paste from Idea Bank (Phases 12 and 13) are therefore not reachable for summer semesters in the app today.</strong> The summer branches below are kept correct anyway (including a guard pre-check mirroring Phase 12's) rather than removed, so this doesn't become a second landmine if a future summer UI adds these actions — but the summer BDD scenarios below are marked accordingly, not claimed as live-exercised behavior.</div>
   <pre><code>async function pasteFromCutBank(cutIndex, teacher, className, weekNum, sourceSemKey) {
   const destSemKey = getAdminSemKey();
   const srcSemKey = sourceSemKey || destSemKey;
@@ -1175,14 +1176,42 @@ Then: The guard pre-check correctly identifies this target would be silently blo
   const fieldsToClear = CONTENT_FIELDS.filter(f =>
     (existing[f] || '').trim() !== '' && !(newLesson[f] || '').trim()
   );
+
+  // Guard pre-check — same reasoning as Phase 12, kept correct even though
+  // this path isn't reachable for summer today (see the danger box above).
+  const isSummer = destSemKey.startsWith('summer-');
+  if (isSummer) {
+    const hasGuardContent = CONTENT_FIELDS.some(f => newLesson[f] && String(newLesson[f]).trim());
+    if (!hasGuardContent && fieldsToClear.length === 0) {
+      alert('This project has no plan content in its process steps, intro, or closure — nothing to paste.');
+      return;
+    }
+  }
+
+  // Save the lesson FIRST, with explicit error handling, and only
+  // remove/persist the Cut Bank entry after it succeeds.
+  try {
+    await saveSingleLesson(destSemKey, key, newLesson, fieldsToClear);
+  } catch (err) {
+    console.error('❌ Paste from Cut Bank failed to save the lesson, nothing removed from the bank:', err);
+    alert('Could not save this lesson: ' + err.message + ' — the Cut Bank entry was not removed, try again.');
+    return;
+  }
+
   lessons[key] = newLesson;
+  currentLessonData[destSemKey] = lessons;
 
   cutProjects.splice(cutIndex, 1);
-  currentLessonData[destSemKey] = lessons;
   if (!currentCutProjects) currentCutProjects = {};
   currentCutProjects[srcSemKey] = cutProjects;
 
-  const logPromise = appendChangeLogEntry(destSemKey, {
+  closeAdminModal();
+  renderAdminGrid();
+  renderCutBank();
+  renderChangeHistory();
+
+  await saveCutProjects(srcSemKey, cutProjects);
+  await appendChangeLogEntry(destSemKey, {
     action: 'paste',
     details: {
       projectTitle: proj.projectTitle, teacher, className, toWeek: weekNum, fromCutBank: true,
@@ -1191,17 +1220,6 @@ Then: The guard pre-check correctly identifies this target would be silently blo
       originalTeacher: proj.originalTeacher, originalWeek: proj.originalWeek
     }
   });
-
-  closeAdminModal();
-  renderAdminGrid();
-  renderCutBank();
-  renderChangeHistory();
-
-  // Firestore writes in background — targeted single-lesson save, never the
-  // whole cached semester.
-  await saveSingleLesson(destSemKey, key, newLesson, fieldsToClear);
-  await saveCutProjects(srcSemKey, cutProjects);
-  await logPromise;
 }
 
 async function pasteFromIdeaBank(idx, teacher, className, weekNum) {
@@ -1230,12 +1248,33 @@ async function pasteFromIdeaBank(idx, teacher, className, weekNum) {
   const fieldsToClear = CONTENT_FIELDS.filter(f =>
     (existing[f] || '').trim() !== '' && !(newLesson[f] || '').trim()
   );
+
+  const isSummer = semKey.startsWith('summer-');
+  if (isSummer) {
+    const hasGuardContent = CONTENT_FIELDS.some(f => newLesson[f] && String(newLesson[f]).trim());
+    if (!hasGuardContent && fieldsToClear.length === 0) {
+      alert('This idea has no plan content in its process steps, intro, or closure — nothing to paste.');
+      return;
+    }
+  }
+
+  // Save the lesson FIRST — the original draft removed and persisted the
+  // Idea Bank entry before attempting this save, which an independent Codex
+  // review found would permanently discard the idea on any save failure.
+  try {
+    await saveSingleLesson(semKey, key, newLesson, fieldsToClear);
+  } catch (err) {
+    console.error('❌ Paste from Idea Bank failed to save the lesson, nothing removed from the bank:', err);
+    alert('Could not save this lesson: ' + err.message + ' — the idea was not removed, try again.');
+    return;
+  }
+
   lessons[key] = newLesson;
+  currentLessonData[semKey] = lessons;
 
   projects.splice(idx, 1);
   await saveFutureProjects(currentFutureProjects);
 
-  await saveSingleLesson(semKey, key, newLesson, fieldsToClear);
   await appendChangeLogEntry(semKey, {
     action: 'paste',
     details: { projectTitle: proj.title, teacher, className, toWeek: weekNum, fromIdeaBank: true }
@@ -1257,7 +1296,19 @@ Then: fieldsToClear is empty (nothing to clear) and the new content saves normal
 
 Given: An Idea Bank paste into a slot that's one of several lessons in the cached semester, at least one other of which has real, unrelated content
 When: The paste executes
-Then: Only the pasted-into key's dotted paths (or, for summer, that one document) are touched — the other lesson is never resent, unlike the original saveLessonData(semKey, lessons) bulk call</div>
+Then: Only the pasted-into key's dotted paths (or, for summer, that one document) are touched — the other lesson is never resent, unlike the original saveLessonData(semKey, lessons) bulk call
+
+Given: The lesson save fails (simulated network failure) during a Paste from Idea Bank
+When: pasteFromIdeaBank runs
+Then: The idea is still present in the Idea Bank afterward — projects.splice() and saveFutureProjects() are never reached, since the function returns from the catch block before either runs
+
+Given: [Non-summer only, current UI reachability] The lesson save fails during a Paste from Cut Bank
+When: pasteFromCutBank runs
+Then: The cut project is still present in the Cut Bank afterward, and the admin sees a clear error alert rather than an uncaught promise rejection
+
+Given: [Documents correct-but-unreachable summer behavior — see the danger box above; no live UI path exercises this today] An Idea Bank entry with only a title/description and no process-step content, pasted onto a summer target
+When: pasteFromIdeaBank runs
+Then: The guard pre-check catches this before removing the idea or attempting the save, and alerts that there's no plan content to paste — the idea remains in the bank, not silently discarded</div>
 </div>
 
 <h2 id="phase14">Phase 14 — Roster-driven lesson slot creation: targeted per-key creates (createLessonSlotsForRoster)</h2>
@@ -1268,10 +1319,24 @@ Then: Only the pasted-into key's dotted paths (or, for summer, that one document
   <p><strong>File:</strong> <code>js/app.js</code>, <code>createLessonSlotsForRoster(semKey, roster, numWeeks)</code>. <strong>No ordering dependency on Phases 7-13.</strong></p>
   <div class="note">⚠️ <strong>Different shape from Phases 11-13 — this function only ever creates BRAND-NEW keys, never touches existing lesson content at all.</strong> The Vulnerability #11 exposure here isn't the new keys themselves (nothing exists there yet to clobber) — it's that <code>saveLessonData(semKey, lessons)</code> resends every OTHER, pre-existing lesson already sitting in the local cache alongside the new ones, at risk of clobbering any that are stale relative to Firestore. The fix: collect only the genuinely-new keys, and write just those, one at a time.</div>
   <div class="note">⚠️ <strong>Why summer bypasses saveSingleLesson() here, unlike Phase 12/13.</strong> These are legitimately all-empty scaffold creates (a slot exists in the grid before any content is written) — <code>saveSingleLesson()</code>'s summer-branch guard exists specifically to block all-empty saves that could silently wipe REAL data, which doesn't apply to a key that has no doc yet. Rather than widen that shared guard's definition for one caller, this phase writes new summer docs directly, mirroring the same strip/JSON-round-trip/<code>set(merge:true)</code> mechanics <code>saveSingleLesson</code>'s summer branch already uses, minus the guard. Non-summer's branch has no such guard, so <code>saveSingleLesson()</code> is used there directly.</div>
+  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — an independent Codex pass found three real issues in the original draft, all stemming from the same root cause: bypassing <code>saveSingleLesson()</code>'s summer branch for the guard (intentional, see above) also silently bypassed two other protections that guard-skip was never meant to touch.</strong>
+    <ol>
+      <li><strong>The global failed-load safety gate was bypassed too, not just the guard.</strong> <code>saveSingleLesson()</code> refuses to write anything at all when <code>lessonDataLoadedSuccessfully === false</code> (<code>firebase-data.js:691-695</code>) — a global "don't trust local state enough to write" circuit breaker set when the initial load fails (<code>firebase-data.js:341-346</code>, which also resets <code>currentLessonData = {}</code>). The direct-write summer path here never checked that flag at all. Fixed: check it once at function entry and refuse to proceed (matching what <code>saveSingleLesson</code> already does for every other caller) if it's <code>false</code>.</li>
+      <li><strong>"Not in the local cache" was treated as proof a server document doesn't exist — it isn't.</strong> If lesson data failed to load or is stale, every roster key can appear locally missing even though real documents exist on the server. The original draft would then merge scaffold defaults — including <code>qaThread: []</code>, <code>materialsList: []</code>, <code>planComplete: false</code> — into whatever's actually there, potentially wiping those fields on a real, concurrently-existing lesson. Fixed: never send those three mutable/resettable fields in the Firestore-bound payload at all. <code>set(merge:true)</code> only touches fields present in the payload, so omitting them means a real existing value for any of the three survives untouched regardless of whether the "brand new" assumption turns out to be wrong — a minimal-footprint create instead of a full-object one, closing the gap without needing a per-key existence check.</li>
+      <li><strong>Swallowing every failure was a regression from today's real caller-visible behavior, not a match for it.</strong> The original draft's comment claimed this matched the function's "original fire-and-forget nature" — false: today's shipped code <code>await</code>s the bulk save directly inside the Settings-save flow's own <code>try/catch</code> (<code>app.js:9285-9305</code>), so a failure already propagates and shows "Error saving settings." Catching and logging every per-slot failure without ever re-throwing would make Settings report success even when slots failed to create. Fixed: collect failures, and throw one aggregate error at the end if any occurred — reusing the Settings flow's existing error handling rather than building new UI.</li>
+    </ol>
+  </div>
   <pre><code>async function createLessonSlotsForRoster(semKey, roster, numWeeks) {
   if (!roster || !numWeeks || Object.keys(roster).length === 0) return;
   if (!currentLessonData) await loadLessonData();
   if (!currentLessonData[semKey]) currentLessonData[semKey] = {};
+
+  // Fail closed if the initial load failed — the same protection
+  // saveSingleLesson() already gives every other caller, which this
+  // function's direct-write summer path would otherwise bypass entirely.
+  if (lessonDataLoadedSuccessfully === false) {
+    throw new Error('Lesson data failed to load earlier — refusing to create roster slots to avoid writing over unconfirmed server state. Reload and try again.');
+  }
 
   const existingLessons = currentLessonData[semKey];
   const newLessons = {}; // ONLY brand-new keys — never touches or resends any existing lesson
@@ -1299,15 +1364,23 @@ Then: Only the pasted-into key's dotted paths (or, for summer, that one document
 
   if (!curriculumDb) initCurriculumFirestore();
   const isSummer = semKey.startsWith('summer-');
+  // Fields deliberately never sent in the Firestore-bound payload below,
+  // for a key that turns out not to be brand-new after all (see the danger
+  // box above) — kept in newLessons/local cache for display only.
+  const NEVER_SEND_ON_CREATE = ['qaThread', 'materialsList', 'planComplete'];
   let createdCount = 0;
+  const failures = [];
   for (const lessonKey of newKeys) {
     try {
       if (isSummer) {
         // Same write mechanics as saveSingleLesson's summer branch (strip
         // empty content fields, JSON round-trip, set/merge) — guard
-        // intentionally skipped, see the note above.
+        // intentionally skipped (see the note above), but NEVER_SEND_ON_CREATE
+        // fields are also stripped here, unlike saveSingleLesson's own
+        // stripping, which only strips CONTENT_FIELDS.
         const stripped = { ...newLessons[lessonKey] };
         CONTENT_FIELDS.forEach(f => { if (!stripped[f] || !String(stripped[f]).trim()) delete stripped[f]; });
+        NEVER_SEND_ON_CREATE.forEach(f => { delete stripped[f]; });
         const cleanData = JSON.parse(JSON.stringify({
           ...stripped,
           lastEditedBy: getAuthUser()?.name || 'Unknown',
@@ -1317,21 +1390,27 @@ Then: Only the pasted-into key's dotted paths (or, for summer, that one document
         newLessons[lessonKey].lastEditedBy = cleanData.lastEditedBy;
         newLessons[lessonKey].lastEditedAt = cleanData.lastEditedAt;
       } else {
-        await saveSingleLesson(semKey, lessonKey, newLessons[lessonKey]);
+        const payload = { ...newLessons[lessonKey] };
+        NEVER_SEND_ON_CREATE.forEach(f => { delete payload[f]; });
+        await saveSingleLesson(semKey, lessonKey, payload);
       }
       currentLessonData[semKey][lessonKey] = newLessons[lessonKey];
       createdCount++;
     } catch (err) {
-      // Best-effort, matching this function's original fire-and-forget
-      // nature (no alert() in the original code, just a console.log) — one
-      // slot failing to create isn't a data-loss risk, just a missing
-      // scaffold row, recoverable by re-saving Settings later.
+      // Independent, unordered creates with no swap/copy-style relationship
+      // between them — still attempt every remaining slot rather than
+      // stop-on-first-failure, but collect what failed instead of silently
+      // swallowing it (see the danger box above).
       console.error(`❌ Failed to create lesson slot ${lessonKey}, continuing with remaining slots:`, err);
+      failures.push(lessonKey);
     }
   }
 
   if (createdCount > 0) {
     console.log(`✅ Created ${createdCount} lesson slots for roster classes`);
+  }
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} of ${newKeys.length} roster lesson slot(s) could not be created: ${failures.join(', ')}. ${createdCount} succeeded.`);
   }
 }</code></pre>
   <div class="bdd">Given: A semester already has 20 real lessons with content, and the admin adds one new teacher to the roster in Settings, requiring 16 new empty slots
@@ -1342,9 +1421,17 @@ Given: The semester is a summer semester
 When: The same roster save triggers new-slot creation
 Then: Each new slot is created via a direct, targeted set(merge:true) on its own document — saveSummerCampLessonData()'s batch-every-cached-lesson path is never invoked, and the summer guard never blocks these legitimately-empty creates (since it's bypassed here, not routed through saveSingleLesson)
 
+Given: lessonDataLoadedSuccessfully is false (the initial load failed)
+When: A roster save is attempted
+Then: createLessonSlotsForRoster throws immediately, before generating or writing any slots — the Settings-save flow's existing try/catch surfaces this as a save error, not a silent no-op or, worse, a write against unconfirmed local state
+
+Given: A roster key that appears locally missing (stale/incomplete local cache) actually has a real document on the server already, with real qaThread/materialsList/planComplete values
+When: createLessonSlotsForRoster runs and attempts to "create" that key
+Then: The set(merge:true) payload never includes qaThread, materialsList, or planComplete — the real server values for those three fields survive untouched, regardless of the incorrect "brand new" assumption
+
 Given: One of several new slot creates throws (simulated network failure)
 When: createLessonSlotsForRoster runs
-Then: The remaining slots are still attempted (best-effort, not stop-on-first-failure) — the function logs which slot failed and continues, since these are independent, unordered creates with no swap/copy-style relationship between them</div>
+Then: The remaining slots are still attempted (best-effort, not stop-on-first-failure) — but the function throws an aggregate error afterward naming which slot(s) failed, so the Settings-save flow's existing try/catch shows "Error saving settings" instead of falsely reporting success</div>
 </div>
 
 <h2 id="firebase-safety">Firebase Safety Checklist</h2>
@@ -1374,16 +1461,19 @@ Then: The remaining slots are still attempted (best-effort, not stop-on-first-fa
 <h2 id="completeness">Completeness Check — mid-plan interruption</h2>
 <div class="phase">
   <p>Phase 7 is fully independent. Phase 8 is internally atomic (its three parts ship together, see below) but independent of the other phases. Phase 9 depends on Phase 8 (see below). Phase 10 is fully independent of all of them — it touches a different function (<code>sendTeacherQaMessage</code>) with no shared state or guard interaction. <strong>Corrected after a Codex review pointed out the original "each phase is independent" opening sentence here contradicted the Phase 9-after-Phase-8 dependency already documented two sentences later in this same section</strong> — this section's job is to state dependencies precisely, not claim independence as a default. If work stops after any phase whose dependencies are satisfied, the app is left in a fully working, deployable state with strictly fewer known risks than before that phase started. There is no partial-phase state that leaves the app broken; a phase either ships complete (code + test + commit) or hasn't started.</p>
-  <p><strong>Phases 11-14, added Aug 14, 2026:</strong> Phase 11 has a real ordering dependency on BOTH Phase 9 (reuses <code>readAdminLessonDoc()</code>'s forced-server <code>opts</code> param) and Phase 10 (reuses the <code>buildQaThreadUnionArgs()</code> helper) — it cannot ship before either. Phases 12, 13, and 14 have <strong>no dependency on any other phase in this doc</strong> — each reuses only already-shipped Phase 1/4 infrastructure (<code>saveSingleLesson()</code>, <code>fieldsToClear</code>) and could ship independently, in any order, even before Phase 7 if that were useful. They're grouped here by discovery date and shared root cause (the same "spread the whole cached semester into one bulk saveLessonData() call" pattern, found via a completeness sweep while designing Phase 11), not by a code dependency.</p>
+  <p><strong>Phases 11-14, added Aug 14, 2026:</strong> Phase 11 has a real ordering dependency on BOTH Phase 9 (reuses the shared <code>adminLessonStillExistsWithRetry()</code> helper, extracted from Phase 9's own existence check) and Phase 10 (reuses the <code>buildQaThreadUnionArgs()</code> helper) — it cannot ship before either. Phases 12, 13, and 14 have <strong>no dependency on any other phase in this doc</strong> — each reuses only already-shipped Phase 1/4 infrastructure (<code>saveSingleLesson()</code>, <code>fieldsToClear</code>) and could ship independently, in any order, even before Phase 7 if that were useful. They're grouped here by discovery date and shared root cause (the same "spread the whole cached semester into one bulk saveLessonData() call" pattern, found via a completeness sweep while designing Phase 11), not by a code dependency.</p>
   <p>Phase 7 (non-summer) is fully independent and self-contained — it can ship, be tested, and deploy on its own with no guard interaction at all. Phase 8 (summer) depends on nothing from Phase 7 either, but its three parts — the diff, the Firestore-payload/local-cache split, and the guard fix — must ship together in the same commit: the diff alone (without the payload split) is a no-op, per the second-model-review finding that drove this phase's redesign; the payload split without the guard fix would incorrectly block legitimate photo-only saves. If work stops after Phase 7 only, the app is left fully working with the non-summer editor's concurrent-edit gap closed and the summer editor's gap still open exactly as it is today — not worse.</p>
   <p><strong>Phase 9 is the one genuine ordering dependency in this set — it must ship after Phase 8, not before or standalone.</strong> Phase 9's payload for a title-only (or otherwise content-field-free) summer admin edit relies on Phase 8's guard rewrite already being live; shipping Phase 9 first (or alone) would incorrectly block that class of save on summer lessons. Phase 9's own three parts (snapshot capture, diff + payload split, fieldsToClear support) ship together in one commit for the same reason Phase 8's do — the snapshot alone accomplishes nothing until the payload actually uses it. If work stops after Phase 7+8 but before Phase 9, the app is fully working with two of three editing surfaces closed and the admin popup's gap documented and open — not worse than today, and not silently unaddressed either, since Phase 9 exists in this doc as known, scoped, pending work.</p>
 </div>
 
 <h2 id="out-of-scope">Not in scope</h2>
 <ul>
-  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins") — reopened, see Phases 7–14 above.</strong> This item was originally deferred here as low-risk on a "same-instant race" characterization. Reinvestigated Aug 13, 2026 after Christie asked directly what happens on a real concurrent edit — the actual mechanism was broader than that characterization (see the Context section above Phase 7), and it kept getting broader on every subsequent pass: a first Codex review (Aug 14, 2026) surfaced <code>sendTeacherQaMessage()</code> as a fourth affected surface beyond the three editing modals; a second Codex pass plus a fourth Claude pass, run in parallel, then surfaced the admin Help Queue reply functions as a live instance of the ORIGINAL bulk-overwrite bug class, not just a narrower Vuln #11 case; and a completeness sweep done specifically to verify that finding (checking every remaining <code>saveLessonData()</code> caller before claiming the list was complete) surfaced four MORE callers with the identical root cause. <strong>Phases 7–14 close it for ten production write call sites</strong> that either spread lesson content into a save from a stale local snapshot, or bulk-write an entire cached semester when only one lesson actually changed: both teacher-facing editors, the admin edit popup, the teacher/admin Q&A sender, the admin Help Queue reply functions, Copy Plan to Others, paste from Cut Bank, paste from Idea Bank, and roster-driven slot creation (Christie explicitly chose to fold all of these in rather than leave any deferred — her stated goal is full completion). One caller, new-semester creation (<code>app.js:3951-4025</code>'s <code>saveLessonData(key, emptyLessons)</code> call), was checked during the same sweep and confirmed NOT exposed — it targets a semester key that doesn't exist until this exact action creates it, so there's no pre-existing content anywhere in that semester for a stale local copy to clobber. <strong>This list should not be assumed final</strong> — the pattern of "the caller-audit finds more on every pass" has held for three consecutive rounds now; the next review pass should re-grep for any caller of <code>saveLessonData</code>/<code>saveSummerCampLessonData</code> not named above before treating Phases 7-14 as covering everything. What remains genuinely deferred after Phases 7–14:
+  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins") — reopened, see Phases 7–14 above.</strong> This item was originally deferred here as low-risk on a "same-instant race" characterization. Reinvestigated Aug 13, 2026 after Christie asked directly what happens on a real concurrent edit — the actual mechanism was broader than that characterization (see the Context section above Phase 7), and it kept getting broader on every subsequent pass: a first Codex review (Aug 14, 2026) surfaced <code>sendTeacherQaMessage()</code> as a fourth affected surface beyond the three editing modals; a second Codex pass plus a fourth Claude pass, run in parallel, then surfaced the admin Help Queue reply functions as a live instance of the ORIGINAL bulk-overwrite bug class, not just a narrower Vuln #11 case; and a completeness sweep done specifically to verify that finding (checking every remaining <code>saveLessonData()</code> caller before claiming the list was complete) surfaced four MORE callers with the identical root cause. <strong>Phases 7–14 close it for ten production write call sites</strong> that either spread lesson content into a save from a stale local snapshot, or bulk-write an entire cached semester when only one lesson actually changed: both teacher-facing editors, the admin edit popup, the teacher/admin Q&A sender, the admin Help Queue reply functions, Copy Plan to Others, paste from Cut Bank, paste from Idea Bank, and roster-driven slot creation (Christie explicitly chose to fold all of these in rather than leave any deferred — her stated goal is full completion). <strong>This list should not be assumed final</strong> — the pattern of "the caller-audit finds more on every pass" has now held for four consecutive rounds; the next review pass should re-grep for any caller of <code>saveLessonData</code>/<code>saveSummerCampLessonData</code> not named above, AND (per a Claude finding, Aug 14, 2026) grep for any DIRECT write to <code>curriculum/lessonData</code>/<code>summerCamps_lessonData</code> that bypasses those two helper functions entirely — a completeness sweep scoped only to the two named helpers is a structural blind spot, since a caller can reach the same shared documents without ever calling either one (see <code>renameTeacherInSemester()</code> below). What remains genuinely deferred or excluded after Phases 7–14:
     <ul>
       <li><strong>Layer 2 — optimistic same-field collision detection.</strong> The narrower residual case: two people editing the <em>literal same field</em> at the <em>literal same moment</em>, where whoever saves last still silently wins for that one field. Closing it needs reading each field's current server value before writing and warning the user if it's changed since their form loaded — its own UX design, plus a Firestore read per save. Deferred, not abandoned — revisit if reported as an actual incident.</li>
+      <li><strong><code>renameTeacherInSemester()</code> (<code>app.js:9373-9406</code>) — found by a fourth Claude review pass, Aug 14, 2026. Not fixed, only named here, because it has zero callers anywhere in the repo (confirmed via grep) — dead code, no live exposure today.</strong> If it were ever wired up, it would be categorically worse than the original Stage-1 bug this whole plan exists to fix: it bypasses <code>saveLessonData()</code>/<code>saveSingleLesson()</code> entirely and does a raw <code>curriculumDb.collection('curriculum').doc('lessonData').set(fullData)</code> — no <code>{merge: true}</code> — spreading the ENTIRE local <code>currentLessonData</code> (every loaded semester, including the in-memory <code>summer-2026</code> mirror) into a full-document replace of the shared doc. This is exactly the kind of caller the plan's own "grep for saveLessonData callers" methodology would never find, since it never calls either helper — see the completeness-sweep warning above. Before this function is ever wired to real UI, it needs the same treatment as Phase 12-14's targets: a merge write, scoped to only the renamed lesson keys.</li>
+      <li><strong><code>restoreFromBackup()</code> (<code>firebase-data.js:501-510</code>) — found by both an independent Codex pass and a fourth Claude pass, Aug 14, 2026. Also dead code (zero callers, confirmed via grep), also not fixed here for the same reason.</strong> Unlike <code>renameTeacherInSemester()</code>, this one DOES call <code>saveLessonData()</code> — so it would have been caught by the plan's stated sweep methodology, and its total absence from earlier accounting was a real, if minor, gap in the "ten call sites" count rather than a structural blind spot. Reads a full semester snapshot from <code>curriculum/lessonData_backup</code> and bulk-writes it back — a deliberate, whole-semester restore operation, conceptually different from the accidental one-lesson-triggers-whole-semester-write pattern Phases 11-14 fix, so even if wired up it may not need the same fix (a real restore may legitimately need to touch every lesson in the semester) — but it should be reviewed with that question in mind before it's ever connected to a UI action, not assumed safe by omission.</li>
+      <li><strong><code>createNewSemester()</code>'s lesson-data write (<code>app.js:3951-4028</code>) — corrected Aug 14, 2026 after an independent Codex pass found the original exclusion claim here overstated.</strong> The original claim was that this caller isn't exposed because "the semester key doesn't exist until this action creates it" — that's not fully accurate: the existence check (<code>app.js:3956</code>) only looks at <code>currentConfig.semesters[key]</code> (the local config cache), and the lesson-data write (<code>saveLessonData(key, emptyLessons)</code>, line 4021) happens BEFORE the config save (line 4028) — not after. If the lesson write succeeds but the config save then fails (network drop, etc.), the config semester entry never gets created, so a retry of the same semester name passes the "already exists" check again and re-runs <code>saveLessonData</code> — a genuine bulk <code>.set(merge:true)</code> with no per-field stripping — against whatever's now at that key. In the ordinary case (no prior failure) this is genuinely safe, matching the original reasoning. The narrow residual risk needs BOTH a failed create-then-retry sequence AND that retry's generated key colliding with pre-existing real lesson data (e.g. orphaned from the first attempt, or from some other prior state) to actually lose anything — narrower and rarer than any of the ten call sites Phases 7-14 fix, which are all reachable via single, ordinary actions. Not designed as a fix here — flagged accurately rather than left overclaimed as fully safe; a future phase could close it by checking server-side lesson data (not just local config) before writing, or by reordering the two writes.</li>
     </ul>
   </li>
   <li><strong>The non-summer branch's missing "block if all-empty" guard</strong> (see the Context section above Phase 7). Pre-existing, unrelated to concurrent-edit safety, not touched by any of Phases 7–14.</li>
