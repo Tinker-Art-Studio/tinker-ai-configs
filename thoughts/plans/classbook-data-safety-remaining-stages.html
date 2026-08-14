@@ -35,7 +35,7 @@
   <strong>Explicitly endorsed by:</strong> the Firebase Backend Resilience plan (<code>plan_QTCn4wTWpk-h</code>) lists finishing exactly these stages as one of its own action items — this plan does not compete with it; file scope never overlaps (that plan touches <code>tinker-ai-configs</code> + the <code>tinker-hq-vault</code> cloud project, never this repo's app code).<br>
   <strong>Risk:</strong> Medium-High per phase — Phase 1 touches the admin grid's irreversible delete paths directly; the rest are additive guards, a new read path, and test-only work.<br>
   <span class="status-tag ready">execution-ready: true</span> — Phases 1–6 only. Approved by Christie via plan-reviewer comment, Aug 12, 2026. Phase 2 was redesigned after a critical second-model-review finding; the e2e test-helper prerequisite is built and committed (<code>7d108b0</code>); Phase 1's <code>saveAdminEdit()</code> decision is resolved and scoped in; a full adversarial re-review found and fixed two more concrete Phase 1 gaps (swap BDD ambiguity, swap partial-failure handling) plus a stale-reference cleanup. Phases 1–6 all shipped and deployed — see Decisions Log.<br>
-  <span class="status-tag not-ready">execution-ready: false</span> — Phases 7–14 (Vulnerability #11 Layer 1, plus the wider bulk-overwrite class it led to; added Aug 13-14, 2026). Christie asked for iterated review from both Claude and Codex until they agree it's execution-ready — that loop is still running. <strong>Five review rounds so far (three before Phases 12-14 existed, three more after), every single one finding real issues, including in content the immediately prior round had just "fixed."</strong> Highlights: Phase 7 was redesigned once (Codex found its "diff-only" claim was false) and has been clean ever since; Phase 9 gained an existence check, then had a literal duplicate-declaration SyntaxError in its own draft fixed; a full audit surfaced <code>sendHelpResponse()</code>/<code>sendQaReply()</code> as live instances of the ORIGINAL Stage 1 bulk-overwrite bug, which led to discovering four more affected callers (Phases 12-14); Phase 14 in particular has been iterated on three times as review kept finding new fields/mechanisms it needed to protect against, most recently a local-cache-poisoning issue with a traced path to real data loss via Phase 9. Two live-but-unrelated bugs (<code>deleteSemester()</code>'s incomplete summer cleanup, an Idea Bank UI-copy mismatch) were found via completeness sweeps and deliberately deferred rather than fixed, at Christie's explicit choice, since they're outside this plan's concurrent-edit-safety scope. <strong>Full round-by-round detail is in the Decisions Log — read the last several entries there, not just this summary, before resuming.</strong> The most recent round's fixes have not themselves been re-reviewed yet — that's always the next step until a round comes back clean. Phase 7 remains independently confirmed clean across multiple rounds with nothing changed since, and safe to execute standalone regardless.<br><br>
+  <span class="status-tag not-ready">execution-ready: false</span> — Phases 7–14 (Vulnerability #11 Layer 1, plus the wider bulk-overwrite class it led to; added Aug 13-14, 2026). Christie asked for iterated review from both Claude and Codex until they agree it's execution-ready — that loop is still running. <strong>Six review rounds so far, every single one finding real issues, including in content the immediately prior round had just "fixed."</strong> Highlights: Phase 7 was redesigned once (Codex found its "diff-only" claim was false) and has been clean ever since; Phase 9 gained an existence check, then had a literal duplicate-declaration SyntaxError in its own draft fixed; a full audit surfaced <code>sendHelpResponse()</code>/<code>sendQaReply()</code> as live instances of the ORIGINAL Stage 1 bulk-overwrite bug, which led to discovering four more affected callers (Phases 12-14); <strong>Phase 14 in particular took four rounds to get right</strong> — three rounds of incremental field-exclusion patches each found a new leak (most recently a local-cache-poisoning bug and a key-collision risk that field-exclusion alone couldn't close), so round 4 replaced that approach entirely with a pre-write existence check. Two live-but-unrelated bugs (<code>deleteSemester()</code>'s incomplete summer cleanup, an Idea Bank UI-copy mismatch) were found via completeness sweeps and deliberately deferred rather than fixed, at Christie's explicit choice, since they're outside this plan's concurrent-edit-safety scope. <strong>Full round-by-round detail is in the Decisions Log — read the last several entries there, not just this summary, before resuming.</strong> Phase 14's redesign has not itself been reviewed yet — that's the next, highest-priority step. Phase 7 remains independently confirmed clean across multiple rounds with nothing changed since, and safe to execute standalone regardless.<br><br>
   <strong>Progress as of Aug 13, 2026:</strong> Phases 1–6 (Stages 2 through 5) shipped, tested, committed (<code>6d127c3</code>/<code>96f86d1</code>/<code>89b51e1</code>/<code>c6fdae8</code>/<code>e993634</code>/<code>a85055f</code>), and <strong>deployed to production</strong> (<code>tinker-classbook.netlify.app</code>, Aug 13, 2026). <code>e2e/data-safety.spec.js</code> has 35 passing tests. Combined with Stages 0/1A/1B/1C from the earlier markdown plan, that closed out the plan as originally scoped.<br><br>
   <strong>Reopened same day:</strong> Christie asked what actually happens if two people edit the same lesson concurrently — this doc's own "Not in scope" had deferred Vulnerability #11 on a characterization ("same-instant race") that turned out to undersell the real mechanism. <strong>Phases 7–10</strong> below are a Layer-1 fix for that (Christie's explicit scope choice — see their Context section and Decisions Log for the full trail, including a separate registered plan that got merged back into this doc). Three Claude second-model-review passes done against Phases 7–9 (two against Phase 8, one against Phase 9), each catching real issues, all fixed. Christie then asked for iterated review from both Claude and Codex until they agree it's execution-ready — a first Codex CLI pass (Aug 14, 2026, after installing and authenticating it) found something all three Claude passes missed: Phase 7's redesign still spread <code>originalLesson</code> into its Firestore payload, so its "diff-only" claim was false whenever the concurrent-edit listener hadn't delivered yet by save time. Same pass found a completely unaudited caller (<code>sendTeacherQaMessage</code>, the non-summer Q&amp;A sender, using a fully stale closure with no freshness attempt at all — worse than anything Phase 7 was fixing) and a real edit-vs-move/delete race in Phase 9 (an admin's still-open edit popup can recreate a lesson someone else just moved/deleted elsewhere). Every Codex finding was independently verified against the real code before being accepted, not taken on faith. Christie chose to fix both newly-found gaps now rather than defer them (full completion, no more scope deferred than necessary) — Phase 7 redesigned again, Phase 9 got an existence-check addition, and a new Phase 10 covers the Q&amp;A sender. <strong>Not yet re-reviewed after these fixes</strong> — Christie is continuing the Claude/Codex iteration loop before this can be marked execution-ready.
 </div>
@@ -1430,43 +1430,30 @@ Then: The guard pre-check catches this before removing the idea or attempting th
   <p><strong>File:</strong> <code>js/app.js</code>, <code>createLessonSlotsForRoster(semKey, roster, numWeeks)</code>. <strong>New ordering dependency, added in a third review round (Aug 14, 2026): must ship after Phase 9</strong>, since its post-write read-back now reuses Phase 9's <code>adminLessonStillExistsWithRetry()</code> helper rather than duplicating that logic — no dependency on Phases 10-13.</p>
   <div class="note">⚠️ <strong>Different shape from Phases 11-13 — this function only ever creates BRAND-NEW keys, never touches existing lesson content at all.</strong> The Vulnerability #11 exposure here isn't the new keys themselves (nothing exists there yet to clobber) — it's that <code>saveLessonData(semKey, lessons)</code> resends every OTHER, pre-existing lesson already sitting in the local cache alongside the new ones, at risk of clobbering any that are stale relative to Firestore. The fix: collect only the genuinely-new keys, and write just those, one at a time.</div>
   <div class="note">⚠️ <strong>Why summer bypasses saveSingleLesson() here, unlike Phase 12/13.</strong> These are legitimately all-empty scaffold creates (a slot exists in the grid before any content is written) — <code>saveSingleLesson()</code>'s summer-branch guard exists specifically to block all-empty saves that could silently wipe REAL data, which doesn't apply to a key that has no doc yet. Rather than widen that shared guard's definition for one caller, this phase writes new summer docs directly, mirroring the same strip/JSON-round-trip/<code>set(merge:true)</code> mechanics <code>saveSingleLesson</code>'s summer branch already uses, minus the guard. Non-summer's branch has no such guard, so <code>saveSingleLesson()</code> is used there directly.</div>
-  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — an independent Codex pass found three real issues in the original draft, all stemming from the same root cause: bypassing <code>saveSingleLesson()</code>'s summer branch for the guard (intentional, see above) also silently bypassed two other protections that guard-skip was never meant to touch.</strong>
-    <ol>
-      <li><strong>The global failed-load safety gate was bypassed too, not just the guard.</strong> <code>saveSingleLesson()</code> refuses to write anything at all when <code>lessonDataLoadedSuccessfully === false</code> (<code>firebase-data.js:691-695</code>) — a global "don't trust local state enough to write" circuit breaker set when the initial load fails (<code>firebase-data.js:341-346</code>, which also resets <code>currentLessonData = {}</code>). The direct-write summer path here never checked that flag at all. Fixed: check it once at function entry and refuse to proceed (matching what <code>saveSingleLesson</code> already does for every other caller) if it's <code>false</code>.</li>
-      <li><strong>"Not in the local cache" was treated as proof a server document doesn't exist — it isn't.</strong> If lesson data failed to load or is stale, every roster key can appear locally missing even though real documents exist on the server. The original draft would then merge scaffold defaults — including <code>qaThread: []</code>, <code>materialsList: []</code>, <code>planComplete: false</code> — into whatever's actually there, potentially wiping those fields on a real, concurrently-existing lesson. Fixed: never send those mutable/resettable fields in the Firestore-bound payload at all. <code>set(merge:true)</code> only touches fields present in the payload, so omitting them means a real existing value survives untouched regardless of whether the "brand new" assumption turns out to be wrong — a minimal-footprint create instead of a full-object one, closing the gap without needing a per-key existence check. <strong>Widened in a second Codex review round, same day:</strong> the first draft of this fix only excluded three fields — a genuinely thorough check needs every field a concurrent creator could plausibly have set to something meaningful, not just those three. <code>weekDate</code>, <code>projectTitle</code>, and <code>materials</code> (the last not even a <code>CONTENT_FIELDS</code> member, so not auto-stripped by <code>saveSingleLesson</code>'s own non-summer path either) are now excluded too. <code>classSize</code> is deliberately kept in the payload rather than excluded — see the code comment where <code>NEVER_SEND_ON_CREATE</code> is defined for why it doesn't have the same "someone else's meaningful value" risk the excluded fields do.</li>
-      <li><strong>Swallowing every failure was a regression from today's real caller-visible behavior, not a match for it.</strong> The original draft's comment claimed this matched the function's "original fire-and-forget nature" — false: today's shipped code <code>await</code>s the bulk save directly inside the Settings-save flow's own <code>try/catch</code> (<code>app.js:9285-9305</code>), so a failure already propagates and shows "Error saving settings." Catching and logging every per-slot failure without ever re-throwing would make Settings report success even when slots failed to create. Fixed: collect failures, and throw one aggregate error at the end if any occurred — reusing the Settings flow's existing error handling rather than building new UI.</li>
-    </ol>
-  </div>
+  <div class="danger">🛑 <strong>Redesigned Aug 14, 2026, after three straight review rounds each found a new leak in an incremental "narrow the create payload" approach — full history in the Decisions Log, summarized here since this box is describing the CURRENT design, not a chronology.</strong> The original draft bulk-wrote every new slot in one <code>saveLessonData()</code> call (Vulnerability #11's usual pattern) — fixed by writing targeted, single-key creates instead. The next three rounds found, in order: (1) that direct-write path also silently bypassed <code>saveSingleLesson()</code>'s global failed-load safety gate, not just its (intentionally-skipped) content guard; (2) "not in the local cache" isn't proof a key is actually free, so a naive full-object create payload could overwrite a real, concurrently-existing lesson's content — patched by excluding an ever-growing list of "risky" fields from the Firestore payload (3 fields, then 6); (3) even with the payload narrowed, the local CACHE still got overwritten with an assumed-blank scaffold when a key turned out to already exist, and a subsequent attempt to read back the real state and merge it in still had two more bugs (an <code>exists:false</code> edge case, and a key-collision risk via <code>makeLessonKey()</code>'s lossy normalization) found in a fourth round. <strong>Rather than patch a fourth time, this is now a genuine redesign: check first, write once confirmed.</strong> Every candidate key gets a forced-server existence check (reusing Phase 9's <code>adminLessonStillExistsWithRetry()</code>) BEFORE any write is attempted. If the check confirms the key is free, the full scaffold is written — no more field-exclusion list needed at all, since the check itself is what makes a full-object write safe. If the check finds the key already exists, nothing is written, and the local cache is populated with the real server data instead of a scaffold. Codex's own round-4 finding made the case directly: "now that Phase 14 performs one read per key anyway, the earlier 'post-read is cheaper than pre-read' rationale no longer holds."</div>
+  <div class="note">⚠️ <strong>Residual TOCTOU race — same accepted-gap treatment as Phase 9, no new decision needed.</strong> A gap remains between the existence check completing and the write landing — another process could create or move a lesson into this exact key in that window. Bounded by the same reasoning Christie already accepted for Phase 9: closing it fully would need a Firestore transaction wrapping check-and-write, a bigger change to shared save infrastructure for a narrow, human-timescale-bounded window.</div>
   <pre><code>async function createLessonSlotsForRoster(semKey, roster, numWeeks) {
   if (!roster || !numWeeks || Object.keys(roster).length === 0) return;
 
-  // Fail closed if the initial load already failed BEFORE this call. This
-  // check alone is not sufficient — see the second check below — since the
-  // flag starts as null, not false, until a load has actually been attempted
-  // and failed. Kept here anyway as a cheap early exit for the already-failed
-  // case, ahead of the roster/numWeeks return above only in the sense that
-  // that return has no side effects to worry about either way.
+  // Fail closed if the initial load already failed BEFORE this call.
   if (lessonDataLoadedSuccessfully === false) {
     throw new Error('Lesson data failed to load earlier — refusing to create roster slots to avoid writing over unconfirmed server state. Reload and try again.');
   }
 
   if (!currentLessonData) await loadLessonData();
-  // Re-check after the load attempt above, not just before it — found by a
-  // third Codex review round: the first check alone only catches a failure
-  // from an EARLIER call to this app. If currentLessonData was still null
-  // when THIS invocation started, the flag was null (not false) at the first
-  // check, so it passed — and if THIS invocation's own loadLessonData() call
-  // then fails, that failure would have gone uncaught without this second
-  // check, letting the summer branch proceed to write against an empty local
-  // cache and the non-summer branch silently no-op through saveSingleLesson's
-  // own gate while still being counted as created.
+  // Re-checked after the load attempt above, not just before it — catches a
+  // failure from THIS invocation's own loadLessonData() call, not just an
+  // earlier one (the flag starts null, not false, until a load has actually
+  // been attempted and failed, so the first check alone can't catch this).
   if (lessonDataLoadedSuccessfully === false) {
     throw new Error('Lesson data failed to load — refusing to create roster slots to avoid writing over unconfirmed server state. Reload and try again.');
   }
   if (!currentLessonData[semKey]) currentLessonData[semKey] = {};
 
   const existingLessons = currentLessonData[semKey];
-  const newLessons = {}; // ONLY brand-new keys — never touches or resends any existing lesson
+  // Locally-missing candidates — NOT confirmed new yet. That confirmation
+  // happens per-key below, via a forced-server read, before any write.
+  const candidates = {};
 
   for (const [className, data] of Object.entries(roster)) {
     if (!data.teacher || !className) continue;
@@ -1474,7 +1461,7 @@ Then: The guard pre-check catches this before removing the idea or attempting th
     for (let weekNum = 1; weekNum &lt;= numWeeks; weekNum++) {
       const lessonKey = makeLessonKey(teacher, className, weekNum);
       if (!existingLessons[lessonKey]) {
-        newLessons[lessonKey] = {
+        candidates[lessonKey] = {
           teacher, className, weekNum, weekDate: '', projectTitle: '',
           introPitch: '', processStep1: '', processStep2: '', processStep3: '', processStep4: '',
           closure: '', materials: '', materialsList: [], dayOfMaterials: '',
@@ -1486,96 +1473,58 @@ Then: The guard pre-check catches this before removing the idea or attempting th
     }
   }
 
-  const newKeys = Object.keys(newLessons);
-  if (newKeys.length === 0) return;
+  const candidateKeys = Object.keys(candidates);
+  if (candidateKeys.length === 0) return;
 
   if (!curriculumDb) initCurriculumFirestore();
   const isSummer = semKey.startsWith('summer-');
-  // Fields deliberately never sent in the Firestore-bound payload below, for
-  // a key that turns out not to be brand-new after all (see the danger box
-  // above) — kept in newLessons/local cache for display only. Expanded Aug
-  // 14, 2026 after a second Codex review round found the original three-field
-  // list incomplete: weekDate, projectTitle, and materials are also real,
-  // user/admin-authored fields a concurrent creator could have set to
-  // something meaningful (materials specifically isn't a CONTENT_FIELDS
-  // member, so it isn't auto-stripped by saveSingleLesson's non-summer path
-  // either — it needed the same explicit exclusion as the summer path).
-  // classSize is deliberately NOT excluded — a residual, accepted risk, not
-  // a fully-closed one. Original reasoning (Aug 14, 2026) claimed a
-  // concurrent write of it would always compute an identical value, since
-  // it's derived from this same roster data. A third-round Codex/Claude pass
-  // (same day) found that overclaims: enrollment is editable input in the
-  // Settings form (app.js:9083-9090), re-read fresh on every save — so if a
-  // real doc already exists at a key this pass believes is new, and
-  // enrollment changed between when that real doc's classSize was set and
-  // now, this write would resync classSize to the current value, not
-  // necessarily the one already there. Accepted rather than excluded: it's a
-  // numeric roster-sync field (arguably reasonable to resync even in this
-  // narrow case), not user-authored content — a materially different risk
-  // profile than the six excluded fields above, matching how this doc
-  // already accepts other narrow residual risks (Phase 9's TOCTOU race,
-  // createNewSemester()'s residual risk in "Not in scope") rather than
-  // engineering every last edge case away.
-  const NEVER_SEND_ON_CREATE = ['weekDate', 'projectTitle', 'materials', 'materialsList', 'qaThread', 'planComplete'];
   let createdCount = 0;
   const failures = [];
-  for (const lessonKey of newKeys) {
+  for (const lessonKey of candidateKeys) {
     try {
+      // Forced-server existence check FIRST — the actual fix. Closes the
+      // key-collision case too (two different roster entries normalizing to
+      // the same makeLessonKey() output): the check is scoped to the exact
+      // key about to be written, so a real doc already sitting there is
+      // caught regardless of why the local cache thought it was missing.
+      const check = await adminLessonStillExistsWithRetry(semKey, lessonKey);
+      if (check.exists) {
+        // Locally missing, but genuinely real on the server — nothing to
+        // create. Update the local cache with the REAL data (not the
+        // scaffold), so this key stops looking "missing" on the next pass
+        // too, and isn't shown blank over real content in the meantime.
+        currentLessonData[semKey][lessonKey] = check.data;
+        continue;
+      }
+
+      // Confirmed free — the full scaffold is now safe to write outright.
       if (isSummer) {
         // Same write mechanics as saveSingleLesson's summer branch (strip
-        // empty content fields, JSON round-trip, set/merge) — guard
-        // intentionally skipped (see the note above), but NEVER_SEND_ON_CREATE
-        // fields are also stripped here, unlike saveSingleLesson's own
-        // stripping, which only strips CONTENT_FIELDS.
-        const stripped = { ...newLessons[lessonKey] };
+        // empty content fields, JSON round-trip, set/merge). The content
+        // guard is still intentionally bypassed (see the note above these
+        // BDD scenarios) — these are legitimately all-empty creates, and the
+        // existence check just above is what makes that safe now.
+        const stripped = { ...candidates[lessonKey] };
         CONTENT_FIELDS.forEach(f => { if (!stripped[f] || !String(stripped[f]).trim()) delete stripped[f]; });
-        NEVER_SEND_ON_CREATE.forEach(f => { delete stripped[f]; });
         const cleanData = JSON.parse(JSON.stringify({
           ...stripped,
           lastEditedBy: getAuthUser()?.name || 'Unknown',
           lastEditedAt: new Date().toISOString()
         }));
         await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(lessonKey)).set(cleanData, { merge: true });
-        newLessons[lessonKey].lastEditedBy = cleanData.lastEditedBy;
-        newLessons[lessonKey].lastEditedAt = cleanData.lastEditedAt;
+        candidates[lessonKey].lastEditedBy = cleanData.lastEditedBy;
+        candidates[lessonKey].lastEditedAt = cleanData.lastEditedAt;
       } else {
-        const payload = { ...newLessons[lessonKey] };
-        NEVER_SEND_ON_CREATE.forEach(f => { delete payload[f]; });
-        await saveSingleLesson(semKey, lessonKey, payload);
+        await saveSingleLesson(semKey, lessonKey, candidates[lessonKey]);
       }
-
-      // Read back the real server state rather than assuming the local
-      // scaffold is what's now there — found independently by both
-      // reviewers in a third review round, the highest-severity finding of
-      // that round. If this key actually already existed (exactly the case
-      // NEVER_SEND_ON_CREATE exists to protect the FIRESTORE side of), just
-      // writing the assumed-blank scaffold into the LOCAL cache would show a
-      // blank slot over real content — and since this same cache is what
-      // showAdminEdit()/saveAdminEdit() (Phase 9) and executeCopyPlan()'s
-      // overwrite-warning (Phase 12) later trust as ground truth, that wrong
-      // local state could itself cause a LATER, unrelated save to silently
-      // revert real fields (e.g. Phase 9 unconditionally resends weekDate
-      // from whatever's in this cache on every admin-edit save, not gated by
-      // its own diff). Reuses adminLessonStillExistsWithRetry() (Phase 9) —
-      // same "don't trust, verify" reasoning already established for this
-      // doc's other post-write/pre-write checks. A failed read-back doesn't
-      // undo the write (which already succeeded) — it only means the local
-      // display falls back to the same scaffold assumption as before,
-      // matching this doc's established "local cache staleness is cosmetic"
-      // tolerance elsewhere.
-      try {
-        const readBack = await adminLessonStillExistsWithRetry(semKey, lessonKey);
-        currentLessonData[semKey][lessonKey] = readBack.data || newLessons[lessonKey];
-      } catch (readErr) {
-        console.warn(`⚠️ Could not confirm server state for ${lessonKey} after create, showing local scaffold as a best guess:`, readErr);
-        currentLessonData[semKey][lessonKey] = newLessons[lessonKey];
-      }
+      currentLessonData[semKey][lessonKey] = candidates[lessonKey];
       createdCount++;
     } catch (err) {
       // Independent, unordered creates with no swap/copy-style relationship
       // between them — still attempt every remaining slot rather than
       // stop-on-first-failure, but collect what failed instead of silently
-      // swallowing it (see the danger box above).
+      // swallowing it. A thrown existence check (both server reads failed)
+      // lands here too — treated as a failure for this key, not a guess.
       console.error(`❌ Failed to create lesson slot ${lessonKey}, continuing with remaining slots:`, err);
       failures.push(lessonKey);
     }
@@ -1585,36 +1534,37 @@ Then: The guard pre-check catches this before removing the idea or attempting th
     console.log(`✅ Created ${createdCount} lesson slots for roster classes`);
   }
   if (failures.length > 0) {
-    throw new Error(`${failures.length} of ${newKeys.length} roster lesson slot(s) could not be created: ${failures.join(', ')}. ${createdCount} succeeded.`);
+    throw new Error(`${failures.length} of ${candidateKeys.length} roster lesson slot(s) could not be created: ${failures.join(', ')}. ${createdCount} succeeded.`);
   }
 }</code></pre>
+  <div class="note">⚠️ <strong>Performance note, not blocking.</strong> Every candidate key now costs one forced-server read before its write — for non-summer, that read (via <code>readAdminLessonDoc()</code>) downloads the entire shared <code>curriculum/lessonData</code> document each time, so creating N slots means N sequential downloads of that document. This function only runs on an explicit Settings save (infrequent, admin-only, bounded by roster size) — acceptable for that usage pattern, but worth knowing about if roster sizes ever grow large enough to matter. A cheaper non-summer variant would do all the targeted writes first, then one single forced read of the shared document, populating every successfully-written key from that one snapshot — not implemented here to keep this phase's design symmetric between both schemas (summer genuinely does need one document read per key, since each lesson is its own document).</div>
   <div class="bdd">Given: A semester already has 20 real lessons with content, and the admin adds one new teacher to the roster in Settings, requiring 16 new empty slots
 When: createLessonSlotsForRoster runs
-Then: 16 targeted creates happen, one per new key — none of the 20 existing lessons' dotted paths (or, for summer, documents) are touched, unlike the original saveLessonData(semKey, lessons) bulk call which resent all 36
+Then: 16 existence checks run, all report "doesn't exist," 16 targeted creates happen — none of the 20 existing lessons' dotted paths (or, for summer, documents) are touched, unlike the original saveLessonData(semKey, lessons) bulk call which resent all 36
 
 Given: The semester is a summer semester
 When: The same roster save triggers new-slot creation
-Then: Each new slot is created via a direct, targeted set(merge:true) on its own document — saveSummerCampLessonData()'s batch-every-cached-lesson path is never invoked, and the summer guard never blocks these legitimately-empty creates (since it's bypassed here, not routed through saveSingleLesson)
+Then: Each new slot is created via a direct, targeted set(merge:true) on its own document, only after its own existence check confirms it's free — saveSummerCampLessonData()'s batch-every-cached-lesson path is never invoked, and the summer guard never blocks these legitimately-empty creates
 
 Given: lessonDataLoadedSuccessfully is false (the initial load failed)
 When: A roster save is attempted
-Then: createLessonSlotsForRoster throws immediately, before generating or writing any slots — the Settings-save flow's existing try/catch surfaces this as a save error, not a silent no-op or, worse, a write against unconfirmed local state
+Then: createLessonSlotsForRoster throws immediately, before generating any candidate list or running any existence check — the Settings-save flow's existing try/catch surfaces this as a save error, not a silent no-op or a write against unconfirmed local state
 
-Given: A roster key that appears locally missing (stale/incomplete local cache) actually has a real document on the server already, with real qaThread/materialsList/planComplete values
-When: createLessonSlotsForRoster runs and attempts to "create" that key
-Then: The set(merge:true) payload never includes qaThread, materialsList, or planComplete — the real server values for those three fields survive untouched, regardless of the incorrect "brand new" assumption
+Given: lessonDataLoadedSuccessfully becomes false specifically during THIS invocation's own loadLessonData() call (not an earlier one)
+When: A roster save is attempted
+Then: The second check (after the load attempt) catches it — this is the case the first check alone can't, since the flag was still null, not false, when the first check ran
 
-Given: The same scenario, but the real existing server document has a real weekDate, a real projectTitle, and real materials text — the fields a second Codex review round found the original three-field exclusion list missed
-When: createLessonSlotsForRoster runs and attempts to "create" that key
-Then: The payload never includes weekDate, projectTitle, or materials either — all six NEVER_SEND_ON_CREATE fields are absent from the write, so every one of the real server values survives untouched
+Given: A roster key that appears locally missing (stale/incomplete local cache) actually has a real document on the server already, with real content and real qaThread/materialsList/planComplete/classSize/weekDate values
+When: createLessonSlotsForRoster runs and reaches that key
+Then: The existence check finds it, no write is attempted at all — not even a narrowed one — and the local cache is populated with the real server document, not a scaffold; every one of its real fields survives untouched, including ones no field-exclusion list would ever have needed to enumerate
 
-Given: The same scenario, but for classSize specifically
+Given: Two different roster entries — e.g. teacher names "Anne Marie" and "Anne-Marie" — normalize to the identical makeLessonKey() output, and a real lesson already exists under the first spelling
+When: createLessonSlotsForRoster processes the second, colliding candidate
+Then: The existence check (scoped to the exact resulting key, not the spelling that produced it) finds the real document and skips the write — the collision is caught regardless of which spelling "discovered" the key first
+
+Given: One of several new slot creates throws (simulated network failure), and a later candidate's existence check finds it already exists
 When: createLessonSlotsForRoster runs
-Then: classSize IS included in the payload (deliberately not in NEVER_SEND_ON_CREATE) — but since it's computed from the same roster data on both the original creator's run and this one, the value written matches what's already there, not a conflicting override
-
-Given: One of several new slot creates throws (simulated network failure)
-When: createLessonSlotsForRoster runs
-Then: The remaining slots are still attempted (best-effort, not stop-on-first-failure) — but the function throws an aggregate error afterward naming which slot(s) failed, so the Settings-save flow's existing try/catch shows "Error saving settings" instead of falsely reporting success</div>
+Then: The remaining slots are still attempted (best-effort, not stop-on-first-failure) — the already-exists case still updates the local cache correctly even after an earlier failure — and the function throws an aggregate error afterward naming which slot(s) failed to create, so the Settings-save flow's existing try/catch shows "Error saving settings" instead of falsely reporting success</div>
 </div>
 
 <h2 id="firebase-safety">Firebase Safety Checklist</h2>
@@ -1635,7 +1585,7 @@ Then: The remaining slots are still attempted (best-effort, not stop-on-first-fa
         <li><strong>Phase 11 (Help Queue reply), added Aug 14, 2026, revised same day after a second review round:</strong> seed a semester with the target lesson plus at least one unrelated lesson with its own real content via the test helpers. For <code>sendHelpResponse</code>: seed the target with a teacher-originated <code>qaThread</code> entry (so it's eligible for the Help Queue), send a response through the real UI, then assert the unrelated lesson's content is byte-for-byte untouched — the test that actually distinguishes this fix from the original bulk-overwrite. Also now needs its OWN move/delete existence-check test (a second review round found the original draft skipped this check for <code>sendHelpResponse</code>, which was wrong — see Phase 11's danger box): seed a lesson with a teacher question, delete the underlying doc directly via the test helpers, then attempt to respond and confirm it's blocked, non-summer specifically (the schema where a silent recreate is possible). For <code>sendQaReply</code>: same isolation assertion, plus a legacy-migration test mirroring Phase 10's third test, plus its own existence-check test. Both need summer AND non-summer variants, since both functions branch by schema internally. One more test specific to <code>sendQaReply</code>'s fresh-data reuse: seed a legacy-only lesson, migrate it via a simulated concurrent write between the local cache read and the reply send, and confirm the reply doesn't re-insert a duplicate synthesized legacy entry (proving the migration decision used the existence check's fresh read, not the stale local cache).</li>
         <li><strong>Phase 12 (Copy Plan), added Aug 14, 2026, revised same day after a second review round:</strong> seed a source lesson with real content, at least two target slots, and an unrelated third lesson elsewhere in the semester. Copy to both targets, assert both received the content AND the unrelated lesson is untouched. A second test for partial failure: seed 3 targets, make the 2nd target's save throw (a test-only hook or a deliberately malformed target key), confirm exactly 1 copy succeeded AND was logged (asserting the change-log entry exists, not just the lesson content — the original draft's logging-timing bug wouldn't have been caught without asserting this specifically), and the admin-facing alert reports "1 of 3." A third test for the fieldsToClear addition: target has real <code>dayOfMaterials</code> the source doesn't set, confirm it's cleared post-copy. A fourth test for the guard pre-check: a summer source lesson with only <code>materials</code> content (no CONTENT_FIELDS content), confirm the target is skipped (not counted in the "copied" count, no <code>saveSingleLesson</code> call attempted) rather than silently reported as successful.</li>
         <li><strong>Phase 13 (Paste from Cut Bank / Idea Bank), added Aug 14, 2026, revised same day after a second review round:</strong> seed a cut project and an idea bank project, paste each into a slot, assert only that slot's dotted path (or document) changed and an unrelated lesson elsewhere in the semester is untouched. A second test per function for the fieldsToClear addition: paste into a slot that already has real content in a field the pasted project doesn't set, confirm that field is cleared, not left stale. A third test for the save-before-remove reorder: make the lesson save throw (test-only hook), confirm the cut/idea bank entry is STILL present afterward for both functions — this is the test that would have caught <code>pasteFromIdeaBank</code>'s original ordering bug (idea permanently discarded on a failed save).</li>
-        <li><strong>Phase 14 (roster slot creation), added Aug 14, 2026, revised same day after a second review round:</strong> seed a semester with existing real lessons, trigger a roster save that requires new slots, assert the new slots exist with the right teacher/className/weekNum AND the existing lessons' content is byte-for-byte untouched. A summer variant confirming the guard-bypass direct-write path actually creates the new documents (the summer guard, if mistakenly left in place, would silently block every one of these — this test is what would have caught that). A test for the safety-gate fix: set <code>lessonDataLoadedSuccessfully = false</code> via the test helpers, attempt a roster save, confirm it throws before any Firestore write is attempted. A test for the NEVER_SEND_ON_CREATE fix: seed a server-side lesson doc with real <code>qaThread</code>/<code>planComplete</code> values at a key that will locally appear "missing" (simulate via a deliberately incomplete local cache), trigger slot creation for that key, and confirm those three fields still hold their real server values afterward, not the scaffold defaults. A test for the aggregate-error fix: make one of several slot creates throw, confirm the remaining slots still get attempted AND the function ultimately throws (so the Settings-save flow's existing try/catch would show its error state) rather than resolving normally.</li>
+        <li><strong>Phase 14 (roster slot creation), added Aug 14, 2026, redesigned same day after a fourth review round around a pre-write existence check (see Phase 14's own danger box for the full design history):</strong> seed a semester with existing real lessons, trigger a roster save that requires new slots, assert the new slots exist with the right teacher/className/weekNum AND the existing lessons' content is byte-for-byte untouched. A summer variant confirming the direct-write path actually creates the new documents. A test for the safety-gate fix: set <code>lessonDataLoadedSuccessfully = false</code> via the test helpers, attempt a roster save, confirm it throws before any Firestore write OR existence check is attempted. A second variant setting the flag <code>null</code> initially and forcing the in-function <code>loadLessonData()</code> call to fail, confirming the second gate check catches it. <strong>The central test for the redesign:</strong> seed a server-side lesson doc with real content (including <code>qaThread</code>/<code>materialsList</code>/<code>planComplete</code>/<code>classSize</code>/<code>weekDate</code> — every field, not just a subset) at a key that will locally appear "missing" (simulate via a deliberately incomplete local cache), trigger slot creation for that key, and assert BOTH that no write was attempted for that key (e.g. via a spy/count on the save call) AND that <code>currentLessonData</code> now holds the real server document — not a scaffold, not a partial merge — closing the exact local-cache-poisoning gap three prior rounds progressively found leaks in. A key-collision variant: seed two roster entries whose teacher names normalize to the same <code>makeLessonKey()</code> output where one already has a real server lesson, confirm the collision is caught by the existence check and the real lesson's identity fields survive. A test for the aggregate-error fix: make one of several slot creates throw, confirm the remaining slots (including an already-exists one) still get attempted AND the function ultimately throws naming the failed key(s).</li>
       </ul>
     </li>
   </ul>
@@ -1761,15 +1711,28 @@ Then: The remaining slots are still attempted (best-effort, not stop-on-first-fa
     <strong>Confirmed accepted, not re-litigated:</strong> the change-log phantom-local-entry gap Codex also flagged (a rejected <code>appendChangeLogEntry()</code> write leaves a phantom entry in the local cache since that shared, pre-existing function updates its cache before its own Firestore write) — documented as an accepted, self-correcting-on-reload cosmetic gap rather than fixed, since closing it would mean changing that shared function's contract for every caller across the app, well beyond this plan's scope. <strong>Confirmed clean, no changes needed:</strong> the <code>pasteFromIdeaBank()</code> argument-shape fix from round 2, the secondary-write try/catch coverage from round 2, the <code>lessonDataLoadedSuccessfully</code> gate placement in Phase 9/12/13, the <code>sendHelpResponse()</code> fresh-data fix, and a fresh completeness sweep (both reviewers independently found nothing beyond what's already named).
     <br><br>
     <strong>Not yet done:</strong> this round's six fixes — especially the Phase 14 read-back redesign, the highest-value change — have not themselves been re-reviewed.</li>
+  <li><strong>Aug 14, 2026 (same session):</strong> Ran a fourth Codex+Claude round in parallel, focused specifically on verifying round 3's Phase 14 read-back redesign. <strong>Both reviewers found real, non-overlapping bugs in that exact redesign — round 3's fix, while a genuine improvement, didn't fully close what it set out to close.</strong>
+    <ol>
+      <li><strong>[Claude, HIGH] The read-back logic silently made every ORDINARY new-lesson-slot creation sparser than every other lesson-creation path in the app, not just the rare "it already existed" case it was built for.</strong> <code>readBack.data || newLessons[lessonKey]</code> looks like a fallback, but <code>readBack.data</code> is truthy for every successful write (the doc exists by definition immediately after creating it) — so the <code>newLessons[lessonKey]</code> scaffold-with-defaults branch never actually fires for a normal create. The real server data that comes back is deliberately sparse (Firestore never received the six excluded fields, or non-summer's empty <code>CONTENT_FIELDS</code>), so it silently replaced the sensible, complete scaffold in the local cache for the overwhelming majority of calls — the exact opposite of the fix's intent.</li>
+      <li><strong>[Codex, HIGH] A legitimately-returned <code>{exists: false, data: null}</code> — the target key deleted or moved by someone else in the gap between the write and the read-back — still poisoned the cache with the scaffold, and silently counted as a success.</strong> The helper only retries thrown errors, not a successful "confirmed absent" result, so this case reached the exact same code path as a normal create.</li>
+      <li><strong>[Codex, HIGH, the one that changed the whole approach] The minimized payload can still overwrite another lesson's structural identity, because lesson keys are collision-prone.</strong> <code>makeLessonKey()</code> strips every non-alphanumeric character from each input — "Anne Marie" and "Anne-Marie," or "Pre-K" and "Pre K," normalize to the identical key. Since <code>teacher</code>/<code>className</code>/<code>weekNum</code> were never in <code>NEVER_SEND_ON_CREATE</code> (they can't be — a doc needs its identity fields), a roster entry for one spelling could silently overwrite a real, differently-spelled lesson's identity if the local cache didn't have it. Codex's own framing made the redesign decision directly: "now that Phase 14 performs one read per key anyway, the earlier 'post-read is cheaper than pre-read' rationale no longer holds."</li>
+      <li><strong>[Claude, MEDIUM] The <code>classSize</code> BDD scenario still asserted the exact overclaim round 3's own prose fix had just retracted twelve lines earlier</strong> — a leftover inconsistency between a corrected code comment and an uncorrected test scenario.</li>
+      <li><strong>[Codex, LOW] The "moved to be the literal first check" claim was still inaccurate</strong> — the roster/numWeeks early return still preceded it (harmless, since that return has no side effects, but the doc's own claim overclaimed).</li>
+    </ol>
+    <strong>Rather than patch a fourth time, redesigned Phase 14 around checking BEFORE writing instead of writing then verifying after.</strong> Every candidate key now gets a forced-server existence check (the same <code>adminLessonStillExistsWithRetry()</code> helper, called earlier in the flow) before any write is attempted. Confirmed-free keys get the full, complete scaffold written outright — the <code>NEVER_SEND_ON_CREATE</code> field-exclusion list is gone entirely, since the pre-check itself is what makes a full-object write provably safe, not a growing list of individually-excluded fields. Confirmed-already-existing keys get zero writes and the local cache populated with the real server document instead of any scaffold. This single redesign closes all three HIGH findings above at once: no more read-back-merge logic to get wrong (Claude's finding), no more post-write <code>exists:false</code> edge case (moot — the check now happens before the write), and the key-collision case is caught by the same per-key check regardless of which roster spelling produced the colliding key (Codex's finding). The <code>classSize</code> BDD scenario is also moot now — with a confirmed-free key, the full scaffold (including <code>classSize</code>) is written without needing residual-risk reasoning at all. The "literal first check" wording was corrected to accurately describe what the check precedes rather than overclaim. This gives Phase 14 the same real ordering dependency on Phase 9 it already had (unchanged), and removes the summer-branch's separate manual <code>NEVER_SEND_ON_CREATE</code> stripping step (no longer needed).
+    <br><br>
+    <strong>Confirmed clean, no changes needed:</strong> the second <code>lessonDataLoadedSuccessfully</code> check's placement (both reviewers independently confirmed it correctly catches a failure from this invocation's own load attempt); Phase 14's Phase-9 dependency stated consistently across all three places that discuss it; Phase 12's alert-wording fix and Phase 13's render-ordering fix, both confirmed actually present in the code, not just described in prose; a fresh completeness sweep by both reviewers, independently, found nothing beyond what's already named.
+    <br><br>
+    <strong>Not yet done:</strong> the Phase 14 redesign — a genuine architectural change, not an incremental patch — has not itself been reviewed. Given the pattern of four straight rounds each finding something in this exact function, treat this as the highest-priority thing to re-verify next, not an assumption that redesigning necessarily means it's now correct.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
 <div class="phase">
-  <p><strong>Status: Phases 1–6 (Stages 2–5) complete, deployed. Phases 7–14 (Vulnerability #11 Layer 1, plus the wider bulk-overwrite class it led to) all drafted and have now each been through THREE independent Codex + Claude review rounds.</strong> Round 1 found and fixed 9 real issues. Round 2 (verifying round 1) found and fixed 7 more, plus surfaced <code>deleteSemester()</code>/<code>deleteLessonData()</code> — a live-but-unrelated bug Christie chose to defer. Round 3 (verifying round 2) found and fixed 6 more, the headline one being Phase 14's local cache getting poisoned with a blank scaffold on a "turned out to already exist" key — found independently by both reviewers, with a traced mechanism for how it could cascade into a later, unrelated data-loss save via Phase 9. See the Decisions Log's last three entries for full detail on all three rounds. <strong>Round 3's fixes have not themselves been re-reviewed yet</strong> — that's the next step. Do not mark <code>execution-ready: true</code> until a review pass comes back with zero new findings AND Christie has explicitly approved — three straight rounds have each found real issues, including in content the prior round had just "fixed." <strong>Phase 7 remains the one part of this set confirmed clean across multiple independent rounds with nothing changed since</strong> — safe to execute standalone right now if desired, independent of everything else.</p>
+  <p><strong>Status: Phases 1–6 (Stages 2–5) complete, deployed. Phases 7–14 all drafted and have now each been through FOUR independent Codex + Claude review rounds, every single one finding real issues.</strong> Phase 14 (roster slot creation) has been the hardest to get right — three rounds of incremental "narrow the create payload" patches each found a new leak, so round 4 replaced that whole approach with a pre-write existence check instead (full history in the Decisions Log's last several entries — read them, this summary is not a substitute). <strong>Round 4's Phase 14 redesign has NOT itself been reviewed yet</strong> — given the pattern in this exact function, treat that as the single highest-priority thing to verify next, not a safe assumption. Do not mark <code>execution-ready: true</code> until a review pass comes back with zero new findings AND Christie has explicitly approved. <strong>Phase 7 remains the one part of this set confirmed clean across multiple independent rounds with nothing changed since</strong> — safe to execute standalone right now if desired, independent of everything else.</p>
 
-  <p><strong>Round 3's headline fixes (Aug 14, 2026), for quick reference — full itemized list is in the Decisions Log's final entry, not duplicated here:</strong> Phase 14 now reads back real server state after each create instead of assuming its scaffold is what landed (reusing Phase 9's <code>adminLessonStillExistsWithRetry()</code> — new ordering dependency: Phase 14 must now ship after Phase 9 too); Phase 14's safety-gate check now re-verifies after its own load attempt, not just before; Phase 14's <code>classSize</code> exclusion reasoning corrected from an overclaim to an accurately-described accepted residual risk; two render-ordering/alert-clarity nits fixed in Phase 12/13; one pre-existing, unrelated Idea Bank UI-copy bug named in "Not in scope."</p>
+  <p><strong>Round 4's headline change (Aug 14, 2026):</strong> Phase 14 no longer writes-then-verifies — it now checks each candidate key's existence on the server FIRST (reusing Phase 9's <code>adminLessonStillExistsWithRetry()</code>), and only writes the full scaffold once confirmed free. This eliminated the <code>NEVER_SEND_ON_CREATE</code> field-exclusion list entirely (no longer needed — the pre-check is what makes a full-object write safe) and closed three real bugs the incremental approach had accumulated: a cache-poisoning merge bug (Claude), an unhandled <code>exists:false</code> edge case (Codex), and a key-collision risk from <code>makeLessonKey()</code>'s lossy normalization (Codex) that no amount of field-exclusion could have closed, since <code>teacher</code>/<code>className</code>/<code>weekNum</code> can't be excluded from an identity write.</p>
 
-  <p><strong>Next step:</strong> get a FOURTH review pass (Codex and/or Claude) across ALL of Phases 7-14, with the Phase 14 read-back redesign as the highest-value thing to re-check (it's new infrastructure introducing a new cross-phase dependency). Re-run the completeness sweep one more time (re-grep every <code>saveLessonData</code>/<code>saveSummerCampLessonData</code> caller, AND every direct write to <code>curriculum/lessonData</code>/<code>summerCamps_lessonData</code> that bypasses both helpers) — this exact sweep has found something new on every round so far. Only mark <code>execution-ready: true</code> once a pass comes back with zero new findings AND Christie has explicitly approved. Once approved, execute in dependency order: Phase 7 (independent, already clean, can go first), Phase 8 (three parts ship together), Phase 9 (after Phase 8, and after its TOCTOU/existence-check items above), Phase 10 (independent of 7-9), Phase 11 (after BOTH Phase 9 and Phase 10), Phase 14 (after Phase 9, per its new dependency), and Phases 12/13 (each independent of everything else in this doc — can ship anytime, including before Phase 7, in any order relative to each other). Write the red test first for each phase's BDD scenarios, commit after each phase with tests green, and do not deploy to Netlify without Christie's explicit "okay to deploy."</p>
+  <p><strong>Next step:</strong> get a FIFTH review pass (Codex and/or Claude) with Phase 14's redesign as the top priority — verify the existence-check-then-write ordering is actually correct, that the collision scenario is genuinely closed, and that nothing from the three prior incremental fixes was lost in the rewrite (compare against the Decisions Log's round-4 entry for what should and shouldn't still be present). Re-run the completeness sweep one more time — it has found something new on every round so far. Only mark <code>execution-ready: true</code> once a pass comes back with zero new findings AND Christie has explicitly approved. Once approved, execute in dependency order: Phase 7 (independent, already clean, can go first), Phase 8 (three parts ship together), Phase 9 (after Phase 8, and after its TOCTOU/existence-check items above), Phase 10 (independent of 7-9), Phase 11 (after BOTH Phase 9 and Phase 10), Phase 14 (after Phase 9, per its dependency), and Phases 12/13 (each independent of everything else in this doc — can ship anytime, including before Phase 7, in any order relative to each other). Write the red test first for each phase's BDD scenarios, commit after each phase with tests green, and do not deploy to Netlify without Christie's explicit "okay to deploy."</p>
 
   <p><strong>Final state of the codebase, for reference by any future work in this app</strong> (not a to-do list — everything below is already shipped and deployed):</p>
   <ul>
