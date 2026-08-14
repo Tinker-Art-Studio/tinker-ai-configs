@@ -237,9 +237,24 @@ Then: It shows each teacher's today's content count next to yesterday's backup-d
   <h3>What it does</h3>
   <p><strong>File:</strong> <code>js/app.js</code>, <code>saveTeacherEdit(lessonKey, originalLesson)</code> (currently lines 3024-3145 or nearby — re-derive by function name at execution time, these drift).</p>
   <p>Compute <code>changedFormData</code> exactly as originally drafted — from only the fields <code>getTeChangedFields()</code> reports as changed, covering every field this modal lets a teacher edit (<code>projectTitle</code>, <code>shortDetails</code>, <code>inspoLink</code>, the content fields, <code>materials</code>, <code>materialsList</code>, <code>planComplete</code>), not just the 7 content fields. Photo is saved separately via its own targeted <code>update()</code> call, already narrow, untouched by this phase.</p>
-  <pre><code>// (photo upload/removal handling stays exactly where it is today, unchanged —
-// it already resolves before this point and already saves via its own
-// separate targeted update() call below, not through this payload)
+  <div class="note">⚠️ <strong>Photo-write ordering — stated explicitly here (Aug 14, 2026, per Codex's non-blocking note) rather than left implicit, so this phase can't be implemented with the four steps below in an inconsistent order.</strong> This is the exact ordering today's shipped <code>saveTeacherEdit</code> already uses (<code>app.js:3050-3112</code>) — this phase changes what's <em>inside</em> steps 2 and 4, not the order of the four steps themselves.</div>
+  <pre><code>// Step 1 — photo upload/removal, exactly as today's shipped code, unchanged.
+// Resolves BEFORE either payload below is built, so photoUrl/photoPath are
+// always known (or stay null, meaning "no photo change this save") by the
+// time firestorePayload is constructed in Step 2.
+let photoUrl = null, photoPath = null;
+if (hasNewPhoto) {
+  const result = await uploadLessonPhoto(semKey, lessonKey, photoInput.files[0]);
+  if (originalLesson.photoPath) await deleteLessonPhoto(originalLesson.photoPath);
+  photoUrl = result.url;
+  photoPath = result.path;
+  if (!changedFields.includes('photo')) changedFields.push('photo');
+} else if (pendingRemove && originalLesson.photoUrl) {
+  if (originalLesson.photoPath) await deleteLessonPhoto(originalLesson.photoPath);
+  photoUrl = '';
+  photoPath = '';
+  if (!changedFields.includes('photo')) changedFields.push('photo');
+}
 
 const changedFormData = {};
 changedFields.forEach(f => {
@@ -247,20 +262,33 @@ changedFields.forEach(f => {
   changedFormData[f] = formData[f];
 });
 
-// Firestore-bound payload — NEVER spreads originalLesson. This is the fix:
-// omitting a field from a per-field dotted-path update() call (the non-summer
-// write mechanism, Stage 2D) already means "leave it untouched on the
-// server," so there's no need for originalLesson to be fresh at all.
+// Step 2 — Firestore-bound payload — NEVER spreads originalLesson. This is
+// the fix: omitting a field from a per-field dotted-path update() call (the
+// non-summer write mechanism, Stage 2D) already means "leave it untouched on
+// the server," so there's no need for originalLesson to be fresh at all.
+// Photo fields are deliberately NOT included here — they go through their
+// own targeted update() in Step 3 below, same as today's shipped code.
 const firestorePayload = { ...changedFormData };
 await saveSingleLesson(semKey, lessonKey, firestorePayload, fieldsToClear);
 
-// Photo fields already saved separately above via their own direct
-// dotted-path update() call — unaffected by this split, already narrow.
+// Step 3 — photo fields, targeted dotted-path update(), exactly as today's
+// shipped code (unchanged) — runs AFTER Step 2, never merged into
+// firestorePayload. Order matters: a partial failure between Step 2 and
+// Step 3 leaves content saved but the photo fields not yet updated — this
+// matches today's existing, already-accepted failure behavior; this phase
+// doesn't change it or introduce a new risk here.
+if (photoUrl !== null) {
+  if (!curriculumDb) initCurriculumFirestore();
+  const photoUpdate = {};
+  photoUpdate[`${semKey}.${lessonKey}.photoUrl`] = photoUrl;
+  photoUpdate[`${semKey}.${lessonKey}.photoPath`] = photoPath;
+  await curriculumDb.collection('curriculum').doc('lessonData').update(photoUpdate);
+}
 
-// Local display/cache only — never sent to Firestore, so staleness here is
-// cosmetic (same reasoning as Phase 8/9). Keeps the full merge, including
-// photo fields, so the open modal and currentLessonData keep showing
-// untouched fields as whatever they were, not blanked locally.
+// Step 4 — local display/cache only — never sent to Firestore, so staleness
+// here is cosmetic (same reasoning as Phase 8/9). Keeps the full merge,
+// including photo fields, so the open modal and currentLessonData keep
+// showing untouched fields as whatever they were, not blanked locally.
 const updatedLesson = { ...originalLesson, ...changedFormData };
 if (photoUrl !== null) { updatedLesson.photoUrl = photoUrl; updatedLesson.photoPath = photoPath; }
 if (currentLessonData[semKey]) {
@@ -432,26 +460,57 @@ function showAdminEdit(key, teacher, className, weekNum) {
 }</code></pre>
   <p>Also reset <code>caEditOriginalData</code> (and <code>caEditLessonExisted</code>) in <code>closeAdminModal()</code> (Cancel or closing without saving) — good hygiene matching the other two editors' lifecycle, though <code>showAdminEdit()</code> already overwrites both fresh on every open regardless.</p>
   <p><strong>The second entry point needs the same call, added at the point <code>openDetailModal()</code> renders the empty-cell form</strong> (<code>app.js:4353-4355</code>):</p>
+  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — the original draft of this call site passed <code>captureAdminEditSnapshot(null)</code>, which is wrong.</strong> This branch is reached whenever <code>!hasProject</code> (<code>app.js:4271</code>, <code>!(lesson && lesson.projectTitle)</code>) — and <code>lesson</code> can be either genuinely absent (no doc at all) <em>or</em> a real Firestore doc that exists but has no <code>projectTitle</code> yet (a contentless scaffold — e.g. a lesson row created with teacher/className/weekNum but never titled). Passing the literal <code>null</code> here throws away that distinction at the one call site whose entire job is to capture it: <code>captureAdminEditSnapshot</code> already computes <code>caEditLessonExisted = !!lesson</code> correctly from whatever it's given — the bug was in what this call site was passing in, not in the function itself. Passing <code>null</code> unconditionally makes <code>caEditLessonExisted</code> false even for the scaffold case where a doc genuinely does exist, so the move/delete existence check below would incorrectly skip itself for that lesson.</div>
   <pre><code>  } else {
     // Empty cell — show edit form directly
-    captureAdminEditSnapshot(null); // lesson is null here — brand-new, nothing to conflict with
+    captureAdminEditSnapshot(lesson); // lesson may be null (nothing exists yet) OR a real contentless-scaffold doc — pass the real value either way so caEditLessonExisted reflects whether a doc actually exists
     html += renderAdminEditForm(null, key, teacher, className, weekNum);
     html += `<hr style="margin:16px 0; border:none; border-top:1px solid #eee">`;
     // ...rest of this branch unchanged
   }</code></pre>
-  <p>With this, <code>caEditLessonExisted</code> is correctly <code>false</code> for genuine creation regardless of which entry point rendered the form, and the move/delete existence check below correctly skips itself for a lesson that was never expected to exist yet.</p>
+  <p>With this, <code>caEditLessonExisted</code> is correctly <code>false</code> only for genuine first-time creation (no doc at all) regardless of which entry point rendered the form, correctly <code>true</code> for a contentless scaffold doc, and the move/delete existence check below runs exactly when it should — skipped only when there's truly nothing to have been moved or deleted yet.</p>
 
   <div class="danger">🛑 <strong>Edit-vs-move/delete race — found by an independent Codex review, verified directly against the real code before accepting the finding. A real gap, not covered by anything above.</strong> <code>saveAdminEdit(key, teacher, className, weekNum)</code>'s four parameters are baked into the Save button's <code>onclick</code> at the moment the popup renders (<code>app.js:4457</code>) — they never update while the popup stays open. The admin grid's move action (<code>app.js:4622-4672</code>) writes the moved lesson to a new key and then calls <code>deleteLessonKey()</code> on the <em>old</em> key, after verifying the destination write. Concrete trace: Admin B opens the edit popup for lesson key <code>Alice-Art-2</code>. Admin A, separately, moves that same lesson to a new week — Firestore now has it at <code>Alice-Art-3</code>, and <code>Alice-Art-2</code>'s doc has been deleted. B, unaware, edits only the title in their still-open popup and saves. Every fix above (the diff, the payload split) correctly narrows <em>what</em> gets written — but B's save still targets the now-deleted key <code>Alice-Art-2</code>, and since Firestore's <code>set(merge:true)</code>/dotted-path <code>update()</code> both create-or-merge, this <strong>recreates a ghost duplicate lesson</strong> at the key A just deleted, containing whatever narrow fields B's payload happened to include (the stale teacher/className/weekNum plus B's title change) — not a data-loss bug, but a data-integrity one: a lesson Admin A believed was gone reappears, sparse and duplicated.</div>
 
-  <p><strong>Fix: verify the lesson still exists before writing, and only when it's supposed to.</strong> A brand-new lesson (empty grid cell, nothing to conflict with) legitimately has no doc yet — <code>caEditLessonExisted</code> distinguishes that case from "existed when I opened this popup, might be gone now." Check as the very first thing in <code>saveAdminEdit()</code>, before any other work (including photo upload) — a clean early exit with zero side effects if the lesson's gone, not an abort partway through:</p>
-  <pre><code>async function saveAdminEdit(key, teacher, className, weekNum) {
+  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — the original draft of this check didn't actually force a server read, contradicting its own stated justification. Found independently by both a second Codex pass and a fourth Claude pass in the same round.</strong> Both the inline summer <code>.get()</code> and the reused <code>readAdminLessonDoc()</code> for non-summer defaulted to a plain, cache-permitting <code>.get()</code>. Claude traced the specific mechanism that makes this a real, not theoretical, risk: <code>setupLessonDataListener()</code> (<code>firebase-data.js:512-541</code>) keeps an active <code>onSnapshot</code> listener on the exact same <code>curriculum/lessonData</code> doc <code>readAdminLessonDoc()</code> reads — Firestore's JS SDK can serve a plain <code>.get()</code> from that listener's local cache instead of the network. In precisely the race window this check exists to close (a delete that hasn't yet propagated to this admin's listener), the check could pass on stale cached data and fail to catch the exact ghost-duplicate scenario it was built for.</div>
+  <p><strong>Fix: verify the lesson still exists before writing, and only when it's supposed to — with a forced server read, not a local-cache check.</strong> A brand-new lesson (empty grid cell, nothing to conflict with) legitimately has no doc yet — <code>caEditLessonExisted</code> distinguishes that case from "existed when I opened this popup, might be gone now." Check as the very first thing in <code>saveAdminEdit()</code>, before any other work (including photo upload) — a clean early exit with zero side effects if the lesson's gone, not an abort partway through:</p>
+  <pre><code>// readAdminLessonDoc() (Phase 1, already shipped) gained a third, optional
+// opts param here — { source: 'server' } forces the network read this check
+// needs; omitting opts preserves the exact default (cache-permitting) behavior
+// its one existing caller (the move read-back at app.js:4663) already relies
+// on, so this doesn't change that call site's behavior at all.
+async function readAdminLessonDoc(semKey, lessonKey, opts = {}) {
+  if (!curriculumDb) initCurriculumFirestore();
+  const getOpts = opts.source === 'server' ? { source: 'server' } : undefined;
+  const snap = await curriculumDb.collection('curriculum').doc('lessonData').get(getOpts);
+  return snap.exists ? (snap.data()?.[semKey]?.[lessonKey] || null) : null;
+}
+
+async function saveAdminEdit(key, teacher, className, weekNum) {
   const semKey = getAdminSemKey();
 
   if (caEditLessonExisted) {
     if (!curriculumDb) initCurriculumFirestore();
-    const stillExists = semKey.startsWith('summer-')
-      ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get()).exists
-      : (await readAdminLessonDoc(semKey, key)) !== null;
+    // Forced server read, mirroring Phase 3's verifySummerLessonWrite()
+    // precedent — retry once on failure, then fail closed (block the save)
+    // rather than silently treating a network error as "still exists."
+    let stillExists;
+    try {
+      stillExists = semKey.startsWith('summer-')
+        ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' })).exists
+        : (await readAdminLessonDoc(semKey, key, { source: 'server' })) !== null;
+    } catch (err) {
+      console.warn('⚠️ Existence check read failed, retrying once:', err);
+      try {
+        stillExists = semKey.startsWith('summer-')
+          ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' })).exists
+          : (await readAdminLessonDoc(semKey, key, { source: 'server' })) !== null;
+      } catch (err2) {
+        console.warn('⚠️ Existence check retry also failed:', err2);
+        alert("Couldn't confirm this lesson still exists — check your connection and try saving again.");
+        return;
+      }
+    }
     if (!stillExists) {
       alert('This lesson was moved or removed elsewhere while you had it open. Your changes were not saved — please close this window and check the grid for its new location.');
       return;
@@ -459,7 +518,8 @@ function showAdminEdit(key, teacher, className, weekNum) {
   }
 
   // ...rest of saveAdminEdit (title validation, diff, photo, save) unchanged from below</code></pre>
-  <p>This reuses <code>readAdminLessonDoc()</code> (Phase 1, non-summer only, already reads <code>curriculum/lessonData</code>) for the non-summer case, and a direct single-doc existence check for summer, mirroring how Phase 8's read-back verification already reads <code>summerCamps_lessonData</code> directly. This is a forced server read each time (not a local-cache check), the same reasoning as Phase 3's read-back verification — a stale local cache is exactly what would fail to catch this.</p>
+  <p>This reuses <code>readAdminLessonDoc()</code> (Phase 1, non-summer only, already reads <code>curriculum/lessonData</code>) for the non-summer case, and a direct single-doc existence check for summer, mirroring how Phase 8's read-back verification already reads <code>summerCamps_lessonData</code> directly. Both are now forced server reads (<code>{ source: 'server' }</code>), not local-cache checks, for the reasoning in the danger box above.</p>
+  <div class="note">⚠️ <strong>Residual TOCTOU race — deliberately accepted as a documented gap, not closed with a transaction. Christie's explicit decision, Aug 14, 2026.</strong> Even with the forced server read above, a gap remains between the check completing and the write landing — another admin could move or delete the lesson in that exact window, still producing the ghost duplicate this fix exists to prevent. Closing it fully would mean wrapping the check and the write in a single Firestore transaction, which would require making <code>saveSingleLesson()</code> transaction-aware — a shared function with many other callers, and one that already does its own separate post-write read-back verification for summer (<code>verifySummerLessonWrite()</code>), a second read that doesn't compose cleanly inside a transaction's read-then-write structure. Christie chose to accept the residual gap instead: the forced server read above already closes the concretely-demonstrated risk (a stale local cache silently passing the check); what's left is bounded by human click-to-click timing, not a tight machine loop, and matches how Layer 2 (same-field collision detection, see "Not in scope") is already deferred elsewhere in this doc for the same kind of reasoning — revisit if this surfaces as an actual incident, not preemptively.</div>
 
   <div class="danger">🛑 <strong>Why this can't just spread the existing lesson like the pre-Phase-8 code did — same underlying reasoning as Phase 8, re-derived for this specific function's data flow. Corrected after a third-pass second-model review found the original framing here overclaimed:</strong> <code>saveAdminEdit()</code>'s <code>existing</code> variable (<code>lessons[key] || {}</code>, where <code>lessons = {...currentLessonData[semKey]}</code>) IS re-read fresh from the local cache at save time, not frozen at modal-open time — on its face this looks like Phase 7's "safe because it's live-refreshed" case, not Phase 8's "frozen closure" case. The original draft argued this further by claiming <code>summerCamps_lessonData</code> "has no live listener" — that's not quite right: <code>currentLessonData['summer-2026']</code> <em>does</em> get opportunistically refreshed via a full <code>loadSummerCampData()</code> re-fetch whenever the unrelated non-summer <code>onSnapshot</code> listener fires (<code>firebase-data.js:512-540</code>) — i.e. on any unrelated non-summer save anywhere in the app, not never. <strong>The real reason this fix is needed has nothing to do with how reliable that opportunistic refresh is</strong>: even an occasionally-fresh <code>existing</code> is not a guarantee at the moment any specific save fires, and the whole point of the payload/local-cache split is that it doesn't need to reason about freshness at all — omitting a field from the Firestore payload is safe regardless of whether <code>existing</code> happened to be fresh or stale at that instant. Since <code>saveAdminEdit()</code> is one shared function serving both schemas, and the split makes freshness a non-issue either way, apply Phase 8's split uniformly to both rather than trying to reason field-by-field about which schema's cache is more trustworthy right now.</div>
 
@@ -587,20 +647,34 @@ Given: An admin edits only the project title on a summer lesson that already has
 When: They save
 Then: The save is not blocked by the hasContent guard — zero content keys in the payload, exactly the case Phase 8's guard rewrite handles
 
-Given: An admin creates a brand-new lesson via an empty grid slot — this specifically exercises openDetailModal()'s direct renderAdminEditForm(null,...) path, not showAdminEdit(), since that's the actual route to a first-time-creation form
+Given: An admin creates a brand-new lesson via an empty grid slot with no doc at all — this specifically exercises openDetailModal()'s direct renderAdminEditForm(null,...) path, not showAdminEdit(), since that's the actual route to a first-time-creation form
 When: They fill in some fields and save
-Then: captureAdminEditSnapshot(null) at that call site correctly set caEditLessonExisted=false and an all-empty caEditOriginalData for this specific popup instance — not a leftover value from a previously-open, different lesson's popup
+Then: captureAdminEditSnapshot(lesson) at that call site (lesson is null/undefined here) correctly set caEditLessonExisted=false and an all-empty caEditOriginalData for this specific popup instance — not a leftover value from a previously-open, different lesson's popup
   AND every field they typed is treated as "changed" against the empty baseline and saved correctly — the diff logic requires no special-casing for creation vs. edit
   AND the move/delete existence check is correctly skipped (caEditLessonExisted is false), since there's nothing to have been moved or deleted yet
 
-Given: Admin B has the edit popup open on a lesson; Admin A, separately, moves that same lesson to a new grid slot, which deletes the original key's Firestore doc after verifying the new location's write (Phase 1)
+Given: An admin opens a lesson slot that renders via the SAME empty-cell branch, but a contentless scaffold doc already exists at that key (teacher/className/weekNum set, no projectTitle) — the specific case the Aug 14, 2026 fix above targets
+When: They fill in a title and other fields and save
+Then: captureAdminEditSnapshot(lesson) at that call site (lesson is the real scaffold object, not null) correctly set caEditLessonExisted=true
+  AND the move/delete existence check below correctly runs for this save (not skipped) — proving this case is distinguishable from genuine first-time creation, which the pre-fix captureAdminEditSnapshot(null) call could not do
+
+Given: Admin B has the edit popup open on a lesson; Admin A, separately, moves that same lesson to a new grid slot, which deletes the original key's Firestore doc after verifying the new location's write (Phase 1) — but B's page's onSnapshot listener (setupLessonDataListener) has NOT yet delivered that delete into B's local cache
 When: B, unaware, edits only the title in their still-open popup and saves
-Then: The pre-save existence check reads the server directly and finds the original key's doc no longer exists
+Then: The pre-save existence check's forced { source: 'server' } read bypasses B's stale local cache entirely and finds the original key's doc no longer exists on the actual server
   AND B's save is blocked with an alert explaining the lesson was moved or removed elsewhere — no ghost duplicate is created at the deleted key
+  AND this specifically proves the check would have failed to catch this exact scenario with a plain (cache-permitting) .get(), which is the bug this fix closes
 
 Given: The same scenario, but B's popup lesson was only edited by someone else (not moved/deleted) — the doc still exists at the same key
 When: B saves
-Then: The existence check passes (doc found) and the save proceeds normally, protected by every other fix in this phase</div>
+Then: The existence check passes (doc found) and the save proceeds normally, protected by every other fix in this phase
+
+Given: The forced server read itself fails once (a transient network error), then succeeds on retry
+When: An admin saves through the edit popup
+Then: The save proceeds normally after the retry succeeds — mirroring verifySummerLessonWrite()'s retry-once pattern, not treated as "lesson doesn't exist"
+
+Given: The forced server read fails twice in a row (retry also fails)
+When: An admin saves through the edit popup
+Then: The save is blocked with an alert asking them to check their connection and try again — a failed existence check fails closed (blocks the save), never silently proceeds as if the lesson were confirmed to still exist</div>
 </div>
 
 <h2 id="phase10">Phase 10 — Teacher Q&amp;A send: narrow payload + atomic thread append</h2>
@@ -614,8 +688,27 @@ Then: The existence check passes (doc found) and the save proceeds normally, pro
 
   <h3>What it does</h3>
   <p><strong>File:</strong> <code>js/app.js</code>, <code>sendTeacherQaMessage(lessonKey, lesson)</code>.</p>
-  <p>Bypass <code>saveSingleLesson()</code> entirely for this save — the same pattern this codebase already uses for photo fields (a direct, targeted dotted-path <code>update()</code> call) — and append the new message via Firestore's <code>arrayUnion()</code> instead of a local read-modify-write, so two concurrent senders can't overwrite each other regardless of timing. Each message includes a <code>timestamp</code>, making every entry unique, so <code>arrayUnion</code> never de-duplicates two different real messages against each other.</p>
-  <pre><code>async function sendTeacherQaMessage(lessonKey, lesson) {
+  <p>Bypass <code>saveSingleLesson()</code> entirely for this save — the same pattern this codebase already uses for photo fields (a direct, targeted dotted-path <code>update()</code> call) — and append the new message via Firestore's <code>arrayUnion()</code> instead of a local read-modify-write, so two concurrent senders can't overwrite each other regardless of timing.</p>
+  <div class="note">⚠️ <strong>Two fixes to this snippet since the last review round, Aug 14, 2026:</strong>
+    <ol>
+      <li><strong>Generated message ID (Codex's non-blocking note, now applied).</strong> The original draft relied on each message's <code>timestamp</code> alone for uniqueness. <code>arrayUnion()</code> de-duplicates array entries by deep equality — a <code>timestamp</code> string only has millisecond resolution, so two different real messages sent in the same millisecond (plausible on a fast connection, e.g. an admin and a teacher both hitting Send right after a page load race) could theoretically collide if every other field also matched, silently merging into one entry. Each entry now carries an <code>id</code>, generated the same way this codebase's existing Idea Bank feature already does (<code>app.js:5317</code>, <code>Date.now().toString(36) + Math.random().toString(36).substr(2, 5)</code> — matched to house style rather than introducing <code>crypto.randomUUID()</code> as a second, inconsistent convention for the same purpose).</li>
+      <li><strong>Legacy-thread migration gap — found while designing Phase 11 below, real, not previously caught by any prior review pass.</strong> <code>getQaThread(lesson)</code> (<code>app.js:6678</code>) only falls back to the old <code>teacherNotes</code>/<code>adminResponse</code> fields when <code>lesson.qaThread</code> is absent or empty — once <code>qaThread</code> has one real entry, those legacy fields are never read again by anything. Today's shipped code (being replaced by this phase) calls <code>getQaThread(lesson)</code>, pushes onto it, and writes the <em>whole</em> resulting array back — so a legacy-only lesson's first message under today's code silently migrates its synthesized legacy thread into a real <code>qaThread</code> array. A bare <code>arrayUnion(newEntry)</code>, as originally drafted for this phase, does not do that migration — it just creates a brand-new one-entry array, permanently losing whatever legacy messages <code>getQaThread()</code> was synthesizing for that lesson. Fixed below via a small shared helper, reused by Phase 11.</li>
+    </ol>
+  </div>
+  <pre><code>// Shared by sendTeacherQaMessage (here) and sendQaReply (Phase 11) — both need
+// to seed arrayUnion's argument list with the synthesized legacy thread on a
+// lesson's first message under this atomic-append pattern, or those legacy
+// messages are silently lost the moment qaThread gets its first real entry
+// (see the note above). arrayUnion's deep-equality dedup makes repeating this
+// migration from two concurrent senders safe: identical legacy entries
+// collapse to one, and new entries (each carrying a generated id) never
+// collide with each other or with the migrated legacy ones.
+function buildQaThreadUnionArgs(existingLesson, newEntry) {
+  const needsMigration = !existingLesson?.qaThread || existingLesson.qaThread.length === 0;
+  return needsMigration ? [...getQaThread(existingLesson || {}), newEntry] : [newEntry];
+}
+
+async function sendTeacherQaMessage(lessonKey, lesson) {
   const input = document.getElementById('te-qa-input');
   if (!input) return;
   const message = input.value.trim();
@@ -624,6 +717,7 @@ Then: The existence check passes (doc found) and the save proceeds normally, pro
   const user = getAuthUser();
   const isAdmin = ['admin', 'manager'].includes(user?.role);
   const newEntry = {
+    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
     from: isAdmin ? 'admin' : 'teacher',
     name: user?.name || 'Unknown',
     message,
@@ -631,6 +725,11 @@ Then: The existence check passes (doc found) and the save proceeds normally, pro
   };
 
   const semKey = getTvSemKey();
+  // Read-only use of the local cache, just to decide whether legacy migration
+  // applies — never spread into the Firestore payload itself, so staleness
+  // here can't cause data loss (worst case: an unnecessary but harmless
+  // re-migration, deduped by arrayUnion as explained above).
+  const currentLesson = currentLessonData?.[semKey]?.[lessonKey] || lesson;
 
   try {
     // Firestore-bound payload — only the Q&A-related fields, never the full
@@ -642,7 +741,7 @@ Then: The existence check passes (doc found) and the save proceeds normally, pro
     // same as the existing photo-field pattern, avoids that entirely.
     if (!curriculumDb) initCurriculumFirestore();
     const updates = {
-      [`${semKey}.${lessonKey}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(newEntry),
+      [`${semKey}.${lessonKey}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(...buildQaThreadUnionArgs(currentLesson, newEntry)),
     };
     if (!isAdmin) {
       updates[`${semKey}.${lessonKey}.teacherNotes`] = message;
@@ -658,7 +757,7 @@ Then: The existence check passes (doc found) and the save proceeds normally, pro
     alert('Error sending message: ' + err.message);
   }
 }</code></pre>
-  <p><code>getQaThread(lesson)</code> is no longer called from this function at all — the local array is never read or rebuilt, so there's nothing to race. <code>openTeacherEditModal(lessonKey)</code> re-renders from whatever's currently in <code>currentLessonData</code>, same as the original code already did with no manual cache sync — not a regression, matches existing behavior.</p>
+  <p><code>getQaThread(lesson)</code> is only called now via <code>buildQaThreadUnionArgs()</code>, and only to read (never to locally push-and-rewrite) — there's still nothing to race, since the actual append to Firestore always goes through <code>arrayUnion()</code>. <code>openTeacherEditModal(lessonKey)</code> re-renders from whatever's currently in <code>currentLessonData</code>, same as the original code already did with no manual cache sync — not a regression, matches existing behavior.</p>
 
   <div class="bdd">Given: Teacher A and Admin B both have the same lesson's Q&A panel open, with Firestore already holding processStep2="Old step 2" (unrelated content field)
 When: A sends a Q&A message
@@ -666,11 +765,19 @@ Then: Firestore's processStep2 is completely unaffected — the update() call on
 
 Given: Teacher A and Admin B both send a Q&A message within the same short window, both starting from the same locally-cached thread state
 When: Both saves land
-Then: Both messages appear in the final qaThread array — arrayUnion() never lets one overwrite the other, regardless of which write reaches the server first
+Then: Both messages appear in the final qaThread array — arrayUnion() never lets one overwrite the other, regardless of which write reaches the server first, and each entry's generated id guarantees this holds even if both messages happen to share the exact same millisecond timestamp
 
 Given: A teacher sends a Q&A message, then immediately edits and saves lesson content via the main editor (Phase 7)
 When: Both saves complete
-Then: Both changes survive — the Q&A save's narrowed payload never touches content fields, and Phase 7's narrowed payload never touches qaThread/teacherNotes/adminResponse</div>
+Then: Both changes survive — the Q&A save's narrowed payload never touches content fields, and Phase 7's narrowed payload never touches qaThread/teacherNotes/adminResponse
+
+Given: A lesson has only legacy teacherNotes/adminResponse fields set — no qaThread array has ever existed on this doc
+When: A teacher sends a new Q&A message through this function
+Then: The resulting qaThread array contains BOTH the synthesized legacy message(s) getQaThread() would have shown AND the new message — not just the new message alone, which would silently discard the legacy conversation
+
+Given: The same legacy-only lesson as above, but Teacher A and Admin B both send a message at nearly the same time, both computing the migration independently from the same stale local cache
+When: Both saves land
+Then: The final qaThread array contains the legacy message(s) exactly once (arrayUnion's deep-equality dedup collapses the two identical migrated copies) plus both new messages — no duplication, no loss</div>
 </div>
 
 <h2 id="firebase-safety">Firebase Safety Checklist</h2>

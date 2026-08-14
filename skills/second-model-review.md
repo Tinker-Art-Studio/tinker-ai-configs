@@ -4,7 +4,7 @@ Get an independent review of a plan or implementation from a second Claude Code 
 
 ## Available reviewer
 
-Only Claude Code is installed. Codex CLI and OMP are not available.
+Both Claude Code and Codex CLI are installed and authenticated (confirmed 2026-08-14 — `codex exec`/`codex review` work; run from inside a git repo dir with `--skip-git-repo-check` and `< /dev/null` to avoid a stdin-read hang). OMP is not available. When a genuinely independent second opinion matters (not just a second Claude instance), prefer running both Claude and Codex and comparing.
 
 ## When to use
 
