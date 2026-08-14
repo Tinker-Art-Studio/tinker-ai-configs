@@ -780,6 +780,489 @@ When: Both saves land
 Then: The final qaThread array contains the legacy message(s) exactly once (arrayUnion's deep-equality dedup collapses the two identical migrated copies) plus both new messages — no duplication, no loss</div>
 </div>
 
+<h2 id="phase11">Phase 11 — Admin Help Queue reply: narrow payload + atomic thread append (sendHelpResponse / sendQaReply)</h2>
+<div class="phase" id="phase-11">
+  <div class="danger">🛑 <strong>Found by a second Codex pass and a fourth Claude pass, run in parallel, independently — both converged on this same finding. This is not a narrower version of Vulnerability #11; it's a live instance of the ORIGINAL Stage 1 bulk-overwrite bug class (the one that caused the actual May 2026 data-loss incidents), in a feature area (admin Help Queue / Q&amp;A reply) no prior pass — not the original 6-phase plan, not four Claude passes, not two Codex passes — had ever audited.</strong> <code>sendHelpResponse(key)</code> (<code>app.js:5567-5591</code>) and <code>sendQaReply(key)</code> (<code>app.js:5593-5619</code>) both do the same local <code>qaThread</code> read-modify-write race Phase 10 fixes for <code>sendTeacherQaMessage</code> — but instead of a single-lesson save, both copy the <strong>entire locally-cached semester</strong> (<code>const lessons = {...(currentLessonData?.[semKey] || {})}</code>) and bulk-write it via <code>saveLessonData()</code> (<code>firebase-data.js:351-366</code>), which does a recursive document-merge for non-summer or routes to <code>saveSummerCampLessonData()</code>'s batch-write-every-cached-lesson path for summer (<code>firebase-data.js:381-412</code>). Both functions are reachable via <code>getAdminSemKey()</code> for <strong>either</strong> schema — unlike <code>sendTeacherQaMessage</code>, which is non-summer only, these two branch by schema internally the same way <code>saveLessonData()</code> itself does.</div>
+
+  <h3>What it does</h3>
+  <p><strong>File:</strong> <code>js/app.js</code>, <code>sendHelpResponse(key)</code> and <code>sendQaReply(key)</code>.</p>
+  <div class="note">⚠️ <strong>Ordering dependency — this phase must ship after BOTH Phase 9 and Phase 10, not before.</strong> It reuses <code>readAdminLessonDoc()</code>'s forced-server <code>opts</code> parameter (added in Phase 9) and the <code>buildQaThreadUnionArgs()</code> helper (added in Phase 10) rather than duplicating either.</div>
+  <p>Bypass <code>saveLessonData()</code>/<code>saveSummerCampLessonData()</code> entirely — direct, targeted writes, branching by schema the same way <code>saveSingleLesson()</code> does, since (unlike Phase 10's non-summer-only <code>sendTeacherQaMessage</code>) both of these functions are reachable for either schema.</p>
+
+  <p><strong><code>sendHelpResponse(key)</code> — reachable only when the Help Queue panel already shows this lesson, which (per <code>renderHelpQueue()</code>'s own filter, <code>l.qaThread || []</code>, <code>app.js:5495</code>) requires a real, non-empty <code>qaThread</code> array to already exist. No legacy-migration case is reachable here — unlike <code>sendQaReply</code> below, a bare <code>arrayUnion(newEntry)</code> is always correct for this function.</strong></p>
+  <pre><code>async function sendHelpResponse(key) {
+  const input = document.getElementById(`ca-help-input-${key}`);
+  if (!input) return;
+  const response = input.value.trim();
+  if (!response) return;
+
+  const semKey = getAdminSemKey();
+  const existing = currentLessonData?.[semKey]?.[key];
+  if (!existing) return;
+
+  const user = getAuthUser();
+  const newEntry = {
+    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+    from: 'admin',
+    name: user?.name || 'Admin',
+    message: response,
+    timestamp: new Date().toISOString()
+  };
+
+  if (!curriculumDb) initCurriculumFirestore();
+  const isSummer = semKey.startsWith('summer-');
+  const updates = {};
+  if (isSummer) {
+    updates.qaThread = firebase.firestore.FieldValue.arrayUnion(newEntry);
+    updates.adminResponse = response;
+    updates.status = 'In Progress';
+  } else {
+    updates[`${semKey}.${key}.qaThread`] = firebase.firestore.FieldValue.arrayUnion(newEntry);
+    updates[`${semKey}.${key}.adminResponse`] = response;
+    updates[`${semKey}.${key}.status`] = 'In Progress';
+  }
+  const docRef = isSummer
+    ? curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key))
+    : curriculumDb.collection('curriculum').doc('lessonData');
+
+  try {
+    await docRef.update(updates);
+  } catch (err) {
+    console.error('Error sending help response:', err);
+    alert('Error sending response: ' + err.message);
+    return;
+  }
+
+  // Local display/cache only — never sent to Firestore, so staleness here is
+  // cosmetic, same reasoning as Phases 7-10.
+  currentLessonData[semKey][key] = {
+    ...existing,
+    adminResponse: response,
+    qaThread: [...(existing.qaThread || []), newEntry],
+    status: 'In Progress'
+  };
+  renderHelpQueue();
+}</code></pre>
+
+  <p><strong><code>sendQaReply(key)</code> — reachable from the admin detail modal's Q&amp;A section (<code>renderQaWithReply()</code>, "admin can always reply," <code>app.js:6729</code>) for ANY lesson with content, regardless of whether <code>qaThread</code> already exists. This function CAN hit a legacy-only lesson (real content in <code>teacherNotes</code>/<code>adminResponse</code>, no <code>qaThread</code> array yet) — needs the same migration handling as Phase 10.</strong></p>
+  <pre><code>async function sendQaReply(key) {
+  const input = document.getElementById(`qa-reply-${key}`);
+  if (!input) return;
+  const message = input.value.trim();
+  if (!message) return;
+
+  const semKey = getAdminSemKey();
+  const existing = currentLessonData?.[semKey]?.[key];
+  if (!existing) return;
+
+  if (!curriculumDb) initCurriculumFirestore();
+  const isSummer = semKey.startsWith('summer-');
+
+  // Move/delete existence check — same reasoning and same shared helper as
+  // Phase 9: this admin detail modal, like saveAdminEdit()'s popup, stays
+  // open indefinitely with this Send button's `key` baked in — openDetailModal()
+  // is NOT wired into the live setupLessonDataListener refresh the way
+  // renderHelpQueue() is (see the note below sendHelpResponse's design for why
+  // that function doesn't need this same check). Forced server read, for the
+  // same reason as Phase 3/Phase 9. Same accepted-gap treatment as Phase 9
+  // applies to the residual TOCTOU window here too — no new decision needed,
+  // this is the identical, already-decided tradeoff.
+  const stillExists = isSummer
+    ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' })).exists
+    : (await readAdminLessonDoc(semKey, key, { source: 'server' })) !== null;
+  if (!stillExists) {
+    alert('This lesson was moved or removed elsewhere. Your reply was not sent — please close this window and check the grid for its new location.');
+    return;
+  }
+
+  const user = getAuthUser();
+  const newEntry = {
+    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+    from: 'admin',
+    name: user?.name || 'Admin',
+    message,
+    timestamp: new Date().toISOString()
+  };
+
+  // Legacy-thread migration — same helper and reasoning as Phase 10's
+  // sendTeacherQaMessage. See Phase 10 for the full explanation of why a bare
+  // arrayUnion(newEntry) would silently drop legacy messages here, and why
+  // re-seeding with getQaThread()'s synthesized array is safe to repeat.
+  const entriesToAdd = buildQaThreadUnionArgs(existing, newEntry);
+
+  const updates = {};
+  if (isSummer) {
+    updates.qaThread = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
+    updates.adminResponse = message;
+  } else {
+    updates[`${semKey}.${key}.qaThread`] = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
+    updates[`${semKey}.${key}.adminResponse`] = message;
+  }
+  const docRef = isSummer
+    ? curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key))
+    : curriculumDb.collection('curriculum').doc('lessonData');
+
+  try {
+    await docRef.update(updates);
+  } catch (err) {
+    console.error('Error sending Q&A reply:', err);
+    alert('Error sending reply: ' + err.message);
+    return;
+  }
+
+  // Local display/cache only — never sent to Firestore, so staleness here is
+  // cosmetic, same reasoning as Phases 7-10.
+  const updatedLesson = {
+    ...existing,
+    adminResponse: message,
+    qaThread: [...(existing.qaThread && existing.qaThread.length > 0 ? existing.qaThread : getQaThread(existing)), newEntry]
+  };
+  currentLessonData[semKey][key] = updatedLesson;
+
+  // Re-open the detail modal to show the updated thread — same as today's
+  // shipped behavior, just reading from the now-updated local cache instead
+  // of the stale closure `lesson` the original code used here.
+  openDetailModal(updatedLesson, key, updatedLesson.teacher, updatedLesson.className, updatedLesson.weekNum);
+}</code></pre>
+
+  <div class="note">⚠️ <strong>Why sendHelpResponse doesn't get the same existence check as sendQaReply — a real, traced asymmetry, not an oversight.</strong> <code>renderHelpQueue()</code>'s container IS re-rendered live on every remote change (<code>setupLessonDataListener</code>'s callback calls it directly, <code>app.js:4066</code>) — so a lesson moved/deleted elsewhere causes this panel to refresh (and that entry to disappear or relocate) on essentially every remote update, substantially narrowing the window versus a modal that stays static. <code>openDetailModal()</code>, by contrast, is not wired into that live refresh at all — once open, it stays showing whatever it showed at open time, exactly like the two edit modals and <code>saveAdminEdit()</code>'s popup, which is precisely the pattern Phase 9 exists to fix. Adding the same check to <code>sendHelpResponse</code> would be redundant engineering against a window that's already self-narrowing; <code>sendQaReply</code> genuinely needs it because its host UI has no equivalent self-refresh.</div>
+
+  <div class="bdd">Given: The Help Queue shows a lesson with an existing teacher question, Firestore already holding processStep2="Old step 2" on that lesson (unrelated content field) and OTHER unrelated lessons elsewhere in the same semester with their own real content
+When: An admin sends a Help Queue response
+Then: Firestore's processStep2 is completely unaffected, AND every other lesson in the semester is completely unaffected — the update() call only ever touches THIS lesson's qaThread/adminResponse/status dotted paths (or, for summer, only this lesson's own document), never any other lesson's fields
+
+Given: The same scenario for sendQaReply via the admin detail modal
+When: An admin sends a reply
+Then: The same isolation holds — no other lesson in the cached semester is touched by this save, unlike the original bug where the entire cached semester was resent
+
+Given: A summer lesson's Help Queue entry, Firestore already holding real content in another summer lesson in the same semester
+When: An admin sends a Help Queue response to the first lesson
+Then: saveSummerCampLessonData()'s batch-every-cached-lesson path is never invoked at all — the write is a single targeted document update, so the other summer lesson's document is never touched, let alone re-merged from a possibly-stale local copy
+
+Given: A legacy-only lesson (real teacherNotes/adminResponse, no qaThread array) that has real content, viewed in the admin detail modal
+When: An admin sends a Q&A reply via sendQaReply
+Then: The resulting qaThread contains both the synthesized legacy message(s) and the new reply — not just the new reply alone
+
+Given: Admin B has the lesson's detail modal open; Admin A, separately, moves that same lesson to a new grid slot, deleting the original key's doc
+When: B, unaware, sends a Q&A reply through the still-open modal
+Then: The pre-send existence check reads the server directly, finds the original key's doc gone, and blocks the send with an alert — no ghost duplicate is created at the deleted key</div>
+</div>
+
+<h2 id="phase12">Phase 12 — Copy Plan to Others: per-target targeted saves (executeCopyPlan)</h2>
+<div class="phase" id="phase-12">
+  <div class="danger">🛑 <strong>Found Aug 14, 2026 via a completeness sweep of every saveLessonData() caller — done specifically to make an honest "no other unaudited callers" claim for Phase 11, and it surfaced four more real instances instead. Christie chose to design fixes for all of them in this same session rather than defer.</strong> <code>executeCopyPlan(sourceKey)</code> (<code>app.js:4817-4883</code>) — the admin grid's "Copy Plan to Others" feature — spreads the entire cached semester (<code>const lessons = { ...currentLessonData[semKey] }</code>), copies <code>getCopyableFields(source)</code> onto every selected target key locally, then bulk-writes the whole thing back via <code>saveLessonData(semKey, lessons)</code>. Identical root cause to Phase 11's finding, different feature.</div>
+
+  <h3>What it does</h3>
+  <p><strong>File:</strong> <code>js/app.js</code>, <code>executeCopyPlan(sourceKey)</code>. <strong>No ordering dependency on Phases 7-11</strong> — this reuses only already-shipped <code>saveSingleLesson()</code> (Phase 1) and could ship before Phase 7 if desired.</p>
+  <p>Split one bulk <code>saveLessonData()</code> call into N targeted <code>saveSingleLesson()</code> calls, one per copy target — the same "one atomic bulk write → multiple targeted writes" pattern Phase 1 already established for the admin grid's swap action. Stop on the first failure rather than attempt every remaining target against a save path that just failed: unlike swap, there's no delete involved here, so there's nothing to roll back — a stopped-partway copy just means the untried targets can be re-run by repeating the action.</p>
+  <pre><code>async function executeCopyPlan(sourceKey) {
+  const semKey = getAdminSemKey();
+  const lessons = { ...currentLessonData[semKey] }; // local display/cache only from here — never sent to Firestore as a whole object
+  const source = lessons[sourceKey];
+  if (!source) return;
+
+  const checkboxes = document.querySelectorAll('.ca-copy-cb:checked');
+  const targetKeys = Array.from(checkboxes).map(cb => cb.dataset.key);
+  if (targetKeys.length === 0) { alert('No targets selected.'); return; }
+
+  const overwriteTargets = targetKeys.filter(k => lessons[k] && hasLessonContent(lessons[k]));
+  if (overwriteTargets.length > 0) {
+    const names = overwriteTargets.map(k => {
+      const l = lessons[k];
+      return `${l.teacher} — ${l.className} (Wk ${l.weekNum})`;
+    }).join('\n');
+    if (!confirm(`${overwriteTargets.length} target(s) already have lesson plans that will be overwritten:\n\n${names}\n\nContinue?`)) return;
+  }
+
+  const fields = getCopyableFields(source);
+  const previousContent = {};
+  const savedTargets = [];
+  let copied = 0;
+
+  for (const targetKey of targetKeys) {
+    if (!lessons[targetKey]) continue;
+    if (hasLessonContent(lessons[targetKey])) {
+      previousContent[targetKey] = getCopyableFields(lessons[targetKey]);
+    }
+
+    // Firestore-bound payload for THIS target only — {...fields}, never the
+    // whole semester.
+    try {
+      await saveSingleLesson(semKey, targetKey, { ...fields });
+    } catch (err) {
+      console.error(`❌ Copy Plan failed to save target ${targetKey}, stopping:`, err);
+      currentLessonData[semKey] = lessons;
+      closeAdminModal();
+      renderAdminGrid();
+      alert(`Copy stopped after ${copied} of ${targetKeys.length} target(s) — the next target could not be saved: ${err.message}. Reload to confirm which targets actually saved before retrying.`);
+      return;
+    }
+
+    // Local display/cache only — mirrors what was actually just saved.
+    Object.assign(lessons[targetKey], fields);
+    savedTargets.push(targetKey);
+    copied++;
+  }
+
+  currentLessonData[semKey] = lessons;
+
+  // Log only the targets that actually saved.
+  for (const targetKey of savedTargets) {
+    const target = lessons[targetKey];
+    const logEntry = {
+      action: 'copy',
+      details: {
+        projectTitle: source.projectTitle,
+        fromTeacher: source.teacher, fromClassName: source.className, fromWeek: source.weekNum,
+        toTeacher: target.teacher, toClassName: target.className, toWeek: target.weekNum
+      }
+    };
+    if (previousContent[targetKey]) logEntry.details.previousPlan = previousContent[targetKey];
+    await appendChangeLogEntry(semKey, logEntry);
+  }
+
+  closeAdminModal();
+  renderAdminGrid();
+  renderChangeHistory();
+  alert(`Plan copied to ${copied} class${copied !== 1 ? 'es' : ''}.`);
+}</code></pre>
+  <div class="note">⚠️ <strong>Guard-interaction edge case — narrow, documented, not engineered around.</strong> <code>getCopyableFields()</code> returns 8 fields (<code>introPitch</code>, <code>processStep1-4</code>, <code>closure</code>, <code>materials</code>, <code>dayOfMaterials</code>), but <code>CONTENT_FIELDS</code> (the set <code>saveSingleLesson</code>'s summer-branch guard checks for "has real content") is only 7 of those — it doesn't include <code>materials</code>. A source lesson whose ONLY real copyable content is its <code>materials</code> field, copied onto a SUMMER target, would produce a payload the guard sees as "all content fields empty" and silently blocks (<code>console.warn</code> + <code>return</code>, no thrown error — so this specific target would locally show as copied but not actually persist). This is narrow (requires a lesson with materials text but no process steps, intro, or closure) and pre-existing in spirit — today's un-fixed code has no guard at all on this path, so this is a NEW edge case this fix could introduce, not one it inherits. Flagged explicitly rather than silently accepted; not fixed here since closing it means either widening the shared guard's definition of "content" (affects every other caller of <code>saveSingleLesson</code>'s summer branch) or special-casing this one call site — Christie may want to weigh in on which, or accept this as a documented rare-case gap the same way Phase 9's TOCTOU race was accepted.</div>
+  <div class="bdd">Given: A non-summer lesson with real content in processStep1-3, and two other, unrelated non-summer lessons elsewhere in the semester with their own real content
+When: An admin copies the plan to 2 target slots
+Then: Only the 2 target keys' dotted paths are touched by the resulting update() calls — the 2 unrelated lessons are never resent, unlike the original bug where the whole semester was bulk-saved
+
+Given: The same scenario, but on summer lessons (separate per-lesson documents)
+When: An admin copies the plan to 2 summer targets
+Then: Two separate targeted document merges happen, one per target — no batch-write touching every cached summer lesson, unlike saveSummerCampLessonData()'s original path
+
+Given: A copy targets 3 lessons; the save to the 2nd target throws (simulated network failure)
+When: executeCopyPlan runs
+Then: The 1st target is saved and logged, the 2nd and 3rd are not attempted, and the admin sees an alert stating exactly 1 of 3 succeeded — not a silent partial failure and not an uncaught promise rejection
+
+Given: A copy target already has real content in a field the source's copyable fields would leave empty (e.g. target has dayOfMaterials text, source has none)
+When: The copy executes
+Then: The target's dayOfMaterials is cleared via FieldValue.delete(), not left stale — same reasoning as Phase 4's fieldsToClear, though this specific phase doesn't need it since getCopyableFields always overwrites with an explicit value (empty string included) for every field it returns, not a partial diff</div>
+</div>
+
+<h2 id="phase13">Phase 13 — Paste from Cut Bank / Idea Bank: targeted single-lesson saves (pasteFromCutBank, pasteFromIdeaBank)</h2>
+<div class="phase" id="phase-13">
+  <div class="danger">🛑 <strong>Found in the same Aug 14, 2026 completeness sweep as Phase 12.</strong> <code>pasteFromCutBank()</code> (<code>app.js:5002-5079</code>) and <code>pasteFromIdeaBank()</code> (<code>app.js:5413-5468</code>) both spread the entire cached semester, replace ONE key with a freshly-built lesson object, then bulk-write the whole thing back via <code>saveLessonData()</code>. Same root cause, same fix pattern, combined into one phase since both functions are nearly identical in shape.</div>
+
+  <h3>What it does</h3>
+  <p><strong>Files:</strong> <code>js/app.js</code>, <code>pasteFromCutBank(cutIndex, teacher, className, weekNum, sourceSemKey)</code> and <code>pasteFromIdeaBank(idx, teacher, className, weekNum)</code>. <strong>No ordering dependency on Phases 7-12</strong> — reuses only already-shipped <code>saveSingleLesson()</code> and <code>fieldsToClear</code> (Phase 4).</p>
+  <p>Replace the bulk <code>saveLessonData()</code> call with a single targeted <code>saveSingleLesson(semKey, key, newLesson, fieldsToClear)</code> call for the one key each function actually touches.</p>
+  <div class="note">⚠️ <strong>Adjacent gap closed in the same phase — found while designing this fix, cheap to close since the exact diff needed is already available.</strong> Both functions build a complete replacement lesson object with every content field explicitly set (empty string if the source project doesn't have it) — meaning if the PASTE TARGET already had real content in a field the incoming project doesn't (e.g. pasting a Cut Bank project with no <code>dayOfMaterials</code> over a slot that already had real <code>dayOfMaterials</code> text), the admin's clear intent (replace this slot's plan entirely) would be silently defeated by <code>saveSingleLesson</code>'s stripping logic, which omits empty fields rather than clearing them — the exact class of bug Phase 4 exists to prevent, newly exposed here because this fix routes through <code>saveSingleLesson</code> for the first time. Fixed by computing <code>fieldsToClear</code> the same way the two edit modals already do, using the pre-paste target as the baseline.</p>
+  <pre><code>async function pasteFromCutBank(cutIndex, teacher, className, weekNum, sourceSemKey) {
+  const destSemKey = getAdminSemKey();
+  const srcSemKey = sourceSemKey || destSemKey;
+  const cutProjects = [...(currentCutProjects?.[srcSemKey] || [])];
+  const proj = cutProjects[cutIndex];
+  if (!proj) return;
+
+  const isCrossSemester = srcSemKey !== destSemKey;
+  const srcSemName = currentConfig?.semesters?.[srcSemKey]?.name || srcSemKey;
+  const confirmMsg = isCrossSemester
+    ? `Paste "${proj.projectTitle}" from ${srcSemName} into ${teacher} / ${className} Week ${weekNum}?`
+    : `Paste "${proj.projectTitle}" into ${teacher} / ${className} Week ${weekNum}?`;
+  if (!confirm(confirmMsg)) return;
+
+  const key = makeLessonKey(teacher, className, weekNum);
+  const lessons = { ...(currentLessonData?.[destSemKey] || {}) }; // local display/cache only — never sent to Firestore as a whole
+  const existing = lessons[key] || {};
+
+  const newLesson = {
+    teacher, className, weekNum, weekDate: '', classSize: 0,
+    projectTitle: proj.projectTitle,
+    shortDetails: proj.shortDetails || '',
+    inspoLink: proj.inspoLink || '',
+    introPitch: proj.introPitch || '',
+    processStep1: proj.processStep1 || '', processStep2: proj.processStep2 || '',
+    processStep3: proj.processStep3 || '', processStep4: proj.processStep4 || '',
+    closure: proj.closure || '',
+    materials: proj.materials || '',
+    dayOfMaterials: proj.dayOfMaterials || '',
+    status: proj.status || '',
+    publishToPrep: proj.publishToPrep || '',
+    teacherNotes: proj.teacherNotes || '',
+    adminResponse: proj.adminResponse || '',
+    lastImported: new Date().toISOString()
+  };
+
+  const fieldsToClear = CONTENT_FIELDS.filter(f =>
+    (existing[f] || '').trim() !== '' && !(newLesson[f] || '').trim()
+  );
+  lessons[key] = newLesson;
+
+  cutProjects.splice(cutIndex, 1);
+  currentLessonData[destSemKey] = lessons;
+  if (!currentCutProjects) currentCutProjects = {};
+  currentCutProjects[srcSemKey] = cutProjects;
+
+  const logPromise = appendChangeLogEntry(destSemKey, {
+    action: 'paste',
+    details: {
+      projectTitle: proj.projectTitle, teacher, className, toWeek: weekNum, fromCutBank: true,
+      crossSemester: isCrossSemester || undefined,
+      sourceSemester: isCrossSemester ? srcSemName : undefined,
+      originalTeacher: proj.originalTeacher, originalWeek: proj.originalWeek
+    }
+  });
+
+  closeAdminModal();
+  renderAdminGrid();
+  renderCutBank();
+  renderChangeHistory();
+
+  // Firestore writes in background — targeted single-lesson save, never the
+  // whole cached semester.
+  await saveSingleLesson(destSemKey, key, newLesson, fieldsToClear);
+  await saveCutProjects(srcSemKey, cutProjects);
+  await logPromise;
+}
+
+async function pasteFromIdeaBank(idx, teacher, className, weekNum) {
+  const projects = currentFutureProjects?.projects || [];
+  const proj = projects[idx];
+  if (!proj) return;
+
+  if (!confirm(`Paste "${proj.title}" into ${teacher} / ${className} Week ${weekNum}? The idea will be removed from the bank.`)) return;
+
+  const semKey = getAdminSemKey();
+  const key = makeLessonKey(teacher, className, weekNum);
+  const lessons = { ...(currentLessonData?.[semKey] || {}) };
+  const existing = lessons[key] || {};
+
+  const newLesson = {
+    teacher, className, weekNum, weekDate: '', classSize: 0,
+    projectTitle: proj.title,
+    shortDetails: proj.description || '',
+    inspoLink: proj.inspoLink || '',
+    introPitch: '', processStep1: '', processStep2: '', processStep3: '', processStep4: '',
+    closure: '', materials: '', dayOfMaterials: '',
+    status: '', publishToPrep: '', teacherNotes: '', adminResponse: '',
+    lastImported: new Date().toISOString()
+  };
+
+  const fieldsToClear = CONTENT_FIELDS.filter(f =>
+    (existing[f] || '').trim() !== '' && !(newLesson[f] || '').trim()
+  );
+  lessons[key] = newLesson;
+
+  projects.splice(idx, 1);
+  await saveFutureProjects(currentFutureProjects);
+
+  await saveSingleLesson(semKey, key, newLesson, fieldsToClear);
+  await appendChangeLogEntry(semKey, {
+    action: 'paste',
+    details: { projectTitle: proj.title, teacher, className, toWeek: weekNum, fromIdeaBank: true }
+  });
+
+  closeAdminModal();
+  renderAdminGrid();
+  renderIdeaBank();
+  renderChangeHistory();
+}</code></pre>
+  <div class="safe">✅ No existence check needed for either function, unlike Phase 9/11 — paste always deliberately targets a specific grid coordinate (teacher/className/weekNum chosen fresh at click time via the form, not baked in from when a long-lived modal first opened), so re-creating or overwriting at that key is the intended outcome regardless of what was there a moment before, not a "recreate a lesson that moved elsewhere" ghost-duplicate risk.</div>
+  <div class="bdd">Given: A Cut Bank project with real content, pasted into a target slot that already has real, different content in dayOfMaterials but nothing the pasted project sets there
+When: The paste executes
+Then: The target's dayOfMaterials is cleared (FieldValue.delete()) via fieldsToClear — not left stale underneath the new plan
+
+Given: The same paste, but the target slot was empty before
+When: The paste executes
+Then: fieldsToClear is empty (nothing to clear) and the new content saves normally — no unnecessary delete() calls fired
+
+Given: An Idea Bank paste into a slot that's one of several lessons in the cached semester, at least one other of which has real, unrelated content
+When: The paste executes
+Then: Only the pasted-into key's dotted paths (or, for summer, that one document) are touched — the other lesson is never resent, unlike the original saveLessonData(semKey, lessons) bulk call</div>
+</div>
+
+<h2 id="phase14">Phase 14 — Roster-driven lesson slot creation: targeted per-key creates (createLessonSlotsForRoster)</h2>
+<div class="phase" id="phase-14">
+  <div class="danger">🛑 <strong>Found in the same Aug 14, 2026 completeness sweep as Phases 12-13.</strong> <code>createLessonSlotsForRoster(semKey, roster, numWeeks)</code> (<code>app.js:9308-9363</code>), called from the Settings panel's "save semester config" flow, builds new empty scaffold lesson entries directly into <code>currentLessonData[semKey]</code> (a live reference, not even a copy) for every teacher/class/week combo that doesn't already have a lesson slot, then bulk-writes the ENTIRE semester (new slots plus every pre-existing lesson) via <code>saveLessonData()</code>.</div>
+
+  <h3>What it does</h3>
+  <p><strong>File:</strong> <code>js/app.js</code>, <code>createLessonSlotsForRoster(semKey, roster, numWeeks)</code>. <strong>No ordering dependency on Phases 7-13.</strong></p>
+  <div class="note">⚠️ <strong>Different shape from Phases 11-13 — this function only ever creates BRAND-NEW keys, never touches existing lesson content at all.</strong> The Vulnerability #11 exposure here isn't the new keys themselves (nothing exists there yet to clobber) — it's that <code>saveLessonData(semKey, lessons)</code> resends every OTHER, pre-existing lesson already sitting in the local cache alongside the new ones, at risk of clobbering any that are stale relative to Firestore. The fix: collect only the genuinely-new keys, and write just those, one at a time.</div>
+  <div class="note">⚠️ <strong>Why summer bypasses saveSingleLesson() here, unlike Phase 12/13.</strong> These are legitimately all-empty scaffold creates (a slot exists in the grid before any content is written) — <code>saveSingleLesson()</code>'s summer-branch guard exists specifically to block all-empty saves that could silently wipe REAL data, which doesn't apply to a key that has no doc yet. Rather than widen that shared guard's definition for one caller, this phase writes new summer docs directly, mirroring the same strip/JSON-round-trip/<code>set(merge:true)</code> mechanics <code>saveSingleLesson</code>'s summer branch already uses, minus the guard. Non-summer's branch has no such guard, so <code>saveSingleLesson()</code> is used there directly.</div>
+  <pre><code>async function createLessonSlotsForRoster(semKey, roster, numWeeks) {
+  if (!roster || !numWeeks || Object.keys(roster).length === 0) return;
+  if (!currentLessonData) await loadLessonData();
+  if (!currentLessonData[semKey]) currentLessonData[semKey] = {};
+
+  const existingLessons = currentLessonData[semKey];
+  const newLessons = {}; // ONLY brand-new keys — never touches or resends any existing lesson
+
+  for (const [className, data] of Object.entries(roster)) {
+    if (!data.teacher || !className) continue;
+    const teacher = data.teacher;
+    for (let weekNum = 1; weekNum <= numWeeks; weekNum++) {
+      const lessonKey = makeLessonKey(teacher, className, weekNum);
+      if (!existingLessons[lessonKey]) {
+        newLessons[lessonKey] = {
+          teacher, className, weekNum, weekDate: '', projectTitle: '',
+          introPitch: '', processStep1: '', processStep2: '', processStep3: '', processStep4: '',
+          closure: '', materials: '', materialsList: [], dayOfMaterials: '',
+          qaThread: [], planComplete: false,
+          classSize: String(data.enrollment || 0),
+          lastEditedBy: '', lastEditedAt: ''
+        };
+      }
+    }
+  }
+
+  const newKeys = Object.keys(newLessons);
+  if (newKeys.length === 0) return;
+
+  if (!curriculumDb) initCurriculumFirestore();
+  const isSummer = semKey.startsWith('summer-');
+  let createdCount = 0;
+  for (const lessonKey of newKeys) {
+    try {
+      if (isSummer) {
+        // Same write mechanics as saveSingleLesson's summer branch (strip
+        // empty content fields, JSON round-trip, set/merge) — guard
+        // intentionally skipped, see the note above.
+        const stripped = { ...newLessons[lessonKey] };
+        CONTENT_FIELDS.forEach(f => { if (!stripped[f] || !String(stripped[f]).trim()) delete stripped[f]; });
+        const cleanData = JSON.parse(JSON.stringify({
+          ...stripped,
+          lastEditedBy: getAuthUser()?.name || 'Unknown',
+          lastEditedAt: new Date().toISOString()
+        }));
+        await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(lessonKey)).set(cleanData, { merge: true });
+        newLessons[lessonKey].lastEditedBy = cleanData.lastEditedBy;
+        newLessons[lessonKey].lastEditedAt = cleanData.lastEditedAt;
+      } else {
+        await saveSingleLesson(semKey, lessonKey, newLessons[lessonKey]);
+      }
+      currentLessonData[semKey][lessonKey] = newLessons[lessonKey];
+      createdCount++;
+    } catch (err) {
+      // Best-effort, matching this function's original fire-and-forget
+      // nature (no alert() in the original code, just a console.log) — one
+      // slot failing to create isn't a data-loss risk, just a missing
+      // scaffold row, recoverable by re-saving Settings later.
+      console.error(`❌ Failed to create lesson slot ${lessonKey}, continuing with remaining slots:`, err);
+    }
+  }
+
+  if (createdCount > 0) {
+    console.log(`✅ Created ${createdCount} lesson slots for roster classes`);
+  }
+}</code></pre>
+  <div class="bdd">Given: A semester already has 20 real lessons with content, and the admin adds one new teacher to the roster in Settings, requiring 16 new empty slots
+When: createLessonSlotsForRoster runs
+Then: 16 targeted creates happen, one per new key — none of the 20 existing lessons' dotted paths (or, for summer, documents) are touched, unlike the original saveLessonData(semKey, lessons) bulk call which resent all 36
+
+Given: The semester is a summer semester
+When: The same roster save triggers new-slot creation
+Then: Each new slot is created via a direct, targeted set(merge:true) on its own document — saveSummerCampLessonData()'s batch-every-cached-lesson path is never invoked, and the summer guard never blocks these legitimately-empty creates (since it's bypassed here, not routed through saveSingleLesson)
+
+Given: One of several new slot creates throws (simulated network failure)
+When: createLessonSlotsForRoster runs
+Then: The remaining slots are still attempted (best-effort, not stop-on-first-failure) — the function logs which slot failed and continues, since these are independent, unordered creates with no swap/copy-style relationship between them</div>
+</div>
+
 <h2 id="firebase-safety">Firebase Safety Checklist</h2>
 <div class="phase">
   <ul>
@@ -794,7 +1277,11 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
         <li><strong>Phase 7 (non-summer) — corrected after a Codex review found the original guidance here wasn't strong enough to actually prove the fix:</strong> since Phase 7's redesign no longer depends on <code>originalLesson</code>'s freshness at all, testing only the favorable case (listener already delivered) — the original guidance — would pass even against the <em>old, broken</em> code whenever the listener happens to have delivered in time, which proves nothing about the fix specifically. Two tests needed: (1) a payload/path assertion — capture the actual object passed to <code>saveSingleLesson()</code> (or the actual dotted-path keys in the resulting <code>update()</code> call) for a title-only edit, and assert no <code>CONTENT_FIELDS</code> key is present at all, touched or not — this is the test that actually distinguishes the fixed code from the original broken draft, which would also happen to produce the right *value* in the favorable-timing case. (2) A real concurrent-edit test that does NOT pre-deliver the concurrent state into <code>currentLessonData</code> first — write a value directly to Firestore via the test helpers, then immediately drive a save through the real UI for a *different* field, without giving any listener a chance to deliver the concurrent write into the page's local state first, and confirm the concurrent value survives regardless. Mirror <code>e2e/data-safety.spec.js</code>'s Test 7 (Stage 1B) pattern only for a supplementary deterministic check, not as the sole proof — Test 7's direct-<code>currentLessonData</code>-injection technique is exactly the "favorable case" that doesn't exercise the actual failure window Codex found.</li>
         <li><strong>Phase 8 (summer):</strong> the corrected design has no listener to race against at all — the Firestore-bound payload never includes <code>lesson</code>'s fields regardless of timing — so a real-Firestore-write test design is fine and simpler here: write an initial value via the test helpers, open the modal (establishing that as the page's stale baseline), overwrite the same field in Firestore again via the test helpers (simulating a concurrent save), edit a <em>different</em> field via the real UI and save, then read back and confirm the field changed via the test helper still holds its value.</li>
         <li><strong>Phase 9 (admin popup):</strong> same reasoning as Phase 8 applies to both schemas here — <code>saveAdminEdit()</code>'s Firestore payload never spreads <code>existing</code>'s content fields regardless of timing, so the real-Firestore-write design works for both the summer and non-summer variant of this test, no listener-timing dependency either way. Use <code>showAdminEdit(key, ...)</code>/<code>saveAdminEdit(key, ...)</code> directly via <code>page.evaluate()</code> rather than clicking through the grid, matching how existing admin-grid tests already drive these functions. Also needs a dedicated test for the two-entry-point snapshot fix — open the empty-cell creation path (exercising <code>openDetailModal()</code>'s direct <code>renderAdminEditForm(null,...)</code> call, not <code>showAdminEdit()</code>) immediately after having had a different lesson's popup open, and confirm the new lesson's diff is computed against an empty baseline, not the previous lesson's leftover snapshot. And a test for the move/delete existence check: seed a lesson, open its admin popup, delete the underlying doc directly via the test helpers (simulating a concurrent move), then attempt to save through the still-open popup and confirm it's blocked with the expected alert rather than recreating the doc.</li>
-        <li><strong>Phase 10 (Q&A send):</strong> no listener-timing dependency — the payload never depends on any cached lesson state at all. Seed a lesson with a real content field via the test helpers, open the teacher edit modal, send a Q&A message through the real UI, then read back and confirm the content field is untouched and the message appears in <code>qaThread</code>. A second test: call <code>sendTeacherQaMessage</code> twice in quick succession simulating two different senders (or drive two separate page contexts), and confirm both messages survive in the final array — the direct test for <code>arrayUnion</code>'s atomicity, which a single-sender test can't exercise.</li>
+        <li><strong>Phase 10 (Q&A send):</strong> no listener-timing dependency — the payload never depends on any cached lesson state at all. Seed a lesson with a real content field via the test helpers, open the teacher edit modal, send a Q&A message through the real UI, then read back and confirm the content field is untouched and the message appears in <code>qaThread</code>. A second test: call <code>sendTeacherQaMessage</code> twice in quick succession simulating two different senders (or drive two separate page contexts), and confirm both messages survive in the final array — the direct test for <code>arrayUnion</code>'s atomicity, which a single-sender test can't exercise. A third test, added Aug 14, 2026 for the legacy-migration fix: seed a lesson with only <code>teacherNotes</code>/<code>adminResponse</code> set (no <code>qaThread</code> field at all) via the test helpers, send a message, and confirm the resulting <code>qaThread</code> contains both the synthesized legacy entry and the new one.</li>
+        <li><strong>Phase 11 (Help Queue reply), added Aug 14, 2026:</strong> seed a semester with the target lesson plus at least one unrelated lesson with its own real content via the test helpers. For <code>sendHelpResponse</code>: seed the target with a teacher-originated <code>qaThread</code> entry (so it's eligible for the Help Queue), send a response through the real UI, then assert the unrelated lesson's content is byte-for-byte untouched — the test that actually distinguishes this fix from the original bulk-overwrite. For <code>sendQaReply</code>: same isolation assertion, plus a legacy-migration test mirroring Phase 10's third test, plus a test for the move/delete existence check (seed a lesson, open its detail modal, delete the underlying doc directly via the test helpers, attempt to send a reply through the still-open modal, confirm it's blocked with the expected alert). Both need summer AND non-summer variants, since both functions branch by schema internally.</li>
+        <li><strong>Phase 12 (Copy Plan), added Aug 14, 2026:</strong> seed a source lesson with real content, at least two target slots, and an unrelated third lesson elsewhere in the semester. Copy to both targets, assert both received the content AND the unrelated lesson is untouched. A second test for partial failure: seed 3 targets, make the 2nd target's save throw (a test-only hook or a deliberately malformed target key), confirm exactly 1 copy succeeded, is logged, and the admin-facing alert reports "1 of 3." A third test for the fieldsToClear addition: target has real <code>dayOfMaterials</code> the source doesn't set, confirm it's cleared post-copy.</li>
+        <li><strong>Phase 13 (Paste from Cut Bank / Idea Bank), added Aug 14, 2026:</strong> seed a cut project and an idea bank project, paste each into a slot, assert only that slot's dotted path (or document) changed and an unrelated lesson elsewhere in the semester is untouched. A second test per function for the fieldsToClear addition: paste into a slot that already has real content in a field the pasted project doesn't set, confirm that field is cleared, not left stale.</li>
+        <li><strong>Phase 14 (roster slot creation), added Aug 14, 2026:</strong> seed a semester with existing real lessons, trigger a roster save that requires new slots, assert the new slots exist with the right teacher/className/weekNum AND the existing lessons' content is byte-for-byte untouched. A summer variant confirming the guard-bypass direct-write path actually creates the new documents (the summer guard, if mistakenly left in place, would silently block every one of these — this test is what would have caught that).</li>
       </ul>
     </li>
   </ul>
@@ -803,18 +1290,19 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
 <h2 id="completeness">Completeness Check — mid-plan interruption</h2>
 <div class="phase">
   <p>Phase 7 is fully independent. Phase 8 is internally atomic (its three parts ship together, see below) but independent of the other phases. Phase 9 depends on Phase 8 (see below). Phase 10 is fully independent of all of them — it touches a different function (<code>sendTeacherQaMessage</code>) with no shared state or guard interaction. <strong>Corrected after a Codex review pointed out the original "each phase is independent" opening sentence here contradicted the Phase 9-after-Phase-8 dependency already documented two sentences later in this same section</strong> — this section's job is to state dependencies precisely, not claim independence as a default. If work stops after any phase whose dependencies are satisfied, the app is left in a fully working, deployable state with strictly fewer known risks than before that phase started. There is no partial-phase state that leaves the app broken; a phase either ships complete (code + test + commit) or hasn't started.</p>
+  <p><strong>Phases 11-14, added Aug 14, 2026:</strong> Phase 11 has a real ordering dependency on BOTH Phase 9 (reuses <code>readAdminLessonDoc()</code>'s forced-server <code>opts</code> param) and Phase 10 (reuses the <code>buildQaThreadUnionArgs()</code> helper) — it cannot ship before either. Phases 12, 13, and 14 have <strong>no dependency on any other phase in this doc</strong> — each reuses only already-shipped Phase 1/4 infrastructure (<code>saveSingleLesson()</code>, <code>fieldsToClear</code>) and could ship independently, in any order, even before Phase 7 if that were useful. They're grouped here by discovery date and shared root cause (the same "spread the whole cached semester into one bulk saveLessonData() call" pattern, found via a completeness sweep while designing Phase 11), not by a code dependency.</p>
   <p>Phase 7 (non-summer) is fully independent and self-contained — it can ship, be tested, and deploy on its own with no guard interaction at all. Phase 8 (summer) depends on nothing from Phase 7 either, but its three parts — the diff, the Firestore-payload/local-cache split, and the guard fix — must ship together in the same commit: the diff alone (without the payload split) is a no-op, per the second-model-review finding that drove this phase's redesign; the payload split without the guard fix would incorrectly block legitimate photo-only saves. If work stops after Phase 7 only, the app is left fully working with the non-summer editor's concurrent-edit gap closed and the summer editor's gap still open exactly as it is today — not worse.</p>
   <p><strong>Phase 9 is the one genuine ordering dependency in this set — it must ship after Phase 8, not before or standalone.</strong> Phase 9's payload for a title-only (or otherwise content-field-free) summer admin edit relies on Phase 8's guard rewrite already being live; shipping Phase 9 first (or alone) would incorrectly block that class of save on summer lessons. Phase 9's own three parts (snapshot capture, diff + payload split, fieldsToClear support) ship together in one commit for the same reason Phase 8's do — the snapshot alone accomplishes nothing until the payload actually uses it. If work stops after Phase 7+8 but before Phase 9, the app is fully working with two of three editing surfaces closed and the admin popup's gap documented and open — not worse than today, and not silently unaddressed either, since Phase 9 exists in this doc as known, scoped, pending work.</p>
 </div>
 
 <h2 id="out-of-scope">Not in scope</h2>
 <ul>
-  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins") — reopened, see Phases 7–10 above.</strong> This item was originally deferred here as low-risk on a "same-instant race" characterization. Reinvestigated Aug 13, 2026 after Christie asked directly what happens on a real concurrent edit — the actual mechanism was broader than that characterization (see the Context section above Phase 7), and a Codex review (Aug 14, 2026) found it was broader still — a full caller-audit surfaced <code>sendTeacherQaMessage()</code> as a fourth affected surface, not just the three editing modals. Phases 7–10 close it for all four production write surfaces that spread lesson content into a save: both teacher-facing editors, the admin edit popup, and the teacher/admin Q&A sender (Christie explicitly chose to fold both the admin popup and the Q&A sender in rather than leave either deferred — her stated goal is full completion). What remains genuinely deferred after Phases 7–10:
+  <li><strong>Concurrent-session conflict detection (Vulnerability #11, "last write wins") — reopened, see Phases 7–14 above.</strong> This item was originally deferred here as low-risk on a "same-instant race" characterization. Reinvestigated Aug 13, 2026 after Christie asked directly what happens on a real concurrent edit — the actual mechanism was broader than that characterization (see the Context section above Phase 7), and it kept getting broader on every subsequent pass: a first Codex review (Aug 14, 2026) surfaced <code>sendTeacherQaMessage()</code> as a fourth affected surface beyond the three editing modals; a second Codex pass plus a fourth Claude pass, run in parallel, then surfaced the admin Help Queue reply functions as a live instance of the ORIGINAL bulk-overwrite bug class, not just a narrower Vuln #11 case; and a completeness sweep done specifically to verify that finding (checking every remaining <code>saveLessonData()</code> caller before claiming the list was complete) surfaced four MORE callers with the identical root cause. <strong>Phases 7–14 close it for ten production write call sites</strong> that either spread lesson content into a save from a stale local snapshot, or bulk-write an entire cached semester when only one lesson actually changed: both teacher-facing editors, the admin edit popup, the teacher/admin Q&A sender, the admin Help Queue reply functions, Copy Plan to Others, paste from Cut Bank, paste from Idea Bank, and roster-driven slot creation (Christie explicitly chose to fold all of these in rather than leave any deferred — her stated goal is full completion). One caller, new-semester creation (<code>app.js:3951-4025</code>'s <code>saveLessonData(key, emptyLessons)</code> call), was checked during the same sweep and confirmed NOT exposed — it targets a semester key that doesn't exist until this exact action creates it, so there's no pre-existing content anywhere in that semester for a stale local copy to clobber. <strong>This list should not be assumed final</strong> — the pattern of "the caller-audit finds more on every pass" has held for three consecutive rounds now; the next review pass should re-grep for any caller of <code>saveLessonData</code>/<code>saveSummerCampLessonData</code> not named above before treating Phases 7-14 as covering everything. What remains genuinely deferred after Phases 7–14:
     <ul>
       <li><strong>Layer 2 — optimistic same-field collision detection.</strong> The narrower residual case: two people editing the <em>literal same field</em> at the <em>literal same moment</em>, where whoever saves last still silently wins for that one field. Closing it needs reading each field's current server value before writing and warning the user if it's changed since their form loaded — its own UX design, plus a Firestore read per save. Deferred, not abandoned — revisit if reported as an actual incident.</li>
     </ul>
   </li>
-  <li><strong>The non-summer branch's missing "block if all-empty" guard</strong> (see the Context section above Phase 7). Pre-existing, unrelated to concurrent-edit safety, not touched by Phase 7, 8, 9, or 10.</li>
+  <li><strong>The non-summer branch's missing "block if all-empty" guard</strong> (see the Context section above Phase 7). Pre-existing, unrelated to concurrent-edit safety, not touched by any of Phases 7–14.</li>
   <li><strong>Migrating the non-summer semester's single-giant-document lesson storage to per-lesson documents</strong> (matching summer's <code>summerCamps_lessonData</code> collection shape). Would reduce blast radius further but is a real data migration outside this plan's scope — the fixes here work within the existing document shape.</li>
   <li><strong>The summer Q&amp;A path, <code>sendSummerLessonQaMessage()</code> (<code>firebase-data.js:449</code>) — checked, not a Vulnerability #11 exposure, confirmed by reading the function directly.</strong> It writes to a different collection entirely (<code>summerCamps_prepHelpQueue</code>, not <code>summerCamps_lessonData</code>) and never touches lesson content fields — a message sent through this path cannot revert a teacher's concurrent edit to their lesson plan. Noted here so a future reader doesn't wonder why Phase 10 only touches the non-summer Q&A function.</li>
 </ul>
@@ -864,6 +1352,10 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
       <li><strong><code>sendHelpResponse()</code> (<code>app.js:5567-5591</code>) and <code>sendQaReply()</code> (<code>app.js:5593-5619</code>) are two more real, unaudited callers — found only on this second, broader sweep — and they're worse than anything found so far, not just another instance of the same class.</strong> Both are wired to real UI (admin Help Queue / Q&A reply features). Both do the same local <code>qaThread</code> read-modify-write race Phase 10 fixes for <code>sendTeacherQaMessage</code> — but instead of a single-lesson save, both copy the <strong>entire locally-cached semester</strong> (<code>const lessons = {...(currentLessonData?.[semKey] || {})}</code>) and bulk-write it via <code>saveLessonData()</code> (<code>firebase-data.js:351-366</code>), which does a recursive document-merge for non-summer or routes to <code>saveSummerCampLessonData()</code>'s batch-write-every-cached-lesson path for summer. This is not a narrower version of Vulnerability #11 — it's a live, still-open instance of the <em>original</em> Stage 1 bulk-overwrite class of bug (the one that caused the actual May 2026 data-loss incidents), in a feature area (admin Help Queue replies) that no prior pass — not the original 6-phase plan, not three Claude passes, not the first Codex pass — had ever audited. Both models confirmed independently, via exhaustive grep, that these are the only remaining Q&A-related write sites and that the plan's "Not in scope" claim of covering "all four production write surfaces" is currently false — there are at least six.</li>
     </ol>
     Claude also confirmed, independently and by direct trace (not trusting the plan text or Codex's prior verdict), that <strong>Phase 7's redesign is fully correct with no gaps</strong> — safe to execute on its own regardless of what happens with Phases 9/10. Codex's minor notes from this same round (Phase 7's photo-write ordering should be stated explicitly rather than left implicit so it can't be implemented ambiguously; <code>arrayUnion()</code> entries should use a generated message ID rather than relying on timestamp uniqueness, since structurally-identical entries would otherwise de-duplicate; the Phase 9 check-then-write gap is a residual TOCTOU race that should either use a transaction or be explicitly documented as an accepted narrow gap, not silently assumed closed) are real but non-blocking — not yet applied to the doc, see Resume Instructions for the full unresolved punch list. <strong>Session ending here on context limits — nothing further applied to the doc this session beyond recording these findings.</strong> Both the empty-cell snapshot bug (<code>captureAdminEditSnapshot(null)</code> should be <code>captureAdminEditSnapshot(lesson)</code> — an existing contentless scaffold lesson can exist even when the cell renders as visually empty, so passing the real <code>lesson</code> value lets <code>caEditLessonExisted</code> correctly reflect whether a doc actually exists) and the <code>sendHelpResponse</code>/<code>sendQaReply</code> fix are still open — not yet designed in this doc, only found and recorded.</li>
+  <li><strong>Aug 14, 2026 (new session, resuming from the punch list above):</strong> Asked Christie for a decision on the one item in the punch list that genuinely needed one — Phase 9's residual check-then-write TOCTOU race (item 4: transaction vs. documented gap). She chose the documented-gap option: keep the forced server read as the mitigation for the concretely-demonstrated stale-cache risk, and explicitly accept the narrow remaining window rather than make <code>saveSingleLesson()</code> transaction-aware for every caller. Applied to Phase 9's existence-check section as a note box with the full reasoning. Then fixed the four remaining punch-list items: (1) Phase 9's existence check now forces <code>{ source: 'server' }</code> on both branches, via a new optional <code>opts</code> param on <code>readAdminLessonDoc()</code> that preserves the existing cache-permitting default for its one other caller (the move read-back), plus a retry-once-then-fail-closed pattern mirroring <code>verifySummerLessonWrite()</code>. (2) Phase 9's empty-cell snapshot bug fixed — <code>captureAdminEditSnapshot(lesson)</code> instead of the literal <code>null</code>, plus a new BDD scenario distinguishing "contentless scaffold exists" from "genuinely nothing exists yet," since those two cases need to produce different <code>caEditLessonExisted</code> values and the pre-fix code couldn't tell them apart. (3) Phase 7's photo-write ordering made explicit as four numbered steps in the snippet, matching today's actual shipped <code>saveTeacherEdit</code> ordering exactly (traced directly against <code>app.js:3050-3112</code>, not assumed). (4) Phase 10's <code>arrayUnion</code> entries now carry a generated <code>id</code> (matching this codebase's existing Idea Bank convention, <code>app.js:5317</code>, rather than introducing <code>crypto.randomUUID()</code> as a second convention for the same purpose).</li>
+  <li><strong>Aug 14, 2026 (same session):</strong> While designing Phase 10's fix, traced <code>getQaThread()</code>'s legacy-fallback behavior (<code>app.js:6678</code>) directly against the code being replaced and found a real regression the fix would otherwise introduce: today's shipped <code>sendTeacherQaMessage</code> reads via <code>getQaThread(lesson)</code>, which synthesizes a real thread from legacy <code>teacherNotes</code>/<code>adminResponse</code> fields on a lesson that's never had a <code>qaThread</code> array — and because today's code then writes the WHOLE resulting array back, that synthesis becomes a real, permanent <code>qaThread</code> migration on that lesson's first message. Phase 10's <code>arrayUnion(newEntry)</code>-only design, as drafted through the prior session, does not do this migration — it would silently and permanently lose any legacy-only lesson's prior conversation the first time someone messaged through the new code. Not previously caught by any Claude or Codex pass. Fixed via a small shared <code>buildQaThreadUnionArgs()</code> helper (seeds the union with the synthesized legacy thread on a lesson's first message, a no-op to repeat since <code>arrayUnion</code> dedupes identical entries) — applied to Phase 10 and reused by Phase 11's <code>sendQaReply</code>, which has the same exposure.</li>
+  <li><strong>Aug 14, 2026 (same session):</strong> Designed Phase 11 for <code>sendHelpResponse()</code>/<code>sendQaReply()</code> — the highest-priority punch-list item. Both branch by schema internally (unlike Phase 10's non-summer-only <code>sendTeacherQaMessage</code>), since <code>getAdminSemKey()</code> can return either type depending on which semester the admin has selected; verified this by tracing both functions' actual callers (<code>renderHelpQueue()</code>, <code>renderQaWithReply()</code>) rather than assuming symmetry with Phase 10. Traced <code>renderHelpQueue()</code>'s eligibility filter (<code>l.qaThread || []</code>, not <code>getQaThread()</code>) and confirmed <code>sendHelpResponse</code> can never hit a legacy-only lesson, so it doesn't need the migration helper Phase 10/11's <code>sendQaReply</code> does — an asymmetry worth stating explicitly rather than applying the fix uniformly out of caution. Also traced whether each function needs Phase 9's move/delete existence check: <code>renderHelpQueue()</code>'s container is wired into the live <code>onSnapshot</code> listener refresh (<code>app.js:4066</code>, calls <code>renderHelpQueue()</code> directly on every remote change), narrowing <code>sendHelpResponse</code>'s exposure window enough that the check isn't warranted there; <code>openDetailModal()</code> (the host of <code>sendQaReply</code>'s reply box) has no such live refresh — it stays static once opened, exactly the pattern Phase 9 exists to fix — so <code>sendQaReply</code> gets the same forced-server existence check, reusing Phase 9's infrastructure directly rather than duplicating it.</li>
+  <li><strong>Aug 14, 2026 (same session):</strong> Before finalizing Phase 11, swept every remaining caller of <code>saveLessonData()</code>/<code>saveSummerCampLessonData()</code> to make an honest "no other unaudited callers" claim in the doc, rather than assert it without checking — the same discipline this project has applied at every prior review stage. The sweep found four more callers with the identical bulk-overwrite root cause: <code>executeCopyPlan()</code> (Copy Plan to Others), <code>pasteFromCutBank()</code>, <code>pasteFromIdeaBank()</code>, and <code>createLessonSlotsForRoster()</code> (roster-driven scaffold creation). A fifth caller, new-semester creation, was checked and confirmed not exposed (targets a semester with no pre-existing data). Stopped and presented this to Christie before proceeding further, since it materially changed the scope of what "done" meant for this session — she chose to design fixes for all four now rather than defer any of them, consistent with her stated goal of full completion. Designed as three more phases: Phase 12 (Copy Plan — multi-target, needed a stop-on-first-failure design since it writes N targets in a loop, matching Phase 1's swap precedent for splitting one bulk write into multiple targeted ones; also found and documented, not fixed, a narrow pre-existing guard-interaction edge case around <code>materials</code>-only lessons copied to summer targets, since <code>CONTENT_FIELDS</code> doesn't include <code>materials</code> but <code>getCopyableFields()</code> does), Phase 13 (paste from Cut Bank / Idea Bank, combined since nearly identical in shape — also found and fixed, in the same phase, a real adjacent <code>fieldsToClear</code> gap: both functions build a full replacement lesson object, so pasting over a slot that had real content the incoming project doesn't set would silently fail to clear it once routed through <code>saveSingleLesson</code>'s stripping logic, the same class of bug Phase 4 exists to prevent), and Phase 14 (roster slot creation — different shape from the others since it only ever creates brand-new keys, never touches existing content; found that routing through <code>saveSingleLesson()</code>'s summer branch would incorrectly guard-block every one of these legitimately-empty scaffold creates, so summer bypasses <code>saveSingleLesson()</code> and writes directly, mirroring its write mechanics minus the guard). Updated the "Not in scope" section's write-surface count and the top-level status/Firebase Safety Checklist/Completeness Check sections to match. <strong>None of Phases 11-14 have been independently reviewed yet</strong> — see Resume Instructions.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
