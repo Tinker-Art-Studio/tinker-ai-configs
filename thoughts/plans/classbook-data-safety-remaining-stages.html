@@ -474,6 +474,8 @@ function showAdminEdit(key, teacher, className, weekNum) {
 
   <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — the original draft of this check didn't actually force a server read, contradicting its own stated justification. Found independently by both a second Codex pass and a fourth Claude pass in the same round.</strong> Both the inline summer <code>.get()</code> and the reused <code>readAdminLessonDoc()</code> for non-summer defaulted to a plain, cache-permitting <code>.get()</code>. Claude traced the specific mechanism that makes this a real, not theoretical, risk: <code>setupLessonDataListener()</code> (<code>firebase-data.js:512-541</code>) keeps an active <code>onSnapshot</code> listener on the exact same <code>curriculum/lessonData</code> doc <code>readAdminLessonDoc()</code> reads — Firestore's JS SDK can serve a plain <code>.get()</code> from that listener's local cache instead of the network. In precisely the race window this check exists to close (a delete that hasn't yet propagated to this admin's listener), the check could pass on stale cached data and fail to catch the exact ghost-duplicate scenario it was built for.</div>
   <p><strong>Fix: verify the lesson still exists before writing, and only when it's supposed to — with a forced server read, not a local-cache check.</strong> A brand-new lesson (empty grid cell, nothing to conflict with) legitimately has no doc yet — <code>caEditLessonExisted</code> distinguishes that case from "existed when I opened this popup, might be gone now." Check as the very first thing in <code>saveAdminEdit()</code>, before any other work (including photo upload) — a clean early exit with zero side effects if the lesson's gone, not an abort partway through:</p>
+  <div class="note">⚠️ <strong>Fixed Aug 14, 2026 — a fourth Claude review pass found this doc's own draft would not compile as instructed.</strong> The draft below used to present two separate, complete-looking <code>async function saveAdminEdit(...) {...}</code> declarations meant to be spliced together — one for "Step 1" (the existence check) and one for "Step 2" (diff/photo/save). Both declared <code>const semKey = getAdminSemKey();</code>. Concatenating them into one real function body, as the surrounding text instructed ("Check as the very first thing... rest of saveAdminEdit unchanged from below"), redeclares <code>const semKey</code> in the same scope — a <code>SyntaxError</code>, not a subtle judgment call. Worse: a reader who implemented only the second snippet (mistaking its own <code>async function saveAdminEdit(...) {...}</code> wrapper for the complete, real function, since it looks self-contained) would ship <code>saveAdminEdit</code> with no existence check at all, silently reintroducing the exact ghost-duplicate bug this phase exists to fix. Merged into one function below, matching how Phase 8's step 1/step 2 fragments are already presented without a repeated wrapper — <code>semKey</code> declared exactly once, existence check unambiguously first.</div>
+  <p>Also extracted a shared <code>adminLessonStillExistsWithRetry()</code> helper (below) — Phase 11's <code>sendHelpResponse</code>/<code>sendQaReply</code> need the identical forced-server-read-with-retry check, and duplicating this logic three times invites exactly the kind of drift (e.g. one copy quietly missing the retry) a second Codex pass already caught once this session (see the Decisions Log). The helper returns the fresh lesson data alongside the exists flag, since Phase 11's <code>sendQaReply</code> needs that data anyway and re-reading the local cache separately after paying for a server read would waste the freshness it just bought.</p>
   <pre><code>// readAdminLessonDoc() (Phase 1, already shipped) gained a third, optional
 // opts param here — { source: 'server' } forces the network read this check
 // needs; omitting opts preserves the exact default (cache-permitting) behavior
@@ -486,53 +488,69 @@ async function readAdminLessonDoc(semKey, lessonKey, opts = {}) {
   return snap.exists ? (snap.data()?.[semKey]?.[lessonKey] || null) : null;
 }
 
+// Shared by saveAdminEdit() (here, Phase 9) and Phase 11's sendHelpResponse()/
+// sendQaReply() — forced server read, retry once on failure, then let a
+// second failure throw so each caller decides how to surface it (mirrors
+// Phase 3's verifySummerLessonWrite() retry-once precedent). Returns
+// { exists, data } — data is the full fresh lesson object when it exists (via
+// readAdminLessonDoc for non-summer, the doc snapshot for summer), null
+// otherwise, so a caller needing fresh data doesn't pay for a second read.
+async function adminLessonStillExistsWithRetry(semKey, key) {
+  if (!curriculumDb) initCurriculumFirestore();
+  const isSummer = semKey.startsWith('summer-');
+  const readOnce = async () => {
+    if (isSummer) {
+      const snap = await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' });
+      return { exists: snap.exists, data: snap.exists ? snap.data() : null };
+    }
+    const data = await readAdminLessonDoc(semKey, key, { source: 'server' });
+    return { exists: data !== null, data };
+  };
+  try {
+    return await readOnce();
+  } catch (err) {
+    console.warn('⚠️ Existence check read failed, retrying once:', err);
+    return await readOnce(); // a second failure throws — caller's catch handles it
+  }
+}
+
 async function saveAdminEdit(key, teacher, className, weekNum) {
   const semKey = getAdminSemKey();
 
+  // Step 1 — move/delete existence check, before any other work (including
+  // photo upload) — a clean early exit with zero side effects if the lesson's
+  // gone, not an abort partway through. Only runs when caEditLessonExisted is
+  // true — a brand-new lesson (see the two captureAdminEditSnapshot() call
+  // sites above) has nothing to conflict with.
   if (caEditLessonExisted) {
-    if (!curriculumDb) initCurriculumFirestore();
-    // Forced server read, mirroring Phase 3's verifySummerLessonWrite()
-    // precedent — retry once on failure, then fail closed (block the save)
-    // rather than silently treating a network error as "still exists."
-    let stillExists;
+    let check;
     try {
-      stillExists = semKey.startsWith('summer-')
-        ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' })).exists
-        : (await readAdminLessonDoc(semKey, key, { source: 'server' })) !== null;
+      check = await adminLessonStillExistsWithRetry(semKey, key);
     } catch (err) {
-      console.warn('⚠️ Existence check read failed, retrying once:', err);
-      try {
-        stillExists = semKey.startsWith('summer-')
-          ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' })).exists
-          : (await readAdminLessonDoc(semKey, key, { source: 'server' })) !== null;
-      } catch (err2) {
-        console.warn('⚠️ Existence check retry also failed:', err2);
-        alert("Couldn't confirm this lesson still exists — check your connection and try saving again.");
-        return;
-      }
+      console.warn('⚠️ Existence check retry also failed:', err);
+      alert("Couldn't confirm this lesson still exists — check your connection and try saving again.");
+      return;
     }
-    if (!stillExists) {
+    if (!check.exists) {
       alert('This lesson was moved or removed elsewhere while you had it open. Your changes were not saved — please close this window and check the grid for its new location.');
       return;
     }
   }
 
-  // ...rest of saveAdminEdit (title validation, diff, photo, save) unchanged from below</code></pre>
-  <p>This reuses <code>readAdminLessonDoc()</code> (Phase 1, non-summer only, already reads <code>curriculum/lessonData</code>) for the non-summer case, and a direct single-doc existence check for summer, mirroring how Phase 8's read-back verification already reads <code>summerCamps_lessonData</code> directly. Both are now forced server reads (<code>{ source: 'server' }</code>), not local-cache checks, for the reasoning in the danger box above.</p>
-  <div class="note">⚠️ <strong>Residual TOCTOU race — deliberately accepted as a documented gap, not closed with a transaction. Christie's explicit decision, Aug 14, 2026.</strong> Even with the forced server read above, a gap remains between the check completing and the write landing — another admin could move or delete the lesson in that exact window, still producing the ghost duplicate this fix exists to prevent. Closing it fully would mean wrapping the check and the write in a single Firestore transaction, which would require making <code>saveSingleLesson()</code> transaction-aware — a shared function with many other callers, and one that already does its own separate post-write read-back verification for summer (<code>verifySummerLessonWrite()</code>), a second read that doesn't compose cleanly inside a transaction's read-then-write structure. Christie chose to accept the residual gap instead: the forced server read above already closes the concretely-demonstrated risk (a stale local cache silently passing the check); what's left is bounded by human click-to-click timing, not a tight machine loop, and matches how Layer 2 (same-field collision detection, see "Not in scope") is already deferred elsewhere in this doc for the same kind of reasoning — revisit if this surfaces as an actual incident, not preemptively.</div>
-
-  <div class="danger">🛑 <strong>Why this can't just spread the existing lesson like the pre-Phase-8 code did — same underlying reasoning as Phase 8, re-derived for this specific function's data flow. Corrected after a third-pass second-model review found the original framing here overclaimed:</strong> <code>saveAdminEdit()</code>'s <code>existing</code> variable (<code>lessons[key] || {}</code>, where <code>lessons = {...currentLessonData[semKey]}</code>) IS re-read fresh from the local cache at save time, not frozen at modal-open time — on its face this looks like Phase 7's "safe because it's live-refreshed" case, not Phase 8's "frozen closure" case. The original draft argued this further by claiming <code>summerCamps_lessonData</code> "has no live listener" — that's not quite right: <code>currentLessonData['summer-2026']</code> <em>does</em> get opportunistically refreshed via a full <code>loadSummerCampData()</code> re-fetch whenever the unrelated non-summer <code>onSnapshot</code> listener fires (<code>firebase-data.js:512-540</code>) — i.e. on any unrelated non-summer save anywhere in the app, not never. <strong>The real reason this fix is needed has nothing to do with how reliable that opportunistic refresh is</strong>: even an occasionally-fresh <code>existing</code> is not a guarantee at the moment any specific save fires, and the whole point of the payload/local-cache split is that it doesn't need to reason about freshness at all — omitting a field from the Firestore payload is safe regardless of whether <code>existing</code> happened to be fresh or stale at that instant. Since <code>saveAdminEdit()</code> is one shared function serving both schemas, and the split makes freshness a non-issue either way, apply Phase 8's split uniformly to both rather than trying to reason field-by-field about which schema's cache is more trustworthy right now.</div>
-
-  <p><strong>Step 2 — diff, and split the Firestore-bound payload from the local-display object, exactly like Phase 8:</strong></p>
-  <pre><code>async function saveAdminEdit(key, teacher, className, weekNum) {
+  // Step 2 — title validation, diff, photo, save. Same function, continuing
+  // directly from Step 1 above — not a second declaration.
   const title = document.getElementById('ca-edit-title')?.value.trim();
   if (!title) { alert('Project title is required.'); return; }
 
-  const semKey = getAdminSemKey();
   const lessons = { ...(currentLessonData?.[semKey] || {}) };
-  const existing = lessons[key] || {};
+  const existing = lessons[key] || {};</code></pre>
+  <p>This reuses <code>readAdminLessonDoc()</code> (Phase 1, non-summer only, already reads <code>curriculum/lessonData</code>) via the shared <code>adminLessonStillExistsWithRetry()</code> helper for the non-summer case, and a direct single-doc existence check for summer, mirroring how Phase 8's read-back verification already reads <code>summerCamps_lessonData</code> directly. Both are forced server reads (<code>{ source: 'server' }</code>), not local-cache checks, for the reasoning in the danger box above Step 1.</p>
+  <div class="note">⚠️ <strong>Residual TOCTOU race — deliberately accepted as a documented gap, not closed with a transaction. Christie's explicit decision, Aug 14, 2026.</strong> Even with the forced server read in Step 1, a gap remains between the check completing and the write landing — another admin could move or delete the lesson in that exact window, still producing the ghost duplicate this fix exists to prevent. Closing it fully would mean wrapping the check and the write in a single Firestore transaction, which would require making <code>saveSingleLesson()</code> transaction-aware — a shared function with many other callers, and one that already does its own separate post-write read-back verification for summer (<code>verifySummerLessonWrite()</code>), a second read that doesn't compose cleanly inside a transaction's read-then-write structure. Christie chose to accept the residual gap instead: the forced server read already closes the concretely-demonstrated risk (a stale local cache silently passing the check); what's left is bounded by human click-to-click timing, not a tight machine loop, and matches how Layer 2 (same-field collision detection, see "Not in scope") is already deferred elsewhere in this doc for the same kind of reasoning — revisit if this surfaces as an actual incident, not preemptively. This same acceptance now also covers Phase 11's reuse of <code>adminLessonStillExistsWithRetry()</code>, rather than needing a fresh decision there.</div>
 
-  const raw = {
+  <div class="danger">🛑 <strong>Why this can't just spread the existing lesson like the pre-Phase-8 code did — same underlying reasoning as Phase 8, re-derived for this specific function's data flow. Corrected after a third-pass second-model review found the original framing here overclaimed:</strong> <code>saveAdminEdit()</code>'s <code>existing</code> variable (<code>lessons[key] || {}</code>, where <code>lessons = {...currentLessonData[semKey]}</code>) IS re-read fresh from the local cache at save time, not frozen at modal-open time — on its face this looks like Phase 7's "safe because it's live-refreshed" case, not Phase 8's "frozen closure" case. The original draft argued this further by claiming <code>summerCamps_lessonData</code> "has no live listener" — that's not quite right: <code>currentLessonData['summer-2026']</code> <em>does</em> get opportunistically refreshed via a full <code>loadSummerCampData()</code> re-fetch whenever the unrelated non-summer <code>onSnapshot</code> listener fires (<code>firebase-data.js:512-540</code>) — i.e. on any unrelated non-summer save anywhere in the app, not never. <strong>The real reason this fix is needed has nothing to do with how reliable that opportunistic refresh is</strong>: even an occasionally-fresh <code>existing</code> is not a guarantee at the moment any specific save fires, and the whole point of the payload/local-cache split is that it doesn't need to reason about freshness at all — omitting a field from the Firestore payload is safe regardless of whether <code>existing</code> happened to be fresh or stale at that instant. Since <code>saveAdminEdit()</code> is one shared function serving both schemas, and the split makes freshness a non-issue either way, apply Phase 8's split uniformly to both rather than trying to reason field-by-field about which schema's cache is more trustworthy right now.</div>
+
+  <p><strong>Step 2, continued — diff, and split the Firestore-bound payload from the local-display object, exactly like Phase 8:</strong></p>
+  <pre><code>  const raw = {
     projectTitle: title,
     shortDetails: document.getElementById('ca-edit-details')?.value.trim() || '',
     inspoLink: document.getElementById('ca-edit-inspo')?.value.trim() || '',
@@ -786,8 +804,10 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
 
   <h3>What it does</h3>
   <p><strong>File:</strong> <code>js/app.js</code>, <code>sendHelpResponse(key)</code> and <code>sendQaReply(key)</code>.</p>
-  <div class="note">⚠️ <strong>Ordering dependency — this phase must ship after BOTH Phase 9 and Phase 10, not before.</strong> It reuses <code>readAdminLessonDoc()</code>'s forced-server <code>opts</code> parameter (added in Phase 9) and the <code>buildQaThreadUnionArgs()</code> helper (added in Phase 10) rather than duplicating either.</div>
+  <div class="note">⚠️ <strong>Ordering dependency — this phase must ship after BOTH Phase 9 and Phase 10, not before.</strong> It reuses the shared <code>adminLessonStillExistsWithRetry()</code> helper (extracted in Phase 9, replacing that phase's original inline duplicated read-with-retry logic) and the <code>buildQaThreadUnionArgs()</code> helper (added in Phase 10) rather than duplicating either.</div>
   <p>Bypass <code>saveLessonData()</code>/<code>saveSummerCampLessonData()</code> entirely — direct, targeted writes, branching by schema the same way <code>saveSingleLesson()</code> does, since (unlike Phase 10's non-summer-only <code>sendTeacherQaMessage</code>) both of these functions are reachable for either schema.</p>
+
+  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — a second Codex pass found that "sendHelpResponse doesn't need an existence check" was wrong, and a fourth Claude pass found sendQaReply's own check didn't actually reuse Phase 9's retry-once/fail-closed behavior despite claiming to. Both functions now use the shared <code>adminLessonStillExistsWithRetry()</code> helper.</strong> The original reasoning for skipping <code>sendHelpResponse</code>'s check was that <code>renderHelpQueue()</code>'s live re-render on remote changes (<code>app.js:4066</code>) narrows the exposure window — that's true, but narrowing isn't closing: the Respond button is still clickable in the interval before this admin's listener delivers a remote delete/move, and critically, the two schemas <em>fail differently</em> in that window. Summer's per-lesson-document <code>.update()</code> naturally throws if the document is gone — no check needed there, it fails closed on its own. Non-summer's dotted-path <code>update()</code> on the shared <code>curriculum/lessonData</code> doc does not fail the same way — Firestore's dotted-field <code>update()</code> creates intermediate map keys as needed, so it would silently recreate the exact sparse ghost-duplicate lesson Phase 9 exists to prevent, just via a different call site. Both functions now get the check on both schemas, for consistency and because the fix is now cheap (one shared helper call) rather than duplicated logic.</div>
 
   <p><strong><code>sendHelpResponse(key)</code> — reachable only when the Help Queue panel already shows this lesson, which (per <code>renderHelpQueue()</code>'s own filter, <code>l.qaThread || []</code>, <code>app.js:5495</code>) requires a real, non-empty <code>qaThread</code> array to already exist. No legacy-migration case is reachable here — unlike <code>sendQaReply</code> below, a bare <code>arrayUnion(newEntry)</code> is always correct for this function.</strong></p>
   <pre><code>async function sendHelpResponse(key) {
@@ -799,6 +819,24 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   const semKey = getAdminSemKey();
   const existing = currentLessonData?.[semKey]?.[key];
   if (!existing) return;
+
+  // Move/delete existence check — shared helper from Phase 9. Summer's own
+  // per-doc update() would fail closed on its own even without this (see the
+  // danger box above); this check exists specifically for the non-summer
+  // shared-document path, where a dotted-path update() would otherwise
+  // silently recreate a deleted lesson's nested path.
+  let check;
+  try {
+    check = await adminLessonStillExistsWithRetry(semKey, key);
+  } catch (err) {
+    console.warn('⚠️ Existence check retry also failed:', err);
+    alert("Couldn't confirm this lesson still exists — check your connection and try again.");
+    return;
+  }
+  if (!check.exists) {
+    alert('This lesson was moved or removed elsewhere. Your response was not sent — please close this and check the grid for its new location.');
+    return;
+  }
 
   const user = getAuthUser();
   const newEntry = {
@@ -844,7 +882,7 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   renderHelpQueue();
 }</code></pre>
 
-  <p><strong><code>sendQaReply(key)</code> — reachable from the admin detail modal's Q&amp;A section (<code>renderQaWithReply()</code>, "admin can always reply," <code>app.js:6729</code>) for ANY lesson with content, regardless of whether <code>qaThread</code> already exists. This function CAN hit a legacy-only lesson (real content in <code>teacherNotes</code>/<code>adminResponse</code>, no <code>qaThread</code> array yet) — needs the same migration handling as Phase 10.</strong></p>
+  <p><strong><code>sendQaReply(key)</code> — reachable from the admin detail modal's Q&amp;A section (<code>renderQaWithReply()</code>, "admin can always reply," <code>app.js:6729</code>) for ANY lesson with content, regardless of whether <code>qaThread</code> already exists. This function CAN hit a legacy-only lesson (real content in <code>teacherNotes</code>/<code>adminResponse</code>, no <code>qaThread</code> array yet) — needs the same migration handling as Phase 10. Its existence check's server read also returns the fresh lesson object — reused below for the migration decision and the local cache update, rather than re-reading the local cache separately, which a fourth Claude review pass found the original draft did unnecessarily (paying for a fresh read, then discarding it in favor of a potentially-stale one).</strong></p>
   <pre><code>async function sendQaReply(key) {
   const input = document.getElementById(`qa-reply-${key}`);
   if (!input) return;
@@ -852,28 +890,34 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   if (!message) return;
 
   const semKey = getAdminSemKey();
-  const existing = currentLessonData?.[semKey]?.[key];
-  if (!existing) return;
+  const cachedExisting = currentLessonData?.[semKey]?.[key];
+  if (!cachedExisting) return;
 
-  if (!curriculumDb) initCurriculumFirestore();
-  const isSummer = semKey.startsWith('summer-');
-
-  // Move/delete existence check — same reasoning and same shared helper as
-  // Phase 9: this admin detail modal, like saveAdminEdit()'s popup, stays
-  // open indefinitely with this Send button's `key` baked in — openDetailModal()
-  // is NOT wired into the live setupLessonDataListener refresh the way
-  // renderHelpQueue() is (see the note below sendHelpResponse's design for why
-  // that function doesn't need this same check). Forced server read, for the
-  // same reason as Phase 3/Phase 9. Same accepted-gap treatment as Phase 9
-  // applies to the residual TOCTOU window here too — no new decision needed,
-  // this is the identical, already-decided tradeoff.
-  const stillExists = isSummer
-    ? (await curriculumDb.collection('summerCamps_lessonData').doc(encodeFirestoreKey(key)).get({ source: 'server' })).exists
-    : (await readAdminLessonDoc(semKey, key, { source: 'server' })) !== null;
-  if (!stillExists) {
+  // Move/delete existence check — shared helper from Phase 9. This admin
+  // detail modal, like saveAdminEdit()'s popup, stays open indefinitely with
+  // this Send button's `key` baked in — openDetailModal() is NOT wired into
+  // the live setupLessonDataListener refresh the way renderHelpQueue() is, so
+  // (unlike sendHelpResponse) there's no self-narrowing mitigation here at
+  // all. Same accepted-gap treatment as Phase 9 applies to the residual
+  // TOCTOU window — no new decision needed, this is the identical,
+  // already-decided tradeoff.
+  let check;
+  try {
+    check = await adminLessonStillExistsWithRetry(semKey, key);
+  } catch (err) {
+    console.warn('⚠️ Existence check retry also failed:', err);
+    alert("Couldn't confirm this lesson still exists — check your connection and try again.");
+    return;
+  }
+  if (!check.exists) {
     alert('This lesson was moved or removed elsewhere. Your reply was not sent — please close this window and check the grid for its new location.');
     return;
   }
+  // The check's server read already fetched the current lesson — use it in
+  // place of the earlier local-cache read for everything below, so the
+  // migration decision isn't made against data that could already be stale
+  // by the time the check completes.
+  const existing = check.data || cachedExisting;
 
   const user = getAuthUser();
   const newEntry = {
@@ -890,6 +934,8 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   // re-seeding with getQaThread()'s synthesized array is safe to repeat.
   const entriesToAdd = buildQaThreadUnionArgs(existing, newEntry);
 
+  if (!curriculumDb) initCurriculumFirestore();
+  const isSummer = semKey.startsWith('summer-');
   const updates = {};
   if (isSummer) {
     updates.qaThread = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
@@ -911,7 +957,9 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   }
 
   // Local display/cache only — never sent to Firestore, so staleness here is
-  // cosmetic, same reasoning as Phases 7-10.
+  // cosmetic, same reasoning as Phases 7-10. Built from the same fresh
+  // `existing`/entriesToAdd used for the write above, so it can't drift from
+  // what was actually saved.
   const updatedLesson = {
     ...existing,
     adminResponse: message,
@@ -924,8 +972,6 @@ Then: The final qaThread array contains the legacy message(s) exactly once (arra
   // of the stale closure `lesson` the original code used here.
   openDetailModal(updatedLesson, key, updatedLesson.teacher, updatedLesson.className, updatedLesson.weekNum);
 }</code></pre>
-
-  <div class="note">⚠️ <strong>Why sendHelpResponse doesn't get the same existence check as sendQaReply — a real, traced asymmetry, not an oversight.</strong> <code>renderHelpQueue()</code>'s container IS re-rendered live on every remote change (<code>setupLessonDataListener</code>'s callback calls it directly, <code>app.js:4066</code>) — so a lesson moved/deleted elsewhere causes this panel to refresh (and that entry to disappear or relocate) on essentially every remote update, substantially narrowing the window versus a modal that stays static. <code>openDetailModal()</code>, by contrast, is not wired into that live refresh at all — once open, it stays showing whatever it showed at open time, exactly like the two edit modals and <code>saveAdminEdit()</code>'s popup, which is precisely the pattern Phase 9 exists to fix. Adding the same check to <code>sendHelpResponse</code> would be redundant engineering against a window that's already self-narrowing; <code>sendQaReply</code> genuinely needs it because its host UI has no equivalent self-refresh.</div>
 
   <div class="bdd">Given: The Help Queue shows a lesson with an existing teacher question, Firestore already holding processStep2="Old step 2" on that lesson (unrelated content field) and OTHER unrelated lessons elsewhere in the same semester with their own real content
 When: An admin sends a Help Queue response
@@ -943,9 +989,17 @@ Given: A legacy-only lesson (real teacherNotes/adminResponse, no qaThread array)
 When: An admin sends a Q&A reply via sendQaReply
 Then: The resulting qaThread contains both the synthesized legacy message(s) and the new reply — not just the new reply alone
 
+Given: A non-summer lesson is moved to a new grid slot by Admin A (deleting the original key's nested path) while Admin B's Help Queue panel happens not to have re-rendered yet
+When: B clicks Respond on the now-stale entry
+Then: The pre-send existence check reads the server directly, finds the key gone, and blocks the send — the dotted-path update() never runs, so the deleted key is not silently recreated with a sparse qaThread/adminResponse/status object
+
 Given: Admin B has the lesson's detail modal open; Admin A, separately, moves that same lesson to a new grid slot, deleting the original key's doc
 When: B, unaware, sends a Q&A reply through the still-open modal
-Then: The pre-send existence check reads the server directly, finds the original key's doc gone, and blocks the send with an alert — no ghost duplicate is created at the deleted key</div>
+Then: The pre-send existence check reads the server directly, finds the original key's doc gone, and blocks the send with an alert — no ghost duplicate is created at the deleted key
+
+Given: A legacy-only lesson gets migrated by a different admin's message between this admin's last local cache sync and their own reply attempt
+When: This admin sends a reply via sendQaReply
+Then: The migration decision uses the existence check's own fresh server read, not the earlier (now-stale) local cache — so it correctly sees the already-migrated qaThread and does not re-synthesize and re-insert a duplicate legacy entry</div>
 </div>
 
 <h2 id="phase12">Phase 12 — Copy Plan to Others: per-target targeted saves (executeCopyPlan)</h2>
@@ -955,6 +1009,7 @@ Then: The pre-send existence check reads the server directly, finds the original
   <h3>What it does</h3>
   <p><strong>File:</strong> <code>js/app.js</code>, <code>executeCopyPlan(sourceKey)</code>. <strong>No ordering dependency on Phases 7-11</strong> — this reuses only already-shipped <code>saveSingleLesson()</code> (Phase 1) and could ship before Phase 7 if desired.</p>
   <p>Split one bulk <code>saveLessonData()</code> call into N targeted <code>saveSingleLesson()</code> calls, one per copy target — the same "one atomic bulk write → multiple targeted writes" pattern Phase 1 already established for the admin grid's swap action. Stop on the first failure rather than attempt every remaining target against a save path that just failed: unlike swap, there's no delete involved here, so there's nothing to roll back — a stopped-partway copy just means the untried targets can be re-run by repeating the action.</p>
+  <div class="danger">🛑 <strong>Fixed Aug 14, 2026 — both an independent Codex pass and a fourth Claude pass, run in parallel, found the same real bug: this phase's own BDD scenario claimed a behavior the code didn't implement.</strong> The original draft called <code>saveSingleLesson(semKey, targetKey, { ...fields })</code> with no 4th argument, while its own BDD text asserted <code>FieldValue.delete()</code> would clear a target field the source leaves empty — false, because <code>saveSingleLesson</code> strips empty <code>CONTENT_FIELDS</code> from the payload rather than clearing them (<code>firebase-data.js:716</code>); only fields explicitly listed in <code>fieldsToClear</code> get <code>FieldValue.delete()</code>. This is the exact "adjacent gap" Phase 13 already identifies and fixes for paste — Phase 12 has the identical exposure (both routes newly go through <code>saveSingleLesson</code>) but the original draft didn't apply the same fix. <strong>Two more real issues found in the same round, both about the loop's failure handling:</strong> (1) logging happened in a separate loop <em>after</em> every target was attempted, so if target 2 failed, target 1's already-successful save was never logged — contradicting the BDD's own "1st target is saved and logged" claim; fixed by logging immediately after each successful save. (2) <code>saveSingleLesson()</code> can silently no-op (its own internal safety gate or, for summer, its content guard) by returning without throwing — the original draft had no way to detect this and would count that target as copied anyway, a false success. Fixed by replicating the summer guard's own condition at this call site before saving, so a target that WOULD be silently blocked is skipped and reported honestly instead of counted as copied.</div>
   <pre><code>async function executeCopyPlan(sourceKey) {
   const semKey = getAdminSemKey();
   const lessons = { ...currentLessonData[semKey] }; // local display/cache only from here — never sent to Firestore as a whole object
@@ -975,20 +1030,45 @@ Then: The pre-send existence check reads the server directly, finds the original
   }
 
   const fields = getCopyableFields(source);
+  const isSummer = semKey.startsWith('summer-');
   const previousContent = {};
-  const savedTargets = [];
+  const skippedTargets = [];
   let copied = 0;
 
   for (const targetKey of targetKeys) {
     if (!lessons[targetKey]) continue;
-    if (hasLessonContent(lessons[targetKey])) {
-      previousContent[targetKey] = getCopyableFields(lessons[targetKey]);
+    const targetExisting = lessons[targetKey];
+    if (hasLessonContent(targetExisting)) {
+      previousContent[targetKey] = getCopyableFields(targetExisting);
+    }
+
+    // A field the source's copyable fields leave empty, but the EXISTING
+    // target had real content in — same fieldsToClear treatment Phase 13
+    // uses, needed for the same reason (saveSingleLesson strips, doesn't
+    // clear, empty payload fields).
+    const fieldsToClear = CONTENT_FIELDS.filter(f =>
+      (targetExisting[f] || '').trim() !== '' && !(fields[f] || '').trim()
+    );
+
+    // Guard pre-check — mirrors saveSingleLesson's own summer-branch
+    // condition (firebase-data.js:712) at this call site, so a target that
+    // would be silently blocked (no CONTENT_FIELDS content in the copied
+    // fields and nothing to clear — e.g. a source lesson whose only real
+    // copyable content is `materials`, which isn't in CONTENT_FIELDS) is
+    // skipped and reported honestly, not counted as copied.
+    if (isSummer) {
+      const hasGuardContent = CONTENT_FIELDS.some(f => fields[f] && String(fields[f]).trim());
+      if (!hasGuardContent && fieldsToClear.length === 0) {
+        console.warn(`⚠️ Copy Plan: target ${targetKey} would be blocked by the summer content guard (no CONTENT_FIELDS content, nothing to clear) — skipping, not counting as copied.`);
+        skippedTargets.push(targetKey);
+        continue;
+      }
     }
 
     // Firestore-bound payload for THIS target only — {...fields}, never the
     // whole semester.
     try {
-      await saveSingleLesson(semKey, targetKey, { ...fields });
+      await saveSingleLesson(semKey, targetKey, { ...fields }, fieldsToClear);
     } catch (err) {
       console.error(`❌ Copy Plan failed to save target ${targetKey}, stopping:`, err);
       currentLessonData[semKey] = lessons;
@@ -1000,33 +1080,33 @@ Then: The pre-send existence check reads the server directly, finds the original
 
     // Local display/cache only — mirrors what was actually just saved.
     Object.assign(lessons[targetKey], fields);
-    savedTargets.push(targetKey);
+    fieldsToClear.forEach(f => { lessons[targetKey][f] = ''; });
     copied++;
-  }
 
-  currentLessonData[semKey] = lessons;
-
-  // Log only the targets that actually saved.
-  for (const targetKey of savedTargets) {
-    const target = lessons[targetKey];
+    // Log immediately after this target's successful save — not in a
+    // separate loop after every target is attempted, so an already-saved
+    // target is never left unlogged if a later target fails.
     const logEntry = {
       action: 'copy',
       details: {
         projectTitle: source.projectTitle,
         fromTeacher: source.teacher, fromClassName: source.className, fromWeek: source.weekNum,
-        toTeacher: target.teacher, toClassName: target.className, toWeek: target.weekNum
+        toTeacher: lessons[targetKey].teacher, toClassName: lessons[targetKey].className, toWeek: lessons[targetKey].weekNum
       }
     };
     if (previousContent[targetKey]) logEntry.details.previousPlan = previousContent[targetKey];
     await appendChangeLogEntry(semKey, logEntry);
   }
 
+  currentLessonData[semKey] = lessons;
   closeAdminModal();
   renderAdminGrid();
   renderChangeHistory();
-  alert(`Plan copied to ${copied} class${copied !== 1 ? 'es' : ''}.`);
+  const skippedNote = skippedTargets.length > 0
+    ? ` (${skippedTargets.length} skipped — no content to copy for the summer content guard, see console)`
+    : '';
+  alert(`Plan copied to ${copied} class${copied !== 1 ? 'es' : ''}.${skippedNote}`);
 }</code></pre>
-  <div class="note">⚠️ <strong>Guard-interaction edge case — narrow, documented, not engineered around.</strong> <code>getCopyableFields()</code> returns 8 fields (<code>introPitch</code>, <code>processStep1-4</code>, <code>closure</code>, <code>materials</code>, <code>dayOfMaterials</code>), but <code>CONTENT_FIELDS</code> (the set <code>saveSingleLesson</code>'s summer-branch guard checks for "has real content") is only 7 of those — it doesn't include <code>materials</code>. A source lesson whose ONLY real copyable content is its <code>materials</code> field, copied onto a SUMMER target, would produce a payload the guard sees as "all content fields empty" and silently blocks (<code>console.warn</code> + <code>return</code>, no thrown error — so this specific target would locally show as copied but not actually persist). This is narrow (requires a lesson with materials text but no process steps, intro, or closure) and pre-existing in spirit — today's un-fixed code has no guard at all on this path, so this is a NEW edge case this fix could introduce, not one it inherits. Flagged explicitly rather than silently accepted; not fixed here since closing it means either widening the shared guard's definition of "content" (affects every other caller of <code>saveSingleLesson</code>'s summer branch) or special-casing this one call site — Christie may want to weigh in on which, or accept this as a documented rare-case gap the same way Phase 9's TOCTOU race was accepted.</div>
   <div class="bdd">Given: A non-summer lesson with real content in processStep1-3, and two other, unrelated non-summer lessons elsewhere in the semester with their own real content
 When: An admin copies the plan to 2 target slots
 Then: Only the 2 target keys' dotted paths are touched by the resulting update() calls — the 2 unrelated lessons are never resent, unlike the original bug where the whole semester was bulk-saved
@@ -1037,11 +1117,15 @@ Then: Two separate targeted document merges happen, one per target — no batch-
 
 Given: A copy targets 3 lessons; the save to the 2nd target throws (simulated network failure)
 When: executeCopyPlan runs
-Then: The 1st target is saved and logged, the 2nd and 3rd are not attempted, and the admin sees an alert stating exactly 1 of 3 succeeded — not a silent partial failure and not an uncaught promise rejection
+Then: The 1st target's save AND its change-log entry both completed before the 2nd target was attempted — the admin sees an alert stating exactly 1 of 3 succeeded, and the change history shows exactly 1 new entry, not zero — not a silent partial failure and not an uncaught promise rejection
 
 Given: A copy target already has real content in a field the source's copyable fields would leave empty (e.g. target has dayOfMaterials text, source has none)
 When: The copy executes
-Then: The target's dayOfMaterials is cleared via FieldValue.delete(), not left stale — same reasoning as Phase 4's fieldsToClear, though this specific phase doesn't need it since getCopyableFields always overwrites with an explicit value (empty string included) for every field it returns, not a partial diff</div>
+Then: The target's dayOfMaterials is cleared via FieldValue.delete() (via the newly-computed fieldsToClear), not left stale underneath the copied content
+
+Given: A summer source lesson whose only real copyable content is its materials field (empty introPitch/processStep1-4/closure/dayOfMaterials — none of which are CONTENT_FIELDS-recognized as "materials" is not itself one), copied onto a summer target
+When: The copy executes
+Then: The guard pre-check correctly identifies this target would be silently blocked, skips it without calling saveSingleLesson, and the resulting alert reports it as skipped rather than counted among the successfully copied targets</div>
 </div>
 
 <h2 id="phase13">Phase 13 — Paste from Cut Bank / Idea Bank: targeted single-lesson saves (pasteFromCutBank, pasteFromIdeaBank)</h2>
