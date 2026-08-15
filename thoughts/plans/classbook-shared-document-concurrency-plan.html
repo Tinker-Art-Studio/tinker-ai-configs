@@ -1,9 +1,40 @@
-<h1>Classbook — Shared Document/Array Concurrency Safety Plan</h1>
-<p class="meta">Created Aug 15, 2026. Companion to <code>classbook-data-safety-remaining-stages.html</code> (<code>plan_jrhp-GpcSGph</code>) — that plan's rounds 9-10 discovered this vulnerability class while fixing Cut Bank/Idea Bank races, and Christie chose to split it into its own dedicated plan rather than keep expanding that document. <strong>This doc is a scoping skeleton, not a finished plan</strong> — the comprehensive sweep that should drive its phase list has not been run yet. Read the "Resume Instructions" section at the bottom before doing anything else.</p>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Classbook Shared Document/Array Concurrency Safety</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #dcfce7; color: #166534; }
+</style>
+</head>
+<body>
 
-<h2 id="status">Status</h2>
-<div class="phase">
-  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Scoping only. No phases have been designed yet.</strong> Six concrete vulnerable functions are already known (found incidentally, not from a deliberate sweep — see "What's already known" below), but this document's own premise is that a comprehensive, deliberate sweep of the whole Classbook app will very likely find more. Do not treat the six below as the final list. No app code has been touched — this document, like its companion, is pure investigation and planning until phases are designed, reviewed, and explicitly approved for execution.
+<h1 id="plan-title">Plan: Classbook Shared Document/Array Concurrency Safety</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Find and close every shared-document/array "last write wins" race in the Classbook app — a document multiple admins can read into a local variable, mutate a copy of, and overwrite wholesale — the sibling vulnerability class to the companion plan's Vulnerability #11, but for shared config/utility data (Settings, Cut Bank, Idea Bank, Prep Dashboard, Prep Cycle config) instead of lesson content.<br>
+  <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>js/app.js</code>, <code>js/firebase-data.js</code><br>
+  <strong>Context:</strong> Companion to <code>classbook-data-safety-remaining-stages.html</code> (<code>plan_jrhp-GpcSGph</code>) — that plan's rounds 9-10 discovered this vulnerability class while fixing Cut Bank/Idea Bank races (Vulnerability #11's Phase 13/17), and Christie chose to split it into its own dedicated plan rather than keep expanding that document indefinitely.<br>
+  <strong>Risk:</strong> Varies by instance — Settings/<code>appData</code> is likely highest (could silently lose an entire semester's config), utility banks (Idea Bank) next, Prep Dashboard/Prep Cycle after that, diagnostics lowest (self-healing).<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Scoping only. No phases have been designed yet.</strong> Six concrete vulnerable functions are already known (found incidentally while working the companion plan, not from a deliberate sweep — see "What's already known" below), but this document's own premise is that a comprehensive, deliberate sweep of the whole Classbook app will very likely find more. Do not treat the six below as the final list. No app code has been touched — this document, like its companion, is pure investigation and planning until phases are designed, reviewed, and explicitly approved for execution.<br><br>
+  <strong>Sequencing relative to the companion plan and the Phases 1-6 backtracking audit:</strong> as of this document's creation (Aug 15, 2026), Christie's stated sequence was: finish the companion plan's own remaining review round first, then the Phases 1-6 live-code audit, then this plan's comprehensive sweep — confirm this hasn't changed before assuming it, since sequencing was being actively discussed across multiple threads in the same session this document was created in.
 </div>
 
 <h2 id="context">Context — why this plan exists</h2>
@@ -65,6 +96,7 @@
   <p><strong>After the sweep:</strong> rank findings by real-world severity — <code>appData</code>/Settings is probably highest (admin-facing, could lose an entire semester), the Idea Bank's five writers are probably next (same collection as work already partially done, most directly actionable), Prep Dashboard/Prep Cycle after that, diagnostics last (self-healing, lowest stakes). Design phases the same way the companion plan does — one phase per logical fix (or a small combined group where the shape is nearly identical, the way the companion plan's Phase 12/13 or Phase 15's summer-2026 special-case were combined) — with BDD scenarios, a Firebase Safety Checklist entry, and the same "trace the real code, don't assume" discipline the companion plan established. <strong>Run the same iterative Codex+Claude review loop from round one</strong> — the companion plan needed 5-10 rounds per phase group before converging; there's no reason to expect this one converges faster, and starting with the dual-loop (rather than a single second-model-review pass, the way the companion plan's Phases 1-6 did) avoids needing a retroactive audit later the way Phases 1-6 now do.</p>
 
   <p><strong>Registration:</strong> this file needs to be registered with the local plan-reviewer (<code>plan-review register ~/tinker-ai-configs/thoughts/plans/classbook-shared-document-concurrency-plan.html --repo auto --branch auto --commit auto</code>, then <code>plan-review index</code>) if not already done by the session that created it — check <code>plan-review index</code>'s output first rather than assuming.</p>
-
-  <p><strong>Sequencing relative to the companion plan and the Phases 1-6 backtracking audit:</strong> as of this document's creation, Christie's stated sequence was: finish the companion plan's own remaining review round first, then the Phases 1-6 live-code audit, then this plan's comprehensive sweep — but confirm this hasn't changed before assuming it, since sequencing was being actively discussed across multiple threads in the same session this document was created in.</p>
 </div>
+
+</body>
+</html>
