@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>Plan: Classbook Phases 1-6 Backtracking Audit — Fixes</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 920px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
   h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
   h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
   h3 { font-size: 1rem; margin-top: 1.2rem; }
@@ -35,7 +35,7 @@
   <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>js/app.js</code>, <code>js/firebase-data.js</code>, <code>e2e/data-safety.spec.js</code><br>
   <strong>Context:</strong> Companion to <code>classbook-data-safety-remaining-stages.html</code> (<code>plan_jrhp-GpcSGph</code>). This plan designs fixes for a 13-issue audit of Phases 1-6, following the SAME process the companion plan used: iterative Codex+Claude review until execution-ready, then execute with tests, then deploy only with Christie's explicit approval.<br>
   <strong>Risk: HIGH for several phases</strong> — this is live, currently-deployed code serving real users today, not a pending proposal.<br>
-  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Round 2 of the review loop complete (Aug 15, 2026).</strong> Round 1 found 19 gaps in the first draft's 8 phases and added 2 new phases (9, 10); this revision closed those, then round 2 found 23 MORE gaps — comparable volume to round 1, not yet converging, matching the companion plan's pattern. Notably: round 2's worst bugs (a crash-on-null, wrong variable names, a scope bug where a <code>const</code> declared inside <code>try{}</code> was invisible to its own <code>catch{}</code>) were concentrated in the phases and compensating-write code round 1 itself had just added — exactly the "every round finds something real, including in content a previous round just fixed" pattern. This revision was built by reading the REAL current source at every cited location before writing each fix (not composing plausible pseudocode), after round 2 found that most of its findings were literal identifier/scope mismatches against the real code. One new phase (11) was added for a structural scope gap (<code>saveLessonData()</code>, a sibling bulk-write function with no load-guard at all, entirely outside Phase 1's original framing). Round 3 is needed next.
+  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Round 3 of the review loop complete (Aug 15, 2026).</strong> Round 1 found 19 gaps, round 2 found 23 more (comparable volume, not converging) and added Phase 11. Round 3 found ~20 more real gaps — BUT also led to an architectural redesign: reading the real code to answer one of round 3's findings confirmed that <strong>ALL non-summer lesson data lives in ONE shared Firestore document</strong> (<code>curriculum/lessonData</code>, dotted-path fields), which means move/swap's two writes (and even a write+delete) can be combined into a SINGLE atomic <code>.update()</code> call — eliminating the entire "first write landed, second write failed" compensating-write problem <strong>by construction</strong> rather than patching around it. Phase 9 has been rewritten around this — it is dramatically simpler than the round-2 version and several previously-accepted residual risks (R2-5, the swap race window) are now structurally impossible rather than merely mitigated. Round 3 also caught a striking miss: Phase 6 had been "fixing" a verbatim copy of the ALREADY-correct non-summer checkbox handler for two full review rounds, while the real summer handler's actual bug, at a different code location entirely, was never touched. Round 4 is needed next, but this round's architectural simplification is a genuine, structural reason to expect faster convergence, not just another patch cycle.
 </div>
 
 <h2 id="context">Context — the audit, and one architectural insight it led to</h2>
@@ -44,93 +44,129 @@
 
   <p><strong>What they found, combined: 13 real issues.</strong> The two most severe were verified a third time — directly, by reading the cited code — before being written up here.</p>
 
-  <p><strong>The architectural insight:</strong> three of the most severe findings share one root cause — <code>saveSingleLesson()</code> silently returns <code>undefined</code> instead of throwing when the global <code>lessonDataLoadedSuccessfully</code> guard is tripped. Fixing this one function to throw instead of silently returning closes several downstream findings as a side effect. Phase 1 below is that fix.</p>
+  <p><strong>The architectural insight that started this plan:</strong> three of the most severe findings share one root cause — <code>saveSingleLesson()</code> silently returns <code>undefined</code> instead of throwing when the global <code>lessonDataLoadedSuccessfully</code> guard is tripped. Fixing this one function to throw instead of silently returning closes several downstream findings as a side effect. Phase 1 below is that fix.</p>
 
-  <p><strong>Cross-plan coordination:</strong> <code>saveSingleLesson()</code>, <code>readAdminLessonDoc()</code>, and <code>saveAdminEdit()</code> are all used or directly modified by multiple NOT-YET-EXECUTED phases in the companion plan. Christie's explicit sequencing decision: execute this plan first, then re-verify/redo the companion plan's review.</p>
+  <p><strong>A second, larger architectural insight, found in round 3:</strong> <code>saveSingleLesson()</code>'s non-summer branch and <code>deleteLessonKey()</code> both operate on dotted-path fields within the SAME single Firestore document, <code>curriculum/lessonData</code> — confirmed by reading both functions directly (<code>js/firebase-data.js:692-760</code>, <code>371-379</code>). Firestore guarantees a single <code>.update()</code> call on one document is atomic: either every field in that call lands, or none do. Round 2's occupied-swap/move logic did two or three SEPARATE <code>saveSingleLesson()</code>/<code>deleteLessonKey()</code> calls and then tried to detect and compensate for partial failure after the fact — an entire class of bug (and an entire class of fix, and an entire class of bug IN that fix, which is what rounds 2 and 3 kept finding) that simply doesn't exist if the multiple writes are combined into one atomic call in the first place. Phase 9 below replaces the compensating-write design with a new shared helper, <code>saveMultipleLessonFields()</code>, built exactly this way.</p>
 
-  <p><strong>Round 1 update:</strong> round 1 confirmed the Phase-1-fixes-2/3/4-as-a-side-effect claim holds for the guard-bypass component specifically, but found real gaps in every one of the first draft's 8 phases' proposed FIXES (not the underlying diagnoses, which were all confirmed correct) — see the round 1 findings table below.</p>
+  <p><strong>Cross-plan coordination:</strong> <code>saveSingleLesson()</code>, <code>readAdminLessonDoc()</code>, and <code>saveAdminEdit()</code> are all used or directly modified by multiple NOT-YET-EXECUTED phases in the companion plan. Christie's explicit sequencing decision: execute this plan first, then re-verify/redo the companion plan's review. <strong>Round 3 update:</strong> this plan's Phase 10(a) now directly reuses the companion plan's own already-reviewed (through 2 Codex + 4 Claude passes) atomic <code>arrayUnion()</code> design for Q&amp;A thread updates, rather than re-inventing a weaker one — see Phase 10 for the coordination note this creates.</p>
 
-  <p><strong>Round 2 update (Aug 15, 2026):</strong> round 2 re-reviewed the round-1-revised plan and found 23 more real gaps, at a volume comparable to round 1 — this plan has not yet converged. Critically, round 2's worst defects were concentrated in round 1's OWN new work: Phase 2's compensating write (added to fix R1-7) crashed with a <code>TypeError</code> whenever the pre-move destination was empty; Phase 10(b)'s revert variables (added to fix R1-19) were declared with <code>const</code> inside a <code>try</code> block that the sibling <code>catch</code> block structurally cannot see; Phase 10(b)'s baseline-reassignment line (also added to fix R1-19) would have made every save AFTER the first one throw, because it assigned the full lesson object where the real code assigns a 7-key content-only object. Several other round-2 findings were literal identifier mismatches — <code>key</code> vs the real parameter <code>lessonKey</code>, <code>qaThread</code> vs the real local variable <code>thread</code> — because round 1's fixes were composed as plausible-looking pseudocode without reading the real function bodies at each cited location. This revision was built differently: every fix below was written only after reading the actual current source at its cited file:line location.</p>
+  <p><strong>Round 1 update:</strong> confirmed the Phase-1-fixes-2/3/4-as-a-side-effect claim holds for the guard-bypass component specifically, but found real gaps in every one of the first draft's 8 phases' proposed FIXES (not the underlying diagnoses, which were all confirmed correct).</p>
+
+  <p><strong>Round 2 update:</strong> found 23 more real gaps, concentrated in round 1's own new work — several were literal identifier mismatches, because round 1's fixes were composed as plausible pseudocode without reading the real function bodies. This revision was built differently — every fix written only after reading the actual current source. Also found <code>saveLessonData()</code>, a sibling bulk-write function with no load-guard at all — added as Phase 11.</p>
+
+  <p><strong>Round 3 update (Aug 15, 2026):</strong> found ~20 more real gaps — comparable volume to round 2, again concentrated in the freshest code (Phase 9's five-way merge, Phase 10's rewrite, the brand-new Phase 11). One finding (Phase 3/9's compensating-write race window, which round 2 had accepted as a residual risk) led directly to the atomic-write redesign described above, which structurally closes it rather than continuing to patch around it. Also found a genuinely surprising miss: Phase 6's fix has been targeting the wrong function for two entire review rounds. See the Round 3 findings table below for the full list.</p>
 </div>
 
 <h2 id="round1-findings">Round 1 Review — Findings &amp; Disposition</h2>
 <div class="phase">
-  <p>Combined: 27 raw findings, consolidated to 19 distinct gaps. Full detail preserved from the round-1 revision; summarized here since round 2 (below) is what matters for the current state of the plan.</p>
+  <p>Combined: 27 raw findings, consolidated to 19 distinct gaps. Summarized here since rounds 2-3 (below) are what matters for the current state of the plan.</p>
   <table>
     <tr><th>#</th><th>Finding</th><th>Severity</th><th>Disposition</th></tr>
-    <tr><td>R1-1</td><td><code>saveAdminEdit()</code> zero try/catch; Phase 1 turns silent no-op into unhandled rejection</td><td>HIGH</td><td>Phase 1 safety net (further corrected in round 2, see R2-22)</td></tr>
-    <tr><td>R1-2</td><td>Caught callers (Q&amp;A, summer editor) don't revert optimistic local-state mutation</td><td>MEDIUM</td><td>Phase 10 (further corrected in round 2)</td></tr>
-    <tr><td>R1-3</td><td>Swap-with-empty: delete-failure-after-success leaves Firestore duplicated, false "restored" claim</td><td>MED-HIGH</td><td>Phase 9 (new)</td></tr>
-    <tr><td>R1-4</td><td>Move's <code>deleteLessonKey()</code> outside try/catch, uncaught by caller</td><td>HIGH</td><td>Phase 9 (new)</td></tr>
-    <tr><td>R1-5</td><td><code>opts.forceServer</code> conflicts with companion plan's <code>opts.source==='server'</code></td><td>HIGH</td><td>Phase 2 — adopted companion's shape</td></tr>
-    <tr><td>R1-6</td><td>Forced read-back has no catch of its own</td><td>MEDIUM</td><td>Phase 2 — wrapped in own try/catch</td></tr>
-    <tr><td>R1-7</td><td><code>restoreGridActionState()</code> doesn't touch Firestore; Phase 2's abort doesn't compensate</td><td>MEDIUM</td><td>Phase 2 — compensating write added (crashed on null; fixed in round 2, R2-1)</td></tr>
-    <tr><td>R1-8</td><td>Phase 2 silently depends on Phase 4's move-side fix; "any order" wrong</td><td>MEDIUM</td><td>Ordering guidance corrected</td></tr>
-    <tr><td>R1-9</td><td>Phase 3 can't actually distinguish "nothing written" from "first write landed"</td><td>HIGH</td><td>Phase 3 — explicit flag added</td></tr>
-    <tr><td>R1-10</td><td>Phase 3's compensating write omits <code>fieldsToClear</code></td><td>MED-HIGH</td><td>Phase 3 — fieldsToClear added</td></tr>
-    <tr><td>R1-11</td><td>Phase 4's occupied-swap formulas compare wrong baseline objects — mathematical no-op</td><td>HIGH</td><td>Phase 4 — formula corrected (confirmed genuinely closed in round 2)</td></tr>
-    <tr><td>R1-12</td><td>Phase 4 scoped to <code>CONTENT_FIELDS</code> only; other fields can survive as hybrids</td><td>HIGH</td><td>Resolved in round 2 with a code-verified field list (R2-6)</td></tr>
-    <tr><td>R1-13</td><td>Phase 5's same-path fix incomplete — other branches still delete before save confirms</td><td>HIGH</td><td>Phase 5 — reordered (residual gap found in round 2, R2-8/R2-9)</td></tr>
-    <tr><td>R1-14</td><td>Phase 6's "mirrors exactly" claim inaccurate</td><td>LOW</td><td>Phase 6 — corrected (round 2 found no further issues)</td></tr>
-    <tr><td>R1-15</td><td>Phase 7 calls a nonexistent <code>showLoadFailureBanner()</code></td><td>MEDIUM</td><td>Phase 7 — real DOM operation (round 2 found the reset-to-true gap, R2-10)</td></tr>
-    <tr><td>R1-16</td><td>Phase 8's "await savePromise, then log" still logs failed swaps/moves</td><td>HIGH</td><td>Phase 8 — success-flag added (round 2 found a deeper defect, R2-14)</td></tr>
-    <tr><td>R1-17</td><td>Phase 8's reorder can turn post-save logging failure into false "Error saving lesson"</td><td>MEDIUM</td><td>Phase 8 — non-blocking log catch (round 2 found wrong identifier, R2-11)</td></tr>
-    <tr><td>R1-18</td><td>Phase 8 misses <code>cutProject()</code>/Cut Bank paste</td><td>MEDIUM</td><td>Scope widened (round 2 found the fix never actually happened, R2-15)</td></tr>
-    <tr><td>R1-19</td><td>Summer full-editor <code>saveLesson()</code> never reverts local state on failure</td><td>MED-HIGH</td><td>Phase 10 (round 2 found 3 real defects in the fix itself, R2-9/18/19/20)</td></tr>
+    <tr><td>R1-1</td><td><code>saveAdminEdit()</code> zero try/catch; Phase 1 turns silent no-op into unhandled rejection</td><td>HIGH</td><td>Phase 1 safety net (corrected R2-22, confirmed closed R3)</td></tr>
+    <tr><td>R1-2</td><td>Caught callers don't revert optimistic local-state mutation</td><td>MEDIUM</td><td>Phase 10 (corrected across R2/R3)</td></tr>
+    <tr><td>R1-3</td><td>Swap-with-empty: delete-failure-after-success leaves Firestore duplicated</td><td>MED-HIGH</td><td>Moot — Phase 9's atomic write (R3 redesign) has no partial-failure state to handle</td></tr>
+    <tr><td>R1-4</td><td>Move's <code>deleteLessonKey()</code> outside try/catch, uncaught</td><td>HIGH</td><td>Moot — same atomic-write redesign</td></tr>
+    <tr><td>R1-5</td><td><code>opts.forceServer</code> conflicts with companion plan's <code>opts.source==='server'</code></td><td>HIGH</td><td>Moot in R3 — <code>readAdminLessonDoc()</code> no longer needed by this plan at all (see Phase 2)</td></tr>
+    <tr><td>R1-6</td><td>Forced read-back has no catch of its own</td><td>MEDIUM</td><td>Moot — same reason</td></tr>
+    <tr><td>R1-7</td><td><code>restoreGridActionState()</code> doesn't touch Firestore; abort doesn't compensate</td><td>MEDIUM</td><td>Moot — atomic write means there is no landed-but-unconfirmed state to compensate for</td></tr>
+    <tr><td>R1-8</td><td>Phase 2 silently depends on Phase 4's move-side fix</td><td>MEDIUM</td><td>Still applies — Phase 4's fieldsToClear feeds Phase 9's atomic write</td></tr>
+    <tr><td>R1-9</td><td>Phase 3 can't distinguish "nothing written" from "first write landed"</td><td>HIGH</td><td>Moot — atomic write has no partial-landing state</td></tr>
+    <tr><td>R1-10</td><td>Phase 3's compensating write omits <code>fieldsToClear</code></td><td>MED-HIGH</td><td>Moot — no compensating write exists anymore</td></tr>
+    <tr><td>R1-11</td><td>Phase 4's occupied-swap formulas — mathematical no-op</td><td>HIGH</td><td>Phase 4 — formula corrected, confirmed via numeric trace in R2 and R3</td></tr>
+    <tr><td>R1-12</td><td>Phase 4 scoped to <code>CONTENT_FIELDS</code> only</td><td>HIGH</td><td>Field list proposed R2, still an open follow-on phase per R3</td></tr>
+    <tr><td>R1-13</td><td>Phase 5's same-path fix incomplete</td><td>HIGH</td><td>Phase 5 — reordered; R3 adds versioned-path redesign closing the remaining gap</td></tr>
+    <tr><td>R1-14</td><td>Phase 6's "mirrors exactly" claim inaccurate</td><td>LOW</td><td>Superseded — R3 found the whole fix targeted the wrong function; see Phase 6</td></tr>
+    <tr><td>R1-15</td><td>Phase 7 calls a nonexistent <code>showLoadFailureBanner()</code></td><td>MEDIUM</td><td>Phase 7 — real DOM operation; R3 adds generation-counter fix</td></tr>
+    <tr><td>R1-16</td><td>Phase 8's "await savePromise, then log" still logs failed swaps</td><td>HIGH</td><td>Phase 9 — success flags now trivial given atomic writes</td></tr>
+    <tr><td>R1-17</td><td>Phase 8's reorder can turn logging failure into false "Error saving lesson"</td><td>MEDIUM</td><td>Phase 8 — confirmed closed for <code>saveTeacherEdit()</code> in R3</td></tr>
+    <tr><td>R1-18</td><td>Phase 8 misses <code>cutProject()</code>/Cut Bank paste</td><td>MEDIUM</td><td>Phase 8 — R3 found the R2 fix still had real gaps, redesigned</td></tr>
+    <tr><td>R1-19</td><td>Summer full-editor never reverts local state on failure</td><td>MED-HIGH</td><td>Phase 10 — R3 found 3 more real defects, fixed with generation-token design</td></tr>
   </table>
 </div>
 
 <h2 id="round2-findings">Round 2 Review — Findings &amp; Disposition</h2>
 <div class="phase">
-  <p>Both reviewers re-reviewed the round-1-revised plan against the real shipped code. Combined: <strong>32 raw findings, consolidated to 23 distinct gaps</strong> — comparable volume to round 1, concentrated in round 1's own new work. This revision was built by reading the actual current source at every cited location before writing each fix below.</p>
+  <p>32 raw findings, consolidated to 23 distinct gaps — comparable volume to round 1, concentrated in round 1's own new work.</p>
   <table>
-    <tr><th>#</th><th>Finding</th><th>Reviewer(s)</th><th>Severity</th><th>Disposition</th></tr>
-    <tr><td>R2-1</td><td>Phase 2's compensating write <code>saveSingleLesson(..., preMoveDestLesson)</code> throws a <code>TypeError</code> when the pre-move destination was empty (<code>null</code>) — <code>saveSingleLesson()</code> dereferences <code>lessonData.lastEditedBy</code> with no null guard</td><td>Codex + Claude</td><td>HIGH</td><td>Phase 9 — null case now deletes the destination key instead of saving null</td></tr>
-    <tr><td>R2-2</td><td>Phase 2's compensating write also omits <code>fieldsToClear</code> — same class of bug R1-10 fixed for Phase 3, never applied here</td><td>Claude</td><td>MEDIUM</td><td>Phase 9 — fieldsToClear added to the non-null compensation path</td></tr>
-    <tr><td>R2-3</td><td><code>swapSucceeded</code>/<code>moveSucceeded</code> referenced by Phase 8 but never declared anywhere — would leak as implicit globals in this non-strict script</td><td>Codex + Claude</td><td>MEDIUM</td><td>Phase 9 — declared explicitly with <code>let</code> in the enclosing scope</td></tr>
-    <tr><td>R2-4</td><td>Phase 3's compensating write depends on Phase 4's variables without declaring that dependency</td><td>Claude</td><td>MEDIUM</td><td>Moot — Phases 2/3/4/8/9 are now one integrated code block (Phase 9)</td></tr>
-    <tr><td>R2-5</td><td>Phase 3's compensating-write path has an unacknowledged concurrent-edit race window (larger than the sibling restore-only path's already-flagged one)</td><td>Codex + Claude</td><td>MEDIUM</td><td>Named as an accepted residual risk, consistent with this plan's existing Layer-2 precedent</td></tr>
-    <tr><td>R2-6</td><td>Reviewers proposed answers to R1-12's open field-enumeration question but DISAGREED on <code>qaThread</code></td><td>Codex + Claude</td><td>—</td><td>Resolved with a field list verified directly from 5 real object literals; <code>qaThread</code> excluded (conservative); widening beyond <code>CONTENT_FIELDS</code> deferred as its own future phase (see Phase 4's note)</td></tr>
-    <tr><td>R2-7</td><td><code>saveSingleLesson()</code>'s own <code>clearedContentFields</code> filter silently drops any <code>fieldsToClear</code> entry not in <code>CONTENT_FIELDS</code> — widening the field list requires changing this function too, not just passing more names</td><td>Codex</td><td>—</td><td>Confirmed via direct read (<code>firebase-data.js:704</code>); documents why R2-6's widening isn't a drop-in change</td></tr>
-    <tr><td>R2-8</td><td>Even with reordering, same-path photo replacement still isn't failure-safe — upload overwrites the live Storage object BEFORE the Firestore save confirms</td><td>Codex</td><td>MED-HIGH</td><td>Phase 5 — named as an acknowledged residual gap, versioned-path approach sketched, not fully implemented</td></tr>
-    <tr><td>R2-9</td><td>Summer modal's <code>lesson = savedLesson</code> reassignment happens BEFORE Phase 5's photo-path-differs check could read the OLD path — silently defeats the different-path orphan-cleanup case at this one call site</td><td>Claude</td><td>MED-HIGH</td><td>Phase 10 — old path captured into its own variable before any reassignment</td></tr>
-    <tr><td>R2-10</td><td>Phase 7's fix never resets the guard back to <code>true</code> after a later successful listener reload — one transient failure permanently blocks every Phase-1-guarded save until a full page reload</td><td>Codex</td><td>MEDIUM</td><td>Phase 7 — reset-on-success added, verified safe since this is the only post-startup mutator of the flag</td></tr>
-    <tr><td>R2-11</td><td>Phase 8's <code>saveTeacherEdit()</code> snippet uses <code>key</code>; the real parameter is <code>lessonKey</code> — literal <code>ReferenceError</code></td><td>Codex</td><td>HIGH</td><td>Phase 8 — corrected against real signature</td></tr>
-    <tr><td>R2-12</td><td><code>saveTeacherEdit()</code> performs a second, separate Firestore write (photo fields) after <code>saveSingleLesson()</code> that round 1's fix didn't account for</td><td>Codex + Claude</td><td>MEDIUM</td><td>Phase 8 — log moved to after both writes</td></tr>
-    <tr><td>R2-13</td><td><code>appendChangeLogEntry()</code> mutates local history synchronously before its own Firestore await; every current call site pairs it with an immediate re-render — Phase 8's delayed logging needs an equivalent SECOND render call</td><td>Claude</td><td>MED-HIGH</td><td>Phase 9 — second <code>renderChangeHistory()</code> call added after each deferred log</td></tr>
-    <tr><td>R2-14</td><td>The real move/swap log calls are created EAGERLY (<code>const logPromise = appendChangeLogEntry(...)</code>, unawaited, running in parallel with the save) — a deeper defect than round 1's "await savePromise" framing addressed</td><td>confirmed directly against real code</td><td>HIGH</td><td>Phase 9 — eager pattern removed entirely; call itself now deferred, not just its await</td></tr>
-    <tr><td>R2-15</td><td><code>cutProject()</code>/<code>pasteFromCutBank()</code> still have no real try/catch or partial-failure handling — R1-18 only reordered the log call</td><td>Codex + Claude</td><td>HIGH</td><td>Phase 8 — real try/catch + honest partial-failure handling; <code>pasteFromCutBank()</code>'s bulk <code>saveLessonData()</code> call also replaced with a targeted <code>saveSingleLesson()</code></td></tr>
-    <tr><td>R2-16</td><td>Phase 10(a)'s <code>sendTeacherQaMessage()</code> fix uses identifiers that don't exist in the real function (<code>qaThread</code> vs real <code>thread</code>; <code>newMessage</code>, <code>fieldsToClear</code> don't exist; saves <code>lesson</code> not the real <code>updatedLesson</code>)</td><td>Codex + Claude</td><td>HIGH</td><td>Phase 10 — rewritten from the real function body</td></tr>
-    <tr><td>R2-17</td><td>Length-truncation revert (<code>qaThread.length = previousLength</code>) can delete a DIFFERENT, successfully-sent message if two sends are in flight concurrently</td><td>Codex</td><td>MEDIUM</td><td>Phase 10 — revert now removes the specific message object, not the array tail</td></tr>
-    <tr><td>R2-18</td><td>Phase 10(b)'s <code>summerLessonOriginalData = savedLesson</code> is WRONG — breaks every subsequent save's <code>.trim()</code> calls (real code assigns a 7-key content-only object)</td><td>Codex + Claude</td><td>HIGH</td><td>Phase 10 — real assignment left untouched</td></tr>
-    <tr><td>R2-19</td><td>Phase 10(b)'s revert variables declared with <code>const</code> inside <code>try{}</code>, invisible to the sibling <code>catch{}</code> — mechanical scope error</td><td>Codex + Claude</td><td>HIGH</td><td>Phase 10 — hoisted with <code>let</code> before the try, plus a <code>cacheMutated</code> guard</td></tr>
-    <tr><td>R2-20</td><td>Phase 10(b)'s BDD claim that reverting local state prevents autosave from retrying a failed edit is FALSE — autosave rereads all 7 content fields fresh from the DOM every time, not from <code>lesson</code></td><td>Codex + Claude</td><td>MEDIUM</td><td>Phase 10 — BDD corrected to state the real, narrower benefit (prevents stale non-content-field leakage, not DOM-field retry)</td></tr>
-    <tr><td>R2-21</td><td><code>saveLessonData()</code> — a sibling bulk-write function, distinct from <code>saveSingleLesson()</code> — has NO load-guard at all; Phase 1's "root cause" framing never covered it. 7 real callers found, several using unsafe unguarded bulk writes for what should be single-lesson operations</td><td>Claude</td><td>HIGH</td><td>New Phase 11 — guard added to <code>saveLessonData()</code> itself, plus real fixes at the worst-affected callers</td></tr>
-    <tr><td>R2-22</td><td>Phase 1's <code>saveAdminEdit()</code> try/catch never showed a <code>return</code> in its catch block — if implemented literally, a caught failure falls through to commit the optimistic local mutation, close the modal, and log a fake edit anyway</td><td>Claude</td><td>MED-HIGH</td><td>Phase 1 — explicit <code>return</code> added, verified against real function body</td></tr>
-    <tr><td>R2-23</td><td><code>cutProject()</code> has no read-back verification at all before its destructive delete</td><td>Claude</td><td>LOW</td><td>Noted as a residual gap, not designed given already-large scope</td></tr>
+    <tr><th>#</th><th>Finding</th><th>Severity</th><th>Disposition</th></tr>
+    <tr><td>R2-1</td><td>Phase 2's compensating write threw a <code>TypeError</code> on a null pre-move destination</td><td>HIGH</td><td>Moot in R3 — atomic write, no compensation needed</td></tr>
+    <tr><td>R2-2</td><td>Same compensating write also omitted <code>fieldsToClear</code></td><td>MEDIUM</td><td>Moot — same reason</td></tr>
+    <tr><td>R2-3</td><td><code>swapSucceeded</code>/<code>moveSucceeded</code> referenced but never declared</td><td>MEDIUM</td><td>Phase 9 — trivial now, set directly inside the one atomic try/catch</td></tr>
+    <tr><td>R2-4</td><td>Phase 3's compensating write depends on Phase 4's variables, undeclared</td><td>MEDIUM</td><td>Moot — no compensating write</td></tr>
+    <tr><td>R2-5</td><td>Compensating-write path has an unacknowledged concurrent-edit race window</td><td>MEDIUM</td><td><strong>Structurally eliminated</strong> by the atomic-write redesign — the single most consequential outcome of round 3</td></tr>
+    <tr><td>R2-6</td><td>R1-12's field-enumeration question — reviewers disagreed on <code>qaThread</code></td><td>—</td><td>Field list proposed, <code>qaThread</code> excluded (conservative)</td></tr>
+    <tr><td>R2-7</td><td><code>saveSingleLesson()</code>'s own filter drops <code>fieldsToClear</code> entries outside <code>CONTENT_FIELDS</code></td><td>—</td><td>Confirmed; still blocks R2-6's widening — open follow-on phase</td></tr>
+    <tr><td>R2-8</td><td>Same-path photo replacement still not failure-safe — upload overwrites before Firestore confirms</td><td>MED-HIGH</td><td>Phase 5 — R3 implements the versioned-path fix that closes this</td></tr>
+    <tr><td>R2-9</td><td>Summer modal's <code>lesson = savedLesson</code> reassignment happens before the photo-path-differs check reads the OLD path</td><td>MED-HIGH</td><td>Phase 10 — <code>oldPhotoPath</code> captured before reassignment, confirmed correct in R3</td></tr>
+    <tr><td>R2-10</td><td>Phase 7 never resets the guard to <code>true</code> after a later successful reload</td><td>MEDIUM</td><td>Phase 7 — fixed; R3 adds the generation-counter refinement for out-of-order callbacks</td></tr>
+    <tr><td>R2-11</td><td>Phase 8's <code>saveTeacherEdit()</code> used <code>key</code>; real parameter is <code>lessonKey</code></td><td>HIGH</td><td>Phase 8 — corrected, confirmed in R3</td></tr>
+    <tr><td>R2-12</td><td><code>saveTeacherEdit()</code>'s second Firestore write (photo fields) wasn't accounted for</td><td>MEDIUM</td><td>Phase 8 — R3 found this write is actually redundant and removed it entirely</td></tr>
+    <tr><td>R2-13</td><td><code>appendChangeLogEntry()</code> mutates local history before its own Firestore await; deferred logging needs a second render</td><td>MED-HIGH</td><td>Phase 9 — second render added</td></tr>
+    <tr><td>R2-14</td><td>Real move/swap log calls are created EAGERLY, unawaited, in parallel with the save</td><td>HIGH</td><td>Phase 9 — eager pattern removed, log fires only after atomic write confirms</td></tr>
+    <tr><td>R2-15</td><td><code>cutProject()</code>/<code>pasteFromCutBank()</code> still had no real try/catch</td><td>HIGH</td><td>Phase 8 — R3 found the R2 fix's ordering was still unsafe, redesigned to archive-first</td></tr>
+    <tr><td>R2-16</td><td>Phase 10(a)'s fix used identifiers that don't exist in the real function</td><td>HIGH</td><td>Phase 10 — rewritten from real code; R3 replaces with the companion plan's atomic design entirely</td></tr>
+    <tr><td>R2-17</td><td>Length-truncation revert could delete a different, successfully-sent message</td><td>MEDIUM</td><td>Moot in R3 — atomic <code>arrayUnion()</code> write means there's no local array to truncate</td></tr>
+    <tr><td>R2-18</td><td>Phase 10(b)'s <code>summerLessonOriginalData = savedLesson</code> was wrong</td><td>HIGH</td><td>Phase 10 — real assignment kept, confirmed correct in R3</td></tr>
+    <tr><td>R2-19</td><td>Phase 10(b)'s revert variables declared with <code>const</code> inside <code>try{}</code>, invisible to <code>catch{}</code></td><td>HIGH</td><td>Phase 10 — hoisted with <code>let</code>, confirmed correct in R3</td></tr>
+    <tr><td>R2-20</td><td>Phase 10(b)'s BDD claim about preventing autosave retry was false</td><td>MEDIUM</td><td>Phase 10 — BDD corrected, confirmed accurate in R3</td></tr>
+    <tr><td>R2-21</td><td><code>saveLessonData()</code> has no load-guard; 7 unguarded bulk-write callers</td><td>HIGH</td><td>New Phase 11; R3 found an 8th caller and real bugs in several of the fixes</td></tr>
+    <tr><td>R2-22</td><td>Phase 1's <code>saveAdminEdit()</code> catch never showed a <code>return</code></td><td>MED-HIGH</td><td>Phase 1 — fixed, confirmed closed in R3</td></tr>
+    <tr><td>R2-23</td><td><code>cutProject()</code> has no read-back verification before its destructive delete</td><td>LOW</td><td>Lower-priority now that Phase 8's R3 redesign makes cut archive-first (delete failure is recoverable, not data loss)</td></tr>
   </table>
-  <div class="note">⚠️ Both reviewers again confirmed every round-1 phase's underlying bug diagnosis is correct — every round-2 gap is in round 1's proposed FIX, not a misdiagnosis. Round 2's own overall assessment (both reviewers independently): "not execution-ready," comparable finding volume to round 1, concentrated in the freshest code (round 1's own additions). Expect round 3 to find more — this revision prioritized reading real source over covering every single item exhaustively.</div>
+  <div class="note">⚠️ Both round-2 reviewers confirmed every round-1 phase's underlying bug diagnosis was correct. Round 3 confirmed the same about round 2's diagnoses — every round-3 gap is in round 2's proposed FIX (or is a genuinely new completeness-sweep finding), not a misdiagnosis.</div>
+</div>
+
+<h2 id="round3-findings">Round 3 Review — Findings &amp; Disposition</h2>
+<div class="phase">
+  <p>Codex found 20 issues (10 HIGH, 10 MEDIUM); Claude found 14 (4 HIGH, 6 MEDIUM, 4 LOW) after independently cross-checking every agent claim against real source. Combined and deduplicated below. <strong>Both reviewers' overall assessment: comparable volume to round 2, not yet converging on their own terms</strong> — but the architectural investigation triggered by finding R3-1 changed the shape of the problem enough that this revision expects round 4 to look qualitatively different, not just another patch cycle.</p>
+  <table>
+    <tr><th>#</th><th>Finding</th><th>Severity</th><th>Disposition</th></tr>
+    <tr><td>R3-1</td><td>Occupied-swap compensation is an application-generated stale overwrite risk, not a recoverable race — Codex: "should block execution," recommends a transaction/atomic write instead of compensation</td><td>HIGH</td><td><strong>Led to the atomic-write redesign</strong> — confirmed via direct code read that move/swap can be one atomic <code>.update()</code>; see Phase 9</td></tr>
+    <tr><td>R3-2</td><td>Move's read-back error path left stale optimistic UI (no restore on a genuine read failure)</td><td>MEDIUM</td><td>Moot — Phase 9's atomic write has no read-back step at all anymore</td></tr>
+    <tr><td>R3-3</td><td><code>sendTeacherQaMessage()</code>'s specific-object revert fixed identifiers but the design was still a non-atomic full-lesson read-modify-write</td><td>HIGH</td><td>Phase 10 — replaced entirely with the companion plan's atomic <code>arrayUnion()</code> design</td></tr>
+    <tr><td>R3-4</td><td>Summer <code>cacheMutated</code> guard fails under overlapping saves (manual save doesn't cancel pending autosave, no button lock)</td><td>MEDIUM</td><td>Phase 10 — generation-token (invocation counter) added</td></tr>
+    <tr><td>R3-5</td><td>R2-8's residual gap (same-path upload destroys the old photo before Firestore confirms) should not ship as accepted risk — concrete cheap fix available</td><td>MED-HIGH</td><td>Phase 5 — versioned-path fix designed and implemented</td></tr>
+    <tr><td>R3-6</td><td>After a swap, replacing one lesson's photo at its new slot could overwrite the OTHER swapped lesson's still-referenced photo at the same deterministic path</td><td>HIGH</td><td>Phase 5 — closed as a side effect of the versioned-path fix (paths never collide across upload events)</td></tr>
+    <tr><td>R3-7</td><td>Phase 7's reset-on-success used simple sequential logic; async snapshot callbacks can resolve out of order</td><td>MEDIUM</td><td>Phase 7 — generation counter added</td></tr>
+    <tr><td>R3-8</td><td>Phase 8's <code>saveTeacherEdit()</code> used <code>key</code>; real param is <code>lessonKey</code>; a second write wasn't accounted for</td><td>HIGH</td><td>Phase 8 — identifier fixed; the "second write" turned out to be dead/redundant code, removed entirely</td></tr>
+    <tr><td>R3-9</td><td><code>createNewSemester()</code> is a real 8th caller of <code>saveLessonData()</code>, missed by R2-21's "confirmed 7" claim</td><td>MED-HIGH</td><td>Phase 11 — added, with real try/catch + local-state revert</td></tr>
+    <tr><td>R3-10</td><td><code>pasteFromIdeaBank()</code>'s rewrite carried forward a real bug: <code>saveFutureProjects(currentFutureProjects)</code> passes the whole wrapper, not the bare array</td><td>HIGH</td><td>Phase 11 — fixed, confirmed against <code>saveFutureProjects()</code>'s real signature</td></tr>
+    <tr><td>R3-11</td><td>Same function: idea removed and Idea Bank saved BEFORE the destination lesson save was confirmed — a lesson-save failure destroys the only copy of the idea</td><td>HIGH</td><td>Phase 11 — reordered, lesson saved first</td></tr>
+    <tr><td>R3-12</td><td><code>executeCopyPlan()</code>'s rewrite from bulk to per-target <code>saveSingleLesson()</code> omitted <code>fieldsToClear</code>, reintroducing hybrid content</td><td>HIGH</td><td>Phase 11 — fixed with a real per-target clear-list computation</td></tr>
+    <tr><td>R3-13</td><td>Same function: still mutates the live shared cache before saving; a mid-loop failure skips logging for already-succeeded targets</td><td>MEDIUM</td><td>Phase 11 — per-target clone, save-then-log-immediately loop</td></tr>
+    <tr><td>R3-14</td><td><code>createLessonSlotsForRoster()</code>'s fix swallows its own error, turning today's correct "Error saving settings" into a false "Settings saved!"</td><td>MEDIUM</td><td>Phase 11 — error now propagates exactly as it does today; only the clone-before-mutate fix was needed</td></tr>
+    <tr><td>R3-15</td><td><code>cutProject()</code> still deletes the live lesson BEFORE the Cut Bank archive write — R2-15 "not closed"</td><td>HIGH</td><td>Phase 8 — reordered to archive-first, delete-second</td></tr>
+    <tr><td>R3-16</td><td><code>cutProject()</code>'s archive is incomplete — omits <code>materialsList</code>, <code>qaThread</code>, <code>planComplete</code>, <code>photoUrl</code>/<code>photoPath</code></td><td>HIGH</td><td>Phase 8 — archive now a full deep-cloned snapshot</td></tr>
+    <tr><td>R3-17</td><td>Cut/paste/idea-paste logging still shares a catch with persistence — a log-only failure reports a false persistence-failure message</td><td>MEDIUM</td><td>Phase 8/11 — separate non-blocking log catch added everywhere</td></tr>
+    <tr><td>R3-18</td><td><code>appendChangeLogEntry()</code>'s optimistic local mutation has no failure rollback (R2-13 only added the success-path render)</td><td>MEDIUM</td><td>Fixed at the source, inside <code>appendChangeLogEntry()</code> itself — benefits every call site</td></tr>
+    <tr><td>R3-19</td><td>Testing plan doesn't satisfy AGENTS.md's "emulator test first" requirement for data-write changes</td><td>MEDIUM</td><td>Investigated — this is a pre-existing, already-documented repo-wide stopgap (AGENTS.md itself says the emulator migration "is scoped but not yet built"), not a gap this plan introduces; named explicitly in the checklist rather than silently ignored</td></tr>
+    <tr><td>R3-20</td><td>Phase 6's fix quotes the wrong function entirely — verbatim match for the ALREADY-correct non-summer handler; the real summer handler's bug was never touched</td><td>HIGH</td><td>Phase 6 — completely rewritten against the real summer handler at its real location</td></tr>
+    <tr><td>R3-21</td><td><code>sendQaReply()</code> "gets the identical fix" claim to <code>sendHelpResponse()</code> was imprecise — real functions differ (status field, modal re-open)</td><td>LOW-MEDIUM</td><td>Phase 11 — each function's fix written against its own real code</td></tr>
+    <tr><td>R3-22</td><td><code>pasteFromCutBank()</code>'s targeted save has no <code>fieldsToClear</code>/existence check — narrow race on a visually-empty cell</td><td>LOW-MEDIUM</td><td>Named as an explicit residual risk (previously unnamed)</td></tr>
+    <tr><td>R3-23</td><td>Dead-code callers (<code>restoreFromBackup()</code>, <code>renameTeacherInSemester()</code>) already named in the companion plan but missing here</td><td>LOW</td><td>Acknowledged in Not-in-scope for consistency</td></tr>
+  </table>
 </div>
 
 <h2 id="phase1">Phase 1 — saveSingleLesson() fails loudly instead of silently, when the load-guard is tripped</h2>
 <div class="phase" id="phase-1">
-  <div class="danger">🛑 <strong>Root cause of Phases 2, 3, and 4 below.</strong> <code>saveSingleLesson()</code> (<code>js/firebase-data.js:692-695</code>, verified) checks <code>lessonDataLoadedSuccessfully === false</code> at its own top and, if tripped, does <code>console.error(...); return;</code> — a normally-resolving <code>undefined</code>, not a thrown error.</div>
+  <div class="danger">🛑 <strong>Root cause of Phases 4 and 9 below.</strong> <code>saveSingleLesson()</code> (<code>js/firebase-data.js:692-695</code>, verified) checks <code>lessonDataLoadedSuccessfully === false</code> at its own top and, if tripped, does <code>console.error(...); return;</code> — a normally-resolving <code>undefined</code>, not a thrown error.</div>
+  <div class="safe">✅ <strong>Round 3: zero new findings in this phase.</strong> Both reviewers independently re-traced the full guard placement, try/catch scope, and the R2-22 <code>return</code> fix against the real <code>saveAdminEdit()</code> body and confirmed it's correct — no fall-through possible on a caught failure. This phase is stable.</div>
 
   <h3>What it does</h3>
-  <p><strong>File:</strong> <code>js/firebase-data.js</code>, <code>saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClear = [])</code>.</p>
   <pre><code>async function saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClear = []) {
   if (lessonDataLoadedSuccessfully === false) {
     throw new Error('Lesson data failed to load — refusing to save to avoid writing over unconfirmed server state. Reload and try again.');
   }
-  // ... rest of the function unchanged ...
+  // ... rest of the function unchanged (see Phase 9 for the round-3 refactor
+  // that extracts its non-summer per-field-update logic into a shared
+  // helper, buildLessonFieldUpdates()) ...
 }</code></pre>
 
-  <div class="danger">🛑 <strong>Round 2 finding (R2-22, Claude, MEDIUM-HIGH): round 1's <code>saveAdminEdit()</code> fix never showed a <code>return</code> in its catch block.</strong> Read the REAL function body (<code>js/app.js:4486-4548</code>) in full to fix this precisely. The real structure: title check (early return) → build <code>lessons[key]</code> (4491-4513) → photo upload/delete (4516-4528) → <code>await saveSingleLesson(semKey, key, lessons[key])</code> (4535, no <code>fieldsToClear</code> arg) → <code>currentLessonData[semKey] = lessons</code> (4536) → <code>closeAdminModal(); renderAdminGrid(); renderChangeHistory();</code> (4538-4540) → an ALREADY-EXISTING separate try/catch around just <code>appendChangeLogEntry()</code> (4542-4548, already correctly non-blocking and already correctly ordered AFTER the save — no fix needed there). If round 1's try/catch is placed around the photo/save section without an explicit <code>return</code> in its catch, execution falls through to the post-save lines anyway on a caught failure — committing the optimistic mutation and logging a fake edit, exactly the class of bug Phases 8/9/10 exist to prevent elsewhere.</div>
+  <h3>saveAdminEdit() — safety net, unchanged from round 2, confirmed correct</h3>
   <pre><code>async function saveAdminEdit(key, teacher, className, weekNum) {
   const title = document.getElementById('ca-edit-title')?.value.trim();
   if (!title) { alert('Project title is required.'); return; }
 
-  // Round-1 addition: check the guard BEFORE any Storage mutation.
   if (lessonDataLoadedSuccessfully === false) {
     alert('Lesson data failed to load — refusing to save to avoid writing over unconfirmed server state. Reload and try again.');
     return;
@@ -139,23 +175,7 @@
   const semKey = getAdminSemKey();
   const lessons = { ...(currentLessonData?.[semKey] || {}) };
   const existing = lessons[key] || {};
-
-  lessons[key] = {
-    ...existing, teacher, className, weekNum,
-    weekDate: existing.weekDate || '', classSize: existing.classSize || 0,
-    projectTitle: title,
-    shortDetails: document.getElementById('ca-edit-details')?.value.trim() || '',
-    inspoLink: document.getElementById('ca-edit-inspo')?.value.trim() || '',
-    introPitch: document.getElementById('ca-edit-intro')?.value.trim() || '',
-    processStep1: document.getElementById('ca-edit-step1')?.value.trim() || '',
-    processStep2: document.getElementById('ca-edit-step2')?.value.trim() || '',
-    processStep3: document.getElementById('ca-edit-step3')?.value.trim() || '',
-    processStep4: document.getElementById('ca-edit-step4')?.value.trim() || '',
-    closure: document.getElementById('ca-edit-closure')?.value.trim() || '',
-    materials: document.getElementById('ca-edit-materials')?.value.trim() || '',
-    dayOfMaterials: document.getElementById('ca-edit-dayof')?.value.trim() || '',
-    lastImported: new Date().toISOString()
-  };
+  lessons[key] = { ...existing, teacher, className, weekNum, /* ... unchanged field list ... */ };
 
   try {
     const photoInput = document.getElementById('ca-edit-photo-input');
@@ -171,21 +191,16 @@
       lessons[key].photoUrl = '';
       lessons[key].photoPath = '';
     }
-
     await saveSingleLesson(semKey, key, lessons[key]);
   } catch (err) {
-    // Round-2 fix (R2-22): MUST return here — otherwise execution falls
-    // through to the lines below (currentLessonData commit, modal close,
-    // render, change-log entry) even though the save never actually
-    // succeeded, reintroducing exactly the "commit + log a fake edit on
-    // failure" bug Phases 8/9/10 exist to prevent elsewhere.
+    // R2-22, confirmed correct in R3: MUST return here — otherwise execution
+    // falls through to commit currentLessonData, close the modal, and log a
+    // fake edit even though the save never actually succeeded.
     console.error('❌ Admin edit failed to save:', err);
     alert('This edit could not be saved. Please try again.');
     return;
   }
 
-  // Targeted single-lesson save already succeeded by this point — everything
-  // below is unchanged from today's shipped code.
   currentLessonData[semKey] = lessons;
   closeAdminModal();
   renderAdminGrid();
@@ -203,79 +218,43 @@
 When: Any caller awaits saveSingleLesson()
 Then: The call throws immediately — the caller's own try/catch engages as it does for a network or permission failure
 
-Given: lessonDataLoadedSuccessfully is false and an admin opens the admin edit modal, replaces a photo, and clicks Save
-When: saveAdminEdit() runs
-Then: The guard is checked FIRST, before any Storage mutation — the admin sees an alert and no photo is uploaded
-
-Given: a genuine (non-guard) failure occurs during saveAdminEdit()'s photo upload or save
+Given: A genuine (non-guard) failure occurs during saveAdminEdit()'s photo upload or save
 When: The catch runs
 Then: The function returns immediately — it does NOT commit currentLessonData, close the modal, or log a change-history entry for an edit that never actually saved</div>
 </div>
 
-<h2 id="phase2">Phase 2 — Move's read-back verification: force a server read, and check the content actually matches</h2>
+<h2 id="phase2">Phase 2 — SUPERSEDED: readAdminLessonDoc() is no longer needed by this plan</h2>
 <div class="phase" id="phase-2">
-  <div class="danger">🛑 <strong>Two compounding gaps, verified against the real code.</strong> <code>readAdminLessonDoc(semKey, lessonKey)</code> (<code>js/app.js:4571-4575</code>, verified — currently NO <code>opts</code> parameter at all) does a bare <code>.get()</code>. The read-back check in <code>handleGridAction()</code>'s move branch (<code>app.js:4658-4670</code>, verified) only asks "does the destination have ANY content," not "does it match what was just moved there."</div>
-
-  <h3>What it does</h3>
-  <p><strong>File:</strong> <code>js/app.js</code>. <strong>Round 1 fix (R1-5):</strong> adopts the companion plan's <code>opts.source === 'server'</code> shape.</p>
-  <pre><code>async function readAdminLessonDoc(semKey, lessonKey, opts = {}) {
-  if (!curriculumDb) initCurriculumFirestore();
-  const getOpts = opts.source === 'server' ? { source: 'server' } : undefined;
-  const snap = await curriculumDb.collection('curriculum').doc('lessonData').get(getOpts);
-  return snap.exists ? (snap.data()?.[semKey]?.[lessonKey] || null) : null;
-}</code></pre>
-  <div class="note">⚠️ <strong>Round 2 finding: this phase's logic does NOT stand alone.</strong> Round 2 review (both reviewers) found that Phases 2, 3, 4, 8, and 9 don't compose correctly when designed as isolated snippets with "..." elisions — the real <code>handleGridAction()</code> move and swap branches interleave all five phases' concerns in ways that must be implemented as ONE coherent edit. <strong>The full, real, integrated move-branch and swap-branch code (incorporating this phase's read-back fix, Phase 3's compensation, Phase 4's <code>fieldsToClear</code>, Phase 8's deferred logging, and Phase 9's delete handling) is now written out in full exactly once, in Phase 9 below</strong> — that is the authoritative version. This phase's role is the <code>readAdminLessonDoc()</code> signature change above, plus the diagnosis; see Phase 9 for the actual control flow.</div>
-  <div class="bdd">Given: An admin moves a lesson onto an occupied destination, and the destination write technically resolves but the content doesn't actually match what was moved
-When: The read-back runs (see Phase 9's integrated code)
-Then: It's forced to the server, compares actual field values, detects the mismatch, restores the destination's original content via a compensating write, and aborts the delete
-
-Given: A move where the destination write genuinely succeeds and matches
-When: The read-back runs
-Then: Behavior is unchanged from today's shipped success path</div>
+  <div class="safe">✅ <strong>Superseded by the round-3 atomic-write redesign (see Phase 9).</strong> This phase originally existed to force a server read of the move destination and verify its content actually matched what was written, BEFORE deleting the source — a safety net specifically needed because move did the destination write and the source delete as two SEPARATE, non-atomic Firestore operations. Phase 9's redesign combines the destination write and the source delete into ONE atomic <code>.update()</code> call: either both happen, or neither does. There is no longer a window where "the write landed but we're not sure, so verify before deleting" applies — Firestore's own write-success/failure signal from that single call IS the confirmation. <code>readAdminLessonDoc()</code> (<code>js/app.js:4571-4575</code>) had exactly one real caller before this round (the move branch's read-back, verified via grep) — after Phase 9 ships, it has zero. This plan makes NO change to it.</div>
+  <div class="note">⚠️ <strong>Cross-plan coordination note:</strong> the companion plan's Phase 9 separately plans to add an <code>opts</code> param to <code>readAdminLessonDoc()</code> for ITS OWN purposes (an existence check, unrelated to move verification). That's unaffected by this change — this plan simply no longer needs to touch the function at all, which actually simplifies the coordination story from round 2 (there is no more <code>opts</code>-shape conflict to resolve, since this plan isn't proposing any shape).</div>
 </div>
 
-<h2 id="phase3">Phase 3 — Occupied-swap: a genuine second-write failure leaves Firestore half-swapped with a false "restored" claim</h2>
+<h2 id="phase3">Phase 3 — SUPERSEDED: occupied-swap compensation replaced by an atomic write</h2>
 <div class="phase" id="phase-3">
-  <div class="danger">🛑 <strong>Verified against the real code (<code>js/app.js:4690-4710</code>).</strong> The occupied-swap branch does two sequential <code>await saveSingleLesson()</code> calls inside one try block, with no compensating write and no way to distinguish "nothing written" from "first write landed."</div>
-
-  <h3>What it does</h3>
-  <p><strong>File:</strong> <code>js/app.js</code>, <code>handleGridAction()</code>'s occupied-swap branch. <strong>See Phase 9 below for the full, integrated code</strong> — round 2 review found this phase's logic must be implemented together with Phases 2, 4, 8, and 9 as one coherent edit, not independently (see Phase 2's note above for why).</p>
-  <div class="note">⚠️ <strong>Round 2 finding (R2-3, Codex + Claude): <code>swapSucceeded</code> was referenced by Phase 8's logging gate but never declared anywhere</strong> — in this app's non-strict classic-script context that would silently leak as an implicit global rather than throw. Fixed in Phase 9's integrated code by declaring it explicitly with <code>let</code> in the enclosing scope both the save logic and the logging gate can see.</div>
-  <div class="note">⚠️ <strong>Round 2 finding (R2-5, Codex + Claude, MEDIUM): the compensating-write path has an unacknowledged, larger concurrent-edit race window</strong> than the sibling restore-local-only path (which already had an explicit callout). A teacher's legitimate edit landing in the gap between the second save's failure and the compensating write can be silently overwritten by the stale compensating write. <strong>Named here as an accepted residual risk</strong>, consistent with this plan's existing precedent for the same class of gap (same-field-collision detection, named and deliberately deferred as "Layer 2" — see Not in scope below) — not fixed with a forced-read-and-compare mitigation in this revision, since that itself would need its own careful design (what does "no longer matches the known intermediate payload" mean exactly, and what should happen then?) that round 3 should scrutinize rather than this draft asserting a mitigation is sufficient.</div>
-  <div class="bdd">Given: An occupied swap's FIRST targeted save throws — a Phase 1 guard trip or a genuine failure before anything is written
-When: The catch runs
-Then: No compensating write is attempted — the code restores local state only and reports an accurate "restored" message
-
-Given: An occupied swap's first targeted save succeeds, and the second genuinely throws
-When: The catch runs
-Then: A compensating write (with correctly computed fieldsToClear, using the corrected Phase 4 baseline) attempts to revert the first save; if it also fails, the admin sees an honest "check manually" message</div>
+  <div class="safe">✅ <strong>Superseded by the round-3 atomic-write redesign (see Phase 9).</strong> This phase originally designed a compensating-write mechanism (a <code>sourceWriteConfirmed</code> flag, a third "restore" write on second-save failure) to recover from occupied-swap's two sequential, non-atomic <code>saveSingleLesson()</code> calls. Round 3's finding R3-1 (Codex, HIGH: "the compensating write is an application-generated stale overwrite risk... this should block execution") led to reading the real code closely enough to confirm both writes target the same shared document and can be combined into ONE atomic <code>.update()</code> call instead. With that redesign, there is no "first write landed, second write failed" state to compensate for — the entire class of bug this phase existed to fix (R1-9, R1-10, R2-4, R2-5, R3-1) is now structurally impossible, not merely handled better. <strong>This is a stronger outcome than either reviewer's own suggested fix</strong> (Codex suggested a transaction or batch; a single-document <code>.update()</code> is simpler than both and provides the identical atomicity guarantee, since Firestore already treats one document's <code>.update()</code> as all-or-nothing with no transaction API needed).</div>
 </div>
 
 <h2 id="phase4">Phase 4 — Move and swap never compute fieldsToClear, silently creating hybrid lesson content</h2>
 <div class="phase" id="phase-4">
-  <div class="danger">🛑 <strong>Verified against the real code.</strong> Move and swap call <code>saveSingleLesson()</code> with no <code>fieldsToClear</code> argument, so a content field empty in the incoming lesson but non-empty at the existing destination survives untouched.</div>
-
-  <h3>What it does</h3>
-  <p><strong>File:</strong> <code>js/app.js</code>, <code>handleGridAction()</code>'s move and both swap branches — see Phase 9 for the full integrated code. <strong>Round 2 confirmed R1-11 (the corrected occupied-swap formula) is genuinely closed</strong> — both reviewers independently traced it with a concrete numeric example (lesson A: <code>introPitch=10</code>, <code>processStep1=0</code>; lesson B: <code>introPitch=0</code>, <code>processStep1=20</code> — source slot receives B, so its clear list is <code>[introPitch]</code>; destination receives A, so its clear list is <code>[processStep1]</code>) and confirmed it produces the right result. The move-side formula was confirmed correct in both rounds and is unchanged.</p>
-  <pre><code>// Move (js/app.js, move branch) — unchanged from round 1, confirmed correct
-// in both review rounds:
+  <div class="danger">🛑 <strong>Verified against the real code.</strong> Move and swap must compute an explicit clear-list so a content field empty in the incoming lesson but non-empty at the existing destination is actually cleared, not silently left as stale hybrid content. This computation is unchanged by the round-3 atomic-write redesign — it feeds into Phase 9's <code>saveMultipleLessonFields()</code> calls exactly the same way it fed into the old sequential calls.</div>
+  <div class="safe">✅ <strong>Round 3: zero new findings.</strong> Both reviewers re-traced the corrected occupied-swap formula with a fresh concrete numeric example and confirmed it holds (Codex: A=<code>introPitch:10,processStep1:0</code>, B=<code>introPitch:0,processStep1:20</code> → source clear list <code>[introPitch]</code>, dest clear list <code>[processStep1]</code>, correct both ways).</div>
+  <pre><code>// Move — unchanged since round 1, confirmed correct in every round:
 const destFieldsToClear = CONTENT_FIELDS.filter(f =>
   (destLesson?.[f] || '').trim() !== '' &amp;&amp; !(movedLesson[f] || '').trim()
 );
 
 // Occupied swap — each slot's clear list compares its OWN pre-swap content
-// against what's now being written there, confirmed correct by both
-// reviewers' independent numeric traces in round 2:
+// against what's now being written there:
 const sourceFieldsToClear = CONTENT_FIELDS.filter(f =>
   (sourceLesson[f] || '').trim() !== '' &amp;&amp; !(swappedSource[f] || '').trim()
 );
 const destFieldsToClearSwap = CONTENT_FIELDS.filter(f =>
   (destLesson[f] || '').trim() !== '' &amp;&amp; !(swappedDest[f] || '').trim()
 );</code></pre>
-  <div class="note">⚠️ <strong>R1-12 resolved (R2-6, R2-7):</strong> both reviewers proposed answers to the previously-open "should this extend beyond <code>CONTENT_FIELDS</code>" question but disagreed on <code>qaThread</code> — Codex said include it in a full-replacement field list; Claude said do NOT auto-clear it, since it's real teacher-admin conversation history, not stale content, and destroying it as a side effect of a grid reorganization is a data-loss risk of a different character than a stale text field. Reading the real object shapes directly (across <code>saveAdminEdit()</code>, <code>cutProject()</code>, <code>pasteFromCutBank()</code>, <code>pasteFromIdeaBank()</code>, and <code>createLessonSlotsForRoster()</code>'s real object literals) confirms a lesson's real field set beyond the 7 <code>CONTENT_FIELDS</code> includes: <code>projectTitle</code> (always set by move/swap, never left stale), <code>shortDetails</code>, <code>inspoLink</code>, <code>materials</code>, <code>materialsList</code> (array — needs array-aware handling, not the string-based filter), <code>status</code>, <code>publishToPrep</code>, <code>teacherNotes</code>/<code>adminResponse</code> (legacy Q&amp;A mirror — same conservation rationale as <code>qaThread</code>, excluded), <code>qaThread</code> (excluded, per above), <code>planComplete</code> (a flag, not stripped by the empty-string-omission logic, no action needed), <code>photoUrl</code>/<code>photoPath</code> (real gap, but Storage-tied — cross-referenced to Phase 5, not duplicated here), <code>lastEditedBy</code>/<code>lastEditedAt</code> (auto-regenerated by <code>saveSingleLesson()</code> itself, no action needed). <strong>This recommends <code>shortDetails</code>, <code>inspoLink</code>, <code>materials</code>, <code>materialsList</code>, <code>status</code>, <code>publishToPrep</code> as the concrete widening candidates</strong> — but does NOT implement it in this revision: <code>saveSingleLesson()</code>'s own <code>clearedContentFields = fieldsToClear.filter(f => CONTENT_FIELDS.includes(f))</code> (<code>firebase-data.js:704</code>, confirmed by direct read) silently drops any entry not in the 7-field <code>CONTENT_FIELDS</code> array today — supporting this list requires a real change to that function (e.g. a second, separately-scoped allowlist used only for the clear-filter, NOT for <code>lessonHasContent()</code> or the other guard checks that also key off <code>CONTENT_FIELDS</code>, since broadening those would have a much larger, unreviewed blast radius). <strong>Flagged as its own future phase for round 3 to design properly</strong>, not bolted onto this already-large phase.</div>
+  <div class="note">⚠️ <strong>Still open (R1-12/R2-6/R2-7/R3): widening beyond CONTENT_FIELDS.</strong> Reading the real object shapes across <code>saveAdminEdit()</code>, <code>cutProject()</code>, <code>pasteFromCutBank()</code>, <code>pasteFromIdeaBank()</code>, and <code>createLessonSlotsForRoster()</code> confirms a lesson's real field set beyond the 7 <code>CONTENT_FIELDS</code> includes <code>shortDetails</code>, <code>inspoLink</code>, <code>materials</code> (note: NOT one of the 7 <code>CONTENT_FIELDS</code>, and — confirmed by reading <code>saveSingleLesson()</code>'s real stripping loop — NOT subject to the strip-when-empty pass either, so an empty <code>materials</code> value is already written through explicitly today; no fix needed for that specific field), <code>materialsList</code> (array), <code>status</code>, <code>publishToPrep</code>, <code>photoUrl</code>/<code>photoPath</code> (Storage-tied, cross-referenced to Phase 5), <code>qaThread</code>/<code>teacherNotes</code>/<code>adminResponse</code> (excluded — real conversation history, a different class of data-loss risk than a stale text field). <code>saveSingleLesson()</code>'s own <code>clearedContentFields = fieldsToClear.filter(f => CONTENT_FIELDS.includes(f))</code> (<code>firebase-data.js:704</code>, still accurate after the round-3 refactor into <code>buildLessonFieldUpdates()</code> — see Phase 9) silently drops any entry not in the 7-field array — supporting a wider list needs a real change to that function (a second, separately-scoped allowlist for the clear-filter only, not the other guard checks that key off <code>CONTENT_FIELDS</code>). <strong>Still flagged as its own future phase</strong>, not bolted onto this one.</div>
   <div class="bdd">Given: Lesson A (introPitch filled, processStep1 empty) and Lesson B (introPitch empty, processStep1 filled) are swapped
 When: The swap completes
-Then: A's new slot has introPitch cleared and processStep1 filled — confirmed via numeric trace in round 2, this now genuinely passes
+Then: A's new slot has introPitch cleared and processStep1 filled — confirmed via numeric trace in rounds 2 and 3
 
 Given: A move onto an empty destination
 When: The move completes
@@ -284,14 +263,30 @@ Then: fieldsToClear is empty — behavior matches today's shipped success path e
 
 <h2 id="phase5">Phase 5 — Photo replacement deletes the newly-uploaded photo, not the old one</h2>
 <div class="phase" id="phase-5">
-  <div class="danger">🛑 <strong>Verified against the real code (<code>js/firebase-data.js:775-819</code>, <code>js/app.js:3050-3068</code>, <code>4516-4528</code>, <code>9764-9787</code>).</strong> <code>getPhotoPath()</code> is deterministic per lesson — no version suffix. All three call sites upload the new file to that path, then unconditionally delete <code>existing.photoPath</code>, which for a genuine replacement is the path just overwritten.</div>
+  <div class="danger">🛑 <strong>Verified against the real code.</strong> <code>getPhotoPath()</code> is deterministic per lesson — no version suffix. All three call sites upload the new file to that path, then delete the old path.</div>
+  <div class="danger">🛑 <strong>Round 3 findings (R3-5, R3-6): the round-2 reorder wasn't enough — the versioned-path fix is now implemented.</strong> Codex (MED-HIGH): even with delete-after-save reordering, the SAME-path upload still overwrites the deterministic live Storage object BEFORE Firestore confirms — if the save then fails, the old photo is already gone with nothing to roll back to, independent of the delete-ordering fix entirely. Codex also found a second, related gap: after a swap, replacing one lesson's photo at its new (deterministic) slot path could silently overwrite the OTHER swapped lesson's still-referenced photo object at that same path. Both are closed by the same fix: make the upload path unique per upload (not just per lesson), so an in-progress or failed upload can never collide with an existing referenced object.</div>
 
   <h3>What it does</h3>
-  <p><strong>Files:</strong> <code>js/app.js</code> (three call sites), <code>js/firebase-data.js</code>. <strong>Round 1 fix (R1-13):</strong> delete only after the Firestore save confirms, and only if the path actually differs.</p>
-  <pre><code>// saveTeacherEdit() and saveAdminEdit() (js/app.js) — delete moved to after
-// the Firestore save, gated on the path actually differing:
-const result = hasNewPhoto ? await uploadLessonPhoto(semKey, lessonKey, file) : null;
-// ... saveSingleLesson() call happens here (unchanged from Phase 8's fix) ...
+  <p><strong>File:</strong> <code>js/firebase-data.js</code> (<code>getPhotoPath()</code>, <code>uploadLessonPhoto()</code>, <code>uploadSummerCampPhoto()</code>), <code>js/app.js</code> (three call sites).</p>
+  <pre><code>// getPhotoPath() — add a version/timestamp segment so every upload gets a
+// genuinely unique path, never colliding with an existing referenced object
+// (same lesson, same slot, or a swapped-in lesson at the same slot):
+function getPhotoPath(semesterKey, lessonKey, filename) {
+  const ext = (filename.split('.').pop() || 'jpg').toLowerCase();
+  return `curriculum/${semesterKey}/${encodeFirestoreKey(lessonKey)}/demo-${Date.now()}.${ext}`;
+}
+// uploadSummerCampPhoto()'s path helper gets the identical treatment:
+// summerCamps/${encodeFirestoreKey(lessonKey)}/demo-${Date.now()}.${ext}
+
+// All three call sites (saveTeacherEdit(), saveAdminEdit(), summer modal's
+// saveLesson()) already implement "delete the old path only if it differs
+// from the new one, and only after the Firestore save confirms" — with a
+// genuinely unique path per upload, that existing logic now ALSO closes
+// R3-5 and R3-6 with ZERO call-site changes, since old and new paths are
+// now guaranteed to differ on every replacement, including the swap-photo
+// collision case:
+const result = shouldUploadNewPhoto ? await uploadLessonPhoto(semKey, lessonKey, file) : null;
+await saveSingleLesson(semKey, lessonKey, updatedLesson, fieldsToClear);
 if (originalLesson.photoPath &amp;&amp; originalLesson.photoPath !== (result?.path || null)) {
   try {
     await deleteLessonPhoto(originalLesson.photoPath);
@@ -299,56 +294,81 @@ if (originalLesson.photoPath &amp;&amp; originalLesson.photoPath !== (result?.pa
     console.error('⚠️ Could not clean up old photo after save (Firestore is correct, Storage has an orphan):', cleanupErr);
   }
 }</code></pre>
-  <div class="note">⚠️ <strong>Round 2 finding (R2-9, Claude, MEDIUM-HIGH): the summer modal's call site has an extra hazard the other two don't.</strong> Its real <code>saveLesson()</code> function reassigns <code>lesson = savedLesson</code> (verified: <code>js/app.js:9796</code>) BEFORE the Firestore save even runs (<code>saveSingleLesson()</code> is at line 9797, one line later) — so a naive post-save check using <code>lesson.photoPath</code> would read the NEW path, not the old one, silently defeating the different-path (moved-lesson) orphan-cleanup case at exactly this call site. <strong>Fixed by capturing the old path into its own variable before any reassignment — see Phase 10 below, which shows this call site's full corrected code</strong> (the photo fix and the local-state-revert fix from Phase 10 are inseparable at this one call site, since they're in the same function body).</div>
-  <div class="danger">🛑 <strong>Round 2 finding (R2-8, Codex, MED-HIGH, new — not caught by round 1): even with reordering, same-path replacement is still not fully failure-safe.</strong> The upload itself overwrites the deterministic live Storage object BEFORE the Firestore save confirms — if <code>saveSingleLesson()</code> then fails, the old photo is already gone (the upload silently destroyed it) even though no explicit delete call was ever made. Concrete scenario: existing photo at <code>curriculum/fall/key/demo.jpg</code>; replacement upload overwrites that object; <code>saveSingleLesson()</code> fails; the reordered code correctly performs no delete, but the old photo is gone anyway because the upload itself was destructive. <strong>Not fixed in this revision</strong> — a true fix requires a versioned/temporary upload path (e.g. upload to <code>curriculum/{sem}/{key}/demo-{timestamp}.jpg</code>), a Firestore reference update pointing at that new path, and only THEN a cleanup delete of the old object — a bigger redesign than this phase currently scopes, touching all three call sites' upload helpers. <strong>Named here as an acknowledged residual gap for round 3 or a dedicated follow-on phase</strong>, given the genuine severity (this is the same class of photo-loss bug this phase exists to fix, just with the failure window narrowed rather than eliminated) rather than silently deferred.</div>
   <div class="bdd">Given: A lesson already has a photo, and a replacement is uploaded for the SAME lesson, and the save succeeds
 When: The save completes
-Then: The new photo remains in Storage — the old object is not separately deleted (already fixed, unchanged from round 1)
+Then: The new photo remains in Storage at its own unique path — the old object is separately deleted only after Firestore confirms
 
-Given: A same-path replacement upload succeeds, but the subsequent Firestore save then fails
+Given: A same-lesson replacement upload succeeds, but the subsequent Firestore save then fails
 When: The save fails
-Then: [ACKNOWLEDGED RESIDUAL GAP, R2-8] The old photo is still gone — the upload's own overwrite already destroyed it, independent of the delete-ordering fix. Not fixed in this revision.</div>
+Then: [R3-5, NOW FIXED] The OLD photo is untouched — the new upload went to a different path, so nothing was destroyed by the upload itself; the orphaned new upload is the only cleanup debt, not the loss of the original photo
+
+Given: Two lessons are swapped, and one lesson's photo is then replaced at its new slot
+When: The replacement upload runs
+Then: [R3-6, NOW FIXED] The upload's unique path can never collide with the other (swapped-in) lesson's still-referenced photo — no risk of silently destroying it</div>
 </div>
 
 <h2 id="phase6">Phase 6 — Summer Plan Complete checkbox: a failed save reverts the checkbox but not the in-memory lesson</h2>
 <div class="phase" id="phase-6">
-  <p>Unchanged from round 1 — round 2 review (both reviewers) found no further issues with this phase.</p>
-  <pre><code>cb.checked = !cb.checked;
-lesson.planComplete = cb.checked;</code></pre>
-  <div class="bdd">Given: A summer lesson's Plan Complete save fails
-When: The catch block runs
-Then: Both cb.checked and lesson.planComplete revert to the pre-save value</div>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-20, Claude, HIGH — a striking miss corrected here): the fix in this phase, for two entire review rounds, targeted the WRONG function.</strong> Verified directly: the real SUMMER Plan Complete checkbox handler lives inside <code>renderSummerCampView()</code>, attached via <code>container.querySelectorAll('.summer-plan-complete-cb')</code> (<code>js/app.js:1948</code> area). Its real catch block (<code>js/app.js:2011-2014</code>) is:
+  <pre><code>} catch (err) {
+  console.error('Error saving plan complete:', err);
+  cb.checked = !cb.checked; // Revert on error
+  alert('Failed to save. Please try again.');
+}</code></pre>
+  — it reverts <code>cb.checked</code> but NEVER touches <code>lesson.planComplete</code> (mutated directly at line ~1980: <code>lesson.planComplete = cb.checked;</code>, a live reference into <code>currentLessonData[semKey][lessonKey]</code>). The fix that shipped in rounds 1 and 2 is a VERBATIM match for the DIFFERENT, ALREADY-correct non-summer handler at <code>app.js:2438-2442</code> (<code>.tv-plan-complete-cb</code>, inside <code>attachCardListeners()</code>) — that one already reverts both <code>cb.checked</code> and <code>lesson.planComplete</code> correctly, and needs no fix. Both prior review rounds apparently verified the wrong code location.</div>
+
+  <h3>What it does — the REAL fix, at the REAL location</h3>
+  <p><strong>File:</strong> <code>js/app.js</code>, the summer Plan Complete checkbox handler inside <code>renderSummerCampView()</code>, real catch block at <code>~2011-2014</code>.</p>
+  <pre><code>} catch (err) {
+  console.error('Error saving plan complete:', err);
+  cb.checked = !cb.checked; // Revert visual state
+  // Round-3 fix (R3-20): also revert the in-memory lesson object — this line
+  // was missing for two full review rounds because the fix was verified
+  // against the DIFFERENT (already-correct) non-summer handler instead of
+  // this real one. lesson.planComplete was mutated directly at the top of
+  // this same handler; without this, currentLessonData stays corrupted even
+  // though the checkbox visually reverts.
+  lesson.planComplete = cb.checked;
+  alert('Failed to save. Please try again.');
+}</code></pre>
+  <div class="bdd">Given: A summer lesson's Plan Complete save fails (simulated network failure)
+When: The catch block runs at the REAL summer handler
+Then: Both cb.checked AND lesson.planComplete revert to the pre-save value — this is the scenario that was NOT actually fixed until round 3, despite being marked "no further issues" after round 2</div>
 </div>
 
 <h2 id="phase7">Phase 7 — A later, listener-triggered summer-data load failure doesn't re-trip the guard or banner</h2>
 <div class="phase" id="phase-7">
-  <div class="danger">🛑 <strong>Verified against the real code (<code>js/firebase-data.js:512-540</code>).</strong> <code>setupLessonDataListener()</code>'s summer-reload sub-fetch catch (lines 534-536, verified) only logs — never touches <code>lessonDataLoadedSuccessfully</code> or the banner.</p></div>
+  <div class="danger">🛑 <strong>Verified against the real code (<code>js/firebase-data.js:512-540</code>).</strong> The listener's summer-reload sub-fetch catch only logs — never touches <code>lessonDataLoadedSuccessfully</code> or the banner. R2-10 added a reset-on-success. <strong>Round 3 finding (R3-7, Codex, MEDIUM): the sequential reset-on-success logic doesn't account for <code>onSnapshot</code> callbacks resolving out of order</strong> — an older snapshot's summer-fetch can still be pending when a newer snapshot's callback starts, and either can resolve first; an older failure resolving AFTER a newer success could incorrectly flip the guard back to false, or vice versa.</div>
 
   <h3>What it does</h3>
-  <p><strong>File:</strong> <code>js/firebase-data.js</code>. <strong>Round 2 finding (R2-10, Codex, MEDIUM, new): round 1's fix never reset the flag back to true on a later successful reload</strong> — one transient failure would permanently trip the guard until a full page reload, even after the app recovered. Verified via <code>grep -n lessonDataLoadedSuccessfully</code> across both files: the ONLY places this flag is ever set are <code>loadLessonData()</code> (the one-time initial load, <code>firebase-data.js:338/341/346</code>) and this listener's summer-reload path — meaning after startup, this listener is the ONLY mutator, so resetting it to <code>true</code> here on success is safe with no ambiguity about "was this failure from a different cause."</p>
   <pre><code>function setupLessonDataListener(callback) {
   console.log('📚 Setting up lesson data listener...');
   if (!curriculumDb) initCurriculumFirestore();
   if (lessonDataUnsubscribe) lessonDataUnsubscribe();
+  // Round-3 fix (R3-7): a monotonic generation counter, closed over by every
+  // snapshot callback — only the LATEST callback's own outcome is allowed to
+  // mutate the shared guard flag/banner, so an older, slower callback's
+  // eventual resolution can't clobber a newer one's already-applied result.
+  let listenerGeneration = 0;
   lessonDataUnsubscribe = curriculumDb.collection('curriculum').doc('lessonData')
     .onSnapshot({ includeMetadataChanges: false }, async (doc) => {
       if (doc.metadata.fromCache &amp;&amp; !doc.metadata.hasPendingWrites) return;
       if (doc.exists) {
+        const myGeneration = ++listenerGeneration;
         currentLessonData = doc.data();
         try {
           const summerData = await loadSummerCampData();
+          if (myGeneration !== listenerGeneration) { if (callback) callback(currentLessonData); return; }
           currentLessonData['summer-2026'] = summerData;
-          // Round-2 fix (R2-10): this listener path is the ONLY mutator of
-          // lessonDataLoadedSuccessfully besides the one-time initial load —
-          // safe to restore it here on a successful reload, so one transient
-          // failure doesn't permanently block every Phase-1-guarded save
-          // until a full page reload.
+          // Round-2 fix (R2-10): this listener is the ONLY post-startup
+          // mutator of lessonDataLoadedSuccessfully — safe to restore it here.
           if (lessonDataLoadedSuccessfully === false) {
             lessonDataLoadedSuccessfully = true;
             document.getElementById('lesson-load-error-banner')?.classList.add('hidden');
           }
         } catch (err) {
           console.error('❌ Could not load Summer Camp data:', err);
+          if (myGeneration !== listenerGeneration) { if (callback) callback(currentLessonData); return; }
           lessonDataLoadedSuccessfully = false;
           document.getElementById('lesson-load-error-banner')?.classList.remove('hidden');
         }
@@ -356,57 +376,54 @@ Then: Both cb.checked and lesson.planComplete revert to the pre-save value</div>
       }
     });
 }</code></pre>
-  <div class="bdd">Given: The app has loaded successfully, then a later listener-triggered summer-data reload fails
-When: The failure occurs
-Then: lessonDataLoadedSuccessfully flips to false and the banner appears
-
-Given: The guard was tripped by a listener-triggered failure, and a LATER listener-triggered reload then succeeds
+  <div class="bdd">Given: The guard was tripped by a listener-triggered failure, and a LATER listener-triggered reload then succeeds
 When: The successful reload completes
-Then: lessonDataLoadedSuccessfully resets to true and the banner hides — Phase-1-guarded saves work again without requiring a page reload</div>
+Then: lessonDataLoadedSuccessfully resets to true and the banner hides
+
+Given: An OLDER snapshot's summer-fetch is still pending when a NEWER snapshot's callback starts and completes first
+When: The older snapshot's fetch eventually resolves (success or failure)
+Then: [R3-7, NOW FIXED] It does NOT mutate the guard flag or banner — only the latest generation's own outcome is allowed to</div>
 </div>
 
-<h2 id="phase8">Phase 8 — Audit-log entries are committed before the save they describe actually succeeds</h2>
+<h2 id="phase8">Phase 8 — Audit-log entries are committed before the save they describe actually succeeds, and Cut Bank's delete-before-archive ordering is unsafe</h2>
 <div class="phase" id="phase-8">
-  <div class="danger">🛑 <strong>Verified against the real code.</strong> <code>saveTeacherEdit()</code> calls <code>logTeacherEdit()</code> (line 3086) BEFORE <code>saveSingleLesson()</code> (line 3098). <code>handleGridAction()</code>'s move/swap branches create their log-entry promise EAGERLY (<code>const logPromise = appendChangeLogEntry(...)</code>, unawaited, running in parallel with the save — a deeper defect than round 1's "await savePromise, then log" framing addressed; see Phase 9). <code>cutProject()</code> (4925-4942) and <code>pasteFromCutBank()</code> (5052-5078) do the identical thing.</div>
+  <div class="danger">🛑 <strong>Verified against the real code.</strong> <code>saveTeacherEdit()</code> calls <code>logTeacherEdit()</code> before <code>saveSingleLesson()</code>. <code>cutProject()</code> and <code>pasteFromCutBank()</code> have zero try/catch around their two persistence calls each, and — round 3 found — <code>cutProject()</code>'s ordering is unsafe even once wrapped.</div>
 
-  <h3>saveTeacherEdit() — real fix</h3>
-  <p><strong>Round 2 finding (R2-11, Codex, HIGH): round 1's snippet used <code>key</code>; the real parameter is <code>lessonKey</code></strong> (verified: <code>js/app.js:3024</code>, <code>async function saveTeacherEdit(lessonKey, originalLesson)</code>) — literal <code>ReferenceError</code> if implemented as drafted. <strong>Round 2 finding (R2-12, Codex + Claude, MEDIUM): the real function performs a SECOND Firestore write</strong> after <code>saveSingleLesson()</code> — an explicit photo-fields update (verified: <code>app.js:3101-3107</code>, only runs when <code>photoUrl !== null</code>) — that round 1's fix didn't account for; logging needs to wait for this too.</p>
-  <pre><code>// Save using granular single-lesson write — the primary persistence action.
+  <h3>saveTeacherEdit() — real fix, and a redundant write removed entirely</h3>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-8, Codex, HIGH): the real parameter is <code>lessonKey</code>, not <code>key</code>.</strong> Verified: <code>js/app.js:3024</code>, <code>async function saveTeacherEdit(lessonKey, originalLesson)</code>. <strong>Deeper finding, made while fixing this: the "second Firestore write" (an explicit photo-fields dotted-path update, real code at <code>app.js:3101-3107</code>) is REDUNDANT and should be removed, not given its own error handling.</strong> Its own comment claims "set merge doesn't reliably persist new fields" — but <code>saveSingleLesson()</code>'s non-summer branch doesn't use a merge-set; it already does an explicit per-field dotted-path <code>.update()</code> (Stage 2D), and <code>updatedLesson</code> (the object passed to <code>saveSingleLesson()</code> a few lines earlier) already carries <code>photoUrl</code>/<code>photoPath</code> whenever a photo change occurred, since those are set on <code>updatedLesson</code> BEFORE the call, not after. Confirmed by reading <code>saveSingleLesson()</code>'s stripping logic directly: <code>photoUrl</code>/<code>photoPath</code> aren't in <code>CONTENT_FIELDS</code>, so they're never stripped even when empty — they're always written through. The comment describes a constraint that stopped applying once <code>saveSingleLesson()</code> was refactored to per-field updates; this second write has been dead weight (and, after round 1's logging reorder, a live bug source) ever since.</div>
+  <pre><code>// ... unchanged: build updatedLesson, handle photo upload/delete (still sets
+// updatedLesson.photoUrl/photoPath exactly as today), build changedFieldEntries ...
+
+const fieldsToClear = CONTENT_FIELDS.filter(f =>
+  (teOriginalData?.[f] || '').trim() !== '' &amp;&amp; !(formData[f] || '').trim()
+);
+
+// Save using granular single-lesson write — this ALREADY includes
+// photoUrl/photoPath via updatedLesson. Round-3 fix (R3-8): the separate
+// photo-fields write that used to follow this call was vestigial (see the
+// danger box above) — removed entirely, rather than given partial-failure
+// handling for a write that shouldn't exist. This also closes the round-2
+// concern (R2-12) about a second write's failure reporting a false
+// "Save failed" after the real save already succeeded — there's no longer a
+// second write to fail.
 await saveSingleLesson(semKey, lessonKey, updatedLesson, fieldsToClear);
 
-// Save photo fields separately (the second real Firestore write this
-// function performs) — round-2 fix: logging must wait until AFTER this too,
-// not just after saveSingleLesson(), since this can independently fail.
-if (photoUrl !== null) {
-  if (!curriculumDb) initCurriculumFirestore();
-  const photoUpdate = {};
-  photoUpdate[`${semKey}.${lessonKey}.photoUrl`] = photoUrl;
-  photoUpdate[`${semKey}.${lessonKey}.photoPath`] = photoPath;
-  await curriculumDb.collection('curriculum').doc('lessonData').update(photoUpdate);
+if (currentLessonData[semKey]) {
+  currentLessonData[semKey][lessonKey] = updatedLesson;
 }
 
-// Round-1/2 fix (R1-17, R2-11, R2-12 corrected): log only after BOTH real
-// persistence writes above are confirmed, with the CORRECT identifier
-// (lessonKey, not key), and its own non-blocking catch so a log failure
-// doesn't propagate to the outer catch and report "Error saving lesson"
-// when the lesson (and photo fields) were actually saved successfully.
+// Round-1/2 fix (R1-17, R2-11): log only after persistence is confirmed,
+// with its own non-blocking catch.
 try {
   await logTeacherEdit(semKey, lessonKey, originalLesson, changedFieldEntries);
 } catch (logErr) {
   console.error('⚠️ Lesson saved, but Change History logging failed:', logErr);
 }
 
-// Update local data immediately (unchanged from today's shipped code)
-if (currentLessonData[semKey]) {
-  currentLessonData[semKey][lessonKey] = updatedLesson;
-}</code></pre>
-  <p><em>(The <code>logTeacherEdit()</code> call that currently sits at line 3086, before the save, is removed from its original position — the rest of the function, including the <code>changedFieldEntries</code> construction that must still happen before this new location, is unchanged.)</em></p>
+// ... unchanged: success UI, teOriginalData reset, setTimeout ...</code></pre>
 
-  <h3>Move/swap logging — see Phase 9</h3>
-  <p>Round 2 review found the real move/swap logging bug is more severe than round 1's fix addressed — <strong>see Phase 9 below for the full integrated fix</strong> (R2-3, R2-13, R2-14).</p>
-
-  <h3>cutProject() / pasteFromCutBank() — real fix</h3>
-  <div class="danger">🛑 <strong>Round 2 finding (R2-15, Codex + Claude, HIGH): R1-18 only reordered the log call — neither function got real try/catch or partial-failure handling.</strong> Verified against the real code (<code>js/app.js:4885-4943</code>, <code>5002-5079</code>): both do their two persistence calls (<code>deleteLessonKey()</code> + <code>saveCutProjects()</code>; <code>saveLessonData()</code> + <code>saveCutProjects()</code>) with NO try/catch at all today. Concrete scenario: in <code>cutProject()</code>, <code>deleteLessonKey()</code> succeeds but <code>saveCutProjects()</code> then throws — the lesson is permanently gone from Firestore with no safety copy ever persisted to the Cut Bank, while the local UI shows it as safely cut. <strong>Also found: <code>pasteFromCutBank()</code> currently calls <code>saveLessonData(destSemKey, lessons)</code> — a BULK overwrite of the entire destination semester</strong> built from local cache, exactly the risk every OTHER admin-grid action in this file deliberately avoids via a targeted <code>saveSingleLesson()</code> call (see the existing comments at <code>saveAdminEdit()</code> and <code>handleGridAction()</code> explaining why). Fixed below by switching to a targeted save.</div>
+  <h3>cutProject() — real fix: archive first, delete second, complete snapshot</h3>
+  <div class="danger">🛑 <strong>Round 3 findings (R3-15, R3-16, Codex, both HIGH): R2-15's fix left the delete BEFORE the archive write, and the archive itself was incomplete.</strong> "Adding a catch and an honest alert does not prevent the permanent data loss if the Cut-Bank write then fails" — the safe ordering is archive first, verify, delete second: a delete failure afterward just leaves a recoverable duplicate, while an archive failure leaves the live lesson completely untouched. Separately, the real <code>cutEntry</code> construction (<code>app.js:4896-4917</code>) hand-lists 15 fields and omits <code>materialsList</code>, <code>qaThread</code>, <code>planComplete</code>, <code>photoUrl</code>/<code>photoPath</code> — a cut lesson with structured materials, Q&amp;A history, or a demo photo permanently loses that data even on a successful paste-back.</div>
   <pre><code>async function cutProject(key) {
   const semKey = getAdminSemKey();
   const lessons = { ...currentLessonData[semKey] };
@@ -416,130 +433,245 @@ if (currentLessonData[semKey]) {
 
   const cutProjects = currentCutProjects?.[semKey] ? [...currentCutProjects[semKey]] : [];
   const user = getAuthUser();
+  // Round-3 fix (R3-16): archive a COMPLETE deep-cloned snapshot of the real
+  // lesson, not a hand-picked 15-field subset — materialsList, qaThread,
+  // planComplete, photoUrl/photoPath (and anything else on the lesson) now
+  // survive a cut/paste round-trip. Only the genuinely positional/identity
+  // fields are overridden with cut-specific metadata; everything else is
+  // preserved as-is.
   const cutEntry = {
-    projectTitle: lesson.projectTitle, originalTeacher: lesson.teacher, originalClassName: lesson.className,
-    originalWeek: lesson.weekNum, cutDate: new Date().toISOString(), cutBy: user?.name || 'Unknown',
-    shortDetails: lesson.shortDetails || '', inspoLink: lesson.inspoLink || '', introPitch: lesson.introPitch || '',
-    processStep1: lesson.processStep1 || '', processStep2: lesson.processStep2 || '', processStep3: lesson.processStep3 || '',
-    processStep4: lesson.processStep4 || '', closure: lesson.closure || '', materials: lesson.materials || '',
-    dayOfMaterials: lesson.dayOfMaterials || '', teacherNotes: lesson.teacherNotes || '', adminResponse: lesson.adminResponse || '',
-    status: lesson.status || '', publishToPrep: lesson.publishToPrep || ''
+    ...JSON.parse(JSON.stringify(lesson)),
+    cutDate: new Date().toISOString(),
+    cutBy: user?.name || 'Unknown',
+    originalTeacher: lesson.teacher,
+    originalClassName: lesson.className,
+    originalWeek: lesson.weekNum
   };
   cutProjects.push(cutEntry);
+
+  // Round-3 fix (R3-15): archive to the Cut Bank FIRST — the real code
+  // (and R2-15's fix) deleted the live lesson before this write. Under that
+  // order, a Cut-Bank write failure after a successful delete meant the
+  // lesson was permanently gone with no safety copy ever persisted. Under
+  // this order, an archive failure leaves the live lesson completely
+  // untouched; only a SUBSEQUENT delete failure is possible, which just
+  // leaves a recoverable duplicate.
+  let archiveConfirmed = false;
+  try {
+    await saveCutProjects(semKey, cutProjects);
+    archiveConfirmed = true;
+    await deleteLessonKey(semKey, key);
+  } catch (err) {
+    console.error('❌ Cut failed partway through:', err);
+    if (archiveConfirmed) {
+      alert(`"${lesson.projectTitle}" was safely archived to the Cut Bank, but could NOT be removed from the grid. Please reload and check — it may now appear in both places.`);
+      currentCutProjects[semKey] = cutProjects;
+      renderCutBank();
+    } else {
+      alert(`Could not cut "${lesson.projectTitle}" — please try again. Nothing was changed.`);
+    }
+    return;
+  }
 
   delete lessons[key];
   currentLessonData[semKey] = lessons;
   if (!currentCutProjects) currentCutProjects = {};
   currentCutProjects[semKey] = cutProjects;
-
   closeAdminModal();
   renderAdminGrid();
   renderCutBank();
   renderChangeHistory();
 
-  // Round-2 fix (R2-15): both persistence calls now inside a try/catch, and
-  // the delete isn't treated as final until the Cut Bank copy has ALSO
-  // landed — a failure between the two used to permanently lose the
-  // project with no error shown to anyone.
-  let deleteConfirmed = false;
+  // Round-3 fix (R3-17): logging gets its own non-blocking catch, separate
+  // from the persistence catch above — a log-only failure here shouldn't be
+  // reported as "could not be saved to the Cut Bank" when it actually was.
   try {
-    await deleteLessonKey(semKey, key);
-    deleteConfirmed = true;
-    await saveCutProjects(semKey, cutProjects);
     await appendChangeLogEntry(semKey, {
       action: 'cut',
       details: { projectTitle: lesson.projectTitle, teacher: lesson.teacher, className: lesson.className, fromWeek: lesson.weekNum }
     });
     renderChangeHistory();
+  } catch (logErr) {
+    console.error('⚠️ Cut saved, but Change History logging failed:', logErr);
+  }
+}</code></pre>
+
+  <h3>pasteFromCutBank() — real fix: targeted save, complete reconstruction, separate log catch</h3>
+  <p><strong>Round-2 fix, confirmed still correct in round 3:</strong> was a bulk <code>saveLessonData(destSemKey, lessons)</code> call — replaced with a targeted <code>saveSingleLesson()</code>. <strong>Round-3 addition:</strong> since <code>cutEntry</code> now archives every field (not a 15-field subset), the reconstruction here widens to match — spread from <code>proj</code> rather than hand-listing fields, so <code>materialsList</code>/<code>qaThread</code>/<code>planComplete</code>/<code>photoUrl</code>/<code>photoPath</code> actually come back on paste. <strong>Also (R3-22, Claude, LOW-MEDIUM, named but not fixed):</strong> this targeted save still has no <code>fieldsToClear</code> or existence check on the destination slot — a narrow race exists if two admins target the same visually-empty cell in a tight window. Named here as an explicit residual risk, not previously acknowledged anywhere.</p>
+  <pre><code>async function pasteFromCutBank(cutIndex, teacher, className, weekNum, sourceSemKey) {
+  // ... unchanged setup through building `proj`, confirm dialog ...
+  const key = makeLessonKey(teacher, className, weekNum);
+  const lessons = { ...(currentLessonData?.[destSemKey] || {}) };
+
+  // Round-3 fix: spread every archived field from `proj` (now complete,
+  // since cutProject()'s archive is no longer a lossy 15-field subset), then
+  // override only the position/identity fields with the NEW paste target,
+  // and drop the cut-specific-only metadata that doesn't belong on a live
+  // lesson object.
+  const { originalTeacher, originalClassName, originalWeek, cutDate, cutBy, ...restoredFields } = proj;
+  lessons[key] = {
+    ...restoredFields,
+    teacher, className, weekNum, weekDate: '', classSize: 0,
+    lastImported: new Date().toISOString()
+  };
+
+  const cutProjects = [...(currentCutProjects?.[srcSemKey] || [])];
+  cutProjects.splice(cutIndex, 1);
+
+  let pasteConfirmed = false;
+  try {
+    await saveSingleLesson(destSemKey, key, lessons[key]);
+    pasteConfirmed = true;
+    await saveCutProjects(srcSemKey, cutProjects);
   } catch (err) {
-    console.error('❌ Cut failed partway through:', err);
-    if (deleteConfirmed) {
-      alert(`"${lesson.projectTitle}" was removed from the grid, but could NOT be saved to the Cut Bank. Please reload and check — you may need to re-enter it manually before it's lost.`);
-    } else {
-      lessons[key] = lesson;
-      currentLessonData[semKey] = lessons;
-      cutProjects.pop();
-      currentCutProjects[semKey] = cutProjects;
+    console.error('❌ Paste from Cut Bank failed partway through:', err);
+    if (pasteConfirmed) {
+      alert(`"${proj.projectTitle}" was placed on the grid, but could NOT be removed from the Cut Bank — it may now appear in both places. Please reload and check.`);
+      currentLessonData[destSemKey] = lessons;
       renderAdminGrid();
-      renderCutBank();
-      alert(`Could not cut "${lesson.projectTitle}" — please try again.`);
+    } else {
+      alert(`Could not paste "${proj.projectTitle}" — please try again.`);
     }
-  }
-}</code></pre>
-  <pre><code>// pasteFromCutBank() — unchanged setup through building lessons[key] (the
-// new lesson object from the cut project) and cutProjects.splice(cutIndex, 1).
-
-currentLessonData[destSemKey] = lessons;
-if (!currentCutProjects) currentCutProjects = {};
-currentCutProjects[srcSemKey] = cutProjects;
-
-closeAdminModal();
-renderAdminGrid();
-renderCutBank();
-renderChangeHistory();
-
-// Round-2 fix (R2-15): was a bulk saveLessonData(destSemKey, lessons) call
-// — every OTHER admin-grid write in this file deliberately avoids exactly
-// this risk (a stale local cache silently reverting other admins' concurrent
-// edits) via a targeted single-lesson save; this was the one place that
-// still did a bulk write.
-let pasteConfirmed = false;
-try {
-  await saveSingleLesson(destSemKey, key, lessons[key]);
-  pasteConfirmed = true;
-  await saveCutProjects(srcSemKey, cutProjects);
-  await appendChangeLogEntry(destSemKey, {
-    action: 'paste',
-    details: {
-      projectTitle: proj.projectTitle, teacher, className, toWeek: weekNum, fromCutBank: true,
-      crossSemester: isCrossSemester || undefined, sourceSemester: isCrossSemester ? srcSemName : undefined,
-      originalTeacher: proj.originalTeacher, originalWeek: proj.originalWeek
-    }
-  });
-  renderChangeHistory();
-} catch (err) {
-  console.error('❌ Paste from Cut Bank failed partway through:', err);
-  if (pasteConfirmed) {
-    alert(`"${proj.projectTitle}" was placed on the grid, but could NOT be removed from the Cut Bank — it may now appear in both places. Please reload and check.`);
-  } else {
-    delete lessons[key];
-    currentLessonData[destSemKey] = lessons;
-    cutProjects.splice(cutIndex, 0, proj);
-    currentCutProjects[srcSemKey] = cutProjects;
-    renderAdminGrid();
-    renderCutBank();
-    alert(`Could not paste "${proj.projectTitle}" — please try again.`);
-  }
-}</code></pre>
-  <div class="bdd">Given: A teacher edit's save succeeds but logTeacherEdit() then fails
-When: saveTeacherEdit runs
-Then: The teacher sees their edit as saved successfully — NOT "Error saving lesson"
-
-Given: cutProject()'s deleteLessonKey() succeeds but saveCutProjects() then fails
-When: The catch runs
-Then: The admin sees an honest "removed from grid but not saved to bank, check manually" message — not silence and not a false success
-
-Given: pasteFromCutBank()'s targeted save succeeds but saveCutProjects() (removing it from the bank) then fails
-When: The catch runs
-Then: The admin sees an honest "may now appear in both places" message</div>
-</div>
-
-<h2 id="phase9">Phase 9 — Move and swap: the single, integrated, real fix for handleGridAction()</h2>
-<div class="phase" id="phase-9">
-  <div class="danger">🛑 <strong>Both round-2 reviewers independently concluded Phases 2, 3, 4, 8, and 9 cannot be correctly implemented as separate isolated snippets</strong> — the real <code>handleGridAction()</code> move and swap branches interleave all five phases' concerns. This is the single, authoritative, fully-real replacement for that function's move branch and swap branch (both occupied and empty-destination sub-cases), verified line-by-line against the real code at <code>js/app.js:4610-4748</code>. It incorporates: Phase 2's forced-server read-back with compensating write (move only), Phase 3's <code>sourceWriteConfirmed</code> tracking and compensating write (occupied swap), Phase 4's <code>fieldsToClear</code> computation (all three branches), Phase 8's deferred success-gated logging (all three branches, replacing the real code's EAGER <code>const logPromise = appendChangeLogEntry(...)</code> pattern — confirmed present at both <code>app.js:4629</code> and <code>4726</code>, which starts the log write in parallel with the save, not gated on its outcome at all), and Phase 9's own delete-failure handling (move's source delete, swap-with-empty's source delete) — including the round-2 fixes: <strong>R2-1</strong> (null-guard on the move compensating write), <strong>R2-2</strong> (fieldsToClear on that same write), <strong>R2-3</strong> (explicit <code>let</code> declarations for the success flags), <strong>R2-13</strong> (a second <code>renderChangeHistory()</code> call after each now-deferred log write, since the original render calls fire before the log write and would otherwise go stale), and <strong>R2-14</strong> (the eager-log pattern removed entirely, not just its await).</div>
-
-  <h3>Move branch</h3>
-  <pre><code>if (caActionMode === 'move') {
-  if (destLesson) {
-    if (!confirm(`Week ${destWeekNum} already has "${destLesson.projectTitle}". This will overwrite it. Continue?`)) {
-      cancelGridAction();
-      return;
-    }
-  }
-  if (!confirm(`Move "${sourceLesson.projectTitle}" from Week ${sourceLesson.weekNum} to ${destTeacher} / ${destClassName} Week ${destWeekNum}?`)) {
-    cancelGridAction();
     return;
   }
+
+  currentLessonData[destSemKey] = lessons;
+  if (!currentCutProjects) currentCutProjects = {};
+  currentCutProjects[srcSemKey] = cutProjects;
+  closeAdminModal();
+  renderAdminGrid();
+  renderCutBank();
+  renderChangeHistory();
+
+  // Round-3 fix (R3-17): separate non-blocking log catch.
+  try {
+    await appendChangeLogEntry(destSemKey, {
+      action: 'paste',
+      details: { projectTitle: proj.projectTitle, teacher, className, toWeek: weekNum, fromCutBank: true, originalTeacher: proj.originalTeacher, originalWeek: proj.originalWeek }
+    });
+    renderChangeHistory();
+  } catch (logErr) {
+    console.error('⚠️ Paste saved, but Change History logging failed:', logErr);
+  }
+}</code></pre>
+
+  <h3>appendChangeLogEntry() — failure rollback, fixed at the source</h3>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-18, Codex, MEDIUM): R2-13 added a second render on SUCCESS but nothing handles FAILURE.</strong> This function (<code>js/firebase-data.js:606-618</code>) mutates the local <code>currentChangeLog</code> array synchronously BEFORE its own Firestore await — if the write then rejects, the optimistically-inserted local entry stays visible in any later render even though it was never persisted. Fixed once, at the source, benefiting every call site in this plan automatically.</div>
+  <pre><code>async function appendChangeLogEntry(semesterKey, entry) {
+  if (!curriculumDb) initCurriculumFirestore();
+  const user = getAuthUser();
+  entry.timestamp = new Date().toISOString();
+  entry.by = user?.name || 'Unknown';
+  if (!currentChangeLog) currentChangeLog = {};
+  if (!currentChangeLog[semesterKey]) currentChangeLog[semesterKey] = [];
+  currentChangeLog[semesterKey] = [...currentChangeLog[semesterKey], entry];
+  try {
+    await curriculumDb.collection('curriculum').doc('changeLog').set({
+      [semesterKey]: firebase.firestore.FieldValue.arrayUnion(entry)
+    }, { merge: true });
+  } catch (err) {
+    // Round-3 fix (R3-18): the write failed — remove the exact optimistic
+    // entry we just added, so a later render doesn't show a history item
+    // that was never actually persisted.
+    currentChangeLog[semesterKey] = currentChangeLog[semesterKey].filter(e => e !== entry);
+    throw err;
+  }
+}</code></pre>
+
+  <h3>Firebase Safety Checklist note (R3-19)</h3>
+  <div class="note">⚠️ <strong>Round 3 finding (Codex, MEDIUM), investigated and disposed of.</strong> <code>AGENTS.md</code> (line 19) requires a failing emulator test first for data-write changes; <code>e2e/data-safety.spec.js</code> currently runs against real production Firestore (<code>TEST_</code>-prefixed docs) via the real Auth+Firestore SDK, not a local emulator. This is technically accurate — but <code>AGENTS.md</code>'s own Credential Handling section (updated Aug 12, 2026) already documents this as a KNOWN, ACCEPTED stopgap: <em>"tests still run against real production Firestore... not a local emulator — the app's own <code>js/firebase-config.js</code> has no emulator mode. A full fix... is scoped but not yet built."</em> Every phase this plan (and the companion plan, across 18 executed phases) has tested has used this exact same pattern. This is not a gap this plan introduces or an oversight specific to it — it's a pre-existing, already-documented, repo-wide limitation. Named explicitly in the Firebase Safety Checklist below rather than silently ignored, but not something this already-large plan takes on fixing.</div>
+
+  <div class="bdd">Given: A teacher edit's save succeeds but logTeacherEdit() then fails
+When: saveTeacherEdit runs
+Then: The teacher sees their edit as saved successfully — NOT "Error saving lesson" (and there's no longer a second, redundant write that could ALSO fail here)
+
+Given: cutProject()'s archive write to the Cut Bank succeeds but the subsequent delete fails
+When: The catch runs
+Then: The admin sees an honest "safely archived, but could not be removed from the grid" message — the lesson exists in both places, which is recoverable, not lost
+
+Given: cutProject()'s archive write itself fails
+When: The catch runs
+Then: The live lesson is completely untouched — nothing was deleted, matching the "archive first" safety property
+
+Given: A cut lesson has materialsList, qaThread, planComplete, and a photo
+When: It's cut and later pasted back
+Then: All of that data survives the round-trip — not just the 15 fields the original cutEntry hand-listed
+
+Given: appendChangeLogEntry()'s Firestore write fails after the local optimistic mutation
+When: The rejection is caught
+Then: The optimistic entry is removed from currentChangeLog — a later render doesn't show a history item that was never persisted</div>
+</div>
+
+<h2 id="phase9">Phase 9 — Move and swap: atomic single-document writes, replacing the compensating-write design entirely</h2>
+<div class="phase" id="phase-9">
+  <div class="danger">🛑 <strong>Round 3's central architectural finding (R3-1, Codex, HIGH: "should block execution").</strong> The round-2 integrated design used sequential <code>saveSingleLesson()</code>/<code>deleteLessonKey()</code> calls plus a compensating-write mechanism to recover from partial failure. Codex found the compensation itself was unsafe: a genuine concurrent edit landing between a failed second write and the compensating "restore" write could be silently destroyed by that restore. <strong>Investigating this directly against the real code confirmed something better than a fix: <code>saveSingleLesson()</code>'s non-summer branch and <code>deleteLessonKey()</code> both write dotted-path fields to the SAME single document, <code>curriculum/lessonData</code></strong> (verified: <code>js/firebase-data.js:692-760</code>, <code>371-379</code>). Firestore guarantees one <code>.update()</code> call on one document is atomic. Combining move's write+delete, and swap's two writes, into ONE call each eliminates the entire "first write landed, second failed" problem BY CONSTRUCTION — there is no partial-landing state left to compensate for, verify, or race against. This closes R1-3, R1-4, R1-9, R1-10, R2-1 through R2-5, and R2-13/14's logging-gate complexity all at once, not by patching each one individually.</div>
+
+  <h3>New shared helper — js/firebase-data.js</h3>
+  <pre><code>// Pure helper — computes the dotted-path update object for ONE lesson within
+// the shared curriculum/lessonData document, given an already-finalized
+// lessonData object. Extracted from saveSingleLesson()'s non-summer branch
+// (round-3 refactor) so it can be reused by saveMultipleLessonFields() below
+// without duplicating the stripping/clearing logic.
+function buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear = []) {
+  const clearedContentFields = fieldsToClear.filter(f => CONTENT_FIELDS.includes(f));
+  const stripped = { ...lessonData };
+  CONTENT_FIELDS.forEach(f => { if (!stripped[f] || !String(stripped[f]).trim()) delete stripped[f]; });
+  const cleanData = JSON.parse(JSON.stringify(stripped));
+  clearedContentFields.forEach(f => { cleanData[f] = firebase.firestore.FieldValue.delete(); });
+  const updates = {};
+  for (const [field, value] of Object.entries(cleanData)) {
+    updates[`${semesterKey}.${lessonKey}.${field}`] = value;
+  }
+  return updates;
+}
+
+// saveSingleLesson()'s non-summer branch now reads simply:
+//   const updates = buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear);
+//   try {
+//     await curriculumDb.collection('curriculum').doc('lessonData').update(updates);
+//   } catch (error) { console.error('❌ Error saving lesson:', error); throw error; }
+// — behaviorally identical to today's shipped code, just with the per-field
+// computation extracted into the shared helper above.
+
+// NEW: combine multiple lesson writes and/or whole-lesson deletes into ONE
+// atomic Firestore .update() call. This is what move and swap use below —
+// either every write/delete in the call lands, or none do, eliminating the
+// entire compensating-write problem structurally rather than patching it.
+async function saveMultipleLessonFields(semesterKey, writes = [], deletes = []) {
+  if (lessonDataLoadedSuccessfully === false) {
+    throw new Error('Lesson data failed to load — refusing to save to avoid writing over unconfirmed server state. Reload and try again.');
+  }
+  if (semesterKey.startsWith('summer-')) {
+    // Summer lessons live in a separate per-lesson-document collection —
+    // no single-document atomicity is available across lessons there.
+    // Not reachable today: handleGridAction()'s move/swap UI is already
+    // gated away from summer-2026 (confirmed via renderAdminGrid()'s
+    // routing) — this guard exists so a future caller can't silently get a
+    // false sense of atomicity if that ever changes.
+    throw new Error('saveMultipleLessonFields() does not support summer semesters — use saveSingleLesson() per lesson instead.');
+  }
+  if (!curriculumDb) initCurriculumFirestore();
+  const user = getAuthUser();
+  const combined = {};
+  for (const { lessonKey, lessonData, fieldsToClear } of writes) {
+    lessonData.lastEditedBy = user?.name || 'Unknown';
+    lessonData.lastEditedAt = new Date().toISOString();
+    Object.assign(combined, buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear || []));
+  }
+  for (const lessonKey of deletes) {
+    combined[`${semesterKey}.${lessonKey}`] = firebase.firestore.FieldValue.delete();
+  }
+  combined.lastUpdated = new Date().toISOString();
+  combined.lastUpdatedBy = user?.name || 'Unknown';
+  await curriculumDb.collection('curriculum').doc('lessonData').update(combined);
+}</code></pre>
+
+  <h3>Move branch — js/app.js, handleGridAction()</h3>
+  <pre><code>if (caActionMode === 'move') {
+  if (destLesson) {
+    if (!confirm(`Week ${destWeekNum} already has "${destLesson.projectTitle}". This will overwrite it. Continue?`)) { cancelGridAction(); return; }
+  }
+  if (!confirm(`Move "${sourceLesson.projectTitle}" from Week ${sourceLesson.weekNum} to ${destTeacher} / ${destClassName} Week ${destWeekNum}?`)) { cancelGridAction(); return; }
 
   const movedLesson = { ...sourceLesson, teacher: destTeacher, className: destClassName, weekNum: destWeekNum };
   movedLesson.weekDate = destLesson?.weekDate || '';
@@ -561,78 +693,32 @@ Then: The admin sees an honest "may now appear in both places" message</div>
     (destLesson?.[f] || '').trim() !== '' &amp;&amp; !(movedLesson[f] || '').trim()
   );
 
-  let destinationConfirmed = false;
   let moveSucceeded = false;
   try {
-    await saveSingleLesson(semKey, newDestKey, movedLesson, destFieldsToClear);
-
-    // Phase 2: force a SERVER read and compare actual field values, not
-    // just "has some content."
-    if (lessonHasContent(preMoveSourceLesson)) {
-      let destReadBack;
-      try {
-        destReadBack = await readAdminLessonDoc(semKey, newDestKey, { source: 'server' });
-      } catch (readErr) {
-        console.error('❌ Move destination could not be verified — write may have landed but could not be confirmed:', readErr);
-        alert(`Move could not be verified due to a connection issue — "${preMoveSourceLesson.projectTitle}" may now exist at the new location without the old one being removed. Please reload and check both slots manually.`);
-        return;
-      }
-      const matches = destReadBack &amp;&amp; CONTENT_FIELDS.every(f =>
-        (destReadBack[f] || '') === (movedLesson[f] || '')
-      );
-      if (!matches) {
-        console.error('❌ Move destination read-back does not match the moved content — aborting delete, restoring source and destination');
-        try {
-          // Round-2 fix (R2-1): saveSingleLesson() dereferences
-          // lessonData.lastEditedBy with no null guard — if the pre-move
-          // destination was EMPTY, preMoveDestLesson is null, and the
-          // correct compensation is to DELETE the newly-created destination
-          // key, not save null into it.
-          if (preMoveDestLesson) {
-            // Round-2 fix (R2-2): compute fieldsToClear for the restore too
-            // — otherwise the "restored" destination can end up hybrid.
-            const restoreFieldsToClear = CONTENT_FIELDS.filter(f =>
-              (movedLesson[f] || '').trim() !== '' &amp;&amp; !(preMoveDestLesson[f] || '').trim()
-            );
-            await saveSingleLesson(semKey, newDestKey, preMoveDestLesson, restoreFieldsToClear);
-          } else {
-            await deleteLessonKey(semKey, newDestKey);
-          }
-          alert(`Move could not be verified — "${preMoveSourceLesson.projectTitle}" has been restored to its original slot, and the destination has been restored to its original state. Nothing was deleted.`);
-        } catch (compErr) {
-          console.error('❌ Could not restore the destination after an aborted move:', compErr);
-          alert('Move could not be verified and the destination could not be automatically restored — please reload and check both slots manually before making further changes.');
-        }
-        restoreGridActionState(semKey, sourceKeyToDelete, preMoveSourceLesson, newDestKey, preMoveDestLesson);
-        return;
-      }
-    }
-
-    destinationConfirmed = true;
-
-    // Phase 9: the source delete used to sit OUTSIDE any try/catch, and
-    // handleGridAction()'s own caller never awaits/catches it either — a
-    // genuine failure here was a silent unhandled rejection leaving the
-    // lesson duplicated at both keys, invisibly.
-    await deleteLessonKey(semKey, sourceKeyToDelete);
+    // ATOMIC: the destination write and the source delete are ONE Firestore
+    // call. There is no window where one lands and the other doesn't —
+    // Phase 2's read-back verification and its whole reason for existing are
+    // gone; readAdminLessonDoc() isn't called at all anymore.
+    await saveMultipleLessonFields(
+      semKey,
+      [{ lessonKey: newDestKey, lessonData: movedLesson, fieldsToClear: destFieldsToClear }],
+      [sourceKeyToDelete]
+    );
     moveSucceeded = true;
   } catch (err) {
-    console.error('❌ Move failed partway through:', err);
-    if (destinationConfirmed) {
-      alert(`Move partially failed — "${movedLesson.projectTitle}" now exists at both the old and new locations. Please reload and delete the duplicate manually.`);
-    } else {
-      restoreGridActionState(semKey, sourceKeyToDelete, preMoveSourceLesson, newDestKey, preMoveDestLesson);
-      alert(`Move could not be saved — "${preMoveSourceLesson.projectTitle}" has been restored to its original slot. Nothing was deleted.`);
-    }
+    // Because the write is atomic, EVERY failure here means NOTHING
+    // changed in Firestore — there is no "partially landed" case to
+    // distinguish anymore. The restore-and-tell-the-truth message is always
+    // accurate.
+    console.error('❌ Move failed:', err);
+    restoreGridActionState(semKey, sourceKeyToDelete, preMoveSourceLesson, newDestKey, preMoveDestLesson);
+    alert(`Move could not be saved — "${preMoveSourceLesson.projectTitle}" has been restored to its original slot. Nothing was changed.`);
     return;
   }
 
-  // Round-2 fix (R2-3, R2-13, R2-14): the real code created this log entry
-  // EAGERLY (`const logPromise = appendChangeLogEntry(...)`, before the
-  // save even started) — moved to fire only now, after every step has
-  // genuinely confirmed, with its own non-blocking catch and a SECOND
-  // renderChangeHistory() call (the original render above happens before
-  // this log write now, so the Change History panel needs a fresh render).
+  // Round-2/3 fix (R2-3/R2-14, now trivial): log only after the atomic write
+  // is genuinely confirmed, with its own non-blocking catch and a second
+  // render (R2-13) since the panel already rendered above, before this write.
   try {
     await appendChangeLogEntry(semKey, {
       action: 'move',
@@ -648,13 +734,10 @@ Then: The admin sees an honest "may now appear in both places" message</div>
   return;
 }</code></pre>
 
-  <h3>Swap branch (occupied + empty-destination)</h3>
+  <h3>Swap branch (occupied + empty-destination) — js/app.js, handleGridAction()</h3>
   <pre><code>} else if (caActionMode === 'swap') {
   const destLabel = destLesson ? `"${destLesson.projectTitle}"` : 'empty slot';
-  if (!confirm(`Swap "${sourceLesson.projectTitle}" (Week ${sourceLesson.weekNum}) with ${destLabel} (Week ${destWeekNum})?`)) {
-    cancelGridAction();
-    return;
-  }
+  if (!confirm(`Swap "${sourceLesson.projectTitle}" (Week ${sourceLesson.weekNum}) with ${destLabel} (Week ${destWeekNum})?`)) { cancelGridAction(); return; }
 
   const sourceWeekNum = sourceLesson.weekNum;
   const sourceTeacher = sourceLesson.teacher;
@@ -663,9 +746,6 @@ Then: The admin sees an honest "may now appear in both places" message</div>
   const sourceKeyForSwap = caSourceKey;
 
   let savePromise;
-  // Round-2 fix (R2-3): declared here, in the enclosing scope, so both save
-  // paths below AND the logging gate at the bottom can see it — round 1's
-  // draft referenced this flag without ever declaring it.
   let swapSucceeded = false;
 
   if (destLesson) {
@@ -675,75 +755,40 @@ Then: The admin sees an honest "may now appear in both places" message</div>
     lessons[newDestKey] = swappedDest;
     currentLessonData[semKey] = lessons;
 
-    // Phase 4 (R1-11 corrected, confirmed via numeric trace in round 2):
-    const sourceFieldsToClear = CONTENT_FIELDS.filter(f =>
-      (sourceLesson[f] || '').trim() !== '' &amp;&amp; !(swappedSource[f] || '').trim()
-    );
-    const destFieldsToClearSwap = CONTENT_FIELDS.filter(f =>
-      (destLesson[f] || '').trim() !== '' &amp;&amp; !(swappedDest[f] || '').trim()
-    );
+    const sourceFieldsToClear = CONTENT_FIELDS.filter(f => (sourceLesson[f] || '').trim() !== '' &amp;&amp; !(swappedSource[f] || '').trim());
+    const destFieldsToClearSwap = CONTENT_FIELDS.filter(f => (destLesson[f] || '').trim() !== '' &amp;&amp; !(swappedDest[f] || '').trim());
 
     savePromise = (async () => {
-      let sourceWriteConfirmed = false;
       try {
-        await saveSingleLesson(semKey, sourceKeyForSwap, swappedSource, sourceFieldsToClear);
-        sourceWriteConfirmed = true;
-        await saveSingleLesson(semKey, newDestKey, swappedDest, destFieldsToClearSwap);
+        // ATOMIC: both slots' writes are ONE Firestore call. R3-1's
+        // concurrent-edit-overwrite risk (which a compensating write could
+        // trigger) no longer exists — there is no compensating write.
+        await saveMultipleLessonFields(semKey, [
+          { lessonKey: sourceKeyForSwap, lessonData: swappedSource, fieldsToClear: sourceFieldsToClear },
+          { lessonKey: newDestKey, lessonData: swappedDest, fieldsToClear: destFieldsToClearSwap }
+        ]);
         swapSucceeded = true;
       } catch (err) {
-        console.error('❌ Swap partially failed:', err);
-        if (!sourceWriteConfirmed) {
-          // R1-9: nothing was ever written — a compensating write is
-          // unnecessary and risky (could clobber a concurrent edit).
-          restoreGridActionState(semKey, sourceKeyForSwap, sourceLesson, newDestKey, destLesson);
-          alert(`Swap did not complete — "${sourceLesson.projectTitle}" and "${destLesson.projectTitle}" have been restored to their original slots.`);
-          return;
-        }
-        // R1-10: the first save landed; compensate WITH fieldsToClear.
-        // R2-5 accepted residual risk: a concurrent edit landing on the
-        // source slot in this window can be silently overwritten by this
-        // stale compensating write — named, not mitigated, in this revision
-        // (see Phase 3's note).
-        const compensatingFieldsToClear = CONTENT_FIELDS.filter(f =>
-          (swappedSource[f] || '').trim() !== '' &amp;&amp; !(sourceLesson[f] || '').trim()
-        );
-        try {
-          await saveSingleLesson(semKey, sourceKeyForSwap, sourceLesson, compensatingFieldsToClear);
-          restoreGridActionState(semKey, sourceKeyForSwap, sourceLesson, newDestKey, destLesson);
-          alert(`Swap did not complete — "${sourceLesson.projectTitle}" and "${destLesson.projectTitle}" have been restored to their original slots.`);
-        } catch (revertErr) {
-          console.error('❌ Could not revert the partial swap — Firestore is left half-swapped:', revertErr);
-          restoreGridActionState(semKey, sourceKeyForSwap, sourceLesson, newDestKey, destLesson);
-          alert(`Swap partially failed and could not be automatically reverted — "${sourceKeyForSwap}" and "${newDestKey}" may not match what's shown here. Please reload and check both slots manually before making further changes.`);
-        }
+        console.error('❌ Swap failed:', err);
+        restoreGridActionState(semKey, sourceKeyForSwap, sourceLesson, newDestKey, destLesson);
+        alert(`Swap did not complete — "${sourceLesson.projectTitle}" and "${destLesson.projectTitle}" have been restored to their original slots.`);
       }
     })();
   } else {
-    // Swap with empty: move source to dest, clear source.
     const movedLesson = { ...sourceLesson, teacher: destTeacher, className: destClassName, weekNum: destWeekNum, weekDate: '' };
     lessons[newDestKey] = movedLesson;
     delete lessons[sourceKeyForSwap];
     currentLessonData[semKey] = lessons;
 
     savePromise = (async () => {
-      let destinationConfirmed = false;
       try {
-        await saveSingleLesson(semKey, newDestKey, movedLesson);
-        destinationConfirmed = true;
-        // R1-3/R1-4: a delete failure after a successful save used to fall
-        // into the same .catch() as a save failure, reverting only the
-        // local model and falsely claiming restoration while Firestore
-        // actually had the lesson duplicated at both keys.
-        await deleteLessonKey(semKey, sourceKeyForSwap);
+        // ATOMIC: write + delete, one call — same guarantee as move above.
+        await saveMultipleLessonFields(semKey, [{ lessonKey: newDestKey, lessonData: movedLesson }], [sourceKeyForSwap]);
         swapSucceeded = true;
       } catch (err) {
-        console.error('❌ Swap-with-empty failed:', err);
-        if (destinationConfirmed) {
-          alert(`Swap partially failed — "${sourceLesson.projectTitle}" now exists at both its old slot and the destination. Please reload and check manually before making further changes.`);
-        } else {
-          restoreGridActionState(semKey, sourceKeyForSwap, sourceLesson, newDestKey, null);
-          alert(`Swap did not complete — "${sourceLesson.projectTitle}" has been restored to its original slot.`);
-        }
+        console.error('❌ Swap failed:', err);
+        restoreGridActionState(semKey, sourceKeyForSwap, sourceLesson, newDestKey, null);
+        alert(`Swap did not complete — "${sourceLesson.projectTitle}" has been restored to its original slot.`);
       }
     })();
   }
@@ -755,10 +800,6 @@ Then: The admin sees an honest "may now appear in both places" message</div>
 
   await savePromise;
 
-  // Round-2 fix (R2-3, R2-13, R2-14): the real code created this log entry
-  // EAGERLY, in parallel with savePromise, not gated on its outcome at all.
-  // Only log once swapSucceeded is genuinely true, and re-render Change
-  // History since the original render above now happens before this write.
   if (swapSucceeded) {
     try {
       await appendChangeLogEntry(semKey, {
@@ -776,32 +817,36 @@ Then: The admin sees an honest "may now appear in both places" message</div>
   }
   return;
 }</code></pre>
-  <div class="bdd">Given: Move's destination write and read-back both succeed, then deleteLessonKey() genuinely fails
+  <div class="bdd">Given: A move's atomic write fails for any reason (guard trip, network, permission)
 When: The catch runs
-Then: The admin sees an honest "exists at both locations" message
+Then: Local state is restored and the alert accurately says nothing was changed — there is no other possible outcome, since the write is all-or-nothing
 
-Given: Move onto a previously-EMPTY destination fails verification
-When: The compensating-write path runs
-Then: The destination key is DELETED (not saved with null), no TypeError — this is the exact scenario round 2 found crashing in round 1's fix
+Given: An occupied swap's atomic write fails for any reason
+When: The catch runs
+Then: Both slots are restored locally and the alert is accurate — no compensating write, no concurrent-edit overwrite risk (R3-1, structurally closed)
 
-Given: An occupied swap's second save fails after the first succeeds, and the compensating write also succeeds
-When: The catch resolves
-Then: The compensating write includes correct fieldsToClear — no hybrid content in the restored slot
-
-Given: A move or swap fails partway and is handled by its own catch (not an outright unhandled rejection)
-When: The logging check at the bottom runs
-Then: appendChangeLogEntry() is NOT called — this only works now because the flag is genuinely declared and the log call itself (not just its await) is deferred until success is confirmed
-
-Given: A move or swap completes normally
+Given: A move or swap's atomic write succeeds
 When: The branch completes
-Then: Behavior matches today's shipped success path, plus the Change History panel now correctly reflects the log entry (the second render call)</div>
+Then: The log entry fires once, only after genuine confirmation, with a second render — behavior matches today's shipped success path plus a correctly up-to-date Change History panel</div>
 </div>
 
-<h2 id="phase10">Phase 10 — Optimistic local-state mutations must revert on save failure, beyond the Plan Complete checkbox</h2>
+<h2 id="phase10">Phase 10 — Q&amp;A messages and summer editor: atomic writes and safe local-state reverts</h2>
 <div class="phase" id="phase-10">
-  <h3>sendTeacherQaMessage() — real fix</h3>
-  <div class="danger">🛑 <strong>Round 2 finding (R2-16, Codex + Claude, HIGH): round 1's fix used identifiers that don't exist in the real function.</strong> Verified against the real code (<code>js/app.js:3151-3189</code>): the real local variable is <code>thread</code> (not <code>qaThread</code>), the real parameter is <code>lessonKey</code> (not <code>key</code>), <code>fieldsToClear</code> doesn't exist in this function's scope at all, the message is pushed as an inline object literal (not built as a named <code>newMessage</code> variable first), and the function saves a distinct <code>updatedLesson</code> object (containing <code>teacherNotes</code>/<code>adminResponse</code>) — not the bare <code>lesson</code> round 1's fix saved.</div>
-  <pre><code>async function sendTeacherQaMessage(lessonKey, lesson) {
+  <h3>sendTeacherQaMessage() — replaced with the companion plan's atomic arrayUnion() design</h3>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-3, Codex, HIGH): round 2's specific-message-object revert fixed the identifier bugs but not the underlying design</strong> — it was still a full-lesson read-modify-write, meaning concurrent sends could still silently drop or resurrect messages, and any concurrent edit to an unrelated field could be overwritten. <strong>The companion plan (<code>classbook-data-safety-remaining-stages.html</code>, its own Phase 10) already designed and reviewed (through 2 Codex + independent Claude passes) the correct fix for this exact problem: bypass <code>saveSingleLesson()</code> entirely, write only the Q&amp;A-related dotted paths directly, and append via Firestore's <code>arrayUnion()</code> (atomic on Firestore's side, immune to the local read-modify-write race) instead of a local push-then-save.</strong> Reused verbatim here rather than re-deriving a weaker version.</div>
+  <div class="note">⚠️ <strong>Cross-plan coordination note:</strong> this phase fully implements the companion plan's own Phase 10 design (including its <code>buildQaThreadUnionArgs()</code> legacy-migration helper). Since Christie's sequencing has THIS plan executing first, when the companion plan's review resumes, its own Phase 10 should be marked as already-shipped by this plan rather than re-implemented — its Resume Instructions should point back here.</div>
+  <pre><code>// Shared by sendTeacherQaMessage (here) and sendHelpResponse/sendQaReply
+// (Phase 11) — seeds arrayUnion's argument list with the legacy
+// teacherNotes/adminResponse thread on a lesson's FIRST message under this
+// atomic-append pattern, so that legacy content isn't silently lost the
+// moment qaThread gets its first real entry. arrayUnion's deep-equality
+// dedup makes repeating this migration from concurrent senders safe.
+function buildQaThreadUnionArgs(existingLesson, newEntry) {
+  const needsMigration = !existingLesson?.qaThread || existingLesson.qaThread.length === 0;
+  return needsMigration ? [...getQaThread(existingLesson || {}), newEntry] : [newEntry];
+}
+
+async function sendTeacherQaMessage(lessonKey, lesson) {
   const input = document.getElementById('te-qa-input');
   if (!input) return;
   const message = input.value.trim();
@@ -809,101 +854,69 @@ Then: Behavior matches today's shipped success path, plus the Change History pan
 
   const user = getAuthUser();
   const isAdmin = ['admin', 'manager'].includes(user?.role);
-  const thread = getQaThread(lesson);
-
-  // Round-2 fix (R2-16, R2-17): capture the specific message OBJECT being
-  // pushed, not just the array's previous length — round-2 finding: the
-  // Send button isn't disabled while a save is pending, so two concurrent
-  // sends can share this same thread array; a length-based revert
-  // (`thread.length = previousLength`) can delete a DIFFERENT,
-  // successfully-sent message. Remove the exact object instead.
-  const newMessageEntry = {
-    from: isAdmin ? 'admin' : 'teacher',
-    name: user?.name || 'Unknown',
-    message,
+  const newEntry = {
+    id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+    from: isAdmin ? 'admin' : 'teacher', name: user?.name || 'Unknown', message,
     timestamp: new Date().toISOString()
   };
-  thread.push(newMessageEntry);
 
   const semKey = getTvSemKey();
-  const updatedLesson = { ...lesson, qaThread: thread };
-  if (!isAdmin) {
-    updatedLesson.teacherNotes = message;
-  } else {
-    updatedLesson.adminResponse = message;
-  }
+  // Read-only use of the local cache, just to decide whether legacy
+  // migration applies — never spread into the Firestore payload, so
+  // staleness here is harmless (worst case: an unnecessary but harmless
+  // re-migration, deduped by arrayUnion).
+  const currentLesson = currentLessonData?.[semKey]?.[lessonKey] || lesson;
 
   try {
-    await saveSingleLesson(semKey, lessonKey, updatedLesson);
+    if (!curriculumDb) initCurriculumFirestore();
+    const updates = {
+      [`${semKey}.${lessonKey}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(...buildQaThreadUnionArgs(currentLesson, newEntry)),
+    };
+    if (!isAdmin) { updates[`${semKey}.${lessonKey}.teacherNotes`] = message; }
+    else { updates[`${semKey}.${lessonKey}.adminResponse`] = message; }
+    await curriculumDb.collection('curriculum').doc('lessonData').update(updates);
     input.value = '';
     openTeacherEditModal(lessonKey);
   } catch (err) {
     console.error('Error sending Q&amp;A message:', err);
-    // Round-2 fix: remove THIS specific message object, not the array tail —
-    // safe even if another message was pushed and successfully sent in the
-    // meantime.
-    const idx = thread.indexOf(newMessageEntry);
-    if (idx !== -1) thread.splice(idx, 1);
     alert('Error sending message: ' + err.message);
   }
 }</code></pre>
 
-  <h3>Summer modal saveLesson() — real fix, incorporates Phase 5's photo fix at this call site</h3>
-  <div class="danger">🛑 <strong>Round 2 findings (R2-9, R2-18, R2-19, R2-20): round 1's fix for this function had three distinct real defects</strong>, verified against the actual function body (<code>js/app.js:9725-9829</code>). <strong>R2-18 (Codex + Claude, HIGH):</strong> <code>summerLessonOriginalData = savedLesson</code> is wrong — the real success path (line 9803) assigns <code>{ ...rawContentFields }</code>, a 7-key content-only object; assigning the full lesson object would make the NEXT save's <code>.trim()</code> calls in the <code>fieldsToClear</code> computation throw on non-string fields (e.g. <code>materialsList</code>, an array). <strong>R2-19 (Codex + Claude, HIGH):</strong> the revert variables were declared with <code>const</code> inside the same block as the outer <code>try</code> — a <code>const</code> declared inside <code>try{}</code> is not visible inside the sibling <code>catch{}</code> in JS. <strong>R2-20 (Codex + Claude, MEDIUM):</strong> the BDD claim that reverting local state prevents the next autosave from retrying a failed edit is false — the real autosave rereads all 7 content fields fresh from the DOM every time (verified: <code>rawContentFields</code> is rebuilt via <code>document.getElementById(...).value.trim()</code> calls at the top of every <code>saveLesson()</code> invocation, lines 9736-9744), not from the <code>lesson</code> variable — so a failed edit still sitting in the textareas WILL be resent regardless of the revert. <strong>R2-9 (Claude, MEDIUM-HIGH):</strong> folds in Phase 5's finding that the old photoPath must be captured before <code>lesson</code> is reassigned.</div>
-  <pre><code>const saveLesson = async (showStatus = true) => {
-  if (!canEditLesson(lesson)) {
-    console.warn('⛔ Save blocked — no edit permission for this lesson');
-    return;
-  }
+  <h3>Summer modal saveLesson() — generation-token fix for overlapping saves</h3>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-4, Codex MEDIUM + Claude, corroborated from different angles): the round-2 cacheMutated guard is correct for a single invocation but unsafe under overlap.</strong> The Save button isn't disabled while a save is pending, and a manual save doesn't cancel a pending autosave — two <code>saveLesson()</code> calls can genuinely be in flight at once. If an EARLIER call fails AFTER a LATER call has already succeeded, the earlier call's catch-triggered revert can silently erase the later call's confirmed content. Fixed with a monotonic invocation counter — only the LATEST invocation is allowed to mutate shared state, on either its success or failure path.</div>
+  <pre><code>let autoSaveTimer = null;
+// Round-3 fix (R3-4): generation token, closed over by every invocation of
+// saveLesson() — see below for how it's used.
+let saveInvocationCounter = 0;
+const autoSaveStatus = document.getElementById('summer-autosave-status');
+
+const saveLesson = async (showStatus = true) => {
+  if (!canEditLesson(lesson)) { console.warn('⛔ Save blocked — no edit permission for this lesson'); return; }
   if (showStatus) autoSaveStatus.textContent = 'Saving...';
 
-  // Round-2 fix (R2-19): hoisted OUTSIDE the try — the real catch below is a
-  // SIBLING block to the try, so a const declared inside the try is not
-  // visible here. cacheMutated tracks whether the optimistic mutation
-  // actually ran, so a failure BEFORE it (e.g. the photo upload) doesn't
-  // attempt a meaningless revert.
+  const myInvocation = ++saveInvocationCounter;
   let previousCachedLesson;
   let previousLessonRef;
   let cacheMutated = false;
 
   try {
-    const rawContentFields = {
-      introPitch: document.getElementById('summer-intro-pitch').value.trim(),
-      processStep1: document.getElementById('summer-step1').value.trim(),
-      processStep2: document.getElementById('summer-step2').value.trim(),
-      processStep3: document.getElementById('summer-step3').value.trim(),
-      processStep4: document.getElementById('summer-step4').value.trim(),
-      closure: document.getElementById('summer-closure').value.trim(),
-      dayOfMaterials: document.getElementById('summer-day-of').value.trim(),
-    };
-    const contentUpdates = Object.fromEntries(
-      Object.entries(rawContentFields).filter(([, v]) => v !== '')
-    );
-    const updatedLesson = {
-      ...lesson, ...contentUpdates,
-      lastEditedBy: getAuthUser()?.name || 'Unknown',
-      lastEditedAt: new Date().toISOString()
-    };
+    const rawContentFields = { /* ... unchanged: 7 fields read fresh from the DOM ... */ };
+    const contentUpdates = Object.fromEntries(Object.entries(rawContentFields).filter(([, v]) => v !== ''));
+    const updatedLesson = { ...lesson, ...contentUpdates, lastEditedBy: getAuthUser()?.name || 'Unknown', lastEditedAt: new Date().toISOString() };
     const fieldsToClear = Object.keys(summerLessonOriginalData).filter(f =>
       summerLessonOriginalData[f].trim() !== '' &amp;&amp; rawContentFields[f] === ''
     );
 
-    // Round-2 fix (R2-9, Phase 5): capture the OLD photoPath BEFORE `lesson`
-    // is reassigned further down — the real `lesson = savedLesson`
-    // reassignment happens one line before saveSingleLesson() runs, so a
-    // post-save check reading lesson.photoPath would already see the NEW
-    // path, silently defeating orphan cleanup for a moved-lesson replacement.
+    // Phase 5 fix: capture the OLD photoPath before any reassignment below.
     const oldPhotoPath = lesson.photoPath;
 
     const photoInput = document.getElementById('summer-photo-input');
     const hasNewPhoto = photoInput?.files?.length > 0;
     const pendingRemove = photoInput?.dataset?.pendingRemove === 'true';
-
     if (hasNewPhoto) {
       if (showStatus) autoSaveStatus.textContent = 'Uploading photo...';
-      const result = await uploadSummerCampPhoto(lessonKey, photoInput.files[0]);
-      // Phase 5 fix: delete moved to AFTER the Firestore save confirms —
-      // see the post-save block below.
+      const result = await uploadSummerCampPhoto(lessonKey, photoInput.files[0]); // now a unique path, Phase 5
       updatedLesson.photoUrl = result.url;
       updatedLesson.photoPath = result.path;
       if (showStatus) autoSaveStatus.textContent = 'Saving...';
@@ -915,8 +928,6 @@ Then: Behavior matches today's shipped success path, plus the Change History pan
     const savedLesson = { ...lesson, ...updatedLesson };
     fieldsToClear.forEach(f => { savedLesson[f] = ''; });
 
-    // Round-1 fix (R1-19), corrected: capture what's being replaced BEFORE
-    // mutating, so the catch below can revert both.
     previousCachedLesson = currentLessonData[semKey]?.[lessonKey];
     previousLessonRef = lesson;
     if (currentLessonData[semKey]) currentLessonData[semKey][lessonKey] = savedLesson;
@@ -925,90 +936,115 @@ Then: Behavior matches today's shipped success path, plus the Change History pan
 
     await saveSingleLesson(semKey, lessonKey, savedLesson, fieldsToClear);
 
-    // Phase 5 fix: only now, after Firestore confirms, clean up the OLD
-    // Storage object — and only if it's actually a different path (uses
-    // oldPhotoPath, captured before any reassignment, not lesson.photoPath).
+    // Round-3 fix (R3-4): if a LATER invocation has already started by the
+    // time this one's await resolves, this invocation's success is stale —
+    // don't let it overwrite whatever the later invocation already did.
+    if (myInvocation !== saveInvocationCounter) {
+      if (showStatus) autoSaveStatus.textContent = '✓ Saved';
+      return;
+    }
+
     if (oldPhotoPath &amp;&amp; oldPhotoPath !== (savedLesson.photoPath || null)) {
-      try {
-        await deleteLessonPhoto(oldPhotoPath);
-      } catch (cleanupErr) {
-        console.error('⚠️ Could not clean up old summer photo after save:', cleanupErr);
-      }
+      try { await deleteLessonPhoto(oldPhotoPath); }
+      catch (cleanupErr) { console.error('⚠️ Could not clean up old summer photo after save:', cleanupErr); }
     }
 
-    // Round-2 fix (R2-18): UNCHANGED from the real shipped code — round 1's
-    // fix incorrectly replaced this with `summerLessonOriginalData =
-    // savedLesson`, which would break the NEXT save. Keep the real
-    // assignment.
-    summerLessonOriginalData = { ...rawContentFields };
+    summerLessonOriginalData = { ...rawContentFields }; // R2-18: unchanged real assignment
 
-    if (showStatus) {
-      const saveBtn = document.getElementById('summer-lesson-save');
-      autoSaveStatus.textContent = fieldsToClear.length > 0
-        ? `✓ Saved (${fieldsToClear.join(', ')} cleared)` : '✓ Saved';
-      if (saveBtn) { saveBtn.textContent = 'Saved!'; saveBtn.disabled = true; }
-      setTimeout(() => {
-        autoSaveStatus.textContent = '';
-        if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
-      }, 2000);
-    }
+    if (showStatus) { /* ... unchanged success UI ... */ }
   } catch (err) {
     console.error('Save failed:', err);
-    // Round-2 fix (R2-19): only revert if the mutation actually happened.
-    if (cacheMutated) {
+    // Round-3 fix (R3-4): only revert if THIS invocation actually mutated
+    // the cache, no LATER invocation has since started, AND
+    // currentLessonData[semKey] still exists (the live listener wholesale-
+    // replaces currentLessonData on every snapshot — it may have dropped
+    // this semester's key entirely in the interim).
+    if (cacheMutated &amp;&amp; myInvocation === saveInvocationCounter &amp;&amp; currentLessonData[semKey]) {
       currentLessonData[semKey][lessonKey] = previousCachedLesson;
       lesson = previousLessonRef;
     }
-    if (showStatus) {
-      autoSaveStatus.textContent = `⚠️ Save failed: ${err.code || err.message || err}`;
-      autoSaveStatus.style.color = 'var(--error)';
-    }
+    if (showStatus) { autoSaveStatus.textContent = `⚠️ Save failed: ${err.code || err.message || err}`; autoSaveStatus.style.color = 'var(--error)'; }
   }
 };</code></pre>
-  <div class="bdd">Given: A teacher sends a Q&amp;A message and the save throws, while a second message from a concurrent send has already succeeded
+  <div class="bdd">Given: A teacher sends a Q&amp;A message, and a concurrent send from someone else lands at nearly the same moment
+When: Both sends complete
+Then: Firestore's arrayUnion() means both messages survive — no local read-modify-write race, no length-based revert that could delete the wrong one
+
+Given: Two summer saveLesson() invocations are in flight (manual save + pending autosave), the earlier one fails AFTER the later one has already succeeded
+When: The earlier invocation's catch runs
+Then: [R3-4, NOW FIXED] It does NOT revert the cache — the later invocation's confirmed content is left untouched
+
+Given: A single summer save fails and no other invocation is in flight
 When: The catch runs
-Then: Only the failed message is removed from the shared thread array — the concurrently-sent successful message is untouched (this scenario is what round 1's length-based revert would have broken)
-
-Given: A summer lesson edit's save fails
-When: The catch runs
-Then: Both currentLessonData and the local lesson variable revert to their pre-edit values — and this compiles/runs correctly, unlike round 1's version where the revert variables weren't visible in the catch at all
-
-Given: A summer lesson edit's save fails, and the teacher types another character 2 seconds later, triggering autosave
-When: Autosave fires
-Then: [CORRECTED CLAIM] It resends the still-present failed content from the DOM regardless of the revert — the revert's real benefit is preventing STALE non-content fields (lastEditedBy, a stale photoUrl/photoPath) from leaking into a later save via the `{...lesson, ...updatedLesson}` spread, not preventing DOM-field retry
-
-Given: The summer lesson had a photo, was previously moved to a new week/semester, and a new photo is uploaded at its new location
-When: The save completes
-Then: The new photo is at the new path, and the OLD orphaned Storage object (captured via oldPhotoPath before lesson was reassigned) is correctly deleted — this is the scenario round 1's fix would have silently defeated at this call site
-
-Given: A lesson has no photo change and the save succeeds normally
-When: The save completes
-Then: summerLessonOriginalData is assigned the real 7-key content object — the NEXT save's fieldsToClear computation works correctly, unlike round 1's version which would throw</div>
+Then: Behavior is unchanged from round 2 — cache and lesson correctly revert</div>
 </div>
 
-<h2 id="phase11">Phase 11 — saveLessonData() has no load-guard at all, and several callers use unguarded bulk writes</h2>
+<h2 id="phase11">Phase 11 — saveLessonData() has no load-guard, and 8 real callers use unsafe or buggy bulk/direct writes</h2>
 <div class="phase" id="phase-11">
-  <div class="danger">🛑 <strong>New phase, added after round 2 review (R2-21, Claude, HIGH, genuinely new — missed by the original audit, round 1, and this plan's own "root cause" framing).</strong> <code>saveLessonData(semesterKey, lessons)</code> (<code>js/firebase-data.js:351-366</code>, verified) is a DIFFERENT function from <code>saveSingleLesson()</code> — the bulk-write primitive — and has NO <code>lessonDataLoadedSuccessfully</code> check at all. Phase 1's entire "root cause" framing only ever covered <code>saveSingleLesson()</code>. Grepped and confirmed 7 real callers, several of which write the ENTIRE semester's lessons from local state with no try/catch: <code>pasteFromIdeaBank()</code> (<code>app.js:5413-5468</code>), <code>executeCopyPlan()</code> (<code>app.js:4817-4884</code>), <code>sendHelpResponse()</code> (<code>app.js:5567-5591</code>), <code>sendQaReply()</code> (<code>app.js:5593-5619</code>), <code>createLessonSlotsForRoster()</code> (<code>app.js:9308-9363</code>, which additionally mutates the LIVE <code>currentLessonData[semKey]</code> object directly, not a clone — unlike every other write path in this file). <code>pasteFromCutBank()</code>'s use of this function was already fixed in Phase 8 above (switched to a targeted <code>saveSingleLesson()</code> call).</div>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-9, corroborated, MED-HIGH): R2-21's "confirmed 7" caller count was wrong — an 8th real, live caller exists.</strong> <code>createNewSemester()</code> (<code>js/app.js:3951-4038</code>, call to <code>saveLessonData()</code> at <code>~4021</code>) is invoked from a bare HTML <code>onclick</code> with zero try/catch anywhere in the function.</div>
 
   <h3>saveLessonData() — the root-cause fix, mirrors Phase 1</h3>
   <pre><code>async function saveLessonData(semesterKey, lessons) {
-  // Round-2 addition (R2-21): saveLessonData() had NO load-guard at all —
-  // Phase 1 only ever covered saveSingleLesson(). Mirrors that fix exactly.
   if (lessonDataLoadedSuccessfully === false) {
     throw new Error('Lesson data failed to load — refusing to save to avoid writing over unconfirmed server state. Reload and try again.');
   }
   if (!curriculumDb) initCurriculumFirestore();
-  if (semesterKey.startsWith('summer-')) {
-    return await saveSummerCampLessonData(lessons);
-  }
+  if (semesterKey.startsWith('summer-')) { return await saveSummerCampLessonData(lessons); }
   const user = getAuthUser();
   await curriculumDb.collection('curriculum').doc('lessonData').set({
     [semesterKey]: lessons, lastUpdated: new Date().toISOString(), lastUpdatedBy: user?.name || 'Unknown'
   }, { merge: true });
 }</code></pre>
 
-  <h3>sendHelpResponse() / sendQaReply() — real fix</h3>
-  <p>Verified against the real code (<code>app.js:5567-5619</code>): both build a full-semester <code>lessons</code> clone, mutate the single target lesson's Q&amp;A thread (via <code>thread.push(...)</code>, the same shared-array-reference hazard as Phase 10's <code>sendTeacherQaMessage()</code> fix), then call bulk <code>saveLessonData(semKey, lessons)</code> with no try/catch.</p>
+  <h3>createNewSemester() — new fix (R3-9)</h3>
+  <pre><code>async function createNewSemester() {
+  const name = document.getElementById('new-sem-name')?.value.trim();
+  if (!name) { alert('Semester name is required.'); return; }
+  const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  if (currentConfig.semesters[key]) { alert(`A semester with key "${key}" already exists.`); return; }
+
+  // ... unchanged: build newSem, breakWeeks, closureDates, copyFromKey ...
+
+  let lessonDataCommitted = false;
+  try {
+    if (copyFromKey &amp;&amp; currentConfig.semesters[copyFromKey]) {
+      // ... unchanged: build emptyLessons from source semester's teacher/class combos ...
+      if (Object.keys(emptyLessons).length > 0) {
+        await saveLessonData(key, emptyLessons);
+        if (!currentLessonData) currentLessonData = {};
+        currentLessonData[key] = emptyLessons;
+        lessonDataCommitted = true;
+      }
+    }
+    currentConfig.semesters[key] = newSem;
+    await saveConfig(currentConfig);
+  } catch (err) {
+    console.error('❌ Could not create new semester:', err);
+    // Round-3 fix: this function had zero try/catch — a failure partway
+    // through left currentConfig mutated locally with nothing persisted
+    // (blocking a retry via the "already exists" check above) or created a
+    // config entry for a semester whose lesson slots never actually saved.
+    // Revert every local commit made so far.
+    delete currentConfig.semesters[key];
+    if (lessonDataCommitted &amp;&amp; currentLessonData) delete currentLessonData[key];
+    alert('Could not create the new semester. Please try again.');
+    return;
+  }
+
+  closeNewSemesterModal();
+  caCurrentSemester = key;
+  renderSemesterSelector();
+  renderAdminGrid();
+  renderHelpQueue();
+  renderCutBank();
+  renderIdeaBank();
+  renderChangeHistory();
+}</code></pre>
+  <div class="note">⚠️ <code>restoreFromBackup()</code> (<code>firebase-data.js:501</code>) is a real but currently-dead (zero callers) 8th+1 caller — named for completeness, not fixed, since there's nothing reachable to fix.</div>
+
+  <h3>sendHelpResponse() / sendQaReply() — real fix, core atomic-write pattern reused from the companion plan</h3>
+  <div class="danger">🛑 <strong>Round 3 finding (R3-3 applies here too, Codex HIGH): both still send a full, possibly-stale lesson via a bulk write, with the same non-atomic Q&amp;A race Phase 10 fixes for sendTeacherQaMessage().</strong> Verified against the real code (<code>app.js:5567-5619</code>): both build a full-semester <code>lessons</code> clone, mutate the target lesson's Q&amp;A thread via a local push, then call bulk <code>saveLessonData(semKey, lessons)</code> with no try/catch. <strong>Round 3 finding (R3-21, Claude, LOW-MEDIUM): the two functions are NOT identical</strong> — <code>sendQaReply()</code> doesn't set <code>status: 'In Progress'</code> and has an <code>openDetailModal()</code> re-open call <code>sendHelpResponse()</code> lacks; each fix below is written against its own real code.</div>
+  <div class="note">⚠️ <strong>Scoping note:</strong> this fix adopts the companion plan's core atomic-write pattern (targeted <code>update()</code>, <code>arrayUnion()</code>, <code>buildQaThreadUnionArgs()</code> from Phase 10) for both functions. It does NOT adopt the companion plan's own Phase 11, which additionally wraps both functions in a move/delete existence check via a helper (<code>adminLessonStillExistsWithRetry()</code>) that belongs to a DIFFERENT phase of the companion plan (its own Phase 9) not yet built here — that's a separate vulnerability class the companion plan found independently, with its own dependency chain. This plan's fix closes the specific bugs round 3 found (bulk-write blast radius, non-atomic Q&amp;A race); the existence-check hardening layer remains the companion plan's Phase 11 to add on top, later.</div>
   <pre><code>async function sendHelpResponse(key) {
   const input = document.getElementById(`ca-help-input-${key}`);
   if (!input) return;
@@ -1016,33 +1052,64 @@ Then: summerLessonOriginalData is assigned the real 7-key content object — the
   if (!response) return;
 
   const semKey = getAdminSemKey();
-  const lessons = currentLessonData?.[semKey];
-  if (!lessons?.[key]) return;
+  const existing = currentLessonData?.[semKey]?.[key];
+  if (!existing) return;
 
-  const thread = getQaThread(lessons[key]);
   const user = getAuthUser();
-  const newMessageEntry = { from: 'admin', name: user?.name || 'Admin', message: response, timestamp: new Date().toISOString() };
-  thread.push(newMessageEntry);
+  const newEntry = { id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5), from: 'admin', name: user?.name || 'Admin', message: response, timestamp: new Date().toISOString() };
 
-  const updatedLesson = { ...lessons[key], adminResponse: response, qaThread: thread, status: 'In Progress' };
   try {
-    // Round-2 fix: was a bulk saveLessonData(semKey, lessons) writing the
-    // ENTIRE semester — replaced with a targeted single-lesson save.
-    await saveSingleLesson(semKey, key, updatedLesson);
-    lessons[key] = updatedLesson;
-    renderHelpQueue();
+    if (!curriculumDb) initCurriculumFirestore();
+    const updates = {
+      [`${semKey}.${key}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(...buildQaThreadUnionArgs(existing, newEntry)),
+      [`${semKey}.${key}.adminResponse`]: response,
+      [`${semKey}.${key}.status`]: 'In Progress'
+    };
+    await curriculumDb.collection('curriculum').doc('lessonData').update(updates);
   } catch (err) {
     console.error('❌ Help response failed to save:', err);
-    const idx = thread.indexOf(newMessageEntry);
-    if (idx !== -1) thread.splice(idx, 1);
     alert('Could not send response. Please try again.');
+    return;
   }
-}
-// sendQaReply() gets the identical fix (targeted saveSingleLesson, revert
-// the specific thread entry on failure, re-open the detail modal only after
-// confirmed success).</code></pre>
 
-  <h3>pasteFromIdeaBank() — real fix</h3>
+  currentLessonData[semKey][key] = { ...existing, adminResponse: response, qaThread: [...getQaThread(existing), newEntry], status: 'In Progress' };
+  renderHelpQueue();
+}
+
+async function sendQaReply(key) {
+  const input = document.getElementById(`qa-reply-${key}`);
+  if (!input) return;
+  const message = input.value.trim();
+  if (!message) return;
+
+  const semKey = getAdminSemKey();
+  const existing = currentLessonData?.[semKey]?.[key];
+  if (!existing) return;
+
+  const user = getAuthUser();
+  const newEntry = { id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5), from: 'admin', name: user?.name || 'Admin', message, timestamp: new Date().toISOString() };
+  const entriesToAdd = buildQaThreadUnionArgs(existing, newEntry);
+
+  try {
+    if (!curriculumDb) initCurriculumFirestore();
+    const updates = {
+      [`${semKey}.${key}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(...entriesToAdd),
+      [`${semKey}.${key}.adminResponse`]: message
+    };
+    await curriculumDb.collection('curriculum').doc('lessonData').update(updates);
+  } catch (err) {
+    console.error('❌ Q&amp;A reply failed to save:', err);
+    alert('Could not send reply. Please try again.');
+    return;
+  }
+
+  const updatedLesson = { ...existing, adminResponse: message, qaThread: [...getQaThread(existing), newEntry] };
+  currentLessonData[semKey][key] = updatedLesson;
+  openDetailModal(updatedLesson, key, updatedLesson.teacher, updatedLesson.className, updatedLesson.weekNum);
+}</code></pre>
+
+  <h3>pasteFromIdeaBank() — real fix (R3-10, R3-11)</h3>
+  <div class="danger">🛑 <strong>Both HIGH.</strong> Verified: real <code>saveFutureProjects(projects)</code> (<code>firebase-data.js:581</code>) expects a bare array; the real/round-2 code calls it with <code>currentFutureProjects</code>, the WHOLE <code>{projects, lastUpdated, lastUpdatedBy}</code> wrapper — double-nesting the Firestore doc and corrupting <code>currentFutureProjects.projects</code> into a non-array. Separately, the idea is removed and saved BEFORE the destination lesson save is confirmed — a lesson-save failure permanently destroys the only copy of the idea.</div>
   <pre><code>async function pasteFromIdeaBank(idx, teacher, className, weekNum) {
   const projects = currentFutureProjects?.projects || [];
   const proj = projects[idx];
@@ -1059,85 +1126,119 @@ Then: summerLessonOriginalData is assigned the real 7-key content object — the
     lastImported: new Date().toISOString()
   };
 
-  let ideaRemoved = false;
+  // Round-3 fix (R3-11): save the destination lesson FIRST — the real code
+  // removed the idea and saved the Idea Bank BEFORE this, so a lesson-save
+  // failure destroyed the only copy of the idea with nothing created.
   try {
-    projects.splice(idx, 1);
-    await saveFutureProjects(currentFutureProjects);
-    ideaRemoved = true;
-    // Round-2 fix: was a bulk saveLessonData(semKey, lessons) — replaced
-    // with a targeted single-lesson save.
     await saveSingleLesson(semKey, key, newLesson);
     if (currentLessonData[semKey]) currentLessonData[semKey][key] = newLesson;
-    await appendChangeLogEntry(semKey, { action: 'paste', details: { projectTitle: proj.title, teacher, className, toWeek: weekNum, fromIdeaBank: true } });
-    closeAdminModal();
-    renderAdminGrid();
-    renderIdeaBank();
-    renderChangeHistory();
   } catch (err) {
-    console.error('❌ Paste from Idea Bank failed:', err);
-    if (ideaRemoved) {
-      alert(`"${proj.title}" was removed from the Idea Bank but could NOT be placed on the grid. Please reload and check — you may need to re-add it to the bank manually.`);
-    } else {
-      projects.splice(idx, 0, proj);
-      alert(`Could not paste "${proj.title}" — please try again.`);
-    }
-    renderIdeaBank();
+    console.error('❌ Paste from Idea Bank failed — lesson could not be saved:', err);
+    alert(`Could not paste "${proj.title}" — please try again. The idea is still in the bank.`);
+    return;
   }
+
+  try {
+    projects.splice(idx, 1);
+    // Round-3 fix (R3-10): pass the bare array, not the whole wrapper —
+    // saveFutureProjects() expects just `projects` and updates
+    // currentFutureProjects internally on success.
+    await saveFutureProjects(projects);
+  } catch (err) {
+    projects.splice(idx, 0, proj); // Firestore never got the removal either — put it back locally.
+    console.error('❌ Paste from Idea Bank — lesson saved but idea removal failed:', err);
+    alert(`"${proj.title}" was placed on the grid, but could NOT be removed from the Idea Bank — it may now appear in both places. Please reload and check.`);
+    closeAdminModal(); renderAdminGrid(); renderIdeaBank(); renderChangeHistory();
+    return;
+  }
+
+  try {
+    await appendChangeLogEntry(semKey, { action: 'paste', details: { projectTitle: proj.title, teacher, className, toWeek: weekNum, fromIdeaBank: true } });
+  } catch (logErr) {
+    console.error('⚠️ Idea pasted, but Change History logging failed:', logErr);
+  }
+  closeAdminModal(); renderAdminGrid(); renderIdeaBank(); renderChangeHistory();
 }</code></pre>
 
-  <h3>executeCopyPlan() — real fix</h3>
-  <p>Verified against the real code (<code>app.js:4817-4884</code>): mutates MULTIPLE target lessons locally, then one bulk <code>saveLessonData()</code> call, then a per-target logging loop, with no try/catch anywhere.</p>
+  <h3>executeCopyPlan() — real fix (R3-12, R3-13)</h3>
+  <div class="danger">🛑 <strong>Both real.</strong> The round-2 rewrite from bulk to per-target <code>saveSingleLesson()</code> omitted <code>fieldsToClear</code>, reintroducing hybrid content (target has content in a field the source doesn't — the exact bug Phase 4 exists to fix). Separately, <code>Object.assign(lessons[targetKey], fields)</code> still mutates the shared cache before any save lands, and a mid-loop failure skipped logging for already-succeeded targets because saving and logging were two separate passes.</div>
   <pre><code>async function executeCopyPlan(sourceKey) {
-  // ... unchanged through building previousContent + Object.assign(lessons[targetKey], fields) ...
+  const semKey = getAdminSemKey();
+  const liveLessons = currentLessonData[semKey];
+  const source = liveLessons[sourceKey];
+  if (!source) return;
 
+  const checkboxes = document.querySelectorAll('.ca-copy-cb:checked');
+  const targetKeys = Array.from(checkboxes).map(cb => cb.dataset.key);
+  if (targetKeys.length === 0) { alert('No targets selected.'); return; }
+
+  const overwriteTargets = targetKeys.filter(k => liveLessons[k] &amp;&amp; hasLessonContent(liveLessons[k]));
+  if (overwriteTargets.length > 0) {
+    const names = overwriteTargets.map(k => { const l = liveLessons[k]; return `${l.teacher} — ${l.className} (Wk ${l.weekNum})`; }).join('\n');
+    if (!confirm(`${overwriteTargets.length} target(s) already have lesson plans that will be overwritten:\n\n${names}\n\nContinue?`)) return;
+  }
+
+  const fields = getCopyableFields(source); // 8 fields: the 7 CONTENT_FIELDS plus `materials`
   let savedCount = 0;
-  const savedTargets = [];
+
   try {
     for (const targetKey of targetKeys) {
-      if (!lessons[targetKey]) continue;
-      // Round-2 fix: was ONE bulk saveLessonData(semKey, lessons) covering
-      // every lesson in the semester — replaced with a targeted save per
-      // copy target, so a failure partway through doesn't touch targets
-      // that already succeeded or unrelated lessons at all.
-      await saveSingleLesson(semKey, targetKey, lessons[targetKey]);
-      savedTargets.push(targetKey);
+      if (!liveLessons[targetKey]) continue;
+      // Round-3 fix (R3-13): clone THIS target independently, not a shared
+      // mutation of the live cache object before the save lands.
+      const previousTarget = { ...liveLessons[targetKey] };
+      const updatedTarget = { ...previousTarget, ...fields };
+
+      // Round-3 fix (R3-12): compute fieldsToClear for the 7 CONTENT_FIELDS
+      // — a field non-empty at the target but empty at the source must be
+      // explicitly cleared. `materials` (also in getCopyableFields() but NOT
+      // one of the 7 CONTENT_FIELDS) doesn't need this — confirmed by
+      // reading saveSingleLesson()'s stripping loop: it isn't subject to the
+      // strip-when-empty pass, so an empty materials value already writes
+      // through explicitly.
+      const targetFieldsToClear = CONTENT_FIELDS.filter(f =>
+        (previousTarget[f] || '').trim() !== '' &amp;&amp; !(fields[f] || '').trim()
+      );
+
+      await saveSingleLesson(semKey, targetKey, updatedTarget, targetFieldsToClear);
+      // Round-3 fix (R3-13): commit locally and log immediately per target,
+      // inside the loop — the round-2 code saved everything first, THEN
+      // looped again to log, so a mid-loop save failure skipped logging
+      // entirely for targets that had already succeeded.
+      currentLessonData[semKey][targetKey] = updatedTarget;
       savedCount++;
-    }
-    for (const targetKey of savedTargets) {
-      const target = lessons[targetKey];
+
       const logEntry = {
         action: 'copy',
-        details: { projectTitle: source.projectTitle, fromTeacher: source.teacher, fromClassName: source.className, fromWeek: source.weekNum, toTeacher: target.teacher, toClassName: target.className, toWeek: target.weekNum }
+        details: { projectTitle: source.projectTitle, fromTeacher: source.teacher, fromClassName: source.className, fromWeek: source.weekNum, toTeacher: updatedTarget.teacher, toClassName: updatedTarget.className, toWeek: updatedTarget.weekNum }
       };
-      if (previousContent[targetKey]) logEntry.details.previousPlan = previousContent[targetKey];
+      if (hasLessonContent(previousTarget)) logEntry.details.previousPlan = getCopyableFields(previousTarget);
       try {
         await appendChangeLogEntry(semKey, logEntry);
       } catch (logErr) {
         console.error('⚠️ Copy saved, but Change History logging failed for', targetKey, logErr);
       }
     }
-    closeAdminModal();
-    renderAdminGrid();
-    renderChangeHistory();
-    alert(`Plan copied to ${savedCount} class${savedCount !== 1 ? 'es' : ''}${savedCount < targetKeys.length ? ` (${targetKeys.length - savedCount} failed — see below)` : ''}.`);
+    closeAdminModal(); renderAdminGrid(); renderChangeHistory();
+    alert(`Plan copied to ${savedCount} class${savedCount !== 1 ? 'es' : ''}${savedCount < targetKeys.length ? ` (${targetKeys.length - savedCount} skipped)` : ''}.`);
   } catch (err) {
     console.error('❌ Copy Plan failed partway through:', err);
-    renderAdminGrid();
-    renderChangeHistory();
+    renderAdminGrid(); renderChangeHistory();
     alert(`Copied to ${savedCount} of ${targetKeys.length} class(es) before a save failed. Please check which targets actually received the plan before retrying the rest.`);
   }
 }</code></pre>
 
-  <h3>createLessonSlotsForRoster() — real fix</h3>
+  <h3>createLessonSlotsForRoster() — real fix (R3-14)</h3>
+  <div class="danger">🛑 <strong>Round 3 finding, MEDIUM: the round-2 fix introduced a NEW regression.</strong> Today, an exception here correctly propagates to the caller (<code>saveSettings()</code>)'s own try/catch, which honestly alerts "Error saving settings." Round 2's fix caught internally with only <code>console.error</code>, no rethrow — so the caller's try completes normally and shows a FALSE "Settings saved!" even though lesson-slot creation actually failed. Fixed by NOT catching here at all — the only real fix needed is the clone-before-mutate.</div>
   <pre><code>async function createLessonSlotsForRoster(semKey, roster, numWeeks) {
   if (!roster || !numWeeks || Object.keys(roster).length === 0) return;
   if (!currentLessonData) await loadLessonData();
   if (!currentLessonData[semKey]) currentLessonData[semKey] = {};
 
-  // Round-2 fix: clone before mutating — the real code mutated
-  // currentLessonData[semKey] directly (the live cache, not a copy), with no
-  // rollback if the save below then failed. Every other write path in this
-  // file clones first for exactly this reason.
+  // Round-3 fix: clone before mutating — the real code mutated
+  // currentLessonData[semKey] directly (the live cache), so a save failure
+  // left fabricated empty lesson slots visible locally even though nothing
+  // persisted.
   const lessons = { ...currentLessonData[semKey] };
   let createdCount = 0;
 
@@ -1159,81 +1260,84 @@ Then: summerLessonOriginalData is assigned the real 7-key content object — the
   }
 
   if (createdCount > 0) {
-    try {
-      await saveLessonData(semKey, lessons);
-      currentLessonData[semKey] = lessons; // only commit locally after Firestore confirms
-      console.log(`✅ Created ${createdCount} lesson slots for roster classes`);
-    } catch (err) {
-      console.error('❌ Could not create lesson slots for roster:', err);
-      // currentLessonData[semKey] was never touched — nothing to revert.
-    }
+    // Round-3 fix: do NOT catch here — this function's only caller,
+    // saveSettings(), already wraps this call in its own try/catch that
+    // correctly reports "Error saving settings" on failure. Catching and
+    // swallowing the error (as round 2's fix did) would let saveSettings()
+    // fall through to a false "Settings saved!" alert.
+    await saveLessonData(semKey, lessons);
+    currentLessonData[semKey] = lessons; // only commit locally after Firestore confirms
+    console.log(`✅ Created ${createdCount} lesson slots for roster classes`);
   }
 }</code></pre>
-  <div class="bdd">Given: lessonDataLoadedSuccessfully is false
-When: Any caller of saveLessonData() (any of the 7 real call sites) attempts to save
-Then: The call throws immediately, matching saveSingleLesson()'s behavior after Phase 1
-
-Given: sendHelpResponse()'s targeted save fails
+  <div class="bdd">Given: createNewSemester()'s lesson-slot creation succeeds but saveConfig() then fails
 When: The catch runs
-Then: Only the specific unsent Q&amp;A message is removed — no bulk-semester write was ever attempted, and no unrelated lesson is touched
+Then: Both the local semester config AND the local lesson data are reverted — a retry doesn't hit a false "already exists" block
+
+Given: pasteFromIdeaBank()'s lesson save succeeds but the idea-removal save then fails
+When: The catch runs
+Then: The admin sees an honest "may now appear in both places" message — the idea is still in the bank (Firestore never got the removal), and the lesson also exists
 
 Given: executeCopyPlan() copies to 5 targets and the 3rd targeted save fails
 When: The error occurs
-Then: The first 2 targets are confirmed saved and logged; the admin is told exactly how many succeeded — not an all-or-nothing bulk write that could partially apply with no visibility into which targets actually got the content
+Then: The first 2 targets are confirmed saved AND logged (not just saved) before the failure; the admin is told exactly how many succeeded; no field left as stale hybrid content on any successful target
 
 Given: createLessonSlotsForRoster()'s save fails
-When: The catch runs
-Then: currentLessonData[semKey] was never mutated (the clone pattern), so there's nothing to revert — unlike the real shipped code, which mutates the live cache before the save even starts</div>
+When: saveSettings()'s outer catch runs
+Then: The admin sees "Error saving settings" — NOT a false "Settings saved!" — and currentLessonData[semKey] was never mutated (the clone pattern)</div>
 </div>
 
 <h2 id="out-of-scope">Not in scope / coordination points</h2>
 <ul>
-  <li><strong>The full diff-based rewrite of <code>saveAdminEdit()</code></strong> (fieldsToClear support, existence check) — still the companion plan's Phase 9 to carry; this plan's Phase 1 adds only a minimal guard-check + try/catch safety net.</li>
+  <li><strong>The full diff-based rewrite of <code>saveAdminEdit()</code></strong> — still the companion plan's Phase 9 to carry; this plan's Phase 1 adds only a minimal guard-check + try/catch safety net.</li>
   <li><strong>Read-back/write-verification checking non-emptiness rather than the exact value written</strong> — matches the companion plan's already-accepted "Layer 2" deferral.</li>
-  <li><strong>Non-summer lessons never got read-back verification at all</strong> — a deliberate prior scope choice, named as a residual risk.</li>
-  <li><strong>Phase 3's compensating-write concurrent-edit race window (R2-5)</strong> — named as an accepted residual risk, not mitigated in this revision.</li>
-  <li><strong>Phase 5's same-path-upload-before-confirm residual gap (R2-8)</strong> — a versioned/temp-path redesign is sketched but not implemented; needs its own phase.</li>
-  <li><strong>Phase 4's widened field-clearing scope beyond CONTENT_FIELDS (R2-6/R2-7)</strong> — a concrete field list is proposed (verified against real object shapes) but requires a <code>saveSingleLesson()</code> change not made in this revision; needs its own phase.</li>
-  <li><strong><code>cutProject()</code>'s lack of read-back verification before its destructive delete (R2-23)</strong> — noted, not designed, given already-large scope this round.</li>
+  <li><strong>Non-summer lessons never got read-back verification at all</strong> — moot for move/swap now (atomic writes need no verification); still a residual scope choice for other non-summer write paths, unchanged from prior rounds.</li>
+  <li><strong>Phase 4's widened field-clearing scope beyond CONTENT_FIELDS (R1-12/R2-6/R2-7)</strong> — a concrete field list is proposed but requires a <code>saveSingleLesson()</code>/<code>buildLessonFieldUpdates()</code> change not made in this revision; needs its own phase.</li>
+  <li><strong><code>pasteFromCutBank()</code>'s lack of <code>fieldsToClear</code>/existence-check on its destination slot (R3-22)</strong> — named as an explicit residual risk, narrow (requires two admins targeting the same visually-empty cell in a tight window), not fixed in this revision.</li>
+  <li><strong>The companion plan's own Phase 11 existence-check hardening (<code>adminLessonStillExistsWithRetry()</code>) for <code>sendHelpResponse()</code>/<code>sendQaReply()</code></strong> — this plan closes the bulk-write and Q&amp;A-race bugs those functions had; the move/delete-race hardening layer remains the companion plan's to add.</li>
+  <li><strong>Dead-code callers already named in the companion plan (R3-23):</strong> <code>restoreFromBackup()</code> (<code>firebase-data.js:501</code>) and <code>renameTeacherInSemester()</code> (<code>app.js:9373</code>, bypasses both helper functions via a raw non-merge <code>.set()</code>) — both zero-caller today, acknowledged here for consistency, not fixed.</li>
   <li><strong>Test coverage gaps</strong> — addressed per-phase via BDD scenarios and the checklist below.</li>
+  <li><strong>Emulator-first testing (R3-19)</strong> — a pre-existing, already-documented repo-wide stopgap per <code>AGENTS.md</code>, not specific to this plan; named in the checklist, not fixed here.</li>
 </ul>
 
 <h2 id="firebase-safety">Firebase Safety Checklist</h2>
 <div class="phase">
   <ul>
     <li><strong>Rules:</strong> no new collections introduced by any phase in this plan.</li>
-    <li><strong>Every phase needs its own red test against the CURRENT shipped behavior before the fix</strong> — this is live, deployed code.</li>
-    <li><strong>Phase 1:</strong> test that saveSingleLesson() throws on a tripped guard; test saveAdminEdit()'s catch actually <code>return</code>s and does NOT commit currentLessonData, close the modal, or log a change entry on a caught failure (this is the specific gap R2-22 found).</li>
-    <li><strong>Phase 9 (the integrated move/swap code):</strong> the central test suite for this whole plan — seed an occupied AND an empty destination, trip the guard or simulate a genuine failure at each of: destination save, read-back, delete (move); first save, second save (occupied swap); save, delete (empty swap). For each, confirm the correct honest-failure message, confirm no crash on the empty-destination compensating-write path (the R2-1 null case), confirm fieldsToClear is correctly applied everywhere, and confirm logging only fires on genuine confirmed success.</li>
-    <li><strong>Phase 4:</strong> the swap fieldsToClear test — now confirm it against the CORRECTED formula with the exact numeric scenario both round-2 reviewers traced.</li>
-    <li><strong>Phase 5:</strong> seed a lesson with an existing photo, replace it, verify the new photo survives; separately, make the Firestore save fail AFTER a same-path upload and confirm/document the residual gap (R2-8) rather than asserting it's fixed.</li>
-    <li><strong>Phase 7:</strong> after a guard trip via a listener failure, simulate a LATER successful listener reload and confirm the guard resets to true and the banner hides (the specific R2-10 gap).</li>
-    <li><strong>Phase 8:</strong> for saveTeacherEdit(), make the SECOND write (photo fields) fail after saveSingleLesson() succeeds, confirm the user sees a success state, not "Error saving lesson." For cutProject()/pasteFromCutBank(), make the SECOND persistence call fail after the first succeeds, confirm the honest partial-failure message, not silence or a false claim.</li>
-    <li><strong>Phase 10:</strong> for sendTeacherQaMessage(), seed TWO concurrent sends where the first succeeds and the second fails, confirm only the failed message is removed (the R2-17 scenario). For the summer editor, make a save fail, confirm the code actually compiles/runs (the R2-19 scope bug), and confirm summerLessonOriginalData after a SUBSEQUENT successful save is still the correct 7-key shape (the R2-18 scenario) — attempt a second save after the first to specifically catch a regression here.</li>
-    <li><strong>Phase 11:</strong> for each of the 5 fixed callers, make the targeted save fail and confirm no bulk semester-wide write was ever attempted (verify via a Firestore write-count assertion, not just behavior) and that only the intended single lesson's data is at risk.</li>
+    <li><strong>Testing approach:</strong> follows the same <code>TEST_</code>-prefixed production-Firestore pattern already used throughout the companion plan's 18 executed phases — a known, <code>AGENTS.md</code>-documented stopgap (full emulator support "is scoped but not yet built" for this app), not a gap introduced here (R3-19).</li>
+    <li><strong>Phase 1:</strong> test saveSingleLesson() throws on a tripped guard; test saveAdminEdit()'s catch actually <code>return</code>s.</li>
+    <li><strong>Phase 4:</strong> the swap fieldsToClear test with the exact numeric scenario traced in rounds 2 and 3.</li>
+    <li><strong>Phase 5:</strong> seed a lesson with an existing photo, replace it, verify the new photo survives at its unique path AND is correctly retrievable; make the Firestore save fail AFTER a successful upload and confirm the OLD photo is untouched (the R3-5 scenario — this should now genuinely pass, not just be documented as a residual gap); seed a swap where both lessons have photos, replace one post-swap, confirm the other's photo survives (R3-6).</li>
+    <li><strong>Phase 6:</strong> the central regression test for this round — make the REAL summer Plan Complete save fail, confirm both cb.checked and lesson.planComplete revert. Add an explicit assertion this test exercises the real <code>.summer-plan-complete-cb</code> listener inside <code>renderSummerCampView()</code>, not the non-summer one, so this specific miss can't recur silently.</li>
+    <li><strong>Phase 7:</strong> after a guard trip, simulate a later successful reload, confirm reset; separately, simulate two overlapping snapshot callbacks resolving out of order and confirm only the latest one's outcome sticks (R3-7).</li>
+    <li><strong>Phase 8:</strong> for cutProject(), make the ARCHIVE write fail and confirm the live lesson is untouched; separately make the DELETE fail after a successful archive and confirm the honest duplicate message. Confirm a cut/paste round-trip preserves materialsList/qaThread/planComplete/photo fields (R3-16). Make a log-only failure occur after successful persistence in cut/paste/idea-paste and confirm no false failure message (R3-17). Make appendChangeLogEntry()'s Firestore write fail and confirm the optimistic local entry is removed (R3-18).</li>
+    <li><strong>Phase 9 (the central test suite for this whole plan):</strong> seed an occupied AND an empty destination for move and both swap variants; trip the guard or simulate a genuine failure; confirm the atomic write either fully lands or fully doesn't (assert via a real Firestore read that BOTH the destination write and the source delete happened together, never just one) — this is the test that proves the architectural redesign, not just the individual bug fixes.</li>
+    <li><strong>Phase 10:</strong> for sendTeacherQaMessage()/sendHelpResponse()/sendQaReply(), seed concurrent sends and confirm both survive via arrayUnion (no local-array race). For the summer editor, seed two overlapping saveLesson() invocations where the earlier fails after the later succeeds, and confirm the later's content survives (R3-4) — this is the test that would have caught the round-2/3 gap.</li>
+    <li><strong>Phase 11:</strong> for createNewSemester(), make the second save (saveConfig) fail after the first succeeds and confirm both local commits revert. For pasteFromIdeaBank(), make the lesson save fail and confirm the idea is untouched in the bank; make the idea-removal fail after a successful lesson save and confirm the honest duplicate message. For executeCopyPlan(), the fieldsToClear regression test with a target that has content the source doesn't. For createLessonSlotsForRoster(), confirm a save failure surfaces via saveSettings()'s real "Error saving settings" path, not a false success (R3-14).</li>
   </ul>
 </div>
 
 <h2 id="decisions">Decisions Log</h2>
 <ul>
   <li><strong>Aug 15, 2026:</strong> Audit found 13 real issues in Phases 1-6. Designed 8-phase first draft around the saveSingleLesson() root-cause fix.</li>
-  <li><strong>Aug 15, 2026 (round 1 review):</strong> Found 19 consolidated gaps across the first draft, added Phases 9 and 10. Both reviewers confirmed the original 8 phases' underlying diagnoses were correct — all gaps were in the proposed fixes.</li>
-  <li><strong>Aug 15, 2026 (round 2 review):</strong> Re-reviewed the round-1-revised plan. Found 23 more real gaps, comparable volume to round 1 — concentrated in round 1's own new work (Phase 2's compensating write, added to fix R1-7, crashed with a TypeError on the common empty-destination case; Phase 10(b)'s revert variables, added to fix R1-19, used a JS scope pattern — const inside try, referenced from catch — that doesn't compile as intended; Phase 10(b)'s baseline reassignment, also added to fix R1-19, would have broken every subsequent save). Traced this to how round 1's fixes were composed: as plausible pseudocode without reading the real function bodies at each cited location, which is exactly why round 2 found so many literal identifier mismatches (<code>key</code> vs real <code>lessonKey</code>, <code>qaThread</code> vs real <code>thread</code>). This revision was built differently — every fix was written only after reading the actual current source at its cited location. Also found a new structural scope gap: <code>saveLessonData()</code>, a sibling bulk-write function, has no load-guard at all and several callers use unsafe unguarded bulk writes for what should be targeted single-lesson operations — added as new Phase 11, with real fixes designed for all 5 of the worst-affected callers (not deferred, given the volume of genuinely real bugs found once the real code was read). Both reviewers' overall assessment: not execution-ready, comparable finding volume to round 1 — this plan has not yet converged and round 3 is expected to find more, matching the companion plan's established pattern.</li>
+  <li><strong>Aug 15, 2026 (round 1 review):</strong> Found 19 consolidated gaps, added Phases 9 and 10. Both reviewers confirmed the original 8 phases' underlying diagnoses were correct.</li>
+  <li><strong>Aug 15, 2026 (round 2 review):</strong> Found 23 more real gaps, comparable volume to round 1, concentrated in round 1's own new work — traced to fixes being composed as pseudocode without reading real function bodies. This revision read the real source at every location before writing each fix. Added Phase 11 (<code>saveLessonData()</code> had no load-guard). Both reviewers: not execution-ready, not yet converged.</li>
+  <li><strong>Aug 15, 2026 (round 3 review):</strong> Found ~20 more real gaps, again comparable volume, again concentrated in the freshest code (Phase 9's five-way merge, Phase 10's rewrite, brand-new Phase 11) — plus a striking miss (Phase 6 had targeted the wrong function for two rounds). One finding (Codex, R3-1: the occupied-swap compensating write is fundamentally unsafe, "should block execution") led to investigating the real Firestore document structure directly, which confirmed all non-summer lesson data lives in ONE shared document with dotted-path fields — meaning move and swap's multiple writes can be combined into a single atomic <code>.update()</code> call, eliminating the entire compensating-write problem by construction. Rebuilt Phase 9 around this (a new <code>saveMultipleLessonFields()</code> helper), which retroactively supersedes Phases 2 and 3 and closes roughly a third of this plan's total accumulated findings (R1-3/4/9/10, R2-1 through R2-5, R2-13/14, R3-1/2) in one structural change rather than continued patching. Also fully adopted the companion plan's already-reviewed atomic <code>arrayUnion()</code> design for Q&amp;A thread updates (Phase 10/11), rather than continuing to harden a weaker local-array-based design across further rounds — a coordination note now points the companion plan's own Phase 10 back to this plan's implementation. Both reviewers' raw finding counts didn't show dramatic convergence this round, but the qualitative shift (one architectural fix closing what would otherwise have been many more rounds of individual patches) is treated here as real progress, not just noise — round 4 should confirm this by re-verifying a structurally simpler Phase 9 rather than continuing to find new edge cases in an ever-more-complex compensating-write design.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
 <div class="phase">
-  <p><strong>Status: round 2 review complete, not yet execution-ready.</strong> Two consecutive rounds have each found ~20 real gaps in the previous round's fixes — this has not converged. Do not execute anything here until it's genuinely execution-ready and Christie has explicitly approved.</p>
+  <p><strong>Status: round 3 review complete, not yet execution-ready.</strong> Three consecutive rounds have each found ~20 real gaps — but round 3's most consequential finding led to a structural simplification (the atomic-write redesign of Phase 9), not just another patch. Do not execute anything here until it's genuinely execution-ready and Christie has explicitly approved.</p>
 
-  <p><strong>Lesson for round 3's reviewers, and for whoever authors round 3's revision if more gaps are found:</strong> round 2's worst defects were concentrated in round 1's OWN new work (the phases and compensating-write code round 1 had just added), not in the original 8 phases' core logic. <strong>Scrutinize the freshest code hardest.</strong> This revision was built by reading the real source at every cited location before writing each fix — that discipline should continue: any reviewer or author who composes a fix without opening the actual file at the actual line number is likely to reproduce round 1's mistakes (wrong identifiers, wrong scope, wrong assumptions about what a variable actually contains at that point in the real control flow).</p>
+  <p><strong>Lesson for round 4's reviewers:</strong> continue scrutinizing the freshest code hardest — this round's worst bugs were again in the newest work (Phase 11's rewrites, Phase 10's concurrency handling). But also specifically re-verify that the atomic-write redesign (Phase 9) is actually correct as a coherent whole, not just that its individual pieces look right — this is new, structurally different code from anything in rounds 1-2, and hasn't had adversarial review yet at the level Phase 9's old (now-superseded) design got. Also verify the companion-plan-derived Q&amp;A code (Phase 10/11) was transcribed correctly and its dependencies (<code>buildQaThreadUnionArgs()</code>, <code>getQaThread()</code>) are real and correctly used.</p>
 
-  <p><strong>Exact next step — round 3:</strong> run another Codex+Claude review round, same pattern as rounds 1 and 2. Priority areas for round 3: (1) verify the Phase 9 integrated move/swap code compiles and behaves correctly as one coherent block — it's now large and interleaves five phases' logic, exactly the kind of code that's easy to get subtly wrong when merging; (2) verify Phase 10's summer <code>saveLesson()</code> rewrite, especially the <code>cacheMutated</code> boolean's interaction with the photo-upload code path (does a photo-upload-only failure, before the cache mutation, correctly skip the revert?); (3) verify Phase 11's five new fixes against the real code independently — these were designed in this same pass and haven't had adversarial review yet; (4) the two acknowledged-but-unfixed residual gaps (Phase 3's compensating-write race window, R2-5; Phase 5's same-path-upload-before-confirm gap, R2-8) — confirm these are genuinely acceptable to ship with, or determine they need fixing before execution.</p>
+  <p><strong>Exact next step — round 4:</strong> another Codex+Claude review round. Priority areas: (1) Phase 9's atomic <code>saveMultipleLessonFields()</code> helper and its two call sites (move, swap) — trace the dotted-path key construction for correctness when writes and deletes are combined in one call, and confirm there's no edge case where Firestore's <code>.update()</code> semantics behave differently than a single-lesson call would; (2) Phase 10/11's adopted Q&amp;A pattern — confirm <code>buildQaThreadUnionArgs()</code> and the <code>arrayUnion()</code> calls are wired correctly at all 3 call sites (<code>sendTeacherQaMessage</code>, <code>sendHelpResponse</code>, <code>sendQaReply</code>); (3) Phase 8's cutProject() archive-first reorder and complete-snapshot change — verify the spread-based reconstruction in <code>pasteFromCutBank()</code> doesn't leak any cut-specific field (<code>cutDate</code>, <code>cutBy</code>, etc.) into the live lesson object; (4) Phase 5's versioned photo-path fix — confirm no other code anywhere assumes the OLD deterministic (non-versioned) path format.</p>
 
-  <p><strong>Phase ordering:</strong> Phase 1 first. Phase 4 must ship at or before Phase 2/9 (exact-match read-back depends on it). Phases 2, 3, 4, 8, and 9's move/swap logic now ship together as ONE edit (Phase 9's integrated code) — they are no longer independently shippable. Phase 11's <code>saveLessonData()</code> guard has no dependencies and can ship anytime; its five caller fixes are independent of everything else. Phases 5, 6, 7, and 10 have no dependencies on the others.</p>
+  <p><strong>Phase ordering:</strong> Phase 1 first. Phase 4 must ship at or before Phase 9 (fieldsToClear feeds the atomic write). Phase 9 replaces Phases 2 and 3 entirely — those two phase sections are now historical/superseded notes only. Phase 11's <code>saveLessonData()</code> guard has no dependencies; its caller fixes are independent of each other and everything else. Phases 5, 6, 7, 8, and 10 have no dependencies on the others.</p>
 
   <p><strong>Once execution-ready and approved:</strong> write the red test first for each phase's BDD scenarios against the REAL current shipped code, commit after each phase with tests green, and do not deploy to Netlify without Christie's explicit "okay to deploy."</p>
 
-  <p><strong>After this plan executes:</strong> resume the companion plan (<code>classbook-data-safety-remaining-stages.html</code>) and re-verify its phases that reference the functions this plan changes.</p>
+  <p><strong>After this plan executes:</strong> resume the companion plan (<code>classbook-data-safety-remaining-stages.html</code>) and re-verify its phases that reference functions this plan changes — especially its own Phase 10 (now fully implemented by this plan's Phase 10, per the coordination note there) and Phase 11 (this plan implements its core atomic-write fix but not its existence-check hardening layer).</p>
 </div>
 
 </body>
