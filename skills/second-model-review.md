@@ -13,6 +13,13 @@ Both Claude Code and Codex CLI are installed and authenticated (confirmed 2026-0
 - Before deploying a rules change that affects multiple apps
 - When you're uncertain whether an approach is correct
 - Any time Christie asks for a second opinion
+- **After EACH phase of a plan's execution that writes/deletes Firestore data** — not just once at
+  the end. Use the "For an implementation review" template below, scoped to that phase's actual diff.
+  A plan that already went through multiple rounds of design review still needs its IMPLEMENTATION
+  reviewed separately — the code that got written can have its own new bugs even when the design was
+  sound (this is a distinct step from the plan-document review, and easy to skip by mistake since the
+  design already feels "done"; `/planning-workflow`'s Phase 4 calls this out explicitly for exactly
+  this reason).
 
 ## How to run
 

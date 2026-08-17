@@ -49,6 +49,17 @@ If you have time, run `/second-model-review` on the plan before marking it execu
 - Read the plan at the start of each phase.
 - Execute only one phase at a time.
 - After each phase: commit, run any existing tests, confirm behavior.
+- **For any phase that writes, deletes, or migrates Firestore data: after tests are green, run an
+  independent second-model IMPLEMENTATION review of the actual diff before starting the next phase.**
+  This is a distinct step from the plan-document review in Phase 3 — that reviewed the design before a
+  line of code existed; this reviews the code that actually got written, since an implementation can
+  introduce its own new bugs even when faithfully following an already-reviewed design (this has
+  happened repeatedly on reviewed plans in this project — a "fix for a fix" pattern). See
+  `/second-model-review`'s "For an implementation review" section for the template. Do this per-phase,
+  not only once at the end — a bug introduced in phase N can get built on by phase N+1 before anyone
+  looks at N's diff again.
+- Also spot-check one real document in the Firebase Console per data-write phase (see Firebase safety
+  gates below) — the automated test suite passing is not a substitute for this.
 - Log deviations in the plan's Decisions log.
 - Do NOT mark `execution-ready: true` until at least one review (browser or second-model) has passed.
 
