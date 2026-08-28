@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Archive Employees</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  h4 { font-size: .92rem; margin-top: 1rem; color: #444; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .status { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; font-weight: 600; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .repo-tag { display: inline-block; font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle; }
+  .repo-hub { background: #ede9fe; color: #5b21b6; }
+  .repo-ticker { background: #dbeafe; color: #1e40af; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .change { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .9rem; }
+  .rejected { background: #fdf2f8; border: 1px dashed #f3b4d1; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .87rem; color: #555; }
+  .open-question { background: #fff7ed; border: 2px solid #fb923c; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .9rem; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Archive Employees</h1>
+
+<div class="status" id="plan-status">
+  Status: NOT execution-ready. This plan <strong>supersedes and merges</strong> two prior separate plans
+  — <code>tinker-ticker-archive-employees.html</code> (<code>plan_6kGOCdKV7jBv</code>) and
+  <code>studio-hub-archive-employees.html</code> (<code>plan__ArypVn99fHf</code>) — into one, per
+  Christie's direct request after finding two coordinated plans more confusing than helpful. Both
+  originals stay on disk with a superseded banner pointing here; nothing from either was discarded.
+  Both plans' second-model reviews (run independently, before the merge) found real, confirmed bugs —
+  every fix from both is already folded into the phases below. Two open questions remain and need
+  Christie's decision before Phase 1 starts — see "Open Questions."
+</div>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> One click, in one place — Studio Hub's Manage Team — archives a person
+  completely: they immediately lose access to all 21 Tinker apps, and their Tinker Ticker schedule
+  disappears from Who's Working, Schedule Builder, the roster picker, kiosk PIN entry, and self-service
+  clock-in. Nothing is deleted. "Reactivate" restores everything exactly as it was, in every app, with
+  zero reconfiguration.<br>
+  <strong>Repos:</strong>
+  <code>~/studio-hub</code> <span class="repo-tag repo-hub">writes</span> — rules, Manage Team UI, and
+  the single write action (including reaching into Ticker's roster document).
+  <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">reads</span> — no write action of
+  its own; just correctly respecting the flag everywhere it currently doesn't.<br>
+  <strong>Why now:</strong> Christie has several seasonal summer employees who've left (some may return
+  next summer) and other past employees to clean up. Both apps' only current offboarding action is a
+  permanent delete with no undo — too destructive for routine cleanup, and (in Studio Hub's case) doesn't
+  even fully revoke access, since a deleted <code>users</code> doc silently gets recreated blank on next
+  login.<br>
+  <strong>Risk:</strong> Medium. Phase 1 edits <code>firestore.rules</code>, shared by all 21 apps — a
+  mistake in the helper functions breaks access everywhere, mitigated by emulator tests before deploy.
+  Phase 2 adds a cross-repo write (Studio Hub writing into Ticker's roster document) — must resolve the
+  right person by Firebase Auth uid, not fuzzy name matching, to avoid repeating the "ericapodwoiski"
+  duplicate-roster-entry problem found and cleaned up earlier this session.<br>
+  <strong>Reversible:</strong> Yes, by design, on both sides — Reactivate restores role/appAccess/studios
+  in Studio Hub and re-shows the schedule in Ticker, with zero data loss either way.
+</div>
+
+<h2 id="why-one-plan">Why one plan instead of two (context for anyone reading this later)</h2>
+<div class="decision">
+  <p>The original split — one plan per repo, coordinated by cross-referencing each other and answering
+  each other's comment threads — was defensible when it looked like two independent features that
+  happened to share a word. It stopped being that the moment both plans converged on a single trigger
+  (see below): once Studio Hub's Manage Team is the only place anyone clicks "Archive," there's no longer
+  a second, independent feature to plan separately — just one feature whose implementation happens to
+  touch two repos, which is normal for any full-stack change and doesn't need two plan documents any more
+  than a typical frontend+backend feature would.</p>
+  <p>Concretely, the two-plan structure was the direct cause of several problems found along the way: a
+  "cross-app coordination" section that existed purely to reason about non-overlap between two documents,
+  a wording mismatch ("Unarchive" vs "Reactivate") that only existed because two people/sessions
+  independently named the same button, and — the one with real consequences — a race condition that was
+  hard to see specifically <em>because</em> two independently-built features wrote to the same document
+  from two different repos without either one being aware of the other's write pattern. One plan, ordered
+  by dependency, avoids all of that.</p>
+</div>
+
+<h2 id="single-trigger">The single-trigger design</h2>
+<div class="decision">
+  <p>Two genuinely different pieces of state remain — merging the plan doesn't merge the data:</p>
+  <ul>
+    <li><code>users/{uid}.active</code> <span class="repo-tag repo-hub">Studio Hub</span> — gated into
+    the five Firestore rule helper functions every one of the 21 apps shares. Controls
+    <strong>authentication/authorization</strong> — can this person read or write anything, anywhere, at
+    all.</li>
+    <li><code>timeclock_settings/employees.roster[].active</code> <span class="repo-tag repo-ticker">Tinker Ticker</span>
+    — an existing field, already checked in a few places, about to be checked in a few more. Controls
+    <strong>schedule/kiosk visibility</strong> inside Ticker specifically, independent of whether the
+    person can still log in anywhere.</li>
+  </ul>
+  <p><strong>One trigger writes both.</strong> Studio Hub's Manage Team "Archive" button (a) sets
+  <code>users/{uid}.active = false</code>, and (b) resolves and flips the matching Ticker roster entry's
+  <code>active</code> field in the same action — extending code that already reaches into that exact
+  roster document today (<code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code>,
+  <code>studio-hub/js/app.js:804-865</code>), rather than inventing a new cross-repo pattern. Tinker
+  Ticker gets <strong>no</strong> archive/reactivate button or write function of its own — it only needs
+  to correctly display and respect the flag, which several of its views don't do today.</p>
+  <p><strong>Resolve by uid, not name — required, not optional.</strong>
+  <code>addToTinkerTickerRoster</code> today matches people by name
+  (<code>roster.some(e => e.id === id || (e.name||'').toLowerCase() === name.toLowerCase())</code>) — the
+  exact fuzzy mechanism that produced the "ericapodwoiski" duplicate roster entry cleaned up earlier this
+  session. The archive/reactivate write must resolve the target roster entry by
+  <code>claimedBy === uid</code> first (Studio Hub already has the person's real Firebase Auth uid as the
+  <code>users/{uid}</code> doc's own key — a strictly better match than name), falling back to
+  name-matching only for someone who hasn't claimed their Ticker account yet.</p>
+</div>
+
+<h2 id="research">What's actually there today (verified against code, not assumed)</h2>
+
+<h3>Studio Hub <span class="repo-tag repo-hub">studio-hub</span></h3>
+<table>
+  <tr><th>Fact</th><th>Evidence</th></tr>
+  <tr><td>Every one of the 21 apps' Firestore rules gates through the same five helper functions, which all read <code>users/{request.auth.uid}</code> via <code>getUserData()</code>.</td><td><code>firestore.rules:12-52</code> — <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code>. This is the actual "one place" mechanism — gating these on an active flag cuts off every app in one rules deploy.</td></tr>
+  <tr><td>"Delete" today is a bare <code>users/{uid}</code> document delete. It does not touch Auth, the Ticker roster, timeclock entries, or <code>staffDirectory</code>.</td><td><code>js/app.js:1104-1116</code> (<code>deleteUser</code>)</td></tr>
+  <tr><td>Deleting the doc doesn't lock the person out. On next login, <code>handleAuthStateChange</code> finds no doc and silently creates a fresh blank one (<code>role: 'staff'</code>, <code>appAccess: []</code>). Prior role/appAccess history is unrecoverable.</td><td><code>js/app.js:134-159</code>; self-create rule at <code>firestore.rules:97-101</code></td></tr>
+  <tr><td>Switching from delete to archive removes this hole for free — the doc is never deleted, so the self-create branch never fires again for that uid.</td><td>Consequence of the design, not new code.</td></tr>
+  <tr><td>Self-read/self-update of <code>users/{userId}</code> is gated on <code>request.auth.uid == userId</code> directly, independent of <code>getUserData()</code>/<code>isActiveUser()</code>. An archived person can still read and lightly patch their own doc (so the app loads instead of erroring).</td><td><code>firestore.rules:80, 108-112</code></td></tr>
+  <tr><td>Self-update already pins <code>role</code>, <code>appAccess</code>, and <code>studios</code>. <code>active</code> must join that pin list, or an archived person could self-write <code>active: true</code> right back.</td><td><code>firestore.rules:103-112</code>, <code>fieldUnchanged()</code> at <code>firestore.rules:60-64</code></td></tr>
+  <tr><td>Manager-on-other's update rule permits changing <code>appAccess</code>/<code>studios</code> for <em>any</em> other user including admins (only <code>role</code> is pinned) — a pre-existing gap, confirmed by direct read.</td><td><code>firestore.rules:114-125</code></td></tr>
+  <tr><td>Tinker Ticker's own login self-write (<code>auth-guard.js</code>) only patches <code>appAccess</code>/<code>studios</code> when missing, via <code>merge:true</code>, never touches <code>role</code> or would touch a new <code>active</code> field — confirmed so pinning <code>active</code> in the self-update rule can't break Ticker login.</td><td><code>tinker-timeclock/js/auth-guard.js:52-78</code></td></tr>
+  <tr><td>Clay Hub Membership already uses an <code>active</code> boolean on a member doc for a related concept — precedent for the field name/shape.</td><td><code>firestore.rules:656-658</code> (<code>isActiveMember()</code> on <code>clayMembers.active</code>)</td></tr>
+  <tr><td>New team members are created without an <code>active</code> field at all today.</td><td><code>js/app.js:1240-1247</code> (<code>createTeamMember</code>)</td></tr>
+  <tr><td>A rules emulator test suite already exists with a describe block for exactly this privilege-pinning pattern.</td><td><code>rules.test.js</code> — <code>describe('Users — appAccess/studios cannot be self-granted...')</code> at line 381; run via <code>npm test</code></td></tr>
+  <tr><td><code>addToTinkerTickerRoster()</code>/<code>syncTimeclockRoster()</code> already do a full read-modify-<code>.set()</code> on <code>timeclock_settings/employees</code> today, whenever anyone grants timeclock access or clicks "Sync Roster" — unrelated to archiving. The call site inside <code>saveUser()</code> isn't even <code>await</code>ed.</td><td><code>studio-hub/js/app.js:804-820, 822-865, 1092</code> — confirmed by direct read.</td></tr>
+</table>
+
+<h3>Tinker Ticker <span class="repo-tag repo-ticker">tinker-timeclock</span></h3>
+<table>
+  <tr><th>Fact</th><th>Evidence</th></tr>
+  <tr><td>Roster entries already have an <code>active</code> field, checked in 5 places (not 3 as first thought — 2 more found during review).</td><td>Kiosk PIN lookup (<code>app.js:7378</code>), Settings roster list (<code>renderRosterList</code>, <code>5806-5842</code>), Schedule Builder's employee picker (<code>loadScheduleBuilder</code>, <code>2893-2918</code>), <code>renderOrphanedSchedules()</code> (<code>5861</code>), <code>checkNameClaim()</code>'s auto-claim path (<code>5171</code>).</td></tr>
+  <tr><td>Nothing in Ticker's own code ever <em>writes</em> <code>active:false</code> today — it will be written exclusively from Studio Hub under this plan.</td><td>Grepped for <code>active: false</code>, <code>active = false</code>, <code>deactivate</code>, <code>toggleActive</code> — zero hits.</td></tr>
+  <tr><td>Who's Working (all 3 view modes) and Schedule Builder's own schedule-card list do <strong>not</strong> check roster <code>active</code> — they iterate <code>allSchedules</code> (whatever's in <code>timeclock_schedules</code>) directly.</td><td><code>renderWhosWorkingDaily</code> (4101-4225), <code>renderWhosWorkingWeekly</code> (4227-4293), <code>renderWhosWorkingMonthly</code> (4303+), <code>renderAllSchedulesList</code> (3171-3236)</td></tr>
+  <tr><td>Self-service (non-kiosk) clock-in also doesn't check roster <code>active</code> anywhere in its chain.</td><td><code>handleClockIn()</code> (381-420) → <code>openUnscheduledModal()</code> (1440-1462) → <code>handleUnscheduledClockIn()</code> (1464+) → <code>doClockIn()</code> (598-628). Confirmed the <code>timeclock_entries</code> create rule (<code>firestore.rules:290-291</code>) doesn't check roster status either.</td></tr>
+  <tr><td>The existing "Remove" button (<code>removeEmployee</code>) is a hard delete with no undo — splices the roster entry out, deletes schedule docs at both the roster <code>id</code> and <code>claimedBy</code>. Stays as-is for genuine permanent deletes; not part of this feature.</td><td><code>app.js:5903-5921</code></td></tr>
+  <tr><td>Firestore rules need no change on Ticker's side — the roster's <code>active</code> field is just a field inside a document managers can already fully write.</td><td><code>studio-hub/firestore.rules:298-304</code> (<code>timeclock_schedules</code>), <code>:326-336</code> (<code>timeclock_settings</code>) — both already <code>allow read, write: if isManagerOrAbove()</code>.</td></tr>
+  <tr><td>This repo has no test harness of its own — no jest, no <code>test</code> script, no <code>firebase.json</code> emulator config. Note: <code>studio-hub/firebase.json</code> also has no <code>emulators</code> block, so this repo's emulator config is new either way, not a copy-paste.</td><td><code>package.json</code> — only lists <code>web-push</code>. Confirmed by direct read of both repos' <code>firebase.json</code>.</td></tr>
+</table>
+
+<h2 id="review-findings">Second-Model Review Findings (both plans reviewed independently before merging; every fix below is already reflected in the phases)</h2>
+
+<h3>Studio Hub findings <span class="repo-tag repo-hub">studio-hub</span></h3>
+<table>
+  <tr><th>Finding</th><th>Fix</th></tr>
+  <tr>
+    <td><strong>Admin self-archive had no recovery path.</strong> The blanket admin-write rule
+    (<code>firestore.rules:128</code>, <code>allow write: if isAdmin();</code>) sits completely outside
+    the self-update rule's <code>fieldUnchanged('active')</code> pin, because Firestore ORs sibling
+    <code>allow</code> rules together. An admin could write <code>active:false</code> to their own doc
+    through this rule; the instant it commits, <code>isAdmin()</code> requires <code>isActiveUser()</code>
+    and fails for them on every future request — including their own attempt to undo it. No client-side
+    recovery; only another active admin or a manual Console edit fixes it. Identical bug shape to a
+    loophole already found and fixed in this same file for managers
+    (<code>firestore.rules:114-122</code>, regression tests at <code>rules.test.js:448-468</code>).</td>
+    <td>Extend the admin-write rule so an admin can do anything to <em>other</em> users' docs (unchanged)
+    but can never touch their own <code>active</code> field — an admin can only be archived/reactivated
+    by a different admin. Added to Phase 1.</td>
+  </tr>
+  <tr>
+    <td><strong><code>belongsToStudio()</code> needed its own explicit active check.</strong> Its
+    non-admin branch (<code>studio in getUserData().studios</code>) doesn't route through
+    <code>isAdmin()</code>/<code>isManager()</code>/etc. at all, so gating those four functions on
+    <code>isActiveUser()</code> would <em>not</em> have touched this one — an archived staff member with
+    a <code>studios</code> array would keep access to every <code>belongsToStudio()</code>-gated
+    collection: Roster Manager, Clay Hub members/waitlist/appData, Clay Inventory.</td>
+    <td><code>belongsToStudio()</code> gets its own explicit <code>isActiveUser()</code> check rather
+    than inheriting one. Added to Phase 1.</td>
+  </tr>
+</table>
+
+<h3>Tinker Ticker findings <span class="repo-tag repo-ticker">tinker-timeclock</span></h3>
+<table>
+  <tr><th>Finding</th><th>Fix</th></tr>
+  <tr>
+    <td><strong>Archiving would trigger a destructive delete trap in the same screen.</strong>
+    <code>renderRosterList()</code> calls <code>renderOrphanedSchedules()</code> on every render
+    (<code>app.js:5844</code>), whose own "no matching roster entry" check
+    (<code>app.js:5861</code>) also filters on <code>e.active !== false</code>. The instant someone whose
+    schedule lives under an unclaimed <code>emp_*</code> id (or has a stray duplicate <code>emp_*</code>
+    doc — exactly the pattern found in the Erica/"ericapodwoiski" audit) gets archived, they'd show up as
+    "orphaned" with a one-click <strong>permanent</strong> delete button
+    (<code>removeOrphanedSchedule</code>, <code>5890-5901</code>).</td>
+    <td><code>renderOrphanedSchedules()</code>'s roster lookup must not treat an archived entry as "no
+    match" — needs its own <code>active</code>-agnostic lookup. Added to Phase 3.</td>
+  </tr>
+  <tr>
+    <td><strong>Archiving doesn't block self-service clock-in, only the kiosk.</strong> Full chain traced
+    (<code>handleClockIn</code> → <code>openUnscheduledModal</code> → <code>handleUnscheduledClockIn</code>
+    → <code>doClockIn</code>) — zero <code>active</code> checks anywhere, and the write would succeed at
+    the rules layer too.</td>
+    <td>Add a roster-active check to this path too, for consistency with everything else archiving
+    blocks — see the open question below for Christie's final confirmation, but this is the recommended
+    and default-built direction. Added to Phase 3.</td>
+  </tr>
+  <tr>
+    <td><strong>A hand-copied test-reimplementation wouldn't test the real code.</strong> A jest test
+    that re-implements the Firestore calls a filtering function makes would pass even if the real,
+    shipped code diverges from the test's copy.</td>
+    <td>Extract the actual filtering logic into a pure, dual-exported function
+    (<code>partitionSchedulesByRosterActive()</code>) that both the app and Jest call directly — no
+    reimplementation. Added to Phase 3/4.</td>
+  </tr>
+  <tr>
+    <td><strong>Null-safety gap in the partition logic.</strong> A real, already-existing
+    Unknown/Reassign path (<code>app.js:3201-3203</code>) means some schedule docs match no roster entry
+    at all — an unguarded partition function would throw, crashing Schedule Builder and Who's Working for
+    everyone.</td>
+    <td>Default an unmatched schedule doc to visible, matching current behavior. Added to Phase 3.</td>
+  </tr>
+</table>
+
+<div class="rejected">
+  <strong>Design alternatives considered and rejected along the way</strong> (kept for anyone revisiting
+  this later): a second <code>archived</code> flag directly on each Ticker schedule doc (rejected — two
+  independent flags can drift out of sync, confirmed as a real risk once Studio Hub's existing roster
+  writes were discovered); editing all 4 Who's Working/Schedule-Builder render functions individually
+  instead of filtering once centrally (rejected — multiplies the chance of missing one); moving/blanking
+  <code>recurring</code>/<code>overrides</code> into a backup field and restoring on unarchive (rejected
+  — two copies of the same data that can drift, versus a boolean flag that's trivially reversible); two
+  separate plan documents coordinating via comments (rejected — see "Why one plan" above).
+</div>
+
+<h2 id="behavior">What archiving actually does, end to end</h2>
+<table>
+  <tr><th>Surface</th><th>Behavior after archiving</th><th>Why</th></tr>
+  <tr><td>Any of the 21 Tinker apps — reads/writes gated by <code>isAdmin</code>/<code>isManager</code>/<code>isManagerOrAbove</code>/<code>hasAppAccess</code>/<code>belongsToStudio</code></td><td>Denied</td><td>New — Phase 1's <code>isActiveUser()</code> gate</td></tr>
+  <tr><td>Studio Hub — own doc, on login</td><td>Still loads (doesn't error), sees their own archived state</td><td>Self-read/self-update stay independent of the gate, by design</td></tr>
+  <tr><td>Ticker Settings → Employee Roster list</td><td>Disappears from the default list</td><td>Already filters <code>active !== false</code> — free</td></tr>
+  <tr><td>Ticker Schedule Builder → employee picker</td><td>Disappears</td><td>Already filters <code>active !== false</code> (<code>app.js:2902</code>) — free</td></tr>
+  <tr><td>Ticker kiosk PIN entry</td><td>PIN no longer matches</td><td>Already filters <code>active !== false</code> (<code>app.js:7378</code>) — free</td></tr>
+  <tr><td>Ticker self-service clock-in</td><td>Blocked (pending Christie's confirmation — see open question)</td><td>New — Phase 3 fix</td></tr>
+  <tr><td>Ticker Who's Working (Daily/Weekly/Monthly)</td><td>Disappears from every date</td><td>New — centralized filter in Phase 3</td></tr>
+  <tr><td>Ticker Schedule Builder's schedule-card list</td><td>Card disappears</td><td>New — same centralized filter</td></tr>
+  <tr><td>Ticker My Schedule (if somehow signed in)</td><td>"No schedule set up yet"</td><td>Doc excluded from <code>allSchedules</code> — same path as never-scheduled</td></tr>
+  <tr><td>Ticker Timesheets / clock history</td><td>Unchanged — all past entries visible</td><td><code>timeclock_entries</code> is a separate collection, never touched</td></tr>
+</table>
+
+<h2 id="open-questions">Open Questions — need Christie's decision before Phase 1</h2>
+
+<div class="open-question">
+  <strong>1. Self-service clock-in scope.</strong> Should archiving block self-service (non-kiosk)
+  clock-in too, or only the kiosk? Recommended: yes, block it too, so "archived" means one consistent
+  thing everywhere rather than "archived except if you're still logged into the webapp." This is built
+  into Phase 3 by default below — flag if you'd rather narrow it to kiosk-only.
+</div>
+<div class="open-question">
+  <strong>2. Retrofitting <code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code> for the
+  race condition.</strong> Phase 2 below wraps the <em>new</em> archive/reactivate roster write in a
+  Firestore transaction — this protects the archive action itself (it'll safely retry if something else
+  writes to the roster mid-transaction). It does <strong>not</strong> fully close the race in the other
+  direction: if <code>addToTinkerTickerRoster</code>'s non-transactional read happens <em>before</em> an
+  archive, and its write completes <em>after</em>, it can still silently overwrite the archive with its
+  own stale snapshot, since a plain write has no way to know a transaction happened. Fully closing this
+  requires also converting those two pre-existing functions to <code>runTransaction</code>. That's a
+  small, well-scoped change (see Phase 2 note) but touches code that predates and is unrelated to this
+  feature — confirm you want it bundled into this plan now rather than tracked separately.
+</div>
+
+<h2 id="phases">Phases</h2>
+
+<div class="phase" id="phase-1">
+  <h3>Phase 1 — Firestore rules + data model <span class="repo-tag repo-hub">studio-hub</span></h3>
+  <p><strong>Acceptance criteria:</strong> When a <code>users/{uid}</code> doc has
+  <code>active: false</code>, that person can no longer read or write anything gated by
+  <code>isAdmin</code>/<code>isManager</code>/<code>isManagerOrAbove</code>/<code>hasAppAccess</code>/
+  <code>belongsToStudio</code> in any app. They can still load Studio Hub far enough to see their own
+  (archived) doc. They cannot un-archive themselves. An admin cannot self-archive with no recovery path.
+  A manager cannot archive an admin.</p>
+
+  <div class="bdd">Given an admin's users/{uid} doc has active: false
+When that admin's client tries to read a payroll document
+Then the read is denied (isAdmin() now requires isActiveUser())
+
+Given a staff member has appAccess: ['kpiData'] and active: false
+When they try to read a kpiData document
+Then the read is denied, even though appAccess still lists 'kpiData'
+
+Given an archived user's own doc
+When they read or lightly self-update it (e.g. a Ticker login patch)
+Then the read/update succeeds and active stays false (pinned, unchanged)
+
+Given an archived staff member
+When they attempt to write active: true to their own doc directly
+Then the write is denied by the self-update rule's fieldUnchanged('active') pin
+
+Given a manager (not admin) editing an admin's users/{uid} doc
+When they try to write active: false (archive) or active: true (reactivate)
+Then the write is denied — only the target admin themself or another admin can change it
+
+Given a manager editing another manager's or a staff member's doc
+When they try to write active: false or active: true
+Then the write succeeds — unchanged from their existing appAccess/studios capability
+
+Given an admin's own users/{uid} doc (active: true)
+When that admin tries to write active: false to their own doc via any rule path,
+  including the blanket admin-write rule at firestore.rules:128
+Then the write is denied — an admin can only be archived/reactivated by a
+  different admin, never by themselves
+
+Given an archived staff member whose studios array still lists 'clayhub'
+When they try to read a clayHub_members document (gated by belongsToStudio())
+Then the read is denied — belongsToStudio() checks isActiveUser() directly
+
+Given an archived manager (previously isManagerOrAbove()-gated)
+When they try to read a payroll document
+Then the read is denied</div>
+
+  <h4>Work</h4>
+  <ul>
+    <li>Add <code>isActiveUser()</code>: <code>isAuthenticated() && getUserData().get('active', true) == true</code></li>
+    <li>Require <code>isActiveUser()</code> inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code></li>
+    <li><code>belongsToStudio()</code>: rewrite to <code>return isActiveUser() && (isAdmin() || studio in getUserData().studios);</code></li>
+    <li>Add <code>fieldUnchanged('active')</code> to the self-update rule (line ~108-112)</li>
+    <li>Admin self-archive guard — change the admin-write rule (line ~128) from
+      <code>allow write: if isAdmin();</code> to:
+      <div class="bdd">allow write: if isAdmin()
+  && (request.auth.uid != userId || fieldUnchanged('active'));</div></li>
+    <li>Manager-on-admin guard — extend the manager-update rule (line ~123-125):
+      <div class="bdd">allow update: if isManager()
+  && request.auth.uid != userId
+  && request.resource.data.role == resource.data.role
+  && (resource.data.role != 'admin' || fieldUnchanged('active'));</div>
+      Managers keep full appAccess/studios editing on admins (that pre-existing gap stays tabled) — only
+      <code>active</code> gets the guard.</li>
+    <li>Extend <code>rules.test.js</code>'s "Users —" describe block with the nine scenarios above, plus
+    one per already-tested collection type (finance, KPI, timeclock) confirming an
+    otherwise-authorized-but-archived user is denied</li>
+    <li>Run <code>npm test</code> — must be green before deploy</li>
+  </ul>
+  <div class="note">Deploy gate: per CLAUDE.md, do not run <code>firebase deploy --only firestore:rules</code>
+  until Christie has said "approved to change firebase" in-session, tests are green, and changes are
+  committed.</div>
+</div>
+
+<div class="phase" id="phase-2">
+  <h3>Phase 2 — Manage Team UI: Archive / Reactivate, including the Ticker roster write <span class="repo-tag repo-hub">studio-hub</span></h3>
+  <p><strong>Acceptance criteria:</strong> Christie can archive a departed employee in one click from
+  Manage Team; their card leaves the default list; their Studio Hub access is revoked; their Tinker
+  Ticker schedule/kiosk visibility is hidden — all from the same action. Reactivate restores everything
+  in both apps with no reconfiguration.</p>
+
+  <div class="bdd">Given an active staff member with appAccess: ['kpiData', 'timeclock'], claimed on the Ticker roster
+When Christie clicks Archive and confirms
+Then their users/{uid} card leaves the default list, active becomes false,
+  archivedAt/archivedBy are set, appAccess/role/studios are untouched,
+  AND their Tinker Ticker roster entry (resolved by claimedBy uid) also gets active:false
+  AND their timeclock_schedules doc is never written to
+
+Given an archived user shown via "Show archived"
+When Christie clicks Reactivate
+Then active becomes true on both users/{uid} and the Ticker roster entry,
+  archivedAt/archivedBy are left in place as a "last archived" audit trail (not cleared),
+  and their card shows the exact appAccess/role/studios they had before archiving
+
+Given a person who has never claimed a Ticker account (no claimedBy match)
+When Christie archives them in Studio Hub
+Then the Ticker roster write falls back to matching by name
+  AND if no roster entry matches by either uid or name, the Studio Hub write still succeeds —
+      a missing Ticker roster entry is not an error, just nothing to sync there
+
+Given the Manage Team list has 5 archived and 20 active users
+When Christie opens Manage Team with no filter applied
+Then only the 20 active users render by default, with a "Show archived (5)" toggle to reveal the rest
+
+Given Firestore write fails (e.g. network drop) during Archive
+When the archive button is clicked
+Then the card is not removed from the visible list and an inline error shows
+
+Given the Ticker roster document is being written to by syncTimeclockRoster() or
+      addToTinkerTickerRoster() at nearly the same moment as an archive/reactivate action
+When both writes are in flight
+Then the archive/reactivate write (wrapped in a Firestore transaction) either completes cleanly
+      or is automatically retried by Firestore against fresh data — it never silently loses its
+      own change to a concurrent write</div>
+
+  <h4>Work</h4>
+  <ul>
+    <li><code>js/app.js</code>: replace <code>deleteUser()</code> with <code>archiveUser(uid, name)</code> /
+    <code>reactivateUser(uid, name)</code>, each an <code>updateDoc</code>-style partial update (not
+    <code>set</code>) on <code>users/{uid}</code></li>
+    <li>Archive confirm copy: "Archive {name}? They'll immediately lose access to every Tinker app and
+    their Tinker Ticker schedule will be hidden. Their role, access settings, and schedule are saved so
+    you can restore everything if they return." Reactivate needs no confirm (non-destructive)</li>
+    <li><strong>New:</strong> after the <code>users/{uid}</code> write succeeds, call
+    <code>syncArchiveToTickerRoster(uid, name, active)</code> — resolves the target roster entry by
+    <code>claimedBy === uid</code> first, falling back to name-match, and flips its <code>active</code>
+    field inside a <code>runTransaction</code> against <code>timeclock_settings/employees</code> (not a
+    plain read-then-<code>.set()</code>) specifically to guard against the race with
+    <code>syncTimeclockRoster</code>/<code>addToTinkerTickerRoster</code>. A missing match is not an
+    error — logged, not surfaced to Christie as a failure.</li>
+    <li><strong>New, pending confirmation of open question 2:</strong> convert
+    <code>addToTinkerTickerRoster()</code> and <code>syncTimeclockRoster()</code> themselves to also use
+    <code>runTransaction</code> for their own read-modify-write, so the race is closed from both
+    directions, not just the new archive path's. Also add the missing <code>await</code> at the
+    <code>saveUser()</code> call site (<code>js/app.js:1092</code>).</li>
+    <li><code>renderUserCard</code>: swap Delete for Archive/Reactivate depending on
+    <code>user.active !== false</code>; show an "Archived {date}" badge + dimmed styling; when the viewer
+    is a manager (not admin) and the card's <code>role === 'admin'</code>, disable the button with a
+    tooltip explaining only an admin can archive an admin</li>
+    <li><code>loadTeamUsers</code>: filter archived users out of the default render; add a "Show archived
+    (N)" toggle near <code>#team-search</code></li>
+    <li><code>downloadTeamCSV</code>: add a Status column (Active/Archived + archivedAt date)</li>
+    <li><code>createTeamMember</code>: write <code>active: true</code> explicitly in the default doc</li>
+  </ul>
+</div>
+
+<div class="phase" id="phase-3">
+  <h3>Phase 3 — Tinker Ticker read-side fixes <span class="repo-tag repo-ticker">tinker-timeclock</span></h3>
+  <p><strong>Acceptance criteria:</strong> Ticker never writes to <code>active</code> anywhere — it only
+  reads and respects it, everywhere it currently doesn't. An archived person disappears from Who's
+  Working (all 3 modes), Schedule Builder's card list, and self-service clock-in, without tripping the
+  orphaned-schedule delete trap or crashing on a schedule doc with no matching roster entry. A read-only
+  "Archived" indicator, collapsed by default, is added to Settings.</p>
+
+  <div class="bdd">Given an employee with an existing timeclock_schedules doc (recurring + overrides + futureSchedule)
+When Studio Hub sets their roster entry to active:false
+Then the schedule doc itself is never written to by anything in Ticker — every field untouched
+  AND on next loadSchedulesData(), the person is absent from allSchedules and present in archivedSchedules
+
+Given an employee who has a roster entry but no schedule doc yet
+When their roster entry's active field is set to false
+Then the exclusion still works (roster list / picker / kiosk) with no error
+
+Given an archived employee is reactivated from Studio Hub
+Then their schedule doc, never having been touched, needs no restoration
+  AND they reappear in allSchedules, roster list, picker, and kiosk PIN lookup
+
+Given a timeclock_schedules doc exists with no matching roster entry at all (the existing,
+      already-real Unknown/Reassign case)
+When partitionSchedulesByRosterActive() runs
+Then it does not throw, and the doc is classified as visible — matching current behavior
+
+Given an employee is archived and their schedule doc lives under an unclaimed emp_* id,
+      or they have a stray duplicate emp_* doc alongside a claimed one
+When renderRosterList() re-renders (which always also calls renderOrphanedSchedules())
+Then that schedule doc does NOT appear in "Orphaned Schedule Docs" — archived is a distinct,
+      non-destructive state, and must never surface the permanent-delete button as a side effect
+
+Given an archived employee is still logged into the Ticker webapp under their own account
+When they try to clock in via the "unscheduled" self-service path
+Then the clock-in is blocked, consistent with kiosk behavior [pending open question 1]
+
+Given Who's Working is viewed in Daily, Weekly, and Monthly modes, for today and for a date
+      an archived person would normally be scheduled
+Then they do not appear in any of the three views, on any date
+
+Given Schedule Builder's schedule-card list is viewed
+Then an archived person's card does not appear
+
+Given at least one employee is archived
+When the admin opens Ticker's Settings and clicks "Show Archived"
+Then a read-only panel lists them with an "Archived" badge and no action button —
+      a note points to Studio Hub's Manage Team for Reactivate</div>
+
+  <h4>Work</h4>
+  <ul>
+    <li>Extract <code>partitionSchedulesByRosterActive(allSchedules, employeeRoster)</code> →
+    <code>{active, archived}</code> as a standalone pure function (see Phase 4 for why) — no Firestore
+    calls inside it, defaults an unmatched schedule doc to <code>active</code></li>
+    <li><code>loadSchedulesData()</code> calls this function to populate <code>allSchedules</code>/
+    <code>archivedSchedules</code> — every existing consumer (<code>renderWhosWorkingDaily/Weekly/Monthly</code>,
+    <code>renderAllSchedulesList</code>, <code>renderMySchedule</code>) keeps using <code>allSchedules</code>
+    unchanged, needing zero further edits</li>
+    <li>Fix <code>renderOrphanedSchedules()</code>'s roster lookup so an archived entry is never treated
+    as "no match"</li>
+    <li>Add a roster-active check to <code>handleClockIn</code>/<code>doClockIn</code>'s self-service
+    path [pending open question 1]</li>
+    <li>Add a collapsed-by-default "Show Archived (N)" toggle to Ticker's Settings roster section,
+    revealing a read-only list (name + "Archived" badge, no action button) built from
+    <code>employeeRoster</code> filtered to <code>active === false</code></li>
+  </ul>
+  <div class="note">⚠️ Before marking this phase done: re-grep the codebase for every reference to
+  <code>allSchedules</code> and <code>loadAllSchedules()</code> to confirm no consumer was missed — this
+  plan's research is a point-in-time snapshot, not a guarantee against drift.</div>
+</div>
+
+<div class="phase" id="phase-4">
+  <h3>Phase 4 — Tinker Ticker test harness <span class="repo-tag repo-ticker">tinker-timeclock</span></h3>
+  <p><strong>Acceptance criteria:</strong> <code>partitionSchedulesByRosterActive()</code> has real,
+  automated test coverage that exercises the actual shipped function — not a hand-copied
+  reimplementation.</p>
+  <ul>
+    <li><strong>Extract, don't replicate:</strong> the pure function from Phase 3 needs no Firestore
+    calls inside it — plain arrays in, plain objects out. Made available both as a browser global (for
+    <code>app.js</code>) and via <code>module.exports</code> (for Jest to <code>require()</code> the
+    exact shipped function). Unit-testable with plain arrays, no emulator needed for this part.</li>
+    <li><strong>Run/wrapper convention, for what genuinely does need Firestore:</strong> add a
+    <code>test</code> script to <code>tinker-timeclock/package.json</code> using the same
+    <code>firebase emulators:exec --only firestore "jest ..."</code> pattern as
+    <code>studio-hub/package.json</code>, plus a new <code>firebase.json</code> emulator config (neither
+    exists in this repo yet). A thin <code>firebase-admin</code>-against-the-emulator test confirms
+    Phase 3's read-side logic behaves correctly against a real Firestore doc shape.</li>
+    <li><strong>Explicitly out of scope:</strong> a rules-style <code>initializeTestEnvironment</code>
+    suite — Ticker's rules don't change in this plan.</li>
+  </ul>
+</div>
+
+<div class="phase" id="phase-5">
+  <h3>Phase 5 — Real cleanup + verification, both apps</h3>
+  <p><strong>Acceptance criteria:</strong> Christie's actual departed seasonal/past employees are
+  archived (not deleted) via the single Studio Hub action. Manage Team and Ticker's roster/schedule
+  views both reflect it. Verified in the Firebase Console, and with a real login check, that access is
+  genuinely revoked — not just that the UI shows "Archived."</p>
+
+  <div class="bdd">Given Phases 1-4 are deployed
+When Christie archives each departed employee via Studio Hub's Manage Team
+Then Manage Team's default list shrinks to current staff only
+  AND Ticker's Who's Working / Schedule Builder / roster list also no longer show them
+
+Given one archived employee who previously had e.g. kpiData access and a claimed Ticker account
+When Christie checks that person's users/{uid} doc AND their Ticker roster entry in the Console
+Then users/{uid}.active is false with appAccess still listing kpiData unchanged,
+  AND the Ticker roster entry's active is also false, with recurring/overrides/futureSchedule
+      byte-identical to before archiving</div>
+
+  <h4>Work</h4>
+  <ul>
+    <li>Christie archives the real departed seasonal/past employees using the shipped UI</li>
+    <li>Spot-check one archived doc in each app's relevant collection in the Console</li>
+    <li>Confirm with one archived account that a direct app login (e.g. Classbook or KPI) is actually
+    denied post-archive, and that Ticker's kiosk PIN and self-service clock-in are both blocked</li>
+  </ul>
+</div>
+
+<h2 id="out-of-scope">Not changed</h2>
+<ul>
+  <li><code>timeclock_entries</code> (clock history) — never read, written, or filtered by this feature, in either app</li>
+  <li>Ticker's existing "Remove" button and <code>deleteScheduleFromList</code> — stay exactly as they are, for genuine permanent deletes</li>
+  <li>Studio Hub's existing hard-delete-via-Console path for genuine junk <code>users</code> records — not wired into the UI, still possible manually</li>
+  <li>The broader pre-existing gap of managers editing an admin's <code>appAccess</code>/<code>studios</code> (non-<code>active</code> fields) — stays tabled per Christie's own call</li>
+</ul>
+
+<h2 id="decisions-log">Decisions / Deviations Log</h2>
+<ul>
+  <li><strong>Aug 28 — Tinker Ticker plan drafted</strong> after auditing the roster (37 entries, 18 live) and confirming "Remove" is a permanent, non-reversible delete with no revocation of login access.</li>
+  <li><strong>Aug 28 — Studio Hub plan drafted</strong> in a parallel session, confirming <code>users/{uid}</code>'s five gating helpers as the "one place" mechanism, and that Studio Hub's Delete has its own silent-recreate-on-login hole.</li>
+  <li><strong>Aug 28 — single-flag design</strong> adopted on the Ticker side after learning Studio Hub already writes to the Ticker roster document, to avoid two independent flags drifting out of sync.</li>
+  <li><strong>Aug 28 — Christie's review comments resolved</strong> on both original plans: collapsed-by-default archived lists; kiosk lockout confirmed; "Archive"/"Reactivate" wording chosen over "Deactivate"; manager-on-admin restriction added; test harness confirmed as a real build, not a manual script.</li>
+  <li><strong>Aug 28 — second-model review, Tinker Ticker plan</strong> (independent Claude + Codex, run in parallel): found and fixed 4 real issues — orphaned-schedule delete trap, self-service clock-in bypass, an untestable test-harness design, and a partition-logic null-safety gap. Also surfaced the pre-existing cross-app roster-write race.</li>
+  <li><strong>Aug 28 — second-model review, Studio Hub plan</strong> (independent Claude, run separately): found and fixed 2 real issues — an admin self-archive lockout with no recovery path, and a <code>belongsToStudio()</code> bypass that would have left archived staff with Clay Hub/Roster Manager access.</li>
+  <li><strong>Aug 28 — architecture pivot to a single trigger</strong>, per Christie's direct question ("why two separate functions?"). Reconsidered against what both reviews had just surfaced — the two-repo split was the direct cause of several of those findings. Cut Ticker's own Archive/Unarchive button and write functions entirely; the action moves to Studio Hub, extending its existing roster-touching code, resolved by <code>claimedBy</code> uid rather than fuzzy name matching.</li>
+  <li><strong>Aug 28 — plans merged into this single document</strong>, per Christie's direct request, after concluding that a single-trigger design no longer justified two separately coordinated plan documents. Both original plans preserved on disk with a superseded banner; no content discarded.</li>
+</ul>
+
+<h2 id="completeness">Completeness check — what if this is interrupted mid-way</h2>
+<ul>
+  <li><strong>Interrupted after Phase 1, before Phase 2:</strong> safe. Rules are deployed and tested; no UI references <code>active</code> yet, so no user is archived and existing-user behavior is unchanged.</li>
+  <li><strong>Interrupted mid-Phase 2:</strong> safe if each piece (archiveUser/reactivateUser, the Ticker roster sync, renderUserCard, loadTeamUsers, CSV) is committed individually — worst case is an inconsistent label, not data loss, since <code>deleteUser</code> is already gone.</li>
+  <li><strong>Interrupted after Phase 2, before Phase 3:</strong> safe but incomplete — Studio Hub correctly revokes access and flips the Ticker roster flag, but Ticker's own views (Who's Working, Schedule Builder, self-service clock-in) won't yet respect it, so an archived person would still show up there until Phase 3 ships. Not dangerous, just visibly unfinished.</li>
+  <li><strong>Interrupted mid-Phase 3 or 4:</strong> safe — each fix (orphan-trap, self-service gate, partition extraction, test harness) is independent and committable on its own.</li>
+  <li><strong>Interrupted mid-Phase 5:</strong> safe — archiving individual employees is independent per-person; resume by archiving whoever's left.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<p>Re-open this file. Check the Decisions log above for anything logged mid-execution. Check
+<code>git log</code> in both <code>studio-hub</code> and <code>tinker-timeclock</code> for which phase's
+commits already landed (commits are per-phase, not batched, and phases 1-2 live in studio-hub while
+3-4 live in tinker-timeclock). Re-run <code>npm test</code> in <code>studio-hub</code> to confirm
+Phase 1's rules are still green before continuing. Resolve both open questions above before Phase 1
+starts; once resolved (inline edits to this file, logged in the Decisions log), set the status banner to
+execution-ready.</p>
+
+</body>
+</html>
