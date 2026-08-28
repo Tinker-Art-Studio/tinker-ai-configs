@@ -30,8 +30,18 @@
 <h1 id="plan-title">Plan: Archive Employees — Tinker Ticker</h1>
 
 <div class="status" id="plan-status">
-  Status: NOT execution-ready. Plan only — no implementation code has been written. Waiting on
-  Christie's review + a second-model review before Phase 1 begins.
+  Status: NOT execution-ready. A second-model review (both a fresh Claude instance and Codex,
+  independently) found real, confirmed bugs in this design — not nitpicks. Every finding below was
+  personally re-verified against the actual code, not taken on either reviewer's word. See "Second-Model
+  Review Findings" for what changed and what still needs Christie's decision.
+</div>
+
+<div class="change">
+  📝 <strong>Aug 28 — second-model review completed, plan substantially revised.</strong> Three
+  confirmed bugs found and fixed into this plan's Phase 1 (orphaned-schedule delete trap, self-service
+  clock-in bypass, test-harness testability gap). One confirmed issue is <strong>out of this plan's
+  scope</strong> and needs Christie's call — see the new open question on the Studio Hub roster-write
+  race.
 </div>
 
 <div class="change">
@@ -119,7 +129,98 @@
   </tr>
 </table>
 
-<h2 id="design">Core design decision</h2>
+<h2 id="review-findings">Second-Model Review Findings (confirmed against code, not taken on trust)</h2>
+
+<table>
+  <tr><th>Finding</th><th>Verified evidence</th><th>Fix</th></tr>
+  <tr>
+    <td><strong>Bug 1 — archiving triggers a destructive delete trap in the same screen.</strong>
+    <code>renderRosterList()</code> — the exact function Phase 2 adds the Archive button to — calls
+    <code>renderOrphanedSchedules()</code> on every render (<code>app.js:5844</code>). That function's
+    own "no matching roster entry" check (<code>app.js:5861</code>) filters on
+    <code>e.active !== false</code> too. The instant someone whose schedule lives under an unclaimed
+    <code>emp_*</code> id (or has a stray duplicate <code>emp_*</code> doc — exactly the pattern found
+    in the Erica/"ericapodwoiski" audit earlier) gets archived, they show up as "orphaned" with a
+    one-click, unconfirmed-reversibility, <strong>permanent</strong> delete button
+    (<code>removeOrphanedSchedule</code>, <code>app.js:5890-5901</code>) sitting directly below the
+    roster list.</td>
+    <td>Personally re-traced the full call chain (<code>app.js:5806-5901</code>) — confirmed exact.</td>
+    <td><code>renderOrphanedSchedules()</code>'s roster lookup must not treat an archived entry as "no
+    match" — it needs its own <code>active</code>-agnostic lookup, distinct from the "currently visible"
+    concept the rest of this feature correctly wants. Added as required Phase 1 work below.</td>
+  </tr>
+  <tr>
+    <td><strong>Bug 2 — archiving does not block self-service clock-in, only the kiosk.</strong> This
+    directly narrows something already told to Christie as resolved ("archived = fully out of the
+    current work cycle"). Traced the entire chain: <code>handleClockIn()</code>
+    (<code>app.js:381-420</code>) → when <code>todayShift</code> is empty (which it will be once
+    archiving excludes the doc from <code>allSchedules</code>) → <code>openUnscheduledModal()</code>
+    (<code>1440-1462</code>) → <code>handleUnscheduledClockIn()</code> (<code>1464+</code>) →
+    <code>doClockIn()</code> (<code>598-628</code>). None of these check roster <code>active</code>
+    anywhere. The Firestore rule for <code>timeclock_entries</code> create
+    (<code>firestore.rules:290-291</code>) only requires <code>hasAppAccess('timeclock')</code> and
+    matching <code>uid</code> — nothing about roster status — so the write would succeed.</td>
+    <td>Personally re-traced the full chain, function by function — confirmed exact, zero active checks
+    anywhere in this path.</td>
+    <td>Either (a) scope down the confirmed decision to "blocks kiosk clock-in" specifically, not "fully
+    out of the work cycle," or (b) add a roster-active check to <code>handleClockIn</code>/
+    <code>doClockIn</code> too. <strong>This needs Christie's call</strong> — see updated open question
+    below; leaning toward (b) since "archived but can still self-service clock in" contradicts the
+    stated intent.</td>
+  </tr>
+  <tr>
+    <td><strong>Test harness: "replicate the calls" tests a copy of the logic, not the real code.</strong>
+    A hand-written jest test that re-implements <code>archiveEmployee</code>/
+    <code>loadSchedulesData</code>'s Firestore calls would pass even if the real
+    <code>archiveEmployee()</code> is never wired up, updates the wrong person, or silently diverges
+    from the test's copy over time. Both reviewers independently converged on the same fix.</td>
+    <td>Confirmed the underlying problem is real: <code>app.js</code> functions are plain browser
+    globals with no export, so a test file can't <code>require()</code> them directly today.</td>
+    <td>Extract the actual filtering logic into a small pure function —
+    <code>partitionSchedulesByRosterActive(allSchedules, employeeRoster)</code> — written so it works
+    both as a browser global (unchanged for the app) and as a <code>module.exports</code> for Jest to
+    <code>require()</code> directly, so the test calls the <em>real</em> shipped logic, not a
+    reimplementation. This is also exactly where Bug 4 (below) would be caught. Reserve a thin
+    firebase-admin-against-emulator test only for confirming the roster write itself lands correctly.</td>
+  </tr>
+  <tr>
+    <td><strong>Bug 4 — null-safety gap in the proposed partition logic.</strong>
+    <code>renderAllSchedulesList()</code> already has a working "Unknown"/Reassign path
+    (<code>app.js:3201-3203</code>) for schedule docs matching <em>no</em> roster entry at all — this
+    genuinely happens today. If the new partition logic doesn't explicitly handle
+    <code>rosterEntry === undefined</code>, it throws, crashing Schedule Builder and Who's Working for
+    <em>everyone</em>, not just failing to filter one person.</td>
+    <td>Confirmed the existing Unknown/Reassign path is real and reachable.</td>
+    <td>Partition logic must explicitly default an unmatched schedule doc to <strong>visible</strong>
+    (matching current behavior) rather than assuming a roster entry always exists.</td>
+  </tr>
+  <tr>
+    <td>Two more sites already check roster <code>active</code> that the original research table
+    missed: <code>renderOrphanedSchedules()</code> (above) and <code>checkNameClaim()</code>'s
+    auto-claim path (<code>app.js:5171</code>).</td>
+    <td>Confirmed both by direct read.</td>
+    <td>Not a bug — just correcting the research table's count from "3 places" to 5, for an accurate
+    picture of what's already active-aware before this plan adds anything.</td>
+  </tr>
+</table>
+
+<div class="open-question">
+  <strong>Confirmed by second-model review, needs a decision — a pre-existing cross-app race, wider than
+  either plan anticipated.</strong> Both this plan and the Studio Hub plan assumed the only risk was a
+  <em>future</em> Studio Hub archive feature writing to the Ticker roster. Independently verified this is
+  already wrong: Studio Hub's existing, unrelated <code>addToTinkerTickerRoster()</code> and
+  <code>syncTimeclockRoster()</code> (<code>studio-hub/js/app.js:804-820, 822-865</code>) already do a
+  full read-modify-<code>.set()</code> on this exact <code>timeclock_settings/employees</code> document
+  today, whenever anyone grants timeclock access or clicks "Sync Roster" in Studio Hub — completely
+  unrelated to archiving. Worse, the call site at <code>studio-hub/js/app.js:1092</code>
+  (<code>addToTinkerTickerRoster(name)</code> inside <code>saveUser()</code>) isn't even
+  <code>await</code>ed. If a Ticker archive/unarchive write and one of these lands close together, the
+  one that finishes last silently overwrites the other's change to the whole array — this can already
+  happen today, independent of whether this plan ships. Out of this plan's scope to fix alone (it touches
+  Studio Hub code), but worth Christie deciding whether to harden <code>saveEmployeeRoster()</code> (and
+  Studio Hub's two functions) to a transaction-based partial update before or alongside shipping either
+  archive feature, rather than leaving it as a pre-existing, now-known race.
+</div>
 
 <div class="decision">
   <strong>Archiving writes exactly one flag: <code>active: false</code> on the roster entry in
@@ -135,7 +236,12 @@
   already used by <code>getSchedName()</code> at <code>app.js:2792</code>) and checking
   <em>that person's</em> <code>active</code> field — producing <code>allSchedules</code> (roster active
   — every existing consumer keeps the name and needs <strong>zero code changes</strong>) and
-  <code>archivedSchedules</code> (roster inactive, used only by Phase 2's "Show Archived" panel).
+  <code>archivedSchedules</code> (roster inactive). <strong>Clarified after second-model review caught
+  an inconsistency:</strong> Phase 2's "Show Archived" panel in Settings is built directly from
+  <code>employeeRoster</code> (filtered to <code>active === false</code>), not from
+  <code>archivedSchedules</code> — <code>archivedSchedules</code> exists purely as the internal
+  complement needed to test the partition logic (see the pure-function fix below) and isn't rendered as
+  its own list anywhere.
 </div>
 
 <div class="rejected">
@@ -184,10 +290,19 @@
 </table>
 
 <div class="decision">
-  <strong>Confirmed by Christie:</strong> archiving does block kiosk clock-in. "Archived" means fully out
-  of the current work cycle — not just hidden from admin views. No further ambiguity here; Phase 1's
-  behavior (kiosk PIN lookup already filters on roster <code>active</code>, so this is automatic once
-  the flag is set) is correct as designed.
+  <strong>Confirmed by Christie:</strong> archiving does block kiosk clock-in. Kiosk PIN lookup already
+  filters on roster <code>active</code>, so this part is automatic once the flag is set — correct as
+  designed, no change needed.
+</div>
+<div class="open-question">
+  <strong>New, from second-model review — the "fully out of the current work cycle" framing doesn't
+  hold for self-service clock-in.</strong> Christie's confirmation covered the kiosk specifically.
+  Second-model review found (see Bug 2 above, independently re-verified) that an archived employee who
+  is still logged into the Ticker webapp under their own account can clock in/out normally via the
+  "unscheduled" path — nothing in that code path checks roster <code>active</code>. Needs Christie's
+  explicit call: extend the active check to self-service clock-in too (recommended, so "archived" means
+  one consistent thing everywhere), or explicitly narrow the decision to "kiosk only" and accept
+  self-service as a known gap.
 </div>
 
 <div class="decision">
@@ -232,10 +347,14 @@
   signature/pattern. Archiving sets <code>active:false</code> on the roster entry only — via the
   existing <code>saveEmployeeRoster</code> full-array-save convention already used by every other roster
   mutation in this file (add/remove/claim/set-PIN) — not a new write pattern. No
-  <code>timeclock_schedules</code> document is touched by either function.
-  <code>loadSchedulesData()</code> is changed to look up each schedule doc's owner in the freshly-loaded
-  roster and split into <code>allSchedules</code> (owner's <code>active !== false</code>) and
-  <code>archivedSchedules</code> (owner's <code>active === false</code>).</p>
+  <code>timeclock_schedules</code> document is touched by either function. The actual partitioning logic
+  is extracted into a standalone, exported pure function —
+  <code>partitionSchedulesByRosterActive(allSchedules, employeeRoster)</code> → <code>{active, archived}</code>
+  — that <code>loadSchedulesData()</code> calls to populate <code>allSchedules</code>/
+  <code>archivedSchedules</code>. It defaults any schedule doc with <strong>no</strong> matching roster
+  entry to <code>active</code> (visible), matching today's behavior for the existing Unknown/Reassign
+  path. <code>renderOrphanedSchedules()</code>'s own roster lookup is fixed to stop treating an archived
+  entry as "no match."</p>
 
   <div class="bdd">Given: an employee with an existing timeclock_schedules doc (recurring + overrides + futureSchedule)
 When: archiveEmployee() is called
@@ -258,7 +377,20 @@ Given: a person's active flag is flipped to false by some OTHER write path in th
       Studio-Hub-driven roster sync), not by this plan's archiveEmployee() function
 When: loadSchedulesData() next runs
 Then: they are still correctly excluded from allSchedules and included in archivedSchedules —
-      the filter reads the roster's active field directly, it does not care who set it</div>
+      the filter reads the roster's active field directly, it does not care who set it
+
+Given: [FOUND BY SECOND-MODEL REVIEW] an employee is archived and their schedule doc lives under an
+      unclaimed emp_* id, OR they have a stray duplicate emp_* doc alongside a claimed one
+When: renderRosterList() re-renders (which always also calls renderOrphanedSchedules())
+Then: that person's schedule doc must NOT appear in the "Orphaned Schedule Docs" panel —
+      archived is a distinct, non-destructive state from "orphaned," and must never surface
+      the permanent-delete removeOrphanedSchedule() button as a side effect of archiving
+
+Given: [FOUND BY SECOND-MODEL REVIEW] a timeclock_schedules doc exists with no matching roster entry
+      at all (the existing, already-real Unknown/Reassign case)
+When: partitionSchedulesByRosterActive() runs
+Then: it does not throw, and the doc is classified as active/visible (matching current behavior),
+      not silently dropped or crashing the whole Who's Working / Schedule Builder render</div>
 
   <div class="note">⚠️ Firestore: the roster write keeps using the existing
   <code>saveEmployeeRoster(array)</code> full-array-save pattern already used by add/remove/claim/set-PIN
@@ -267,30 +399,32 @@ Then: they are still correctly excluded from allSchedules and included in archiv
   feature specifically.</div>
 
   <div class="decision">
-    <strong>Confirmed by Christie: build a real test harness (option 1), not a one-off manual script.</strong>
-    Structure to mirror — two existing precedents, combined, since neither alone is a perfect fit:
+    <strong>Test harness — revised after second-model review found the original approach untestable
+    against real code.</strong> Christie confirmed building a real harness (not a manual script);
+    the <em>structure</em> below is corrected from the original draft, which both an independent Claude
+    review and Codex independently flagged as testing a hand-copied reimplementation rather than the
+    shipped code:
     <ol>
-      <li><strong>The run/wrapper convention from <code>studio-hub</code>:</strong> add a <code>test</code>
-      script to <code>tinker-timeclock/package.json</code> using the same
-      <code>firebase emulators:exec --only firestore "jest ..."</code> pattern as
+      <li><strong>Extract the real logic, don't replicate it.</strong>
+      <code>partitionSchedulesByRosterActive()</code> (see acceptance criteria above) is written as a
+      pure function with no Firestore calls inside it — takes plain arrays, returns plain objects. It's
+      defined once and made available both as a browser global (for <code>app.js</code>'s own use) and
+      via <code>module.exports</code> (for Jest to <code>require()</code> the <em>exact</em> shipped
+      function — no reimplementation, so a real bug in the shipped code fails the real test). This one
+      function is pure enough to unit-test with plain arrays and needs no emulator at all.</li>
+      <li><strong>The run/wrapper convention from <code>studio-hub</code>, for what genuinely does need
+      Firestore:</strong> add a <code>test</code> script to <code>tinker-timeclock/package.json</code>
+      using the same <code>firebase emulators:exec --only firestore "jest ..."</code> pattern as
       <code>studio-hub/package.json</code>, and a <code>firebase.json</code> emulator config (neither
-      exists in this repo yet — <code>studio-hub</code>'s is the template). <code>rules.test.js</code>'s
-      setup style — <code>@firebase/rules-unit-testing</code>'s <code>initializeTestEnvironment</code>,
-      fixed named test UIDs per role, a shared <code>beforeAll</code> — is the right shape to copy for
-      the emulator bootstrap itself.</li>
-      <li><strong>Where it has to diverge:</strong> <code>rules.test.js</code> tests <em>rules</em>
-      (does a given fake-auth client get allowed/denied) — but this feature doesn't change any rule, so
-      there's nothing rules-shaped to test. <code>tinker-timeclock/js/app.js</code>'s functions
-      (<code>archiveEmployee</code>, <code>loadSchedulesData</code>, etc.) are plain browser-global
-      functions, not Node-exportable modules, so they can't be <code>require()</code>'d into a test file
-      the way rules tests import the Firestore SDK directly. The test instead has to replicate the exact
-      Firestore calls those functions make (read roster → mutate → <code>saveEmployeeRoster()</code>'s
-      full-array <code>.set()</code> → re-run the <code>loadSchedulesData()</code> partition logic) using
-      <code>firebase-admin</code> against the local emulator and assert on the resulting document state —
-      the same pattern already proven working in this session for verifying Firestore
-      merge-vs-mergeFields behavior before the Fall 2026 import (a throwaway Node script + emulator, no
-      jest needed for that one, but the same "assert real emulator state, don't guess" approach applies
-      here inside a proper jest test this time).</li>
+      exists in this repo yet — note <code>studio-hub/firebase.json</code> itself has no
+      <code>emulators</code> block either, confirmed by direct read, so this repo's emulator config is
+      new either way, not a copy-paste). A thin <code>firebase-admin</code>-against-the-emulator test
+      confirms <code>archiveEmployee()</code>'s actual roster write lands correctly — this is the only
+      part that still needs the emulator, since it's the only part that's genuinely a Firestore call.</li>
+      <li><strong>Explicitly out of scope for this harness:</strong> a rules-style
+      <code>initializeTestEnvironment</code> test suite — this feature changes zero rules, so there's
+      nothing rules-shaped to test; <code>rules.test.js</code>'s setup style is not the template here,
+      only its run/wrapper convention is.</li>
     </ol>
   </div>
 </div>
@@ -374,14 +508,33 @@ Then: they appear again, identically to before archiving, in every view</div>
   emulator+jest test harness for this repo rather than a manual verification script, structured as
   studio-hub's run/wrapper convention plus a firebase-admin-against-emulator approach for the actual
   archive/unarchive assertions (Phase 1 updated with the concrete structure).</li>
+  <li><strong>Aug 28 (second-model review — Claude + Codex, run independently):</strong> Found and
+  personally re-verified 4 real issues, not nitpicks: (1) archiving can trigger a same-screen permanent
+  schedule-delete trap via <code>renderOrphanedSchedules()</code> — fix required, added to Phase 1;
+  (2) self-service (non-kiosk) clock-in is NOT blocked by archiving, narrowing what was told to Christie
+  as resolved — needs her explicit decision, reopened as a question; (3) the planned test-harness
+  approach would test a hand-copied reimplementation, not the real code — switched to extracting a pure,
+  dual-exported partition function both reviewers independently recommended; (4) a null-safety gap in
+  the partition logic for schedule docs with no matching roster entry — must default to visible, not
+  crash. Also surfaced a real, pre-existing cross-app race (Studio Hub's existing, unrelated roster-sync
+  functions already do full-array writes to the same document, one not even awaited) that's wider than
+  either archive plan anticipated — flagged as an open question, out of this plan's scope to fix alone.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
-<p>Not execution-ready. Before Phase 1 starts: (1) Christie reviews this plan in the plan reviewer and
-resolves the two open questions above (kiosk clock-in behavior; test-harness approach), (2) a
-second-model review runs via <code>/second-model-review</code>, (3) both open <code>.open-question</code>
-blocks above are either resolved inline (edit this file) or explicitly deferred with a decision logged
-above. Only then set this file's status banner to execution-ready and begin Phase 1.</p>
+<p>Not execution-ready. The second-model review (Aug 28, both a fresh Claude instance and Codex,
+independently) is done — its confirmed findings are already folded into Phase 1's acceptance criteria,
+BDD, and the test-harness decision above. Two <code>.open-question</code> blocks remain and need
+Christie's explicit decision before Phase 1 starts:</p>
+<ol>
+  <li>Does archiving also block <strong>self-service</strong> clock-in (not just the kiosk)? Recommended:
+  yes, for consistency — but it's Christie's call.</li>
+  <li>The pre-existing Studio Hub roster-write race (unrelated to either archive feature, already live
+  in production today) — does this need hardening (transaction-based partial writes) before or alongside
+  shipping this feature, or is the current small risk window acceptable to leave as-is for now?</li>
+</ol>
+<p>Once both are resolved inline in this file (or explicitly deferred with a logged decision), set the
+status banner to execution-ready and begin Phase 1.</p>
 
 </body>
 </html>
