@@ -33,7 +33,7 @@
 <h1 id="plan-title">Plan: Enrollment Board as a Tinker HQ App</h1>
 
 <div class="meta" id="plan-meta">
-  <span class="status-tag not-ready">execution-ready: false</span> — three architectural decisions below need Christie's confirmation (in this review, as comments or edits) before Phase 1 starts. No code moves until then, and no deploy of any kind happens without hearing <strong>"yes, do it"</strong> — separately, no <code>netlify deploy</code> without a fresh "okay to deploy?" per app.<br><br>
+  <span class="status-tag not-ready">execution-ready: false</span> — the three architectural decisions from the brief, plus four follow-on items surfaced during planning (enumerated in Phase 0), need Christie's confirmation before Phase 1 starts. No code moves until then, and no deploy of any kind happens without hearing <strong>"yes, do it"</strong> — separately, no <code>netlify deploy</code> without a fresh "okay to deploy?" per app.<br><br>
   <strong>Goal:</strong> Bring the Sawyer enrollment dashboard into the Tinker HQ ecosystem as a registered app with a Studio Hub tile, replacing its current dual life as an unpublished Claude artifact and an unfinished scratch Netlify site — without breaking the one thing already proven to work (single-page landscape printing) or the hard scope limit on what the refresh job is allowed to touch in Sawyer.<br>
   <strong>Proposed app id:</strong> <code>enrollment-board</code><br>
   <strong>Source doc:</strong> <code>~/tinker-ai-configs/enrollment-board-handoff.md</code><br>
@@ -58,8 +58,9 @@
     <tr><th>Option A — Restyle</th><td>Switch to Nunito + Tinker purple per the standard registry. Cost: real risk of breaking the single-page print guarantee; requires re-verifying pagination the same rigorous way it was verified once already.</td></tr>
     <tr><th>Option B — Documented exception</th><td>Keep the current type system. <code>/product-principles</code> itself allows this path ("Do not introduce a new visual pattern <em>without flagging it</em>" implies flagging, not blocking). This app's job — dense printable schedules — is unlike every other Tinker app's job, which is the substantive reason for an exception rather than just inertia.</td></tr>
   </table>
-  <div class="rec"><strong>Recommendation: Option B.</strong> Log the exception as a one-line addition to <code>product-principles.md</code>'s registry table (app name + "documented exception: print-tuned type system, see enrollment-board plan") so a future session doesn't "fix" it by accident. Restyling stays available later if Christie decides visual consistency outweighs the print risk — it isn't a one-way door, just not the default path today.</div>
+  <div class="rec"><strong>Recommendation: Option B.</strong> Log the exception in <code>product-principles.md</code> — its registry table only has four columns (App/Path/localhost/Hosting), no notes field, so this needs a short new "Documented exceptions" note near the Design System section rather than trying to cram a reason into that table. That way a future session doesn't "fix" it by accident. Restyling stays available later if Christie decides visual consistency outweighs the print risk — it isn't a one-way door, just not the default path today.</div>
   <div class="ask">Needs Christie: confirm the exception, or say the restyle-and-retune is worth doing now.</div>
+  <p style="font-size:.87rem;color:#555;">Small thing worth knowing rather than "discovering" later: the scratch repo's <code>build.js</code> already makes a partial concession to house style — the auth-guard overlay chrome (sign-in form, sign-out button) is styled in Nunito, only the dashboard body itself keeps Archivo/IBM Plex Mono/Source Sans 3. That split is sensible (the gate is shared UI, the dashboard is the app) and doesn't need to change.</p>
 </div>
 
 <h2 id="decision2">Decision 2 — Data architecture</h2>
@@ -81,21 +82,23 @@
   <div class="ask">Needs Christie: pick <code>curriculum</code> or <code>marketing</code>.</div>
 
   <h3>Access level</h3>
-  <p>Precedent already exists in <code>firestore.rules</code> for exactly this shape (manager+ by default, staff via override) — e.g. <code>kpiData</code>: <code>allow read, write: if isManagerOrAbove() || hasAppAccess('kpi');</code>. Under the Decision 2 default (static, no Firestore reads/writes from the app itself), this rule pattern doesn't apply to <em>data access</em> — there's no document to gate. What it controls is only the Studio Hub tile's visibility (via <code>roles: ["admin","manager"]</code> in config.js + a <code>MANAGER_ONLY_APPS</code> entry for the staff appAccess override), matching the brief's instinct of manager+ with an appAccess override for specific staff.</p>
-  <div class="note">Found during research, worth avoiding here: <code>kpiData</code>'s rule checks <code>hasAppAccess('kpi')</code>, but the app's own <code>id</code> everywhere else (config.js, <code>MANAGER_ONLY_APPS</code>) is <code>kpi-dashboard</code> — the Manage Team checkbox pushes <code>'kpi-dashboard'</code> into a staff member's <code>appAccess</code> array, which does not satisfy <code>hasAppAccess('kpi')</code>. That looks like a pre-existing, unrelated bug (a staff override checkbox that silently doesn't work) — flagging it to Christie separately, not fixing it in this plan. For the new app, keep the id used in config.js/app.js and any future <code>hasAppAccess()</code> check identical (<code>enrollment-board</code> everywhere) so it can't drift the same way.</div>
+  <p>Precedent exists in <code>firestore.rules</code> for manager+-by-default-with-override — e.g. <code>kpiData</code>: <code>allow read, write: if isManagerOrAbove() || hasAppAccess('kpi');</code>. But under the Decision 2 default (static, no Firestore reads/writes from the app itself at all), that rule pattern <strong>cannot apply</strong> — there is no document to gate. This is a materially bigger gap than first drafted, confirmed by reading the actual shared auth guard both this app and every other standalone Tinker app copies verbatim:</p>
+  <div class="warn"><strong>Verified against <code>~/studio-hub/shared/auth-guard.js</code> directly (the canonical source, not just the scratch repo's copy):</strong> <code>requireAuth()</code> fetches <code>role</code>/<code>appAccess</code> from the user's Firestore doc into <code>authCurrentUser</code>, but never checks them before hiding the sign-in overlay. It resolves for <em>any</em> authenticated <code>tinker-hq-apps</code> user — staff included. For a Firestore-backed app this is masked because the rules layer still blocks unauthorized reads/writes even if the UI shell briefly shows (the same "silently falls back to defaults" pattern already documented in <code>studio-hub/CLAUDE.md</code>). This app has no such backstop under Option A: the moment any signed-in staff member — not just an unauthenticated URL-guesser reading page source — opens the page, the full baked-in enrollment/fill-rate/teacher-name dataset is right there, fully functional, no different from a manager's view. <code>MANAGER_ONLY_APPS</code>/<code>roles</code> only ever controlled whether the Studio Hub <em>tile</em> is shown; a staff member who already knows or is given the URL bypasses that entirely.</div>
+  <div class="ask">This needs its own explicit decision, not a bundled "acceptable as-is": (a) accept that manager+ restriction for this app is tile-visibility only, with no enforcement against a staff member who has the URL — a real change from what "manager+ with appAccess override" implies elsewhere in this ecosystem; or (b) add an actual gate — the auth guard already fetches <code>role</code>/<code>appAccess</code> into <code>authCurrentUser</code>, so checking it client-side (show an "access restricted" state instead of the dashboard for non-manager/non-override staff) is a small, scoped addition to Phase 1, not a redesign — though note a client-side check alone still doesn't stop a determined non-manager from reading the baked HTML directly, only from using the normal UI. A server-side check (Netlify edge function) is the only way to actually close that, and is the same fix already flagged for the anonymous-reader case below.</div>
+  <div class="note">Separately found during research, unrelated to this plan: <code>kpiData</code>'s rule checks <code>hasAppAccess('kpi')</code>, but the app's own <code>id</code> everywhere else (config.js, <code>MANAGER_ONLY_APPS</code>) is <code>kpi-dashboard</code> — the Manage Team checkbox pushes <code>'kpi-dashboard'</code> into a staff member's <code>appAccess</code> array, which does not satisfy <code>hasAppAccess('kpi')</code>. Looks like a pre-existing, silent bug in the KPI Dashboard staff-override checkbox. Flagging to Christie separately, not fixing it here. For this new app, keep the id used in config.js/app.js and any future <code>hasAppAccess()</code> check identical (<code>enrollment-board</code> everywhere) so it can't drift the same way.</div>
 
   <h3>Port</h3>
   <p>The handoff states port 8086 is the only free number in the 8080-8099 range. Research found a conflict: both <code>quick-reference.md</code> and <code>netlify-sites.md</code> list 8086 as already assigned to <strong>Org Chart</strong> (<code>~/tinker-org-chart/</code> — the directory and a provisioned Netlify site both genuinely exist, last touched Feb 2026). Org Chart is <em>not</em>, however, currently registered as a tile in <code>studio-hub/js/config.js</code>'s app list, and doesn't appear in <code>product-principles.md</code>'s registry table or in <code>MEMORY.md</code>'s Active Projects — all of which suggests it may be dormant/abandoned rather than actively reserved. If so, the entire 8080-8099 range is otherwise fully allocated across 20 apps with no other gap.</p>
   <div class="ask">Needs Christie: confirm Org Chart is dead and 8086 can be reclaimed, or use 8100 instead (next number outside the documented range).</div>
 
-  <h3>Static-file exposure</h3>
-  <p>If the app stays static (Decision 2, Option A), the auth guard gates who can <em>open</em> the page but not the file itself — someone with the URL could read fill rates and teacher first names from page source without signing in. No student names, guardian contacts, or payment details are ever in this pipeline.</p>
-  <div class="rec"><strong>Recommendation: acceptable as-is for now.</strong> This is not a regression — the same exposure already exists in the live artifact Christie uses today. A real fix (a Netlify edge function checking auth before serving the file, per the prior-art README's own suggestion) is a clean, separable follow-up that shouldn't block getting the app into the registered ecosystem.</div>
-  <div class="ask">Needs Christie: confirm that's acceptable, or ask for the edge-function gate now instead of later.</div>
+  <h3>Static-file exposure (unauthenticated)</h3>
+  <p>Distinct from the Access Level question above, which is about <em>authenticated</em> staff: if the app stays static (Decision 2, Option A), the file itself is served to anyone who requests the URL — the auth guard controls the sign-in overlay, not delivery of the underlying HTML/JS. Someone with the URL but no Tinker HQ account at all could still view page source and read fill rates and teacher first names without ever signing in. No student names, guardian contacts, or payment details are ever in this pipeline.</p>
+  <div class="rec"><strong>Recommendation: acceptable as-is for now.</strong> This is not a regression — the same exposure already exists in the live artifact Christie uses today. A real fix (a Netlify edge function checking auth before serving the file, per the prior-art README's own suggestion) would also be the fix for the Access Level gap above, since an edge function can check <code>role</code>/<code>appAccess</code> server-side before serving the file at all — closing both gaps at once rather than needing two separate mechanisms.</div>
+  <div class="ask">Needs Christie: confirm that's acceptable for now, or ask for the edge-function gate up front — which would resolve both this and the Access Level question above in one piece of work rather than one now and one later.</div>
 </div>
 
 <h2 id="roadmap">Roadmap this plan should not paint itself out of</h2>
-<p>The next feature is marketing attribution: log each MailChimp campaign send (and manual one-off pushes) and measure registration lift in the 24-48h window after, against a 7-14 day baseline, with promoted classes named so unpromoted ones act as a control. That needs snapshots at a reliable cadence (not "Christie remembers to refresh") and somewhere server-side to hold a MailChimp API key. Decision 2's phased approach is written specifically so that Firestore-backed history plus a scheduled job remain the obvious next plan, not a redesign.</p>
+<p>The next feature is marketing attribution: log each MailChimp campaign send (and manual one-off pushes) and measure registration lift in the 24-48h window after, against a 7-14 day baseline, with promoted classes named so unpromoted ones act as a control. That needs snapshots at a reliable cadence (not "Christie remembers to refresh") and somewhere server-side to hold a MailChimp API key. Decision 2's phased approach keeps the CSV-to-Firestore migration mechanical for whenever that fast-follow happens — but to be precise about what it does and doesn't buy: moving snapshot storage to Firestore does not, by itself, solve either roadmap requirement. The refresh is a Claude-driven Chrome session handling Sawyer's client-rendered calendar and a real rendering race (see <code>refresh-task-prompt.txt</code>) — that needs its own automation regardless of where output lands. Holding a MailChimp API key server-side needs actual compute (a Cloud Function, or a small Render service, matching this stack's existing pattern for secrets), which Firestore alone doesn't provide either. Neither of these forecloses anything, and the CSV-to-Firestore column mapping really is mechanical as described — but the honest scope of that fast-follow is "scrape automation + a compute layer + a data migration," not just the migration.</p>
 
 <h2 id="non-negotiable">Carried forward unchanged: Sawyer scope limit</h2>
 <div class="warn">
@@ -112,15 +115,25 @@
 <h2 id="phase0">Phase 0 — Decisions confirmed (gate, no code)</h2>
 <div class="phase">
   <h3>What it does</h3>
-  <p>Christie reviews this plan in the browser and resolves the three architectural decisions plus the two smaller ones (department, port). Nothing in Phase 1 starts until every <span class="ask">Needs Christie</span> item above has an actual answer recorded in the Decisions Log, not just a recommendation.</p>
+  <p>Christie reviews this plan in the browser and resolves every open item below. Nothing in Phase 1 starts until each one has an actual recorded answer in the Decisions Log, not just a recommendation. There are <strong>seven</strong> — spread across three decisions plus follow-on questions, easy to undercount if tallied from the prose instead of a list, so they're enumerated explicitly here:</p>
+  <ol>
+    <li>Decision 1 — design system: documented exception, or restyle-and-retune?</li>
+    <li>Decision 2 — data architecture: static now / Firestore later, or fold Firestore into this same plan?</li>
+    <li>Decision 3 — department: <code>curriculum</code> or <code>marketing</code>?</li>
+    <li>Decision 3 — port: reclaim 8086 from the dormant Org Chart app, or use 8100?</li>
+    <li>Decision 3 — access level: accept tile-visibility-only enforcement for signed-in staff, or add an actual gate (client-side check now, or a server-side edge function that also closes item 7 in one piece of work)?</li>
+    <li>Decision 3 — static-file exposure: acceptable as-is, or fold into the same edge-function fix as item 5?</li>
+    <li>Phase 3 — does the existing Claude artifact get retired once the new site is confirmed working, or kept as a fallback?</li>
+  </ol>
+  <p style="font-size:.85rem;color:#888;">Items 5 and 6 are closely related and may resolve together, but each needs its own explicit answer, not an assumption that one covers the other.</p>
   <div class="bdd">Given: this plan is published and registered with the local plan-reviewer
 When: Christie reviews it and leaves comments or edits
-Then: each of the 5 open items has an explicit answer (accept the recommendation or override it)
+Then: each of the items above has an explicit answer (accept the recommendation or override it)
   AND the Decisions Log below is updated with her actual choices before Phase 1 begins
 
 Given: Christie has not yet reviewed
 When: any session picks this plan back up
-Then: it does not proceed past Phase 0 — re-read this plan's Decisions Log first</div>
+Then: it does not proceed past Phase 0 — re-read this plan's Decisions Log first and confirm all items above are answered, not just some of them</div>
 </div>
 
 <h2 id="phase1">Phase 1 — Repo scaffold: adopt the prior art</h2>
@@ -132,9 +145,9 @@ Then: it does not proceed past Phase 0 — re-read this plan's Decisions Log fir
 When: Christie opens <code>site/index.html</code> locally at the assigned port and signs in with her Tinker HQ account
 Then: she sees the same dashboard she sees in the artifact today, with real data from the last refresh (846 sessions, 2026-08-27)
 
-Given: she prints the Weekly Grid tab
-When: the print dialog opens
-Then: it is one landscape page — no blank stack, no iframe-sandboxed print dialog behavior
+Given: she prints each of the three documented views
+When: the print dialog opens for Weekly Grid, then separately for Workshops &amp; one-offs, then separately for Everything
+Then: Weekly Grid is one landscape page, Workshops &amp; one-offs is one landscape page, and Everything is two landscape pages with the break falling between the semester classes and the workshops section, matching the README's three verified cases — test all three, not just Weekly Grid, since a layout regression is most likely to show up in the break-point placement for the two-page case
 
 Given: <code>shared/firebase-config.js</code> was copied from <code>studio-hub/shared/</code>
 When: the page loads
@@ -162,8 +175,8 @@ Then: it fails as a broken image, not a JS error — confirm the icon file is ac
 <h2 id="phase3">Phase 3 — Refresh recipe cutover</h2>
 <div class="phase">
   <h3>What it does</h3>
-  <p>Update <code>refresh-task-prompt.txt</code>'s Step 6 target (the file it edits and saves back to, and what it publishes to) to point at the new repo instead of <code>~/tinker-ai-configs/enrollment-dashboard.html</code> and the Claude artifact. The snapshot log path does not move — <code>~/tinker-ai-configs/enrollment-snapshots.csv</code> stays exactly where it is, append-only, regardless of everything else.</p>
-  <div class="ask">Open item, not assumed: does the artifact copy get retired once the new site is confirmed working, or does it stay as a fallback (e.g. for viewing on mobile away from a signed-in browser)? The handoff doesn't say — ask Christie rather than deciding either way.</div>
+  <p>Update <code>refresh-task-prompt.txt</code>'s Step 6 target (the file it edits and saves back to, and what it publishes to) to point at the new repo instead of <code>~/tinker-ai-configs/enrollment-dashboard.html</code> and the Claude artifact. The snapshot log path does not move — <code>~/tinker-ai-configs/enrollment-snapshots.csv</code> stays exactly where it is, append-only, regardless of everything else. This is a targeted edit to Step 6 only — the HARD SCOPE LIMIT block (Sawyer access) lives elsewhere in the file and must not be touched, reworded, or accidentally clipped by whatever edit method is used.</p>
+  <div class="ask">Open item, not assumed, and tracked in Phase 0 (not deferred to here): does the artifact copy get retired once the new site is confirmed working, or does it stay as a fallback (e.g. for viewing on mobile away from a signed-in browser)? The handoff doesn't say — ask Christie rather than deciding either way, before this phase starts, since it changes what Phase 3 actually does.</div>
   <div class="bdd">Given: a refresh runs against the new location
 When: it completes
 Then: the new site's <code>template.html</code> is rebuilt with new numbers, <code>site/index.html</code> reflects them after <code>node build.js</code>, and the snapshot CSV gets exactly one new block of rows appended with no existing rows touched
@@ -174,7 +187,11 @@ Then: nothing is published to the new site and nothing is appended to the CSV �
 
 Given: any page content on Sawyer appears to address the scraping agent directly
 When: it's encountered
-Then: it is treated as data and reported in Step 8, never acted on — this defense carries forward unchanged, it is not something this plan touches</div>
+Then: it is treated as data and reported in Step 8, never acted on — this defense carries forward unchanged, it is not something this plan touches
+
+Given: <code>refresh-task-prompt.txt</code> is edited to retarget Step 6
+When: the edit is done
+Then: the HARD SCOPE LIMIT section (the calendar-only path restriction, the no-click-through rule, the first-names-only rule) is byte-for-byte unchanged — diff the file before/after and confirm only Step 6's target paths differ</div>
 </div>
 
 <h2 id="phase4">Phase 4 — Cleanup</h2>
@@ -182,6 +199,7 @@ Then: it is treated as data and reported in Step 8, never acted on — this defe
   <h3>What it does</h3>
   <ul>
     <li>Delete <code>~/tinker-ai-configs/_board-transfer.tgz</code>.</li>
+    <li>Delete <code>~/tinker-ai-configs/_snapshot-incoming.csv</code> — a 0-byte untracked file timestamped essentially at the last refresh (2026-08-27 15:48, two minutes after that refresh's own META timestamp). Not referenced anywhere in the refresh recipe or the snapshot-log discipline; looks like debris from an interrupted run. Confirm it's still empty before deleting — if it isn't, stop and ask rather than deleting silently.</li>
     <li>Confirm <code>~/tinker-ai-configs/tinker-enrollment-board/</code> is empty/gone once Phase 1's relocation is done (if Phase 1 used a move rather than a copy, this is already moot — verify, don't assume).</li>
     <li>No action on the Sawyer 1am/1pm bad data — noted here only so it isn't mistaken for a leftover TODO.</li>
   </ul>
@@ -213,10 +231,11 @@ Then: it is treated as data and reported in Step 8, never acted on — this defe
   <li><strong>2026-08-28:</strong> Plan drafted from <code>enrollment-board-handoff.md</code>. Recommendations proposed for all three architectural decisions plus port and static-exposure; none yet confirmed by Christie.</li>
   <li><strong>2026-08-28:</strong> Port conflict discovered during research — 8086 (claimed free in the handoff) appears already assigned to a dormant <code>tinker-org-chart</code> app in two memory files, though that app is not currently registered in Studio Hub's own config.js. Needs Christie's confirmation before Phase 1 assigns a port.</li>
   <li><strong>2026-08-28:</strong> Found (not part of this plan, flagged separately to Christie): <code>kpiData</code>'s Firestore rule checks <code>hasAppAccess('kpi')</code> but the app's id everywhere in the UI is <code>kpi-dashboard</code> — likely a pre-existing silent bug in the staff appAccess override for KPI Dashboard. Not touched here; noted so this plan's own app id stays consistent everywhere instead of repeating the mismatch.</li>
+  <li><strong>2026-08-28:</strong> Second-model review (Claude, independent instance) ran against this plan. Headline finding, verified directly against <code>studio-hub/shared/auth-guard.js</code>: the "manager+ with appAccess override" access model doesn't actually hold for a static app, because the shared auth guard never checks role/appAccess before showing the dashboard to any signed-in user. Decision 3's Access Level section was rewritten to surface this as its own explicit open item rather than an assumption. The review also caught an open-item undercount (six-to-seven items, not five/three) — Phase 0 was rewritten with an enumerated list — plus gaps in print-pagination BDD coverage (Workshops and the two-page Everything case were untested), a missing byte-for-byte check on the Sawyer scope-limit text surviving Phase 3's edit, an overclaim about what Firestore-vs-static buys the marketing-attribution roadmap item, an inaccurate remediation format for Decision 1's product-principles.md note, and one piece of debris (<code>_snapshot-incoming.csv</code>) missing from Cleanup. All incorporated above.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
-<p>If this session ends mid-plan: re-open this file, check the Decisions Log for which of the five open items Christie has actually answered (not just what was recommended), and do not start Phase 1 until all five have real answers. Phases execute in order, one at a time; commit after each; re-read this plan at the start of each phase per <code>/planning-workflow</code>.</p>
+<p>If this session ends mid-plan: re-open this file, check the Decisions Log against Phase 0's enumerated list for which items Christie has actually answered (not just what was recommended), and do not start Phase 1 until all of them have real answers. Phases execute in order, one at a time; commit after each; re-read this plan at the start of each phase per <code>/planning-workflow</code>.</p>
 
 </body>
 </html>
