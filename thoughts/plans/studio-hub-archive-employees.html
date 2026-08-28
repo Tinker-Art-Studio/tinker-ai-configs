@@ -77,10 +77,10 @@
 <div class="decision"><strong>UI:</strong> the per-card "Delete" button is replaced with "Archive" (active users) / "Reactivate" (archived users). Archived users are hidden from the default Manage Team list behind a "Show archived (N)" toggle next to search, shown dimmed with an "Archived {date}" badge when revealed. CSV export gains a status column.</div>
 <div class="rejected"><strong>Rejected: keep a hard-delete option in the UI.</strong> The current destructive action is exactly what Christie asked to move away from. True permanent deletion of a <code>users</code> doc remains possible via the Firebase Console for genuine junk records (e.g. a mistyped signup), but this plan doesn't wire a UI button for it.</div>
 
-<h2>Open questions for Christie's review</h2>
-<div class="open-question">Wording: "Archive" vs. "Deactivate" as the button/label text? This plan writes "Archive" throughout since that's the word Christie used, but worth confirming before Phase 2's UI copy is final.</div>
-<div class="open-question">Manager-on-manager/admin: the existing manager-update rule doesn't restrict <em>whose</em> doc a manager can edit (a manager can already change another manager's or admin's appAccess/studios today). This plan carries that same boundary forward for <code>active</code> rather than fixing it — flagging so it's a deliberate choice, not an oversight, since archiving is a stronger action than tweaking appAccess.</div>
-<div class="open-question">Should <code>createTeamMember</code> (new-hire flow) start writing <code>active: true</code> explicitly going forward, or keep relying on "missing = active"? Either works; explicit is slightly more self-documenting for anyone reading a doc in the Console later.</div>
+<h2>Decided in review (2026-08-28)</h2>
+<div class="decision"><strong>Wording — resolved:</strong> "Archive"/"Reactivate" confirmed over "Deactivate" — matches the actual behavior (record kept, fully restorable), and stays close to the Tinker Ticker plan's own Archive/Unarchive naming. (Ticker uses "Unarchive," this plan uses "Reactivate" — a person's access being reactivated reads more naturally than a person being "unarchived"; the two apps' wording doesn't need to match exactly, and both sessions agreed this isn't worth blocking on.) The default-collapsed "Show archived (N)" list Christie asked for was already specified in Phase 2 as written — no change needed, just confirmed.</div>
+<div class="decision"><strong>Manager-on-admin — resolved, added to Phase 1:</strong> managers can archive/reactivate other managers and staff (unchanged from their existing appAccess/studios editing capability), but <strong>cannot</strong> flip an admin's <code>active</code> flag. The broader existing gap — managers editing an admin's appAccess/studios — stays out of scope/tabled, per Christie ("if this is a bigger issue though, we can table it"); only the archive/active action gets the admin guard, since it's the stronger, more consequential one. See Phase 1 for the specific rule change.</div>
+<div class="decision"><strong>createTeamMember — resolved:</strong> the new-hire flow will write <code>active: true</code> explicitly going forward, per Christie's confirmation. See Phase 2.</div>
 
 <h2>Phase 1 — Firestore rules + data model</h2>
 <div class="phase">
@@ -100,13 +100,27 @@ Then the read/update succeeds and active stays false (pinned, unchanged)
 
 Given an archived staff member
 When they attempt to write active: true to their own doc directly
-Then the write is denied by the self-update rule's fieldUnchanged('active') pin</div>
+Then the write is denied by the self-update rule's fieldUnchanged('active') pin
+
+Given a manager (not admin) editing an admin's users/{uid} doc
+When they try to write active: false (archive) or active: true (reactivate)
+Then the write is denied — only the target admin themself or another admin can change it
+
+Given a manager editing another manager's or a staff member's doc
+When they try to write active: false or active: true
+Then the write succeeds — unchanged from their existing appAccess/studios capability</div>
   <h4>Work</h4>
   <ul>
     <li>Add <code>isActiveUser()</code> helper to <code>firestore.rules</code>: <code>isAuthenticated() && getUserData().get('active', true) == true</code></li>
     <li>Require <code>isActiveUser()</code> inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code></li>
     <li>Add <code>fieldUnchanged('active')</code> to the self-update rule (line ~108-112)</li>
-    <li>Extend <code>rules.test.js</code>'s existing "Users —" describe block with the four scenarios above, plus one per already-tested collection type (finance, KPI, timeclock) confirming an otherwise-authorized-but-archived user is denied</li>
+    <li>Manager-on-admin guard (resolved in review): extend the manager-update rule (line ~123-125) so a manager can't touch an admin's <code>active</code> field, using the same pattern as the existing <code>role</code> pin:
+      <div class="bdd">allow update: if isManager()
+  && request.auth.uid != userId
+  && request.resource.data.role == resource.data.role
+  && (resource.data.role != 'admin' || fieldUnchanged('active'));</div>
+      Managers keep full appAccess/studios editing on admins (that existing gap is explicitly tabled, not touched here) — only <code>active</code> gets the guard.</li>
+    <li>Extend <code>rules.test.js</code>'s existing "Users —" describe block with the six scenarios above, plus one per already-tested collection type (finance, KPI, timeclock) confirming an otherwise-authorized-but-archived user is denied</li>
     <li>Run <code>npm test</code> — must be green before deploy</li>
   </ul>
   <div class="note">Deploy gate: per CLAUDE.md, do not run <code>firebase deploy --only firestore:rules</code> until Christie has said "approved to change firebase" in-session, tests are green, and changes are committed.</div>
@@ -142,7 +156,8 @@ Then the card is not removed from the visible list and an inline
     <li><code>renderUserCard</code>: swap the Delete button for Archive/Reactivate depending on <code>user.active !== false</code>; show an "Archived {date}" badge + dimmed styling for archived cards</li>
     <li><code>loadTeamUsers</code>: filter archived users out of the default render; add a "Show archived (N)" toggle near <code>#team-search</code> that reveals them</li>
     <li><code>downloadTeamCSV</code>: add a Status column (Active/Archived + archivedAt date)</li>
-    <li><code>createTeamMember</code>: decide per the open question above whether to write <code>active: true</code> explicitly</li>
+    <li><code>createTeamMember</code>: write <code>active: true</code> explicitly in the default doc (resolved in review)</li>
+    <li><code>renderUserCard</code>: when the viewer is a manager (not admin) and the card's <code>role === 'admin'</code>, disable (not hide) the Archive/Reactivate button with a tooltip explaining only an admin can archive an admin — avoids a surprise permission-denied error from the Phase 1 rule guard</li>
   </ul>
 </div>
 
@@ -188,6 +203,9 @@ Then active: false is set and appAccess still lists kpiData unchanged
 
 <h2>Decisions log</h2>
 <p><em>(append-only — record any choice made during execution that deviates from or resolves an open question in this plan)</em></p>
+<ul>
+  <li><strong>2026-08-28:</strong> Christie confirmed "Archive"/"Reactivate" wording and the default-collapsed archived list (both already as-written). Confirmed <code>createTeamMember</code> should write <code>active: true</code> explicitly. Confirmed managers should not be able to archive/reactivate admins specifically (broader manager-on-admin appAccess/studios gap stays tabled) — added as a Phase 1 rule change and Phase 2 UI guard. All three open questions closed via the plan-reviewer comment thread; a parallel "second opinion" pass from the Tinker Ticker session independently verified the manager-on-admin rule text and proposed the same fix shape, cross-checked against <code>firestore.rules:123-125</code> before this plan adopted it.</li>
+</ul>
 
 </body>
 </html>
