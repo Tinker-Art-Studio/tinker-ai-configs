@@ -39,12 +39,16 @@
   <code>studio-hub-archive-employees.html</code> (<code>plan__ArypVn99fHf</code>) — into one, per
   Christie's direct request after finding two coordinated plans more confusing than helpful. Both
   originals stay on disk with a superseded banner pointing here; nothing from either was discarded.
-  Both plans' original second-model reviews, and a Round 2 review run specifically against the merged
-  document (Claude + Codex, independently, twice total), found real, confirmed bugs — every fix from
-  all of that is folded into the phases below. Every open question raised at any point — the original
-  two, plus the two scope decisions Round 2 surfaced — is now resolved (see the "resolved" decision
-  blocks throughout, and the Decisions Log). Begin with Phase 1. The standing "approved to change
-  firebase" phrase and green tests are still required before any actual rules deploy — this
+  Both plans' original second-model reviews, a Round 2 review against the merged document, and a Round 3
+  review requested by Christie specifically because Phase 1 touches Firestore rules shared by all 21
+  apps (three independent review passes total, one of them run twice — Claude + Codex — on the merged
+  doc) all found real, confirmed issues — every fix from all three rounds is folded into the phases
+  below. Round 3's verdict was that the rule design itself is sound and independently re-verified against
+  the live files, with one new finding (a pre-existing clock-in bug that becomes dangerous once Phase 1's
+  rules deploy) fixed as a Phase 2 co-requisite. Every open question raised at any point across all three
+  rounds is now resolved (see the "resolved" decision blocks throughout, and the Decisions Log). Begin
+  with Phase 1. The standing "approved to change firebase" phrase and green tests are still required
+  before any actual rules deploy — this
   execution-ready status covers the plan, not a bypass of that separate gate.
 </div>
 
@@ -369,6 +373,50 @@ freshly verified — nothing here is taken on either reviewer's word alone.</div
   targeted emulator tests for the transaction itself, rather than waiting for Phase 4's broader harness.
 </div>
 
+<h2 id="review-findings-3">Second-Model Review, Round 3 — requested by Christie specifically because Phase 1 touches shared Firestore rules; verdict: sound, one new finding fixed</h2>
+
+<div class="safe">
+  <strong>Everything from Rounds 1 and 2 re-verified independently, against the live files, and holds
+  up.</strong> Every rule citation in Phase 1 matched the current <code>firestore.rules</code> exactly.
+  The reviewer additionally grepped the entire 700+ line rules file for every <code>getUserData()</code>
+  call site to independently check for a second hidden bypass like the <code>belongsToStudio()</code> one
+  Round 1 found — <strong>confirmed <code>getUserData()</code> is called only inside the five gated
+  helper functions, nowhere else</strong> — the plan's core premise ("gate five functions = gate
+  everything") is verified true, not just asserted. The Phase 2 transaction design was also confirmed
+  technically sound, including a real SDK constraint the plan doesn't spell out but gets right anyway:
+  Firestore's <code>transaction.get()</code> only accepts a single document reference, not a collection
+  query — which is exactly why the plan already says to keep <code>syncTimeclockRoster()</code>'s
+  <code>users</code> collection scan outside the transaction. Both resolved Round 2 scope decisions were
+  independently checked and found to be honestly represented — phrased as deliberate, named tradeoffs,
+  not oversold as fully solved.
+</div>
+
+<table>
+  <tr><th>Finding</th><th>Fix</th></tr>
+  <tr>
+    <td><strong>A pre-existing, unrelated bug in Ticker's clock-in code becomes newly dangerous once
+    Phase 1's rules deploy.</strong> Confirmed directly: <code>addClockEntry()</code>
+    (<code>tinker-timeclock/js/firebase-data.js:32-45</code>) calls <code>ref.set({...})</code> with no
+    <code>await</code> and no <code>.catch()</code>, then immediately returns <code>ref.id</code>
+    synchronously — regardless of whether the write actually succeeds. <code>doClockIn()</code>
+    (<code>app.js:598-628</code>) treats that returned id as proof of success and shows "Clocked In"
+    unconditionally. Today this is invisible because these writes essentially never get rejected. After
+    Phase 1 ships, <code>hasAppAccess('timeclock')</code> requires <code>isActiveUser()</code> — the
+    instant someone is archived, their self-service clock-in write is correctly <em>denied</em> by the
+    new rule, but <code>addClockEntry</code> silently swallows that rejection and the UI still says
+    "Clocked In." The person believes they have a clock-in on record and they don't — a rules deploy
+    correctly doing its job, surfaced as a false-success UI a step downstream that neither prior review
+    round caught, since it required reading <code>firebase-data.js</code> specifically.</td>
+    <td>Two fixes, both folded into Phase 2 as co-requisites (same treatment as the orphan-trap fix —
+    don't ship Phase 1's rules while a nearby code path can silently misreport success): (1) the
+    self-service clock-in roster-active guard moves from Phase 3 into Phase 2, so an archived person's
+    client never attempts the write in the first place — the primary defense; (2) <code>addClockEntry</code>
+    is fixed to actually <code>await</code> its write and return/surface a failure instead of an
+    unconditional id — a small, independently-correct fix that closes this same silent-failure risk for
+    any future rule denial, not just this one. See Phase 2's work list.</td>
+  </tr>
+</table>
+
 <h2 id="behavior">What archiving actually does, end to end</h2>
 <table>
   <tr><th>Surface</th><th>Behavior after archiving</th><th>Why</th></tr>
@@ -377,7 +425,7 @@ freshly verified — nothing here is taken on either reviewer's word alone.</div
   <tr><td>Ticker Settings → Employee Roster list</td><td>Disappears from the default list</td><td>Already filters <code>active !== false</code> — free</td></tr>
   <tr><td>Ticker Schedule Builder → employee picker</td><td>Disappears</td><td>Already filters <code>active !== false</code> (<code>app.js:2902</code>) — free</td></tr>
   <tr><td>Ticker kiosk PIN entry</td><td>PIN no longer matches</td><td>Already filters <code>active !== false</code> (<code>app.js:7378</code>) — free</td></tr>
-  <tr><td>Ticker self-service clock-in</td><td>Blocked</td><td>New — Phase 3 fix, confirmed by Christie</td></tr>
+  <tr><td>Ticker self-service clock-in</td><td>Blocked</td><td>New — Phase 2 co-requisite (moved from Phase 3 per Round 3 finding), confirmed by Christie</td></tr>
   <tr><td>Ticker Who's Working (Daily/Weekly/Monthly)</td><td>Disappears from every date</td><td>New — centralized filter in Phase 3</td></tr>
   <tr><td>Ticker Schedule Builder's schedule-card list</td><td>Card disappears</td><td>New — same centralized filter</td></tr>
   <tr><td>Ticker My Schedule (if somehow signed in)</td><td>"No schedule set up yet"</td><td>Doc excluded from <code>allSchedules</code> — same path as never-scheduled</td></tr>
@@ -497,9 +545,11 @@ Then the read is denied</div>
   <p><strong>Acceptance criteria:</strong> Christie can archive a departed employee in one click from
   Manage Team; their card leaves the default list; their Studio Hub access is revoked. Their Ticker
   roster entry's <code>active</code> flag also flips in the same atomic action, which immediately hides
-  them from Ticker's roster list, employee picker, and kiosk PIN entry (already free per existing code)
-  — full Who's Working / Schedule Builder / self-service clock-in visibility follows once Phase 3 lands,
-  not from this phase alone. Reactivate restores everything in both apps with no reconfiguration.</p>
+  them from Ticker's roster list, employee picker, and kiosk PIN entry (already free per existing code),
+  blocks their self-service clock-in, and doesn't trip the orphaned-schedule delete trap (both fixed as
+  co-requisites of this phase — see Round 2/3 findings) — full Who's Working / Schedule Builder card-list
+  visibility follows once Phase 3 lands. Reactivate restores everything in both apps with no
+  reconfiguration.</p>
 
   <div class="bdd">Given an active staff member with appAccess: ['kpiData', 'timeclock'], claimed on the Ticker roster
 When Christie clicks Archive and confirms
@@ -541,7 +591,18 @@ Then the archive/reactivate transaction either completes cleanly or is automatic
 Given an employee is archived whose schedule doc lives under an unclaimed emp_* id
 When Christie (or anyone) next opens Ticker's Settings roster section
 Then that schedule doc does NOT appear in "Orphaned Schedule Docs" with a permanent-delete button —
-      this is a hard co-requisite of this phase, not deferred to Phase 3 (see Round 2 findings above)</div>
+      this is a hard co-requisite of this phase, not deferred to Phase 3 (see Round 2 findings above)
+
+Given an archived employee is still logged into the Ticker webapp under their own account
+When they try to clock in via the "unscheduled" self-service path
+Then the attempt is blocked client-side before any write is attempted — a hard co-requisite of
+      this phase, not deferred to Phase 3 (see Round 3 findings above)
+
+Given addClockEntry()'s underlying write is rejected for any reason, including but not limited to
+      an archived account's now-denied timeclock_entries write
+When doClockIn() checks the result
+Then it sees an actual failure (not an unconditionally-returned id) and shows an error to the user
+      instead of falsely reporting "Clocked In"</div>
 
   <h4>Work</h4>
   <ul>
@@ -569,6 +630,16 @@ Then that schedule doc does NOT appear in "Orphaned Schedule Docs" with a perman
     <span class="repo-tag repo-ticker">tinker-timeclock</span> so its roster lookup doesn't treat an
     archived entry as "no match" — must ship in the same deploy as this phase, not deferred, since this
     phase is what starts writing <code>active:false</code> for the first time.</li>
+    <li><strong>Pulled in from Phase 3, required here (Round 3 finding):</strong> add a roster-active
+    check to <code>handleClockIn</code>/<code>doClockIn</code>'s self-service path
+    <span class="repo-tag repo-ticker">tinker-timeclock</span> — must land alongside Phase 1's rules
+    deploy, not deferred, so an archived person's client never attempts a write that the new rules would
+    silently have denied.</li>
+    <li><strong>New (Round 3 finding):</strong> fix <code>addClockEntry()</code>
+    <span class="repo-tag repo-ticker">tinker-timeclock</span> (<code>firebase-data.js:32-45</code>) to
+    <code>await</code> its <code>.set()</code> call and return/throw on failure instead of
+    unconditionally returning <code>ref.id</code> — independently correct regardless of this plan, and
+    closes the silent-false-success risk for any future rule denial, not just an archived account's.</li>
     <li><code>renderUserCard</code>: swap Delete for Archive/Reactivate depending on
     <code>user.active !== false</code>; show an "Archived {date}" badge + dimmed styling. (No
     manager-vs-admin per-card guard needed here — Manage Team's entry button is already hidden for
@@ -587,10 +658,11 @@ Then that schedule doc does NOT appear in "Orphaned Schedule Docs" with a perman
 <div class="phase" id="phase-3">
   <h3>Phase 3 — Tinker Ticker read-side fixes <span class="repo-tag repo-ticker">tinker-timeclock</span></h3>
   <p><strong>Acceptance criteria:</strong> Ticker never writes to <code>active</code> anywhere — it only
-  reads and respects it, everywhere it currently doesn't. An archived person disappears from Who's
-  Working (all 3 modes), Schedule Builder's card list, and self-service clock-in, without tripping the
-  orphaned-schedule delete trap or crashing on a schedule doc with no matching roster entry. A read-only
-  "Archived" indicator, collapsed by default, is added to Settings.</p>
+  reads and respects it. An archived person disappears from Who's Working (all 3 modes) and Schedule
+  Builder's card list, without crashing on a schedule doc with no matching roster entry. (The
+  orphaned-schedule delete trap and the self-service clock-in guard are both handled earlier, as Phase 2
+  co-requisites — not this phase's job.) A "Show Archived" list, collapsed by default, is added to
+  Settings.</p>
 
   <div class="bdd">Given an employee with an existing timeclock_schedules doc (recurring + overrides + futureSchedule)
 When Studio Hub sets their roster entry to active:false
@@ -609,16 +681,6 @@ Given a timeclock_schedules doc exists with no matching roster entry at all (the
       already-real Unknown/Reassign case)
 When partitionSchedulesByRosterActive() runs
 Then it does not throw, and the doc is classified as visible — matching current behavior
-
-Given an employee is archived and their schedule doc lives under an unclaimed emp_* id,
-      or they have a stray duplicate emp_* doc alongside a claimed one
-When renderRosterList() re-renders (which always also calls renderOrphanedSchedules())
-Then that schedule doc does NOT appear in "Orphaned Schedule Docs" — archived is a distinct,
-      non-destructive state, and must never surface the permanent-delete button as a side effect
-
-Given an archived employee is still logged into the Ticker webapp under their own account
-When they try to clock in via the "unscheduled" self-service path
-Then the clock-in is blocked, consistent with kiosk behavior
 
 Given Who's Working is viewed in Daily, Weekly, and Monthly modes, for today and for a date
       an archived person would normally be scheduled
@@ -644,12 +706,11 @@ Then a panel lists them with an "Archived" badge and the existing Remove button 
     <code>archivedSchedules</code> — every existing consumer (<code>renderWhosWorkingDaily/Weekly/Monthly</code>,
     <code>renderAllSchedulesList</code>, <code>renderMySchedule</code>) keeps using <code>allSchedules</code>
     unchanged, needing zero further edits</li>
-    <li>Add a roster-active check to <code>handleClockIn</code>/<code>doClockIn</code>'s self-service
-    path</li>
     <li>Add a collapsed-by-default "Show Archived (N)" toggle to Ticker's Settings roster section,
     revealing a list (name + "Archived" badge + the existing Remove button, no Unarchive button) built
     from <code>employeeRoster</code> filtered to <code>active === false</code>. (The
-    <code>renderOrphanedSchedules()</code> fix itself is a Phase 2 co-requisite, not here — see Phase 2.)</li>
+    <code>renderOrphanedSchedules()</code> fix and the self-service clock-in guard are both Phase 2
+    co-requisites, not here — see Phase 2 and Round 3 findings above.)</li>
   </ul>
   <div class="note">⚠️ Before marking this phase done: re-grep the codebase for every reference to
   <code>allSchedules</code> and <code>loadAllSchedules()</code> to confirm no consumer was missed — this
@@ -725,6 +786,7 @@ Then users/{uid}.active is false with appAccess still listing kpiData unchanged,
   <li><strong>Aug 28 — both open questions resolved.</strong> Self-service clock-in: Christie confirmed blocking it too, for consistency. Roster-write race retrofit: Christie asked for a recommendation; recommended and confirmed bundling the <code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code> transaction retrofit into Phase 2 now rather than tracking separately, since all three functions share the same document/repo/shape and Phase 2 is already working in this code. Christie then asked for a fresh second-model review of the fully merged, now-decision-complete document before execution-ready is set — see below.</li>
   <li><strong>Aug 28 — second-model review, Round 2</strong> (Claude + Codex, independently, against the fully merged document): found the merge itself introduced real gaps. Fixed directly: Phase 2/3 ordering was actually unsafe (the orphan-trap fix moved into Phase 2 as a hard co-requisite); the two archive writes weren't atomic (redesigned as one cross-document transaction); the transaction retrofit instructions had an implementation gap (now explicit about <code>transaction.get()</code> inside the callback); the name-match fallback was ambiguous (now requires a unique match or no-op); <code>syncTimeclockRoster()</code> didn't filter archived users (now required); two merge-introduced self-contradictions (admin self-archive BDD, Phase 2's visibility overclaim); archived entries had silently lost their Remove button; a manager-facing pointer to an admin-only screen. Two real scope decisions surfaced, not decided unilaterally — see the two new open questions: how much of the broader roster-write race to close (recommended: scope to the automated Studio Hub writers, not every Ticker roster mutator), and how to handle roster-only employees with no Studio Hub <code>users</code> doc (recommended: restrict Ticker's Add Employee flow instead of building a second archive path). Also noted, accepted as out of scope: the Firestore rules don't technically enforce "only Studio Hub writes active" — it's a code convention.</li>
   <li><strong>Aug 28 — both Round 2 scope decisions resolved.</strong> Race scope: Christie found the tradeoff too deep in Firestore mechanics to evaluate herself and asked me to just decide — scoped to the two automated Studio Hub writers plus the new archive transaction, per my recommendation; full transactionalization of every Ticker roster function tracked as a future follow-up, not a blocker. Roster-only-employee gap: Christie clarified her actual onboarding always adds the person in Studio Hub first, grants Ticker access there, then she personally does the name-claim/PIN setup in Ticker before their first day — she never uses Ticker's own "Add Employee" button for real onboarding, so the theoretical gap doesn't occur in practice. Left as-is, revisitable in a future hardening pass if her process changes. With both resolved, every open question raised across both review rounds is closed — status set to execution-ready.</li>
+  <li><strong>Aug 28 — second-model review, Round 3</strong> (single fresh Claude instance, requested by Christie specifically because Phase 1 touches Firestore rules shared by all 21 apps): independently re-verified every Phase 1 rule citation against the live <code>firestore.rules</code> (exact match, including grepping the whole file to confirm <code>getUserData()</code> has no hidden call sites outside the five gated helpers) and the Phase 2 transaction design against real roster code and Firestore SDK constraints — both confirmed sound, no drift. Found one new, previously-unflagged issue: <code>addClockEntry()</code> in Ticker's <code>firebase-data.js</code> never awaits its write and always reports success, which becomes a real silent-failure bug the moment Phase 1's rules start correctly denying an archived person's self-service clock-in. Verified directly, then fixed: the self-service clock-in guard moved from Phase 3 into Phase 2 as a co-requisite (alongside the orphan-trap fix), and <code>addClockEntry()</code> itself gets fixed to await and surface failures. Plan remains execution-ready.</li>
 </ul>
 
 <h2 id="completeness">Completeness check — what if this is interrupted mid-way</h2>
