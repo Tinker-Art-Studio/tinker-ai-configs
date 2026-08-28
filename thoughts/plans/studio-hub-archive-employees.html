@@ -28,7 +28,7 @@
 <body>
 
 <h1>Plan: Archive Employees — Studio Hub</h1>
-<div class="status">execution-ready: false — plan only, no implementation code written. Needs Christie's browser review + a second-model review before Phase 1 begins.</div>
+<div class="status">execution-ready: false — plan only, no implementation code written. Christie's 3 open questions resolved 2026-08-28; a second-model review then found 2 real issues (below), now fixed in this doc. Needs Christie's final glance before Phase 1 begins.</div>
 
 <div class="meta">
   <strong>App:</strong> studio-hub — <code>~/studio-hub/js/app.js</code>, <code>~/studio-hub/firestore.rules</code>, <code>~/studio-hub/index.html</code>, <code>~/studio-hub/rules.test.js</code><br>
@@ -70,7 +70,7 @@
 
 <h2>Design decisions</h2>
 <div class="decision"><strong>Fields on <code>users/{uid}</code>:</strong> add <code>active</code> (boolean), <code>archivedAt</code> (ISO string), <code>archivedBy</code> (email of who archived). Missing <code>active</code> is treated as <code>true</code> everywhere (rules use <code>.get('active', true)</code>; UI uses <code>user.active !== false</code>) — existing users need no migration write.</div>
-<div class="decision"><strong>Rules gating:</strong> add <code>isActiveUser()</code> and require it inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code>. This is the single change that cuts off all 21 apps at once. Self-read/self-update stay independent of it (see table above) so the app can still load and show an "archived" state instead of crashing.</div>
+<div class="decision"><strong>Rules gating:</strong> add <code>isActiveUser()</code> and require it inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, and — as its own explicit check, since it doesn't call the other four — <code>belongsToStudio()</code>. This is the single change that cuts off all 21 apps at once. Self-read/self-update stay independent of it (see table above) so the app can still load and show an "archived" state instead of crashing. <code>isKiosk()</code> (line 32-38) is also deliberately left independent — it's a hardcoded PIN-lookup bypass unrelated to any person's <code>role</code>, and kiosk/schedule visibility for an archived person is governed by Tinker Ticker's own separate roster <code>active</code> flag (see Cross-app coordination above), not this one.</div>
 <div class="decision"><strong>Pin <code>active</code> in the self-update rule</strong> alongside <code>role</code>/<code>appAccess</code>/<code>studios</code>, so an archived person can never self-reactivate.</div>
 <div class="decision"><strong>Who can archive/reactivate:</strong> admin and manager, matching the existing manager-can-edit-appAccess/studios boundary. Not adding new role restrictions beyond what already exists for Manage Team.</div>
 <div class="decision"><strong>Data preserved on archive:</strong> <code>role</code>, <code>appAccess</code>, <code>studios</code> are left exactly as-is — only <code>active</code> flips. Access is denied purely by the rules gate, so there's no need to clear the fields, and leaving them intact is what makes Reactivate a single click with no reconfiguration.</div>
@@ -81,6 +81,10 @@
 <div class="decision"><strong>Wording — resolved:</strong> "Archive"/"Reactivate" confirmed over "Deactivate" — matches the actual behavior (record kept, fully restorable), and stays close to the Tinker Ticker plan's own Archive/Unarchive naming. (Ticker uses "Unarchive," this plan uses "Reactivate" — a person's access being reactivated reads more naturally than a person being "unarchived"; the two apps' wording doesn't need to match exactly, and both sessions agreed this isn't worth blocking on.) The default-collapsed "Show archived (N)" list Christie asked for was already specified in Phase 2 as written — no change needed, just confirmed.</div>
 <div class="decision"><strong>Manager-on-admin — resolved, added to Phase 1:</strong> managers can archive/reactivate other managers and staff (unchanged from their existing appAccess/studios editing capability), but <strong>cannot</strong> flip an admin's <code>active</code> flag. The broader existing gap — managers editing an admin's appAccess/studios — stays out of scope/tabled, per Christie ("if this is a bigger issue though, we can table it"); only the archive/active action gets the admin guard, since it's the stronger, more consequential one. See Phase 1 for the specific rule change.</div>
 <div class="decision"><strong>createTeamMember — resolved:</strong> the new-hire flow will write <code>active: true</code> explicitly going forward, per Christie's confirmation. See Phase 2.</div>
+
+<h2>Second-model review findings (2026-08-28) — both fixed below</h2>
+<div class="note"><strong>1. Admin self-archive had no recovery path.</strong> <code>firestore.rules:128</code> (<code>allow write: if isAdmin();</code>) is unrestricted and, because Firestore ORs sibling <code>allow</code> rules, sits completely outside the self-update rule's <code>fieldUnchanged('active')</code> pin. An admin could write <code>active: false</code> to their <em>own</em> doc through this rule; the instant it commits, <code>isAdmin()</code> requires <code>isActiveUser()</code> and fails for them on every future request — including their own attempt to undo it, since the self-update rule (their only remaining path to their own doc) pins <code>active</code> unchanged. No client-side recovery; only another active admin or a manual Console edit fixes it. This is the identical bug shape to a loophole already found and fixed in this same file for managers (<code>firestore.rules:114-122</code>, regression tests at <code>rules.test.js:448-468</code>) — that fix just didn't need to consider a field like <code>active</code> that didn't exist yet. <strong>Fix (added to Phase 1 below):</strong> extend the admin-write rule so an admin can do anything to <em>other</em> users' docs (unchanged), but can never touch their own <code>active</code> field — an admin can only be archived/reactivated by a <em>different</em> admin. This forecloses admin self-archiving entirely, which is the deliberate tradeoff: simple, rules-only, and avoids needing an "are you the last active admin" check (which would require a Firestore query inside the rule and isn't attempted).</div>
+<div class="note"><strong>2. <code>belongsToStudio()</code> needed its own explicit active check.</strong> Its non-admin branch (<code>studio in getUserData().studios</code>) doesn't route through <code>isAdmin()</code>/<code>isManager()</code>/etc. at all, so gating those four functions on <code>isActiveUser()</code> would <em>not</em> have touched this one — an archived staff member with a <code>studios</code> array would keep access to every <code>belongsToStudio()</code>-gated collection: <code>rosterManager</code>, <code>clayHub_members</code>/<code>clayHub_waitlist</code>/<code>clayHub_appData</code>, <code>clayInventory</code>. <strong>Fix (added to Phase 1 below):</strong> <code>belongsToStudio()</code> gets its own explicit <code>isActiveUser()</code> check rather than inheriting one.</div>
 
 <h2>Phase 1 — Firestore rules + data model</h2>
 <div class="phase">
@@ -108,19 +112,39 @@ Then the write is denied — only the target admin themself or another admin can
 
 Given a manager editing another manager's or a staff member's doc
 When they try to write active: false or active: true
-Then the write succeeds — unchanged from their existing appAccess/studios capability</div>
+Then the write succeeds — unchanged from their existing appAccess/studios capability
+
+Given an admin's own users/{uid} doc (active: true)
+When that admin tries to write active: false to their own doc via any rule path,
+  including the blanket admin-write rule at firestore.rules:128
+Then the write is denied — an admin can only be archived/reactivated by a
+  different admin, never by themselves (closes the self-lockout hole below)
+
+Given an archived staff member whose studios array still lists 'clayhub'
+When they try to read a clayHub_members document (gated by belongsToStudio())
+Then the read is denied — belongsToStudio() checks isActiveUser() directly,
+  not just via isAdmin()
+
+Given an archived manager (previously isManagerOrAbove()-gated)
+When they try to read a payroll document
+Then the read is denied</div>
   <h4>Work</h4>
   <ul>
     <li>Add <code>isActiveUser()</code> helper to <code>firestore.rules</code>: <code>isAuthenticated() && getUserData().get('active', true) == true</code></li>
-    <li>Require <code>isActiveUser()</code> inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code></li>
+    <li>Require <code>isActiveUser()</code> inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code></li>
+    <li><code>belongsToStudio()</code> (found in second-model review — its non-admin branch doesn't route through any of the other four functions, so it needs its own check): rewrite to <code>return isActiveUser() && (isAdmin() || studio in getUserData().studios);</code></li>
     <li>Add <code>fieldUnchanged('active')</code> to the self-update rule (line ~108-112)</li>
+    <li>Admin self-archive guard (found in second-model review — same OR'd-sibling-rule bug shape already fixed once in this file for managers): change the admin-write rule (line ~128) from <code>allow write: if isAdmin();</code> to:
+      <div class="bdd">allow write: if isAdmin()
+  && (request.auth.uid != userId || fieldUnchanged('active'));</div>
+      Admins keep unrestricted write on every other user's doc (including delete); only their own <code>active</code> field becomes untouchable by themselves, closing the self-lockout hole with no recovery path.</li>
     <li>Manager-on-admin guard (resolved in review): extend the manager-update rule (line ~123-125) so a manager can't touch an admin's <code>active</code> field, using the same pattern as the existing <code>role</code> pin:
       <div class="bdd">allow update: if isManager()
   && request.auth.uid != userId
   && request.resource.data.role == resource.data.role
   && (resource.data.role != 'admin' || fieldUnchanged('active'));</div>
       Managers keep full appAccess/studios editing on admins (that existing gap is explicitly tabled, not touched here) — only <code>active</code> gets the guard.</li>
-    <li>Extend <code>rules.test.js</code>'s existing "Users —" describe block with the six scenarios above, plus one per already-tested collection type (finance, KPI, timeclock) confirming an otherwise-authorized-but-archived user is denied</li>
+    <li>Extend <code>rules.test.js</code>'s existing "Users —" describe block with the nine scenarios above, plus one per already-tested collection type (finance, KPI, timeclock) confirming an otherwise-authorized-but-archived user is denied</li>
     <li>Run <code>npm test</code> — must be green before deploy</li>
   </ul>
   <div class="note">Deploy gate: per CLAUDE.md, do not run <code>firebase deploy --only firestore:rules</code> until Christie has said "approved to change firebase" in-session, tests are green, and changes are committed.</div>
@@ -137,8 +161,9 @@ Then their card leaves the default list, active becomes false,
 
 Given an archived user shown via "Show archived"
 When Christie clicks Reactivate
-Then active becomes true (archivedAt/archivedBy cleared or left as history — see below)
-  and their card shows the exact appAccess/role/studios they had before archiving
+Then active becomes true, archivedAt/archivedBy are left in place as a
+  "last archived" audit trail (not cleared), and their card shows the exact
+  appAccess/role/studios they had before archiving
 
 Given the Manage Team list has 5 archived and 20 active users
 When Christie opens Manage Team with no filter applied
@@ -205,6 +230,7 @@ Then active: false is set and appAccess still lists kpiData unchanged
 <p><em>(append-only — record any choice made during execution that deviates from or resolves an open question in this plan)</em></p>
 <ul>
   <li><strong>2026-08-28:</strong> Christie confirmed "Archive"/"Reactivate" wording and the default-collapsed archived list (both already as-written). Confirmed <code>createTeamMember</code> should write <code>active: true</code> explicitly. Confirmed managers should not be able to archive/reactivate admins specifically (broader manager-on-admin appAccess/studios gap stays tabled) — added as a Phase 1 rule change and Phase 2 UI guard. All three open questions closed via the plan-reviewer comment thread; a parallel "second opinion" pass from the Tinker Ticker session independently verified the manager-on-admin rule text and proposed the same fix shape, cross-checked against <code>firestore.rules:123-125</code> before this plan adopted it.</li>
+  <li><strong>2026-08-28 (second-model review):</strong> an independent Claude Code instance reviewed this plan against the live <code>firestore.rules</code>/<code>rules.test.js</code>, not just this doc's own excerpts. Verdict: core mechanism sound, no lockout-everyone risk (verified 0 existing <code>users/{uid}</code> docs have an <code>active</code> field). Found two real gaps, both fixed in this doc before execution: (1) the blanket admin-write rule at <code>firestore.rules:128</code> let an admin self-archive with no recovery path — same OR'd-sibling-rule bug shape already fixed once in this file for managers — closed by pinning <code>active</code> when an admin edits their own doc; (2) <code>belongsToStudio()</code>'s non-admin branch doesn't route through the other four gated functions and would have kept archived staff's studio-scoped access (Clay Hub, roster) — closed with its own explicit <code>isActiveUser()</code> check. Full review at <code>~/.claude/plans/plan-under-review-shimmering-grove.md</code>. Also resolved: reactivate leaves <code>archivedAt</code>/<code>archivedBy</code> in place as history rather than clearing them; <code>isKiosk()</code>'s independence from this whole mechanism is now stated explicitly in the plan.</li>
 </ul>
 
 </body>
