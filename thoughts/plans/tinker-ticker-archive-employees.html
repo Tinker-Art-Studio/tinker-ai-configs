@@ -45,6 +45,18 @@
 </div>
 
 <div class="change">
+  📝 <strong>Aug 28 — architecture reconsidered per Christie's question: why two separate archive
+  actions instead of one?</strong> Good challenge, and the review findings above actually make the case
+  <em>for</em> consolidating, not against it — see "Single-trigger reconsideration" below. Phase 2 is
+  revised: Tinker Ticker no longer gets its own Archive/Unarchive <em>action</em>. Studio Hub's Manage
+  Team becomes the single place that triggers archiving, writing to both <code>users/{uid}.active</code>
+  and this roster's <code>active</code> field in one action. Ticker's roster list keeps a read-only
+  "Archived" indicator and the collapsed "Show Archived" view Christie asked for, but the button that
+  actually flips the flag moves to Studio Hub. This needs a matching update to the Studio Hub plan,
+  which is not this plan to edit — flagged for that session.
+</div>
+
+<div class="change">
   📝 <strong>Revised Aug 28</strong> — Christie is running a parallel session planning a Studio-Hub-wide
   offboarding flow (revoking <code>appAccess</code> via <code>users/{uid}</code>, which gates all 21
   apps). That session found <code>timeclock_settings/employees.roster[]</code> is already written to
@@ -57,20 +69,75 @@
 </div>
 
 <div class="meta" id="plan-meta">
-  <strong>Goal:</strong> Give admins a reversible "Archive" action for a roster entry that makes that
-  person disappear from every current-schedule view (Who's Working, Schedule Builder's schedule list,
-  the roster picker, kiosk PIN entry) without deleting any of their data — and an "Unarchive" that
-  brings them back exactly as they were.<br>
+  <strong>Goal:</strong> Make an archived employee (archived via Studio Hub's Manage Team — see the
+  single-trigger reconsideration below) disappear from every current-schedule view in Tinker Ticker
+  (Who's Working, Schedule Builder's schedule list, the roster picker, kiosk PIN entry, and self-service
+  clock-in) without deleting any of their data — reversibly, with zero Ticker-side write action of its
+  own.<br>
   <strong>App:</strong> tinker-timeclock — <code>~/tinker-timeclock/js/app.js</code>,
-  <code>js/firebase-data.js</code><br>
+  <code>js/firebase-data.js</code> (read-side only; the write lives in <code>~/studio-hub</code>)<br>
   <strong>Why now:</strong> The roster has 37 entries; only 18 are in the live Fall 2026 schedule. The
   existing "Remove" button is a hard, permanent delete (roster entry + both schedule docs, no undo) —
   too destructive for routine end-of-term cleanup.<br>
-  <strong>Risk:</strong> Low data risk (no field this plan touches is ever deleted — only two new
-  boolean flags are added/toggled). Main risk is UI coverage: several views read schedule data directly
-  and must all respect the new flag, or an archived person could still show up somewhere.<br>
+  <strong>Risk:</strong> Low data risk (no field this plan touches is ever deleted — only one existing
+  boolean flag, <code>active</code>, is read more places than it is today). Main risk is UI coverage:
+  several views read schedule data directly and must all respect the flag, or an archived person could
+  still show up somewhere.<br>
   <strong>Reversible:</strong> Yes, by design — Unarchive clears both flags and restores full visibility
   with zero data loss.
+</div>
+
+<h2 id="single-trigger">Single-trigger reconsideration (answering "why two functions?")</h2>
+
+<div class="decision">
+  <p><strong>Short answer: Christie's right, and this plan changes accordingly.</strong> The original
+  "keep Studio Hub and Ticker fully separate, two-click offboarding" design was defensible in isolation,
+  but the second-model review's findings expose its actual cost: an entire "cross-app coordination"
+  section needed just to reason about non-overlap, a wording mismatch between the two plans'
+  Archive/Reactivate/Unarchive verbs, and — most concretely — a real race condition that's only hard to
+  reason about <em>because</em> two independently-built features write to the same document from two
+  different repos. All of that friction is a symptom of splitting one concern across two triggers, not
+  an inherent property of the underlying data model.</p>
+
+  <p><strong>What doesn't change:</strong> the two pieces of state are still genuinely different things —
+  <code>users/{uid}.active</code> (Studio Hub) controls login/authorization everywhere;
+  <code>timeclock_settings/employees.roster[].active</code> (Ticker) controls schedule/kiosk visibility.
+  Merging the <em>trigger</em> doesn't merge the <em>data</em> — Studio Hub's single Archive action would
+  write to both fields, from one place, in one user action.</p>
+
+  <p><strong>What does change:</strong> Studio Hub's Manage Team becomes the only place an admin clicks
+  "Archive." That action (a) sets <code>users/{uid}.active = false</code> as already planned there, and
+  (b) also resolves and flips the matching Tinker Ticker roster entry's <code>active</code> field —
+  extending code that already exists and already reaches into this exact roster document
+  (<code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code>,
+  <code>studio-hub/js/app.js:804-865</code>), rather than inventing a new cross-repo pattern. Tinker
+  Ticker's own Archive/Unarchive <em>button</em> (originally Phase 2) is cut. Ticker keeps everything
+  that has to live in Ticker regardless of who flips the flag: the read-side fixes from the second-model
+  review (respecting <code>active</code> in Who's Working, Schedule Builder, kiosk, self-service
+  clock-in, and not tripping the orphaned-schedule trap), plus a read-only "Archived" indicator and the
+  collapsed "Show Archived" list in Settings, so an admin looking at Ticker directly can still see who's
+  archived without needing to go check Studio Hub.</p>
+
+  <p><strong>This also directly resolves the race-condition open question below</strong> — with a single
+  writer (Studio Hub) responsible for every write to this roster array (new-hire sync <em>and</em> the
+  active flip), that writer's own code can be hardened with one Firestore transaction, in one repo, under
+  one team's control — rather than needing two independently-designed features in two repos to coordinate
+  a shared write path.</p>
+
+  <p><strong>One real risk this consolidation inherits, worth specifying explicitly rather than
+  discovering later:</strong> <code>addToTinkerTickerRoster</code> today resolves who's who by
+  <em>name matching</em> (<code>roster.some(e => e.id === id || (e.name||'').toLowerCase() === name.toLowerCase())</code>)
+  — the exact fuzzy mechanism that produced the "ericapodwoiski" duplicate-roster-entry cleanup earlier
+  this session. If Studio Hub's archive action resolves the target Ticker roster entry the same way, it
+  inherits that same fragility. Fix: resolve by <code>claimedBy</code> uid first (Studio Hub already has
+  the person's real Firebase Auth uid as the <code>users/{uid}</code> doc's own key — a strictly better
+  match than name), falling back to name-matching only for people who haven't claimed their Ticker
+  account yet. This is a required part of the consolidated design, not an afterthought.</p>
+
+  <p><strong>Not this plan's call to make unilaterally:</strong> the Studio Hub plan
+  (<code>studio-hub-archive-employees.html</code>) needs a matching revision — its Phase 2 currently
+  scopes archiving to <code>users/{uid}</code> only. That's a change for that plan/session to make, not
+  this one to impose by editing their file directly.</p>
 </div>
 
 <h2 id="research">What's actually there today (verified against code, not assumed)</h2>
@@ -341,14 +408,12 @@
 <h2 id="phases">Phases</h2>
 
 <div class="phase" id="phase-1">
-  <h3>Phase 1 — Data layer: archive/unarchive functions + centralized filter</h3>
-  <p><strong>Acceptance criteria:</strong> Two new functions, <code>archiveEmployee(empId, name)</code>
-  and <code>unarchiveEmployee(empId, name)</code>, mirroring the existing <code>removeEmployee</code>
-  signature/pattern. Archiving sets <code>active:false</code> on the roster entry only — via the
-  existing <code>saveEmployeeRoster</code> full-array-save convention already used by every other roster
-  mutation in this file (add/remove/claim/set-PIN) — not a new write pattern. No
-  <code>timeclock_schedules</code> document is touched by either function. The actual partitioning logic
-  is extracted into a standalone, exported pure function —
+  <h3>Phase 1 — Data layer: read-side filtering (revised — no Ticker-side write functions)</h3>
+  <p><strong>Revised per the single-trigger reconsideration above:</strong> this plan no longer builds
+  <code>archiveEmployee()</code>/<code>unarchiveEmployee()</code> in Ticker — the roster's
+  <code>active</code> field is written from Studio Hub's Manage Team instead. What Ticker still needs,
+  regardless of who writes the flag: correctly reading and respecting it everywhere.</p>
+  <p><strong>Acceptance criteria:</strong> the actual partitioning logic is extracted into a standalone, exported pure function —
   <code>partitionSchedulesByRosterActive(allSchedules, employeeRoster)</code> → <code>{active, archived}</code>
   — that <code>loadSchedulesData()</code> calls to populate <code>allSchedules</code>/
   <code>archivedSchedules</code>. It defaults any schedule doc with <strong>no</strong> matching roster
@@ -357,24 +422,21 @@
   entry as "no match."</p>
 
   <div class="bdd">Given: an employee with an existing timeclock_schedules doc (recurring + overrides + futureSchedule)
-When: archiveEmployee() is called
-Then: the roster entry gets active:false
-  AND the schedule doc itself is never written to — every field on it is untouched
+When: Studio Hub sets that person's roster entry to active:false
+Then: the schedule doc itself is never written to by anything in Ticker — every field on it is untouched
   AND on next loadSchedulesData(), the person is absent from allSchedules and present in archivedSchedules
 
 Given: an employee who has a roster entry but NO schedule doc yet (never been scheduled)
-When: archiveEmployee() is called
-Then: active:false is set on the roster entry
-  AND the roster-only archive still works (they vanish from roster list / picker / kiosk) with no error
+When: their roster entry's active field is set to false
+Then: the roster-only exclusion still works (they vanish from roster list / picker / kiosk) with no error
 
 Given: an archived employee
-When: unarchiveEmployee() is called
-Then: active is set back to true on the roster entry (their schedule doc, if any, was never touched
-      by archiving, so nothing needs restoring on it)
+When: their roster entry's active field is set back to true (from Studio Hub)
+Then: their schedule doc, if any, was never touched by archiving, so nothing needs restoring on it
   AND the person reappears in allSchedules, roster list, picker, and kiosk PIN lookup
 
-Given: a person's active flag is flipped to false by some OTHER write path in the future (e.g. a
-      Studio-Hub-driven roster sync), not by this plan's archiveEmployee() function
+Given: a person's active flag is flipped to false by any write path — Studio Hub's Manage Team,
+      a manual Firestore console edit, anything
 When: loadSchedulesData() next runs
 Then: they are still correctly excluded from allSchedules and included in archivedSchedules —
       the filter reads the roster's active field directly, it does not care who set it
@@ -430,28 +492,28 @@ Then: it does not throw, and the doc is classified as active/visible (matching c
 </div>
 
 <div class="phase" id="phase-2">
-  <h3>Phase 2 — Roster settings UI: Archive button + "Show Archived" panel</h3>
-  <p><strong>Acceptance criteria:</strong> Each row in <code>renderRosterList()</code> gets a new
-  "Archive" button (alongside the existing PIN/Remove buttons — Remove stays, for the rare true-delete
-  case). Archived entries are <strong>never shown by default</strong> — a "Show Archived (N)" link/toggle
-  sits below the main list, collapsed/hidden until clicked, and reveals a separate list of archived
-  entries (<code>renderArchivedRosterList()</code>) with an "Unarchive" button on each. Collapsing it
-  again hides them. No existing button's behavior changes, and the default Settings view looks identical
-  to today until an admin deliberately opts in to seeing archived people.</p>
+  <h3>Phase 2 — Roster settings UI: read-only "Archived" display (revised — the action moved to Studio Hub)</h3>
+  <p><strong>Revised per the single-trigger reconsideration above:</strong> Ticker does not get its own
+  Archive/Unarchive <em>button</em>. The flag is written from Studio Hub's Manage Team; this phase is
+  purely about Ticker correctly displaying and respecting whatever that flag currently says.</p>
+  <p><strong>Acceptance criteria:</strong> Archived entries are <strong>never shown by default</strong> —
+  a "Show Archived (N)" link/toggle sits below the main roster list, collapsed/hidden until clicked, and
+  reveals a separate read-only list of archived entries with an "Archived" badge on each (no action
+  button — unarchiving happens in Studio Hub). Collapsing it again hides them. No existing button's
+  behavior changes, and the default Settings view looks identical to today until an admin deliberately
+  opts in to seeing archived people.</p>
   <div class="note">Per Christie's comment: this must not add clutter to the default Settings view —
   archived entries live behind the toggle, full stop, never inline in the main list.</div>
 
-  <div class="bdd">Given: the admin is on the Schedule Builder tab's Employee Roster section
-When: they click "Archive" on an employee's row
-Then: a confirm prompt explains this is reversible (contrast with Remove's "cannot be undone" wording)
-  AND on confirm, that employee disappears from the visible roster list and the "Select employee" picker
-  AND a "Show Archived (1)" indicator appears/increments
+  <div class="bdd">Given: an employee is archived via Studio Hub's Manage Team
+When: Ticker's roster data next reloads
+Then: that employee disappears from the default roster list and the "Select employee" picker
+  AND a "Show Archived (1)" indicator appears/increments — with no write ever happening from Ticker's side
 
 Given: at least one employee is archived
-When: the admin clicks "Show Archived"
-Then: a panel lists each archived employee by name with an "Unarchive" button
-  AND clicking Unarchive removes them from this panel and restores them to the main roster list,
-      the employee picker, and (per Phase 3) Who's Working / Schedule Builder's card list</div>
+When: the admin clicks "Show Archived" in Ticker's Settings
+Then: a read-only panel lists each archived employee by name with an "Archived" badge
+  AND there is no unarchive button here — a note points to Studio Hub's Manage Team for that action</div>
 </div>
 
 <div class="phase" id="phase-3">
@@ -519,6 +581,15 @@ Then: they appear again, identically to before archiving, in every view</div>
   crash. Also surfaced a real, pre-existing cross-app race (Studio Hub's existing, unrelated roster-sync
   functions already do full-array writes to the same document, one not even awaited) that's wider than
   either archive plan anticipated — flagged as an open question, out of this plan's scope to fix alone.</li>
+  <li><strong>Aug 28 (architecture pivot — single trigger, per Christie's question):</strong> Cut
+  Ticker's own Archive/Unarchive write functions and UI button entirely. The action moves to Studio
+  Hub's Manage Team, extending its existing roster-touching code
+  (<code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code>) to also flip an existing
+  entry's <code>active</code> field, resolved by <code>claimedBy</code> uid first rather than fuzzy name
+  matching. Ticker keeps only what has to live in Ticker regardless of who writes the flag: the read-side
+  fixes from the second-model review, plus a read-only "Archived" display in Settings. This directly
+  addresses the race-condition open question too — a single writer can be transaction-hardened in one
+  place. Requires a corresponding update to the Studio Hub plan, not made here.</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
