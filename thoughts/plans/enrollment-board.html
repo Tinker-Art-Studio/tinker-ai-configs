@@ -33,11 +33,11 @@
 <h1 id="plan-title">Plan: Enrollment Board as a Tinker HQ App</h1>
 
 <div class="meta" id="plan-meta">
-  <span class="status-tag not-ready">execution-ready: false</span> — the three architectural decisions from the brief, plus four follow-on items surfaced during planning (enumerated in Phase 0), need Christie's confirmation before Phase 1 starts. No code moves until then, and no deploy of any kind happens without hearing <strong>"yes, do it"</strong> — separately, no <code>netlify deploy</code> without a fresh "okay to deploy?" per app.<br><br>
+  <span class="status-tag ready">execution-ready: pending final read-through</span> — all seven open items have been decided by Christie (2026-08-28, in chat review). No code moves until this plan gets one more pass to confirm the write-up matches what was decided, and no deploy of any kind happens without hearing <strong>"yes, do it"</strong> — separately, no <code>netlify deploy</code> without a fresh "okay to deploy?" per app, and no Firestore rules deploy without a separate "approved to change firebase" per the standing gate.<br><br>
   <strong>Goal:</strong> Bring the Sawyer enrollment dashboard into the Tinker HQ ecosystem as a registered app with a Studio Hub tile, replacing its current dual life as an unpublished Claude artifact and an unfinished scratch Netlify site — without breaking the one thing already proven to work (single-page landscape printing) or the hard scope limit on what the refresh job is allowed to touch in Sawyer.<br>
-  <strong>Proposed app id:</strong> <code>enrollment-board</code><br>
+  <strong>Proposed app id:</strong> <code>enrollment-board</code> (department: <code>marketing</code>)<br>
   <strong>Source doc:</strong> <code>~/tinker-ai-configs/enrollment-board-handoff.md</code><br>
-  <strong>Risk:</strong> Low-to-medium. Zero new Firestore writes under the recommended path (static data, unchanged from today). The only genuinely new surface is the Studio Hub registry edit and a promoted repo.
+  <strong>Risk:</strong> Low-to-medium. One new Firestore collection (a single gated document holding the live dashboard numbers), added with a rule + emulator test in the same phase per <code>AGENTS.md</code>. Snapshot history stays outside Firestore for now. The other genuinely new surfaces are the Studio Hub registry edit and a promoted repo.
 </div>
 
 <h2 id="today">What exists today</h2>
@@ -58,8 +58,7 @@
     <tr><th>Option A — Restyle</th><td>Switch to Nunito + Tinker purple per the standard registry. Cost: real risk of breaking the single-page print guarantee; requires re-verifying pagination the same rigorous way it was verified once already.</td></tr>
     <tr><th>Option B — Documented exception</th><td>Keep the current type system. <code>/product-principles</code> itself allows this path ("Do not introduce a new visual pattern <em>without flagging it</em>" implies flagging, not blocking). This app's job — dense printable schedules — is unlike every other Tinker app's job, which is the substantive reason for an exception rather than just inertia.</td></tr>
   </table>
-  <div class="rec"><strong>Recommendation: Option B.</strong> Log the exception in <code>product-principles.md</code> — its registry table only has four columns (App/Path/localhost/Hosting), no notes field, so this needs a short new "Documented exceptions" note near the Design System section rather than trying to cram a reason into that table. That way a future session doesn't "fix" it by accident. Restyling stays available later if Christie decides visual consistency outweighs the print risk — it isn't a one-way door, just not the default path today.</div>
-  <div class="ask">Needs Christie: confirm the exception, or say the restyle-and-retune is worth doing now.</div>
+  <div class="rec"><strong>Decided (Christie, 2026-08-28): Option B — documented exception.</strong> Log it in <code>product-principles.md</code> — its registry table only has four columns (App/Path/localhost/Hosting), no notes field, so this needs a short new "Documented exceptions" note near the Design System section rather than trying to cram a reason into that table. That way a future session doesn't "fix" it by accident. Restyling stays available later if visual consistency ever outweighs the print risk — it isn't a one-way door, just not the default path today.</div>
   <p style="font-size:.87rem;color:#555;">Small thing worth knowing rather than "discovering" later: the scratch repo's <code>build.js</code> already makes a partial concession to house style — the auth-guard overlay chrome (sign-in form, sign-out button) is styled in Nunito, only the dashboard body itself keeps Archivo/IBM Plex Mono/Source Sans 3. That split is sensible (the gate is shared UI, the dashboard is the app) and doesn't need to change.</p>
 </div>
 
@@ -70,31 +69,31 @@
     <tr><th>Option A — Stay static</th><td>No new collection, no rules change, no test burden. Refresh flow is unchanged in shape — only its target file path moves.</td></tr>
     <tr><th>Option B — Firestore-backed snapshot history</th><td>New collection (e.g. <code>enrollmentSnapshots</code>) → rule block + emulator test in the same commit, per <code>AGENTS.md</code>. Unlocks reliable scheduled snapshots and queryable history for the marketing-attribution roadmap item below.</td></tr>
   </table>
-  <div class="rec"><strong>Recommendation: phase it.</strong> Ship on Option A now — it's what's already working today, and this plan's job is to get the board into the ecosystem, not to redesign its data layer at the same time. Scope Option B as an explicit fast-follow, timed to when the MailChimp integration actually starts (that's the point where "somewhere server-side to hold an API key" becomes a real requirement, and a scheduled job is needed regardless of where history lives). The existing CSV's columns (<code>snapshot,kind,name,loc,time,dow,session_date,enrolled,capacity,waitlist</code>) already map cleanly to a Firestore doc shape, so migrating the 261 rows later is a mechanical import script, not a redesign. This keeps today's change low-risk without painting the roadmap into a corner — the brief's own lean toward Firestore is about the <em>next</em> feature, not this one.</div>
-  <div class="ask">Needs Christie: confirm phasing (static now, Firestore as a separate later plan) vs. wanting the Firestore migration folded into this same plan.</div>
+  <div class="rec"><strong>Decided (Christie, 2026-08-28): phase it — history stays on Option A.</strong> The append-only CSV and the full snapshot-history question stay static for now, as originally recommended; that's still "what's already working today" and not this plan's job to redesign. Scope full Option B (a proper <code>enrollmentSnapshots</code> history collection) as an explicit fast-follow, timed to when the MailChimp integration actually starts. The CSV's columns (<code>snapshot,kind,name,loc,time,dow,session_date,enrolled,capacity,waitlist</code>) already map cleanly to a Firestore doc shape, so migrating the 261 rows later is a mechanical import script, not a redesign.</div>
+  <div class="note"><strong>Narrower addition, decided separately under Decision 3 below:</strong> the <em>live</em> dashboard numbers (today's <code>RAW</code>/<code>DROPIN_SESSIONS</code>/<code>META</code>/teacher-assignment data — everything that isn't the historical CSV) move into one new Firestore document now, not later. This isn't the Option B history migration — it's a smaller, security-driven change to give the app the same real appAccess enforcement every other Tinker app has, since a fully static file has no server-side check for a rule to attach to. See Decision 3 — Access level for why, and Phase 1/2 for what it means concretely.</div>
 </div>
 
 <h2 id="decision3">Decision 3 — Access level and registration</h2>
 <div class="decision">
   <p>Needs an app <code>id</code>, a tile in <code>js/config.js</code> <code>CONFIG.apps[]</code>, an icon, and (if manager+ by default) an entry in <code>MANAGER_ONLY_APPS</code> in <code>js/app.js</code>.</p>
-  <h3>Department: curriculum or marketing?</h3>
-  <p>Enrollment and scheduling data puts this closer to Roster Manager / Classbook / Summer Camp App (all <code>curriculum</code>) than to Social Media Manager (the only current <code>marketing</code> app). But the roadmap's marketing-attribution feature is a real vote for <code>marketing</code>. This is explicitly flagged in the brief as Christie's call — no recommendation forced here.</p>
-  <div class="ask">Needs Christie: pick <code>curriculum</code> or <code>marketing</code>.</div>
+  <h3>Department</h3>
+  <div class="rec"><strong>Decided (Christie, 2026-08-28): <code>marketing</code>.</strong></div>
 
-  <h3>Access level</h3>
-  <p>Precedent exists in <code>firestore.rules</code> for manager+-by-default-with-override — e.g. <code>kpiData</code>: <code>allow read, write: if isManagerOrAbove() || hasAppAccess('kpi');</code>. But under the Decision 2 default (static, no Firestore reads/writes from the app itself at all), that rule pattern <strong>cannot apply</strong> — there is no document to gate. This is a materially bigger gap than first drafted, confirmed by reading the actual shared auth guard both this app and every other standalone Tinker app copies verbatim:</p>
-  <div class="warn"><strong>Verified against <code>~/studio-hub/shared/auth-guard.js</code> directly (the canonical source, not just the scratch repo's copy):</strong> <code>requireAuth()</code> fetches <code>role</code>/<code>appAccess</code> from the user's Firestore doc into <code>authCurrentUser</code>, but never checks them before hiding the sign-in overlay. It resolves for <em>any</em> authenticated <code>tinker-hq-apps</code> user — staff included. For a Firestore-backed app this is masked because the rules layer still blocks unauthorized reads/writes even if the UI shell briefly shows (the same "silently falls back to defaults" pattern already documented in <code>studio-hub/CLAUDE.md</code>). This app has no such backstop under Option A: the moment any signed-in staff member — not just an unauthenticated URL-guesser reading page source — opens the page, the full baked-in enrollment/fill-rate/teacher-name dataset is right there, fully functional, no different from a manager's view. <code>MANAGER_ONLY_APPS</code>/<code>roles</code> only ever controlled whether the Studio Hub <em>tile</em> is shown; a staff member who already knows or is given the URL bypasses that entirely.</div>
-  <div class="ask">This needs its own explicit decision, not a bundled "acceptable as-is": (a) accept that manager+ restriction for this app is tile-visibility only, with no enforcement against a staff member who has the URL — a real change from what "manager+ with appAccess override" implies elsewhere in this ecosystem; or (b) add an actual gate — the auth guard already fetches <code>role</code>/<code>appAccess</code> into <code>authCurrentUser</code>, so checking it client-side (show an "access restricted" state instead of the dashboard for non-manager/non-override staff) is a small, scoped addition to Phase 1, not a redesign — though note a client-side check alone still doesn't stop a determined non-manager from reading the baked HTML directly, only from using the normal UI. A server-side check (Netlify edge function) is the only way to actually close that, and is the same fix already flagged for the anonymous-reader case below.</div>
-  <div class="note">Separately found during research, unrelated to this plan: <code>kpiData</code>'s rule checks <code>hasAppAccess('kpi')</code>, but the app's own <code>id</code> everywhere else (config.js, <code>MANAGER_ONLY_APPS</code>) is <code>kpi-dashboard</code> — the Manage Team checkbox pushes <code>'kpi-dashboard'</code> into a staff member's <code>appAccess</code> array, which does not satisfy <code>hasAppAccess('kpi')</code>. Looks like a pre-existing, silent bug in the KPI Dashboard staff-override checkbox. Flagging to Christie separately, not fixing it here. For this new app, keep the id used in config.js/app.js and any future <code>hasAppAccess()</code> check identical (<code>enrollment-board</code> everywhere) so it can't drift the same way.</div>
+  <h3>Access level — the real mechanism</h3>
+  <p>Precedent exists in <code>firestore.rules</code> for manager+-by-default-with-override — e.g. <code>kpiData</code>: <code>allow read, write: if isManagerOrAbove() || hasAppAccess('kpi');</code>. Under the Decision 2 static default, that pattern <strong>could not apply</strong> — there was no document to gate. Verified directly against <code>~/studio-hub/shared/auth-guard.js</code> (the canonical source every standalone Tinker app copies): <code>requireAuth()</code> fetches <code>role</code>/<code>appAccess</code> into <code>authCurrentUser</code> but never checks them before hiding the sign-in overlay — it resolves for <em>any</em> authenticated <code>tinker-hq-apps</code> user, staff included. For Firestore-backed apps this is masked because the rules layer still blocks unauthorized reads/writes even if the UI shell briefly shows. A fully static enrollment board would have had no such backstop: any signed-in staff member, not just an unauthenticated URL-guesser, would get the full baked-in dataset.</p>
+  <div class="rec"><strong>Decided (Christie, 2026-08-28): real manager/admin-only enforcement is required, via the same <code>appAccess</code> mechanism every other app uses.</strong> Mechanism chosen: the live dashboard numbers move into a single Firestore document, read at runtime and gated by a rule identical in shape to <code>kpiData</code>'s:</p>
+  <div class="bdd">match /enrollmentBoard/{docId} {
+  allow read, write: if isManagerOrAbove() || hasAppAccess('enrollment-board');
+}</div>
+  <p>Concretely: <code>enrollmentBoard/current</code> holds <code>RAW</code>, <code>DROPIN_SESSIONS</code>, <code>META</code>, <code>PREV</code>, <code>CANCELLED</code>, <code>TEACHERS</code>, and <code>TEACHERS_MANUAL</code> — everything that's actually enrollment/fill-rate/teacher-name data. <code>NOCLASS_DATES</code>, room-assignment rules, and all layout/print CSS stay baked into the static build; none of that is sensitive and none of it needs a Firestore round-trip. The page's JS, after <code>requireAuth()</code> resolves, does one more read: on success it renders normally; on <code>permission-denied</code> it shows an "access restricted, contact your administrator" state instead of the dashboard — mirroring how every other manager+ app already fails when a rule denies it. Reusing the same appAccess field means the same Manage Team checkbox works here, no new UI needed.</div>
+  <div class="note">This also fully resolves the separate unauthenticated static-file-exposure concern below: once the numbers only exist behind an authenticated, rules-checked read, there's nothing left in the served HTML for an unauthenticated URL-guesser to find in page source.</div>
+  <div class="note">Separately found during research, unrelated to this plan: <code>kpiData</code>'s rule checks <code>hasAppAccess('kpi')</code>, but the app's own <code>id</code> everywhere else (config.js, <code>MANAGER_ONLY_APPS</code>) is <code>kpi-dashboard</code> — the Manage Team checkbox pushes <code>'kpi-dashboard'</code> into a staff member's <code>appAccess</code> array, which does not satisfy <code>hasAppAccess('kpi')</code>. Confirmed by reading the KPI app's own <code>firebase-data.js</code>: it has no client-side role check, just tries the Firestore read and silently returns <code>null</code>/falls back to localStorage on denial. Net effect is a <strong>broken grant, not a leak</strong> — a staff member Christie checks the box for sees the tile, opens it, and gets a blank/local-only dashboard that never syncs with the real data, rather than gaining unauthorized access. Not fixed here; for this new app, the id used in config.js/<code>MANAGER_ONLY_APPS</code>/the rule's <code>hasAppAccess()</code> call is <code>enrollment-board</code> everywhere, so it can't drift the same way.</div>
 
   <h3>Port</h3>
-  <p>The handoff states port 8086 is the only free number in the 8080-8099 range. Research found a conflict: both <code>quick-reference.md</code> and <code>netlify-sites.md</code> list 8086 as already assigned to <strong>Org Chart</strong> (<code>~/tinker-org-chart/</code> — the directory and a provisioned Netlify site both genuinely exist, last touched Feb 2026). Org Chart is <em>not</em>, however, currently registered as a tile in <code>studio-hub/js/config.js</code>'s app list, and doesn't appear in <code>product-principles.md</code>'s registry table or in <code>MEMORY.md</code>'s Active Projects — all of which suggests it may be dormant/abandoned rather than actively reserved. If so, the entire 8080-8099 range is otherwise fully allocated across 20 apps with no other gap.</p>
-  <div class="ask">Needs Christie: confirm Org Chart is dead and 8086 can be reclaimed, or use 8100 instead (next number outside the documented range).</div>
+  <div class="rec"><strong>Decided (Christie, 2026-08-28): reclaim 8086.</strong> Org Chart (<code>~/tinker-org-chart/</code>) is confirmed dead — Christie doesn't use or want it. It stays out of scope for this plan (deleting its repo/Netlify site is a separate, deliberate cleanup task if Christie wants it later — not folded in here), but port 8086 is free to reassign to the enrollment board. <code>quick-reference.md</code> and <code>netlify-sites.md</code> need their Org Chart / 8086 rows corrected as part of this plan's documentation update.</div>
 
   <h3>Static-file exposure (unauthenticated)</h3>
-  <p>Distinct from the Access Level question above, which is about <em>authenticated</em> staff: if the app stays static (Decision 2, Option A), the file itself is served to anyone who requests the URL — the auth guard controls the sign-in overlay, not delivery of the underlying HTML/JS. Someone with the URL but no Tinker HQ account at all could still view page source and read fill rates and teacher first names without ever signing in. No student names, guardian contacts, or payment details are ever in this pipeline.</p>
-  <div class="rec"><strong>Recommendation: acceptable as-is for now.</strong> This is not a regression — the same exposure already exists in the live artifact Christie uses today. A real fix (a Netlify edge function checking auth before serving the file, per the prior-art README's own suggestion) would also be the fix for the Access Level gap above, since an edge function can check <code>role</code>/<code>appAccess</code> server-side before serving the file at all — closing both gaps at once rather than needing two separate mechanisms.</div>
-  <div class="ask">Needs Christie: confirm that's acceptable for now, or ask for the edge-function gate up front — which would resolve both this and the Access Level question above in one piece of work rather than one now and one later.</div>
+  <p>Resolved by the Access Level mechanism above — see the note there. No separate action needed.</p>
 </div>
 
 <h2 id="roadmap">Roadmap this plan should not paint itself out of</h2>
@@ -115,17 +114,16 @@
 <h2 id="phase0">Phase 0 — Decisions confirmed (gate, no code)</h2>
 <div class="phase">
   <h3>What it does</h3>
-  <p>Christie reviews this plan in the browser and resolves every open item below. Nothing in Phase 1 starts until each one has an actual recorded answer in the Decisions Log, not just a recommendation. There are <strong>seven</strong> — spread across three decisions plus follow-on questions, easy to undercount if tallied from the prose instead of a list, so they're enumerated explicitly here:</p>
+  <p>All seven open items are now resolved (Christie, 2026-08-28, in chat review of this plan):</p>
   <ol>
-    <li>Decision 1 — design system: documented exception, or restyle-and-retune?</li>
-    <li>Decision 2 — data architecture: static now / Firestore later, or fold Firestore into this same plan?</li>
-    <li>Decision 3 — department: <code>curriculum</code> or <code>marketing</code>?</li>
-    <li>Decision 3 — port: reclaim 8086 from the dormant Org Chart app, or use 8100?</li>
-    <li>Decision 3 — access level: accept tile-visibility-only enforcement for signed-in staff, or add an actual gate (client-side check now, or a server-side edge function that also closes item 7 in one piece of work)?</li>
-    <li>Decision 3 — static-file exposure: acceptable as-is, or fold into the same edge-function fix as item 5?</li>
-    <li>Phase 3 — does the existing Claude artifact get retired once the new site is confirmed working, or kept as a fallback?</li>
+    <li>Design system: <strong>documented exception</strong> — keep Archivo/IBM Plex Mono/Source Sans 3.</li>
+    <li>Data architecture: <strong>phase it</strong> — history stays static/CSV; live numbers move to one gated Firestore doc now (see #5).</li>
+    <li>Department: <strong><code>marketing</code></strong>.</li>
+    <li>Port: <strong>reclaim 8086</strong> — Org Chart confirmed dead.</li>
+    <li>Access level: <strong>real enforcement required</strong> — a single gated Firestore document (<code>enrollmentBoard/current</code>), checked by <code>isManagerOrAbove() || hasAppAccess('enrollment-board')</code>, same as every other app.</li>
+    <li>Static-file exposure: <strong>resolved automatically</strong> by #5 — nothing sensitive is left in the served static file.</li>
+    <li>Old artifact: <strong>retire once Christie has confirmed the new site actually works</strong> for her through at least one real refresh cycle — not on any fixed schedule or count, her call when she's used it enough to trust it.</li>
   </ol>
-  <p style="font-size:.85rem;color:#888;">Items 5 and 6 are closely related and may resolve together, but each needs its own explicit answer, not an assumption that one covers the other.</p>
   <div class="bdd">Given: this plan is published and registered with the local plan-reviewer
 When: Christie reviews it and leaves comments or edits
 Then: each of the items above has an explicit answer (accept the recommendation or override it)
@@ -136,32 +134,41 @@ When: any session picks this plan back up
 Then: it does not proceed past Phase 0 — re-read this plan's Decisions Log first and confirm all items above are answered, not just some of them</div>
 </div>
 
-<h2 id="phase1">Phase 1 — Repo scaffold: adopt the prior art</h2>
+<h2 id="phase1">Phase 1 — Repo scaffold: adopt the prior art, add the access gate</h2>
 <div class="phase">
   <h3>What it does</h3>
   <p>Promote <code>~/tinker-ai-configs/tinker-enrollment-board/</code> to a real top-level app repo at <code>~/tinker-enrollment-board/</code> — matching the flat <code>~/&lt;app-name&gt;/</code> convention every other Tinker app uses, instead of living nested inside <code>tinker-ai-configs</code> (the skills/plans repo, not an app-repo home). This is a deliberate adoption, not a rebuild: the print CSS is already verified with headless Chrome, <code>build.js</code> already does the right template-to-static-site split, and the auth-guard/firebase-config files are already copied in verbatim from <code>studio-hub/shared/</code>, matching the pattern every standalone Tinker app already follows.</p>
-  <p>Concretely: relocate the directory (preserving its existing local git history), stamp it with <code>/repo-bootstrap</code>'s CLAUDE.md + AGENTS.md, assign the local dev port resolved in Decision 3. The refresh recipe's target paths (Step 6 in <code>refresh-task-prompt.txt</code>) stay pointed at the current artifact and template file until Phase 3 — the live thing Christie uses today keeps working through this phase.</p>
-  <div class="bdd">Given: the promoted repo and a fresh <code>node build.js</code>
-When: Christie opens <code>site/index.html</code> locally at the assigned port and signs in with her Tinker HQ account
-Then: she sees the same dashboard she sees in the artifact today, with real data from the last refresh (846 sessions, 2026-08-27)
+  <p>Concretely: relocate the directory (preserving its existing local git history), stamp it with <code>/repo-bootstrap</code>'s CLAUDE.md + AGENTS.md, assign local dev port 8086. The refresh recipe's target paths (Step 6 in <code>refresh-task-prompt.txt</code>) stay pointed at the current artifact and template file until Phase 3 — the live thing Christie uses today keeps working through this phase.</p>
+  <p><strong>Also in this phase (new, from the Access Level decision):</strong> change <code>build.js</code>/<code>template.html</code> so <code>RAW</code>, <code>DROPIN_SESSIONS</code>, <code>META</code>, <code>PREV</code>, <code>CANCELLED</code>, <code>TEACHERS</code>, and <code>TEACHERS_MANUAL</code> are no longer baked into the built HTML at all — the static build keeps only layout, print CSS, chrome, <code>NOCLASS_DATES</code>, and room-assignment rules. After <code>requireAuth()</code> resolves, the page's JS reads <code>enrollmentBoard/current</code> from Firestore and renders from that; a <code>permission-denied</code> result shows an "access restricted" state instead of the dashboard, not a broken page. Since real end-to-end testing needs the rule from Phase 2 to exist, local testing in this phase runs against the Firestore emulator (<code>firebase emulators:start --only firestore</code> from <code>studio-hub/</code>) seeded with a fixture doc matching the expected shape — per <code>AGENTS.md</code>'s "write a failing emulator test first, then fix, then green." A real signed-in check against production waits until Phase 2's rule is live.</p>
+  <div class="bdd">Given: the promoted repo, a fresh <code>node build.js</code>, and the Firestore emulator seeded with a fixture <code>enrollmentBoard/current</code> doc
+When: an emulator-connected session opens <code>site/index.html</code> locally at localhost:8086 and signs in
+Then: it renders the same dashboard shape as today, populated from the fixture doc, not from anything baked into the HTML — confirm by diffing the built <code>site/index.html</code> and verifying <code>RAW</code>/<code>DROPIN_SESSIONS</code>/<code>TEACHERS</code> literals are absent from it
 
-Given: she prints each of the three documented views
+Given: the emulator denies the read (simulating a non-manager, non-override staff account)
+When: the page's Firestore read comes back <code>permission-denied</code>
+Then: an "access restricted, contact your administrator" state renders instead of the dashboard — verify this is a real state, not a blank page or a console error users would just see as broken
+
+Given: she prints each of the three documented views (once real data is loading, e.g. against the emulator fixture)
 When: the print dialog opens for Weekly Grid, then separately for Workshops &amp; one-offs, then separately for Everything
-Then: Weekly Grid is one landscape page, Workshops &amp; one-offs is one landscape page, and Everything is two landscape pages with the break falling between the semester classes and the workshops section, matching the README's three verified cases — test all three, not just Weekly Grid, since a layout regression is most likely to show up in the break-point placement for the two-page case
+Then: Weekly Grid is one landscape page, Workshops &amp; one-offs is one landscape page, and Everything is two landscape pages with the break falling between the semester classes and the workshops section, matching the README's three verified cases — test all three, not just Weekly Grid, since a layout regression is most likely to show up in the break-point placement for the two-page case, and the Firestore-fetch timing must not print a half-loaded page (wait for the data to resolve before enabling Print)
 
 Given: <code>shared/firebase-config.js</code> was copied from <code>studio-hub/shared/</code>
 When: the page loads
 Then: sign-in succeeds against the real <code>tinker-hq-apps</code> project — verify the copied config matches studio-hub's current one before trusting it, since a stale copy fails silently as a sign-in error, not a build error</div>
 </div>
 
-<h2 id="phase2">Phase 2 — Studio Hub registration</h2>
+<h2 id="phase2">Phase 2 — Studio Hub registration + Firestore rule</h2>
 <div class="phase">
   <h3>What it does</h3>
-  <p>Add the app id (<code>enrollment-board</code>, pending Decision 3's department answer) to <code>js/config.js</code> <code>CONFIG.apps[]</code> with an icon and <code>roles: ["admin","manager"]</code>, and add the matching entry to <code>MANAGER_ONLY_APPS</code> in <code>js/app.js</code>. The <code>url</code> field is a placeholder until a Netlify deploy happens — no deploy is part of this plan.</p>
-  <div class="note">No Firestore rule is added in this phase — under the Decision 2 default (static data), there is no new collection to gate. If Christie chooses Option B in Decision 2 instead, this phase gains a rule-block + emulator-test sub-step; see the Firebase Safety Checklist below.</div>
+  <p>Add <code>enrollment-board</code> to <code>js/config.js</code> <code>CONFIG.apps[]</code> — department <code>marketing</code>, an icon, <code>roles: ["admin","manager"]</code> — and add the matching entry to <code>MANAGER_ONLY_APPS</code> in <code>js/app.js</code>. The <code>url</code> field is a placeholder until a Netlify deploy happens — no deploy is part of this plan.</p>
+  <p><strong>Also in this phase:</strong> add the rule block to <code>studio-hub/firestore.rules</code> in the same commit the collection is introduced, per <code>AGENTS.md</code>:</p>
+  <div class="bdd">match /enrollmentBoard/{docId} {
+  allow read, write: if isManagerOrAbove() || hasAppAccess('enrollment-board');
+}</div>
+  <p>Write the emulator test first (failing), then confirm it passes against this rule. Run <code>cd studio-hub && npm test</code> and confirm the full suite is green (check the printed count, don't hardcode it) before the rule is deployed. The deploy itself (<code>firebase deploy --only firestore:rules</code>, never bare <code>firebase deploy</code>) needs Christie's separate <strong>"approved to change firebase"</strong> phrase — distinct from this plan's "yes, do it" — per the standing Firebase Backend Resilience Plan gate. Until that deploy happens, Phase 1's local testing stays on the emulator.</p>
   <div class="bdd">Given: an admin signs into Studio Hub after this change is made locally
 When: the dashboard loads
-Then: an "Enrollment Board" tile appears under the chosen department
+Then: an "Enrollment Board" tile appears under Marketing &amp; Outreach
 
 Given: a staff account with no appAccess override
 When: they sign into Studio Hub
@@ -169,21 +176,26 @@ Then: the tile does not appear (MANAGER_ONLY_APPS gating, same as every other ma
 
 Given: the icon asset referenced in config.js doesn't exist yet in assets/app-icons/
 When: Studio Hub renders the tile
-Then: it fails as a broken image, not a JS error — confirm the icon file is actually committed before this phase is considered done, not just referenced</div>
+Then: it fails as a broken image, not a JS error — confirm the icon file is actually committed before this phase is considered done, not just referenced
+
+Given: the new emulator test for enrollmentBoard/current
+When: it runs against the rule above
+Then: admin and manager reads/writes succeed; a staff account with no appAccess override is denied; a staff account with appAccess containing exactly 'enrollment-board' succeeds — this last case is the one worth double-checking given the kpiData/kpi-dashboard mismatch found elsewhere, to make sure the id used in the emulator test, the rule, and config.js all agree</div>
 </div>
 
-<h2 id="phase3">Phase 3 — Refresh recipe cutover</h2>
+<h2 id="phase3">Phase 3 — Refresh recipe cutover (now writes to Firestore, not just a file)</h2>
 <div class="phase">
   <h3>What it does</h3>
-  <p>Update <code>refresh-task-prompt.txt</code>'s Step 6 target (the file it edits and saves back to, and what it publishes to) to point at the new repo instead of <code>~/tinker-ai-configs/enrollment-dashboard.html</code> and the Claude artifact. The snapshot log path does not move — <code>~/tinker-ai-configs/enrollment-snapshots.csv</code> stays exactly where it is, append-only, regardless of everything else. This is a targeted edit to Step 6 only — the HARD SCOPE LIMIT block (Sawyer access) lives elsewhere in the file and must not be touched, reworded, or accidentally clipped by whatever edit method is used.</p>
-  <div class="ask">Open item, not assumed, and tracked in Phase 0 (not deferred to here): does the artifact copy get retired once the new site is confirmed working, or does it stay as a fallback (e.g. for viewing on mobile away from a signed-in browser)? The handoff doesn't say — ask Christie rather than deciding either way, before this phase starts, since it changes what Phase 3 actually does.</div>
+  <p>Update <code>refresh-task-prompt.txt</code>'s Step 6 so it (a) rebuilds the new repo's <code>template.html</code>/<code>site/index.html</code> for layout/print/history purposes as before, and (b) writes the live data (<code>RAW</code>, <code>DROPIN_SESSIONS</code>, <code>META</code>, <code>PREV</code>, <code>CANCELLED</code>, <code>TEACHERS</code>, <code>TEACHERS_MANUAL</code>) to the <code>enrollmentBoard/current</code> Firestore document instead of baking them into the built file. The snapshot log path does not move — <code>~/tinker-ai-configs/enrollment-snapshots.csv</code> stays exactly where it is, append-only, regardless of everything else. This is a targeted edit to Step 6 only — the HARD SCOPE LIMIT block (Sawyer access) lives elsewhere in the file and must not be touched, reworded, or accidentally clipped by whatever edit method is used.</p>
+  <div class="warn"><strong>How the Firestore write actually happens, per <code>AGENTS.md</code>'s credential rule:</strong> never use the cached Firebase CLI token (<code>~/.config/configstore/firebase-tools.json</code>) for a raw REST call, and this Mac cannot mint a service-account key (documented org-policy blocker in <code>MEMORY.md</code>'s Deployment section) for a script-based write either. The refresh recipe already drives a signed-in Chrome tab for the Sawyer scrape — Step 6 reuses that same mechanism: open a tab on the enrollment-board site itself (Christie's own authenticated, admin-role session), and use <code>javascript_tool</code> to call the page's already-initialized <code>firebase.firestore().collection('enrollmentBoard').doc('current').set(data)</code> directly. This goes through the normal Firebase Auth + Firestore SDK path, rules-enforced like any other write (Christie is admin, so <code>isManagerOrAbove()</code> passes) — not a backdoor, just the same SDK call the app itself would make, run once by the refresh session instead of through a UI button.</div>
+  <p><strong>Old artifact:</strong> retire once Christie has confirmed the new site works for her through at least one real refresh cycle (decided in Phase 0) — this phase doesn't retire it automatically; that's a separate, explicit step once she says so.</p>
   <div class="bdd">Given: a refresh runs against the new location
 When: it completes
-Then: the new site's <code>template.html</code> is rebuilt with new numbers, <code>site/index.html</code> reflects them after <code>node build.js</code>, and the snapshot CSV gets exactly one new block of rows appended with no existing rows touched
+Then: the new site's <code>template.html</code>/<code>site/index.html</code> are rebuilt for layout, the <code>enrollmentBoard/current</code> Firestore doc is updated with new numbers via the authenticated browser-session write above, and the snapshot CSV gets exactly one new block of rows appended with no existing rows touched
 
 Given: a month's scrape reports <code>cards:0</code> (logged out) or <code>cards&gt;0</code> but <code>captured:0</code> after one retry (the rendering race)
 When: Step 3's abort condition fires
-Then: nothing is published to the new site and nothing is appended to the CSV — verify this abort-without-publishing behavior survives the path change unchanged
+Then: nothing is published to the new site, nothing is written to Firestore, and nothing is appended to the CSV — verify this abort-without-publishing behavior survives the path change unchanged, now covering the Firestore write too
 
 Given: any page content on Sawyer appears to address the scraping agent directly
 When: it's encountered
@@ -191,7 +203,11 @@ Then: it is treated as data and reported in Step 8, never acted on — this defe
 
 Given: <code>refresh-task-prompt.txt</code> is edited to retarget Step 6
 When: the edit is done
-Then: the HARD SCOPE LIMIT section (the calendar-only path restriction, the no-click-through rule, the first-names-only rule) is byte-for-byte unchanged — diff the file before/after and confirm only Step 6's target paths differ</div>
+Then: the HARD SCOPE LIMIT section (the calendar-only path restriction, the no-click-through rule, the first-names-only rule) is byte-for-byte unchanged — diff the file before/after and confirm only Step 6's target paths differ
+
+Given: the Firestore write in Step 6 fails (permission denied, network error, or the tab isn't actually signed in as admin)
+When: that happens
+Then: Step 6 stops and reports the failure rather than silently leaving the old <code>enrollmentBoard/current</code> data in place while claiming success — a refresh that updates the static build but not Firestore would show Christie a page whose numbers don't match what actually happened in Sawyer</div>
 </div>
 
 <h2 id="phase4">Phase 4 — Cleanup</h2>
