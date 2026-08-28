@@ -183,28 +183,44 @@
   <td>Out of scope; a separate, deliberate action in Studio Hub's Manage Team</td></tr>
 </table>
 
-<div class="open-question">
-  <strong>Open question for review:</strong> is "can no longer clock in at the kiosk" the correct
-  behavior for "archived," or should archiving be purely a visibility/admin-view change that leaves
-  kiosk clock-in alone? This plan assumes archived = fully out of the current work cycle (matching what
-  "departed staff" implies), but it's worth Christie confirming explicitly rather than discovering it
-  after the fact.
+<div class="decision">
+  <strong>Confirmed by Christie:</strong> archiving does block kiosk clock-in. "Archived" means fully out
+  of the current work cycle — not just hidden from admin views. No further ambiguity here; Phase 1's
+  behavior (kiosk PIN lookup already filters on roster <code>active</code>, so this is automatic once
+  the flag is set) is correct as designed.
 </div>
 
-<div class="open-question">
-  <strong>Open question — cross-app coordination with the parallel Studio Hub offboarding plan:</strong>
-  both a future Studio Hub offboarding flow and this plan's Archive button will be capable of writing
-  <code>active:false</code> to the same <code>timeclock_settings/employees.roster[]</code> entry.
-  Recommend the Studio Hub plan stay scoped to <code>users/{uid}</code> / <code>appAccess</code> only —
-  i.e. its own menu's "Studio Hub only, for now" option — and <strong>not</strong> also write to the
-  Ticker roster directly. Reasons: (1) <code>saveEmployeeRoster()</code> re-saves the <em>entire</em>
-  roster array on every write (no per-field update) — two systems writing near-simultaneously risk one
-  clobbering the other's unrelated changes (e.g. a PIN set moments earlier); (2) with this plan's
-  single-flag design, Ticker's Archive button is already sufficient to produce correct behavior
-  everywhere in Ticker — Studio Hub doesn't need to touch this field for Ticker's views to work. The two
-  features should combine additively (archived-in-Ticker + access-revoked-in-Studio-Hub = fully
-  offboarded) without either calling into the other's write path. This needs Christie's confirmation
-  since it constrains how the other session's plan should be scoped.
+<div class="decision">
+  <strong>Cross-app coordination with Studio Hub's offboarding plan — resolved, now confirmed against
+  the actual registered Studio Hub plan (<code>studio-hub-archive-employees.html</code>,
+  <code>plan__ArypVn99fHf</code>), not just a hypothetical.</strong>
+  <p>The two plans solve genuinely different problems that happen to share the word "archive":</p>
+  <ul>
+    <li><strong>Studio Hub's plan</strong> adds an <code>active</code> flag to <code>users/{uid}</code>
+    and gates it into the five Firestore rule helpers every one of the 21 apps shares
+    (<code>isAdmin</code>, <code>isManager</code>, <code>isManagerOrAbove</code>, <code>hasAppAccess</code>,
+    <code>belongsToStudio</code>). This controls <strong>authentication/authorization</strong> — can this
+    person read or write <em>anything</em>, in any app, at all. It is confirmed scoped to
+    <code>users/{uid}</code> and Studio Hub's own rules/UI only — it does not touch
+    <code>timeclock_settings/employees.roster[]</code> or any file in <code>tinker-timeclock/</code>.</li>
+    <li><strong>This plan (Tinker Ticker)</strong> controls <strong>schedule/kiosk visibility</strong> —
+    does this person's shift show up in Who's Working, Schedule Builder, or the kiosk PIN pad — entirely
+    independent of whether they can still technically log in anywhere.</li>
+  </ul>
+  <p><strong>Why they don't call into each other, even though both use the word "active":</strong>
+  <code>saveEmployeeRoster()</code> (and Studio Hub's own existing <code>syncTimeclockRoster</code> /
+  <code>addToTinkerTickerRoster</code>) re-save the <em>entire</em> roster array on every write — there is
+  no partial/per-field update path for that document. Two systems writing to it independently, near the
+  same moment, risk one silently clobbering the other's unrelated concurrent change (e.g. a PIN just set
+  in Ticker). Since this plan's single-flag design already makes Ticker's own Archive button fully
+  sufficient for Ticker's views, Studio Hub's plan has no need to touch the Ticker roster at all — and it
+  doesn't, by explicit design.</p>
+  <p><strong>Net result — this is a deliberate two-click "fully offboarded," not a bug:</strong> to fully
+  offboard someone today, Christie archives them in Studio Hub (revokes login everywhere) <em>and</em>,
+  separately, archives them in Ticker (hides them from schedule/kiosk views). Neither plan wires a single
+  button that triggers both. The Studio Hub plan explicitly logs this as a deliberate non-goal for now,
+  with a shared trigger noted as a plausible fast-follow once both features exist and are proven stable —
+  not something either plan should try to build speculatively before that.</p>
 </div>
 
 <h2 id="phases">Phases</h2>
@@ -250,19 +266,31 @@ Then: they are still correctly excluded from allSchedules and included in archiv
   so there is nothing there that needs <code>updateDoc</code>-vs-<code>setDoc</code> care for this
   feature specifically.</div>
 
-  <div class="open-question">
-    <strong>Open question for review — no test harness exists in this repo.</strong>
-    <code>AGENTS.md</code> requires "a failing emulator test first, then fix, then green" for any
-    data-write change, but <code>tinker-timeclock</code> has no jest/emulator setup at all today (unlike
-    <code>studio-hub</code>). Two options, needs a decision before Phase 1 starts:
+  <div class="decision">
+    <strong>Confirmed by Christie: build a real test harness (option 1), not a one-off manual script.</strong>
+    Structure to mirror — two existing precedents, combined, since neither alone is a perfect fit:
     <ol>
-      <li>Stand up a minimal emulator+jest harness for this repo, mirroring studio-hub's
-      <code>firebase emulators:exec --only firestore jest</code> pattern — real automated coverage, but
-      meaningfully more setup than the feature itself.</li>
-      <li>Skip automated tests for this phase; instead write a small read-only verification script
-      (same pattern as <code>check-roster-duplicates.html</code>) that Christie runs by hand after
-      Phase 1 to confirm archive/unarchive didn't touch <code>recurring</code>/<code>overrides</code> —
-      faster, but not a repeatable regression test for future changes.</li>
+      <li><strong>The run/wrapper convention from <code>studio-hub</code>:</strong> add a <code>test</code>
+      script to <code>tinker-timeclock/package.json</code> using the same
+      <code>firebase emulators:exec --only firestore "jest ..."</code> pattern as
+      <code>studio-hub/package.json</code>, and a <code>firebase.json</code> emulator config (neither
+      exists in this repo yet — <code>studio-hub</code>'s is the template). <code>rules.test.js</code>'s
+      setup style — <code>@firebase/rules-unit-testing</code>'s <code>initializeTestEnvironment</code>,
+      fixed named test UIDs per role, a shared <code>beforeAll</code> — is the right shape to copy for
+      the emulator bootstrap itself.</li>
+      <li><strong>Where it has to diverge:</strong> <code>rules.test.js</code> tests <em>rules</em>
+      (does a given fake-auth client get allowed/denied) — but this feature doesn't change any rule, so
+      there's nothing rules-shaped to test. <code>tinker-timeclock/js/app.js</code>'s functions
+      (<code>archiveEmployee</code>, <code>loadSchedulesData</code>, etc.) are plain browser-global
+      functions, not Node-exportable modules, so they can't be <code>require()</code>'d into a test file
+      the way rules tests import the Firestore SDK directly. The test instead has to replicate the exact
+      Firestore calls those functions make (read roster → mutate → <code>saveEmployeeRoster()</code>'s
+      full-array <code>.set()</code> → re-run the <code>loadSchedulesData()</code> partition logic) using
+      <code>firebase-admin</code> against the local emulator and assert on the resulting document state —
+      the same pattern already proven working in this session for verifying Firestore
+      merge-vs-mergeFields behavior before the Fall 2026 import (a throwaway Node script + emulator, no
+      jest needed for that one, but the same "assert real emulator state, don't guess" approach applies
+      here inside a proper jest test this time).</li>
     </ol>
   </div>
 </div>
@@ -271,9 +299,13 @@ Then: they are still correctly excluded from allSchedules and included in archiv
   <h3>Phase 2 — Roster settings UI: Archive button + "Show Archived" panel</h3>
   <p><strong>Acceptance criteria:</strong> Each row in <code>renderRosterList()</code> gets a new
   "Archive" button (alongside the existing PIN/Remove buttons — Remove stays, for the rare true-delete
-  case). A new "Show Archived (N)" link/toggle reveals a separate list of archived entries
-  (<code>renderArchivedRosterList()</code>), each with an "Unarchive" button. No existing button's
-  behavior changes.</p>
+  case). Archived entries are <strong>never shown by default</strong> — a "Show Archived (N)" link/toggle
+  sits below the main list, collapsed/hidden until clicked, and reveals a separate list of archived
+  entries (<code>renderArchivedRosterList()</code>) with an "Unarchive" button on each. Collapsing it
+  again hides them. No existing button's behavior changes, and the default Settings view looks identical
+  to today until an admin deliberately opts in to seeing archived people.</p>
+  <div class="note">Per Christie's comment: this must not add clutter to the default Settings view —
+  archived entries live behind the toggle, full stop, never inline in the main list.</div>
 
   <div class="bdd">Given: the admin is on the Schedule Builder tab's Employee Roster section
 When: they click "Archive" on an employee's row
@@ -335,6 +367,13 @@ Then: they appear again, identically to before archiving, in every view</div>
   writes to this same roster document. Single flag removes the risk of the two systems' writes getting
   out of sync. Added an open question recommending the Studio Hub plan stay scoped to
   <code>users</code>/<code>appAccess</code> and not also write to the Ticker roster directly.</li>
+  <li><strong>Aug 28 (Christie's review comments, resolved):</strong> Archived list must be
+  collapsed/hidden by default in Settings (Phase 2 updated). Archiving does block kiosk clock-in
+  (confirmed, no longer open). Cross-app boundary confirmed against the actual registered Studio Hub
+  plan — two-click offboarding across both apps is correct, not a gap. Decided to build a real
+  emulator+jest test harness for this repo rather than a manual verification script, structured as
+  studio-hub's run/wrapper convention plus a firebase-admin-against-emulator approach for the actual
+  archive/unarchive assertions (Phase 1 updated with the concrete structure).</li>
 </ul>
 
 <h2 id="resume">Resume Instructions</h2>
