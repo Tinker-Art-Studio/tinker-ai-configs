@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Archive Employees — Tinker Ticker</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .status { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; font-weight: 600; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .change { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .9rem; }
+  .rejected { background: #fdf2f8; border: 1px dashed #f3b4d1; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .87rem; color: #555; }
+  .open-question { background: #fff7ed; border: 2px solid #fb923c; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .9rem; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Archive Employees — Tinker Ticker</h1>
+
+<div class="status" id="plan-status">
+  Status: NOT execution-ready. Plan only — no implementation code has been written. Waiting on
+  Christie's review + a second-model review before Phase 1 begins.
+</div>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Give admins a reversible "Archive" action for a roster entry that makes that
+  person disappear from every current-schedule view (Who's Working, Schedule Builder's schedule list,
+  the roster picker, kiosk PIN entry) without deleting any of their data — and an "Unarchive" that
+  brings them back exactly as they were.<br>
+  <strong>App:</strong> tinker-timeclock — <code>~/tinker-timeclock/js/app.js</code>,
+  <code>js/firebase-data.js</code><br>
+  <strong>Why now:</strong> The roster has 37 entries; only 18 are in the live Fall 2026 schedule. The
+  existing "Remove" button is a hard, permanent delete (roster entry + both schedule docs, no undo) —
+  too destructive for routine end-of-term cleanup.<br>
+  <strong>Risk:</strong> Low data risk (no field this plan touches is ever deleted — only two new
+  boolean flags are added/toggled). Main risk is UI coverage: several views read schedule data directly
+  and must all respect the new flag, or an archived person could still show up somewhere.<br>
+  <strong>Reversible:</strong> Yes, by design — Unarchive clears both flags and restores full visibility
+  with zero data loss.
+</div>
+
+<h2 id="research">What's actually there today (verified against code, not assumed)</h2>
+
+<table>
+  <tr><th>Fact</th><th>Evidence</th></tr>
+  <tr>
+    <td>Roster entries already have an <code>active</code> field, and 3 places already check
+    <code>e.active !== false</code></td>
+    <td>Kiosk PIN lookup (<code>app.js:7378</code>), Settings roster list
+    (<code>renderRosterList</code>, <code>app.js:5806-5842</code>), Schedule Builder's employee picker
+    (<code>loadScheduleBuilder</code>, <code>app.js:2893-2918</code>)</td>
+  </tr>
+  <tr>
+    <td>Nothing in the app ever <em>writes</em> <code>active:false</code> today</td>
+    <td>Grepped for <code>active: false</code>, <code>active = false</code>, <code>deactivate</code>,
+    <code>toggleActive</code> across <code>app.js</code> — zero hits. It's a dead field.</td>
+  </tr>
+  <tr>
+    <td>Who's Working (all 3 view modes) and Schedule Builder's own schedule-card list do
+    <strong>not</strong> check roster <code>active</code> at all — they iterate
+    <code>allSchedules</code> (i.e. whatever documents exist in <code>timeclock_schedules</code>)
+    directly</td>
+    <td><code>renderWhosWorkingDaily</code> (4101-4225), <code>renderWhosWorkingWeekly</code>
+    (4227-4293), <code>renderWhosWorkingMonthly</code> (4303+), <code>renderAllSchedulesList</code>
+    (3171-3236) — none reference <code>employeeRoster</code>'s <code>active</code> field</td>
+  </tr>
+  <tr>
+    <td>The existing "Remove" button (<code>removeEmployee</code>) is a hard delete with no undo</td>
+    <td><code>app.js:5903-5921</code> — splices the roster entry out permanently, then deletes
+    <code>timeclock_schedules</code> docs at both the roster <code>id</code> and, if set,
+    <code>claimedBy</code>. Its own confirm dialog says as much.</td>
+  </tr>
+  <tr>
+    <td>Removing someone from the roster does not revoke their login</td>
+    <td><code>checkNameClaim()</code> (<code>app.js:5156-5192</code>) runs on every sign-in
+    independent of the Ticker roster; their Firebase Auth account and <code>users/{uid}</code> doc
+    (created by <code>auth-guard.js:58-66</code> with <code>appAccess:['timeclock']</code> by default)
+    are untouched by anything in this repo. Full lockout requires revoking <code>appAccess</code> in
+    Studio Hub's Manage Team — out of scope for this plan, noted for completeness.</td>
+  </tr>
+  <tr>
+    <td>Firestore rules need no change</td>
+    <td><code>/Users/christiehubley/studio-hub/firestore.rules:298-304</code> —
+    <code>timeclock_schedules/{uid}</code> already allows <code>read, write: if isManagerOrAbove()</code>.
+    <code>firestore.rules:326-336</code> — <code>timeclock_settings/{docId}</code> already allows the
+    same for managers+. Both new flags are just fields inside documents these rules already fully permit
+    managers to write. No new collection, no new rule.</td>
+  </tr>
+  <tr>
+    <td>This repo has no test harness of its own</td>
+    <td><code>package.json</code> lists only the <code>web-push</code> dependency, no <code>test</code>
+    script, no jest config, no emulator config (<code>firebase.json</code> has no
+    <code>emulators</code> block). <code>studio-hub</code>'s emulator test suite only covers
+    <em>rules</em>, not this app's data logic. Flagged as a gap — see Phase 1's open question below.</td>
+  </tr>
+</table>
+
+<h2 id="design">Core design decision</h2>
+
+<div class="decision">
+  <strong>Archiving writes two flags, not one:</strong>
+  <ol>
+    <li><code>active: false</code> on the roster entry in <code>timeclock_settings/employees</code>
+    (existing field — the 3 places that already check it get fixed for free, no code change needed
+    there)</li>
+    <li>A new <code>archived: true</code> field directly on the person's
+    <code>timeclock_schedules/{effectiveUid}</code> document, where <code>effectiveUid</code> is
+    <code>claimedBy || id</code> — the same resolution already used everywhere else in this file
+    (e.g. <code>app.js:2907</code>, <code>3512</code>). This is the field Who's Working and Schedule
+    Builder's card list will be taught to check.</li>
+  </ol>
+  <strong>Filter once, centrally — not four separate edits.</strong> Rather than editing
+  <code>renderWhosWorkingDaily/Weekly/Monthly</code> and <code>renderAllSchedulesList</code> individually
+  to each skip <code>archived</code> docs, <code>loadSchedulesData()</code> (<code>app.js:2770-2788</code>)
+  is changed to partition the result of <code>loadAllSchedules()</code> into two arrays:
+  <code>allSchedules</code> (non-archived — every existing consumer keeps using this name and needs
+  <strong>zero code changes</strong>) and a new <code>archivedSchedules</code> (archived only, used solely
+  by the new "Show Archived" panel in Phase 2).
+</div>
+
+<div class="rejected">
+  <strong>Considered and rejected — editing all 4 render functions individually:</strong> works, but
+  multiplies the chance of missing one, and every future new consumer of schedule data would need to
+  remember the same check again. A single choke point is safer to review and safer long-term.
+</div>
+<div class="rejected">
+  <strong>Considered and rejected — moving/blanking <code>recurring</code>/<code>overrides</code> into a
+  backup field and restoring on unarchive:</strong> works, but creates two copies of the same data that
+  can drift, and is meaningfully more code than a boolean flag for the same visible result. A flag is
+  trivially reversible; a data move is not risk-free.
+</div>
+
+<h2 id="behavior">What archiving actually does, end to end</h2>
+<table>
+  <tr><th>Surface</th><th>Behavior after archiving</th><th>Why</th></tr>
+  <tr><td>Settings → Employee Roster list</td><td>Person disappears from the default list</td>
+  <td>Already filters <code>active !== false</code> — free once the flag is set</td></tr>
+  <tr><td>Schedule Builder → employee picker dropdown</td><td>Person disappears</td>
+  <td>Already filters <code>active !== false</code> (<code>app.js:2902</code>) — free</td></tr>
+  <tr><td>Kiosk PIN entry</td><td>Their PIN no longer matches</td>
+  <td>Already filters <code>active !== false</code> (<code>app.js:7378</code>) — free</td></tr>
+  <tr><td>Who's Working (Daily/Weekly/Monthly)</td><td>Person disappears from every date</td>
+  <td>New — via the centralized <code>allSchedules</code> filter</td></tr>
+  <tr><td>Schedule Builder's schedule-card list</td><td>Person's card disappears</td>
+  <td>New — via the centralized <code>allSchedules</code> filter</td></tr>
+  <tr><td>My Schedule (if they somehow sign in)</td><td>Shows "No schedule set up yet"</td>
+  <td>Their doc is excluded from <code>allSchedules</code>, so <code>renderMySchedule</code>'s lookup
+  finds nothing — same code path as someone who was never scheduled</td></tr>
+  <tr><td>Timesheets / clock history</td><td>Unchanged — all past entries still visible</td>
+  <td><code>timeclock_entries</code> is a separate collection, never touched by this feature, exactly
+  like "Remove" already promises ("clock history is preserved")</td></tr>
+  <tr><td>Login / Studio Hub access</td><td>Unchanged — not revoked</td>
+  <td>Out of scope; a separate, deliberate action in Studio Hub's Manage Team</td></tr>
+</table>
+
+<div class="open-question">
+  <strong>Open question for review:</strong> is "can no longer clock in at the kiosk" the correct
+  behavior for "archived," or should archiving be purely a visibility/admin-view change that leaves
+  kiosk clock-in alone? This plan assumes archived = fully out of the current work cycle (matching what
+  "departed staff" implies), but it's worth Christie confirming explicitly rather than discovering it
+  after the fact.
+</div>
+
+<h2 id="phases">Phases</h2>
+
+<div class="phase" id="phase-1">
+  <h3>Phase 1 — Data layer: archive/unarchive functions + centralized filter</h3>
+  <p><strong>Acceptance criteria:</strong> Two new functions, <code>archiveEmployee(empId, name)</code>
+  and <code>unarchiveEmployee(empId, name)</code>, mirroring the existing <code>removeEmployee</code>
+  signature/pattern. Archiving sets <code>active:false</code> on the roster entry (via the existing
+  <code>saveEmployeeRoster</code> full-array-save convention already used by every other roster mutation
+  in this file) and <code>archived:true</code> on the matching schedule doc via a targeted
+  <code>.update()</code> — never <code>.set()</code>, so <code>recurring</code>/<code>overrides</code>/
+  <code>futureSchedule</code>/<code>pin</code> are byte-for-byte untouched. <code>loadSchedulesData()</code>
+  produces both <code>allSchedules</code> (non-archived) and <code>archivedSchedules</code> (archived).</p>
+
+  <div class="bdd">Given: an employee with an existing timeclock_schedules doc (recurring + overrides + futureSchedule)
+When: archiveEmployee() is called
+Then: the roster entry gets active:false
+  AND the schedule doc gets archived:true
+  AND every other field on the schedule doc is byte-identical to before
+  AND the person is absent from allSchedules and present in archivedSchedules on next loadSchedulesData()
+
+Given: an employee who has a roster entry but NO schedule doc yet (never been scheduled)
+When: archiveEmployee() is called
+Then: active:false is set on the roster entry
+  AND no error is thrown attempting to update a nonexistent schedule doc
+  AND the roster-only archive still works (they vanish from roster list / picker / kiosk)
+
+Given: an archived employee
+When: unarchiveEmployee() is called
+Then: active is set back to true on the roster entry
+  AND archived is set back to false on the schedule doc
+  AND recurring/overrides/futureSchedule are unchanged from before archiving
+  AND the person reappears in allSchedules, roster list, picker, and kiosk PIN lookup
+
+Given: the roster save succeeds but the schedule doc update fails (e.g. network drop mid-action)
+When: archiveEmployee() catches the error
+Then: the failure is surfaced to the admin (not silently swallowed)
+  AND the resulting partial state (active:false, archived flag NOT set) is something Phase 2's UI
+      can detect and re-offer ("finish archiving" / re-run), not a silent inconsistency</div>
+
+  <div class="note">⚠️ Firestore: schedule-doc write must be <code>.update({archived: true})</code> /
+  <code>.update({archived: false})</code> — a partial update, never a full <code>.set()</code>, per this
+  repo's own <code>AGENTS.md</code> safety rule. The roster write keeps using the existing
+  <code>saveEmployeeRoster(array)</code> pattern already used by add/remove/claim/set-PIN — not a new
+  convention.</div>
+
+  <div class="open-question">
+    <strong>Open question for review — no test harness exists in this repo.</strong>
+    <code>AGENTS.md</code> requires "a failing emulator test first, then fix, then green" for any
+    data-write change, but <code>tinker-timeclock</code> has no jest/emulator setup at all today (unlike
+    <code>studio-hub</code>). Two options, needs a decision before Phase 1 starts:
+    <ol>
+      <li>Stand up a minimal emulator+jest harness for this repo, mirroring studio-hub's
+      <code>firebase emulators:exec --only firestore jest</code> pattern — real automated coverage, but
+      meaningfully more setup than the feature itself.</li>
+      <li>Skip automated tests for this phase; instead write a small read-only verification script
+      (same pattern as <code>check-roster-duplicates.html</code>) that Christie runs by hand after
+      Phase 1 to confirm archive/unarchive didn't touch <code>recurring</code>/<code>overrides</code> —
+      faster, but not a repeatable regression test for future changes.</li>
+    </ol>
+  </div>
+</div>
+
+<div class="phase" id="phase-2">
+  <h3>Phase 2 — Roster settings UI: Archive button + "Show Archived" panel</h3>
+  <p><strong>Acceptance criteria:</strong> Each row in <code>renderRosterList()</code> gets a new
+  "Archive" button (alongside the existing PIN/Remove buttons — Remove stays, for the rare true-delete
+  case). A new "Show Archived (N)" link/toggle reveals a separate list of archived entries
+  (<code>renderArchivedRosterList()</code>), each with an "Unarchive" button. No existing button's
+  behavior changes.</p>
+
+  <div class="bdd">Given: the admin is on the Schedule Builder tab's Employee Roster section
+When: they click "Archive" on an employee's row
+Then: a confirm prompt explains this is reversible (contrast with Remove's "cannot be undone" wording)
+  AND on confirm, that employee disappears from the visible roster list and the "Select employee" picker
+  AND a "Show Archived (1)" indicator appears/increments
+
+Given: at least one employee is archived
+When: the admin clicks "Show Archived"
+Then: a panel lists each archived employee by name with an "Unarchive" button
+  AND clicking Unarchive removes them from this panel and restores them to the main roster list,
+      the employee picker, and (per Phase 3) Who's Working / Schedule Builder's card list</div>
+</div>
+
+<div class="phase" id="phase-3">
+  <h3>Phase 3 — Verify Who's Working &amp; Schedule Builder's card list respect the filter</h3>
+  <p><strong>Acceptance criteria:</strong> Because of the Phase 1 design (centralizing the filter inside
+  <code>loadSchedulesData()</code>), this phase should require <strong>no code changes</strong> to
+  <code>renderWhosWorkingDaily/Weekly/Monthly</code> or <code>renderAllSchedulesList</code> — they already
+  consume <code>allSchedules</code> unchanged. This phase is a deliberate verification pass, not new
+  implementation, specifically to catch any consumer of schedule data this plan's research missed.</p>
+
+  <div class="bdd">Given: an employee is archived
+When: I view Who's Working in Daily, Weekly, and Monthly modes, for today and for a date they'd normally
+      be scheduled
+Then: they do not appear in any of the three views, on any date
+
+Given: an employee is archived
+When: I open Schedule Builder's schedule-card list
+Then: their card does not appear
+
+Given: an employee is unarchived
+When: I repeat both checks above
+Then: they appear again, identically to before archiving, in every view</div>
+
+  <div class="note">⚠️ Before marking this phase done: re-grep the codebase for every reference to
+  <code>allSchedules</code> and <code>loadAllSchedules()</code> to confirm no consumer was missed between
+  when this plan was written and when Phase 1 actually lands — the plan's research is a point-in-time
+  snapshot, not a guarantee against drift.</div>
+</div>
+
+<h2 id="out-of-scope">Not changed</h2>
+<ul>
+  <li><code>timeclock_entries</code> (clock history) — never read, written, or filtered by this feature</li>
+  <li>The existing "Remove" button and <code>deleteScheduleFromList</code> — both stay exactly as they
+  are today, for the cases where a true permanent delete is actually wanted</li>
+  <li>Studio Hub's <code>users</code> collection, <code>appAccess</code>, login/auth — archiving is a
+  Ticker-only concept; it does not touch account access anywhere else</li>
+  <li>Firestore rules — no change needed (see research table above)</li>
+</ul>
+
+<h2 id="decisions-log">Decisions / Deviations Log</h2>
+<ul>
+  <li><strong>Aug 28 (initial):</strong> Plan drafted after auditing the roster (37 entries, 18 live) and
+  confirming "Remove" is a permanent, non-reversible delete with no revocation of login access.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<p>Not execution-ready. Before Phase 1 starts: (1) Christie reviews this plan in the plan reviewer and
+resolves the two open questions above (kiosk clock-in behavior; test-harness approach), (2) a
+second-model review runs via <code>/second-model-review</code>, (3) both open <code>.open-question</code>
+blocks above are either resolved inline (edit this file) or explicitly deferred with a decision logged
+above. Only then set this file's status banner to execution-ready and begin Phase 1.</p>
+
+</body>
+</html>
