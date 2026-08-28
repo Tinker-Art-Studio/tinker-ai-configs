@@ -40,8 +40,11 @@
   Christie's direct request after finding two coordinated plans more confusing than helpful. Both
   originals stay on disk with a superseded banner pointing here; nothing from either was discarded.
   Both plans' second-model reviews (run independently, before the merge) found real, confirmed bugs —
-  every fix from both is already folded into the phases below. Two open questions remain and need
-  Christie's decision before Phase 1 starts — see "Open Questions."
+  every fix from both is folded into the phases below. Both open questions are now resolved (see
+  "Questions — both resolved") — <strong>Christie has explicitly asked for one more full second-model
+  review of this merged document before it's marked execution-ready</strong>, since the merge and both
+  resolutions changed real content since the last review pass. That review is next; do not begin Phase 1
+  until it's done and any findings are addressed.
 </div>
 
 <div class="meta" id="plan-meta">
@@ -239,32 +242,42 @@
   <tr><td>Ticker Settings → Employee Roster list</td><td>Disappears from the default list</td><td>Already filters <code>active !== false</code> — free</td></tr>
   <tr><td>Ticker Schedule Builder → employee picker</td><td>Disappears</td><td>Already filters <code>active !== false</code> (<code>app.js:2902</code>) — free</td></tr>
   <tr><td>Ticker kiosk PIN entry</td><td>PIN no longer matches</td><td>Already filters <code>active !== false</code> (<code>app.js:7378</code>) — free</td></tr>
-  <tr><td>Ticker self-service clock-in</td><td>Blocked (pending Christie's confirmation — see open question)</td><td>New — Phase 3 fix</td></tr>
+  <tr><td>Ticker self-service clock-in</td><td>Blocked</td><td>New — Phase 3 fix, confirmed by Christie</td></tr>
   <tr><td>Ticker Who's Working (Daily/Weekly/Monthly)</td><td>Disappears from every date</td><td>New — centralized filter in Phase 3</td></tr>
   <tr><td>Ticker Schedule Builder's schedule-card list</td><td>Card disappears</td><td>New — same centralized filter</td></tr>
   <tr><td>Ticker My Schedule (if somehow signed in)</td><td>"No schedule set up yet"</td><td>Doc excluded from <code>allSchedules</code> — same path as never-scheduled</td></tr>
   <tr><td>Ticker Timesheets / clock history</td><td>Unchanged — all past entries visible</td><td><code>timeclock_entries</code> is a separate collection, never touched</td></tr>
 </table>
 
-<h2 id="open-questions">Open Questions — need Christie's decision before Phase 1</h2>
+<h2 id="open-questions">Questions — both resolved</h2>
 
-<div class="open-question">
-  <strong>1. Self-service clock-in scope.</strong> Should archiving block self-service (non-kiosk)
-  clock-in too, or only the kiosk? Recommended: yes, block it too, so "archived" means one consistent
-  thing everywhere rather than "archived except if you're still logged into the webapp." This is built
-  into Phase 3 by default below — flag if you'd rather narrow it to kiosk-only.
+<div class="decision">
+  <strong>1. Self-service clock-in scope — resolved: yes, block it too.</strong> Christie confirmed
+  ("yes agreed"). Archiving now consistently means one thing everywhere in Ticker — kiosk and
+  self-service both blocked — rather than "archived except if you're still logged into the webapp."
+  Phase 3's self-service gate is no longer conditional.
 </div>
-<div class="open-question">
+<div class="decision">
   <strong>2. Retrofitting <code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code> for the
-  race condition.</strong> Phase 2 below wraps the <em>new</em> archive/reactivate roster write in a
+  race condition — resolved: yes, bundle it into this plan now.</strong> Christie asked for a
+  recommendation; reasoning: all three functions touching this document
+  (the two pre-existing ones, plus this plan's new <code>syncArchiveToTickerRoster</code>) share the
+  exact same read-modify-write shape against the exact same document, in the exact same repo — Phase 2
+  is already working in this code, so retrofitting the other two now is marginal added effort, not a
+  second project. Deferring it means knowingly shipping a feature that exercises a known concurrency bug
+  precisely during the period (active roster cleanup, happening this week) when it's most likely to
+  actually trigger — Christie granting timeclock access or clicking "Sync Roster" while also archiving
+  people. The change itself doesn't alter either function's observable behavior, only its concurrency
+  safety, so the added risk is low relative to the cost of leaving a diagnosed bug in place. Phase 2's
+  retrofit bullet is no longer conditional.
+  <p>Original framing, for context: Phase 2 wraps the <em>new</em> archive/reactivate roster write in a
   Firestore transaction — this protects the archive action itself (it'll safely retry if something else
   writes to the roster mid-transaction). It does <strong>not</strong> fully close the race in the other
   direction: if <code>addToTinkerTickerRoster</code>'s non-transactional read happens <em>before</em> an
   archive, and its write completes <em>after</em>, it can still silently overwrite the archive with its
   own stale snapshot, since a plain write has no way to know a transaction happened. Fully closing this
   requires also converting those two pre-existing functions to <code>runTransaction</code>. That's a
-  small, well-scoped change (see Phase 2 note) but touches code that predates and is unrelated to this
-  feature — confirm you want it bundled into this plan now rather than tracked separately.
+  small, well-scoped change, now confirmed as part of Phase 2 rather than tracked separately.</p>
 </div>
 
 <h2 id="phases">Phases</h2>
@@ -399,7 +412,7 @@ Then the archive/reactivate write (wrapped in a Firestore transaction) either co
     plain read-then-<code>.set()</code>) specifically to guard against the race with
     <code>syncTimeclockRoster</code>/<code>addToTinkerTickerRoster</code>. A missing match is not an
     error — logged, not surfaced to Christie as a failure.</li>
-    <li><strong>New, pending confirmation of open question 2:</strong> convert
+    <li><strong>New, confirmed:</strong> convert
     <code>addToTinkerTickerRoster()</code> and <code>syncTimeclockRoster()</code> themselves to also use
     <code>runTransaction</code> for their own read-modify-write, so the race is closed from both
     directions, not just the new archive path's. Also add the missing <code>await</code> at the
@@ -449,7 +462,7 @@ Then that schedule doc does NOT appear in "Orphaned Schedule Docs" — archived 
 
 Given an archived employee is still logged into the Ticker webapp under their own account
 When they try to clock in via the "unscheduled" self-service path
-Then the clock-in is blocked, consistent with kiosk behavior [pending open question 1]
+Then the clock-in is blocked, consistent with kiosk behavior
 
 Given Who's Working is viewed in Daily, Weekly, and Monthly modes, for today and for a date
       an archived person would normally be scheduled
@@ -475,7 +488,7 @@ Then a read-only panel lists them with an "Archived" badge and no action button 
     <li>Fix <code>renderOrphanedSchedules()</code>'s roster lookup so an archived entry is never treated
     as "no match"</li>
     <li>Add a roster-active check to <code>handleClockIn</code>/<code>doClockIn</code>'s self-service
-    path [pending open question 1]</li>
+    path</li>
     <li>Add a collapsed-by-default "Show Archived (N)" toggle to Ticker's Settings roster section,
     revealing a read-only list (name + "Archived" badge, no action button) built from
     <code>employeeRoster</code> filtered to <code>active === false</code></li>
@@ -551,6 +564,7 @@ Then users/{uid}.active is false with appAccess still listing kpiData unchanged,
   <li><strong>Aug 28 — second-model review, Studio Hub plan</strong> (independent Claude, run separately): found and fixed 2 real issues — an admin self-archive lockout with no recovery path, and a <code>belongsToStudio()</code> bypass that would have left archived staff with Clay Hub/Roster Manager access.</li>
   <li><strong>Aug 28 — architecture pivot to a single trigger</strong>, per Christie's direct question ("why two separate functions?"). Reconsidered against what both reviews had just surfaced — the two-repo split was the direct cause of several of those findings. Cut Ticker's own Archive/Unarchive button and write functions entirely; the action moves to Studio Hub, extending its existing roster-touching code, resolved by <code>claimedBy</code> uid rather than fuzzy name matching.</li>
   <li><strong>Aug 28 — plans merged into this single document</strong>, per Christie's direct request, after concluding that a single-trigger design no longer justified two separately coordinated plan documents. Both original plans preserved on disk with a superseded banner; no content discarded.</li>
+  <li><strong>Aug 28 — both open questions resolved.</strong> Self-service clock-in: Christie confirmed blocking it too, for consistency. Roster-write race retrofit: Christie asked for a recommendation; recommended and confirmed bundling the <code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code> transaction retrofit into Phase 2 now rather than tracking separately, since all three functions share the same document/repo/shape and Phase 2 is already working in this code. Christie then asked for a fresh second-model review of the fully merged, now-decision-complete document before execution-ready is set — see below.</li>
 </ul>
 
 <h2 id="completeness">Completeness check — what if this is interrupted mid-way</h2>
@@ -567,8 +581,9 @@ Then users/{uid}.active is false with appAccess still listing kpiData unchanged,
 <code>git log</code> in both <code>studio-hub</code> and <code>tinker-timeclock</code> for which phase's
 commits already landed (commits are per-phase, not batched, and phases 1-2 live in studio-hub while
 3-4 live in tinker-timeclock). Re-run <code>npm test</code> in <code>studio-hub</code> to confirm
-Phase 1's rules are still green before continuing. Resolve both open questions above before Phase 1
-starts; once resolved (inline edits to this file, logged in the Decisions log), set the status banner to
+Phase 1's rules are still green before continuing. Both open questions are resolved (see "Questions —
+both resolved"); the remaining gate before Phase 1 starts is the fresh second-model review Christie
+requested on this merged document — once that's run and any findings addressed, set the status banner to
 execution-ready.</p>
 
 </body>
