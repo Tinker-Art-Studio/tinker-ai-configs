@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Archive Employees — Studio Hub</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .status { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; font-weight: 600; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .change { background: #eff6ff; border-left: 4px solid #3b82f6; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .9rem; }
+  .rejected { background: #fdf2f8; border: 1px dashed #f3b4d1; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .87rem; color: #555; }
+  .open-question { background: #fff7ed; border: 2px solid #fb923c; border-radius: 4px; padding: .6rem 1rem; margin: .5rem 0; font-size: .9rem; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+</style>
+</head>
+<body>
+
+<h1>Plan: Archive Employees — Studio Hub</h1>
+<div class="status">execution-ready: false — plan only, no implementation code written. Needs Christie's browser review + a second-model review before Phase 1 begins.</div>
+
+<div class="meta">
+  <strong>App:</strong> studio-hub — <code>~/studio-hub/js/app.js</code>, <code>~/studio-hub/firestore.rules</code>, <code>~/studio-hub/index.html</code>, <code>~/studio-hub/rules.test.js</code><br>
+  <strong>Why now:</strong> Manage Team's only offboarding action today is a permanent <code>users/{uid}</code> document delete. Christie has several seasonal summer employees who've left (some may return next summer) and other past employees to clean up — she needs a reversible way to revoke their access without destroying their role/access configuration.<br>
+  <strong>Risk:</strong> Medium. This edits <code>firestore.rules</code>, which is shared across all 21 Tinker apps — a mistake in the helper functions breaks access everywhere, not just Studio Hub. Mitigated by emulator tests (Firebase safety gate below) before deploy.<br>
+  <strong>Reversible:</strong> Yes, by design — Reactivate restores the exact role/appAccess/studios the person had before archiving, with zero data loss.
+</div>
+
+<h2>Cross-app coordination</h2>
+<div class="safe">
+  <strong>Confirmed with Christie:</strong> this plan is scoped to Studio Hub only (<code>users/{uid}</code>, Firestore rules, Manage Team UI). It does <strong>not</strong> touch <code>timeclock_settings/employees.roster[]</code> or any file inside <code>tinker-timeclock/</code>.
+</div>
+<p>Christie is running a parallel session with its own plan — <code>tinker-ticker-archive-employees.html</code> — for Tinker Ticker's roster/schedule-visibility side (kiosk clock-in, Who's Working, Schedule Builder). That plan independently arrived at the same boundary and explains why, which is worth restating here since it's the reason this plan doesn't write to the roster:</p>
+<ul>
+  <li><code>timeclock_settings/employees</code> is saved as one full array on every write (<code>saveEmployeeRoster()</code> / this repo's own <code>syncTimeclockRoster()</code>/<code>addToTinkerTickerRoster()</code>) — no per-field update exists. Two systems writing to it independently risk clobbering each other's concurrent changes (e.g. a PIN just set in Ticker).</li>
+  <li>The two features are additive, not overlapping: Studio Hub's <code>active:false</code> on <code>users/{uid}</code> revokes <strong>app access</strong> everywhere (can no longer log into any of the 21 apps, including Ticker itself). Ticker's own Archive flips the roster entry's existing <code>active</code> flag, which controls <strong>schedule/kiosk visibility</strong> (no longer shown in Who's Working, Schedule Builder, or the kiosk PIN pad) independent of whether they can still authenticate.</li>
+  <li>Neither plan calls into the other's write path. "Fully offboarded" = archived in both places; that's a manual two-click action across two apps for now, not a single trigger. A shared trigger is a plausible fast-follow once both features exist and are stable, not part of this plan.</li>
+</ul>
+<div class="note">Non-goal, explicit: no single button that archives someone everywhere at once. Christie will archive in Studio Hub (revoke access) and, separately, in Ticker (hide from schedule/kiosk) if both are needed for a given person.</div>
+
+<h2>What's there today (verified against code, not assumed)</h2>
+<table>
+  <tr><th>Fact</th><th>Evidence</th></tr>
+  <tr><td>Every one of the 21 apps' Firestore rules gates through the <em>same</em> five helper functions, which all read <code>users/{request.auth.uid}</code> via <code>getUserData()</code>.</td><td><code>firestore.rules:12-52</code> — <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code>. This is the actual "one place" mechanism — gating these five functions on an active flag cuts off every app in one rules deploy.</td></tr>
+  <tr><td>"Delete" today is a bare <code>users/{uid}</code> document delete. It does not touch Auth, the Ticker roster, timeclock entries, or <code>staffDirectory</code>.</td><td><code>js/app.js:1104-1116</code> (<code>deleteUser</code>)</td></tr>
+  <tr><td>Deleting the doc doesn't lock the person out. On next login, <code>handleAuthStateChange</code> finds no doc and silently creates a fresh blank one (<code>role: 'staff'</code>, <code>appAccess: []</code>) — the self-create rule permits this because <code>role == 'staff'</code> and empty <code>appAccess</code> is exactly what it requires. Prior role/appAccess history is unrecoverable.</td><td><code>js/app.js:134-159</code>; self-create rule at <code>firestore.rules:97-101</code></td></tr>
+  <tr><td>Switching from delete to archive removes this hole for free — the doc is never deleted, so the self-create branch never fires again for that uid.</td><td>Consequence of the design below, not new code to write.</td></tr>
+  <tr><td>Self-read/self-update of <code>users/{userId}</code> is gated on <code>request.auth.uid == userId</code> directly — it does not go through <code>getUserData()</code>/<code>isActiveUser()</code>. An archived person can still read and lightly patch their own doc (needed so the app loads instead of erroring).</td><td><code>firestore.rules:80, 108-112</code></td></tr>
+  <tr><td>Self-update already pins <code>role</code>, <code>appAccess</code>, and <code>studios</code> so a staff user can't self-escalate. <code>active</code> must join that pin list, or an archived person could self-write <code>active: true</code> right back.</td><td><code>firestore.rules:103-112</code>, <code>fieldUnchanged()</code> helper at <code>firestore.rules:60-64</code></td></tr>
+  <tr><td>Manager-on-other's update rule already permits changing <code>appAccess</code>/<code>studios</code> for other users (only <code>role</code> is pinned) — Manage Team is manager+ only per this app's CLAUDE.md, so managers already grant/revoke app access today.</td><td><code>firestore.rules:114-125</code></td></tr>
+  <tr><td>Tinker Ticker's own login self-write (<code>auth-guard.js</code>) only patches <code>appAccess</code>/<code>studios</code> when missing, via <code>merge: true</code>, and never touches <code>role</code> or would touch a new <code>active</code> field. Checked so the new self-update pin on <code>active</code> can't break Ticker login.</td><td><code>tinker-timeclock/js/auth-guard.js:52-78</code></td></tr>
+  <tr><td>Clay Hub Membership already uses this exact pattern — an <code>active</code> boolean on the member doc — for a related concept, so the field name/shape has precedent in this codebase.</td><td><code>firestore.rules:656-658</code> (<code>isActiveMember()</code> on <code>clayMembers.active</code>)</td></tr>
+  <tr><td>New team members are created without an <code>active</code> field at all.</td><td><code>js/app.js:1240-1247</code> (<code>createTeamMember</code>)</td></tr>
+  <tr><td>A rules emulator test suite already exists and already has a describe block for this exact privilege-pinning pattern.</td><td><code>rules.test.js</code> — <code>describe('Users — appAccess/studios cannot be self-granted...')</code> at line 381; run via <code>npm test</code></td></tr>
+</table>
+
+<h2>Goal</h2>
+<p>Give admins and managers a reversible "Archive" action in Manage Team that immediately revokes a person's access to every Tinker app, hides them from the default team list, and preserves their exact role/appAccess/studios so "Reactivate" restores them with zero reconfiguration — replacing the current permanent, silently-reversible-by-relogin Delete.</p>
+
+<h2>Design decisions</h2>
+<div class="decision"><strong>Fields on <code>users/{uid}</code>:</strong> add <code>active</code> (boolean), <code>archivedAt</code> (ISO string), <code>archivedBy</code> (email of who archived). Missing <code>active</code> is treated as <code>true</code> everywhere (rules use <code>.get('active', true)</code>; UI uses <code>user.active !== false</code>) — existing users need no migration write.</div>
+<div class="decision"><strong>Rules gating:</strong> add <code>isActiveUser()</code> and require it inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code>. This is the single change that cuts off all 21 apps at once. Self-read/self-update stay independent of it (see table above) so the app can still load and show an "archived" state instead of crashing.</div>
+<div class="decision"><strong>Pin <code>active</code> in the self-update rule</strong> alongside <code>role</code>/<code>appAccess</code>/<code>studios</code>, so an archived person can never self-reactivate.</div>
+<div class="decision"><strong>Who can archive/reactivate:</strong> admin and manager, matching the existing manager-can-edit-appAccess/studios boundary. Not adding new role restrictions beyond what already exists for Manage Team.</div>
+<div class="decision"><strong>Data preserved on archive:</strong> <code>role</code>, <code>appAccess</code>, <code>studios</code> are left exactly as-is — only <code>active</code> flips. Access is denied purely by the rules gate, so there's no need to clear the fields, and leaving them intact is what makes Reactivate a single click with no reconfiguration.</div>
+<div class="decision"><strong>UI:</strong> the per-card "Delete" button is replaced with "Archive" (active users) / "Reactivate" (archived users). Archived users are hidden from the default Manage Team list behind a "Show archived (N)" toggle next to search, shown dimmed with an "Archived {date}" badge when revealed. CSV export gains a status column.</div>
+<div class="rejected"><strong>Rejected: keep a hard-delete option in the UI.</strong> The current destructive action is exactly what Christie asked to move away from. True permanent deletion of a <code>users</code> doc remains possible via the Firebase Console for genuine junk records (e.g. a mistyped signup), but this plan doesn't wire a UI button for it.</div>
+
+<h2>Open questions for Christie's review</h2>
+<div class="open-question">Wording: "Archive" vs. "Deactivate" as the button/label text? This plan writes "Archive" throughout since that's the word Christie used, but worth confirming before Phase 2's UI copy is final.</div>
+<div class="open-question">Manager-on-manager/admin: the existing manager-update rule doesn't restrict <em>whose</em> doc a manager can edit (a manager can already change another manager's or admin's appAccess/studios today). This plan carries that same boundary forward for <code>active</code> rather than fixing it — flagging so it's a deliberate choice, not an oversight, since archiving is a stronger action than tweaking appAccess.</div>
+<div class="open-question">Should <code>createTeamMember</code> (new-hire flow) start writing <code>active: true</code> explicitly going forward, or keep relying on "missing = active"? Either works; explicit is slightly more self-documenting for anyone reading a doc in the Console later.</div>
+
+<h2>Phase 1 — Firestore rules + data model</h2>
+<div class="phase">
+  <h3>Acceptance criteria (user outcome)</h3>
+  <p>When a <code>users/{uid}</code> doc has <code>active: false</code>, that person can no longer read or write anything gated by <code>isAdmin</code>/<code>isManager</code>/<code>isManagerOrAbove</code>/<code>hasAppAccess</code>/<code>belongsToStudio</code> in <em>any</em> app — verified by emulator tests, not just Studio Hub's own UI. They can still load Studio Hub far enough to see their own (archived) doc rather than the app erroring. They cannot un-archive themselves.</p>
+  <div class="bdd">Given an admin's users/{uid} doc has active: false
+When that admin's client tries to read a payroll document
+Then the read is denied (isAdmin() now requires isActiveUser())
+
+Given a staff member has appAccess: ['kpiData'] and active: false
+When they try to read a kpiData document
+Then the read is denied, even though appAccess still lists 'kpiData'
+
+Given an archived user's own doc
+When they read or lightly self-update it (e.g. a Ticker login patch)
+Then the read/update succeeds and active stays false (pinned, unchanged)
+
+Given an archived staff member
+When they attempt to write active: true to their own doc directly
+Then the write is denied by the self-update rule's fieldUnchanged('active') pin</div>
+  <h4>Work</h4>
+  <ul>
+    <li>Add <code>isActiveUser()</code> helper to <code>firestore.rules</code>: <code>isAuthenticated() && getUserData().get('active', true) == true</code></li>
+    <li>Require <code>isActiveUser()</code> inside <code>isAdmin()</code>, <code>isManager()</code>, <code>isManagerOrAbove()</code>, <code>hasAppAccess()</code>, <code>belongsToStudio()</code></li>
+    <li>Add <code>fieldUnchanged('active')</code> to the self-update rule (line ~108-112)</li>
+    <li>Extend <code>rules.test.js</code>'s existing "Users —" describe block with the four scenarios above, plus one per already-tested collection type (finance, KPI, timeclock) confirming an otherwise-authorized-but-archived user is denied</li>
+    <li>Run <code>npm test</code> — must be green before deploy</li>
+  </ul>
+  <div class="note">Deploy gate: per CLAUDE.md, do not run <code>firebase deploy --only firestore:rules</code> until Christie has said "approved to change firebase" in-session, tests are green, and changes are committed.</div>
+</div>
+
+<h2>Phase 2 — Manage Team UI: Archive / Reactivate</h2>
+<div class="phase">
+  <h3>Acceptance criteria (user outcome)</h3>
+  <p>Christie can archive a departed employee in one click from Manage Team, see them disappear from the default list, and reactivate them later with their exact prior role/appAccess/studios restored — no re-entering permissions.</p>
+  <div class="bdd">Given an active staff member with appAccess: ['kpiData', 'timeclock']
+When Christie clicks Archive and confirms
+Then their card leaves the default list, active becomes false,
+  archivedAt/archivedBy are set, and appAccess/role/studios are untouched
+
+Given an archived user shown via "Show archived"
+When Christie clicks Reactivate
+Then active becomes true (archivedAt/archivedBy cleared or left as history — see below)
+  and their card shows the exact appAccess/role/studios they had before archiving
+
+Given the Manage Team list has 5 archived and 20 active users
+When Christie opens Manage Team with no filter applied
+Then only the 20 active users render by default, with a
+  "Show archived (5)" toggle to reveal the rest
+
+Given Firestore write fails (e.g. network drop) during Archive
+When the archive button is clicked
+Then the card is not removed from the visible list and an inline
+  error shows — mirroring saveUser's existing error handling, not deleteUser's alert()</div>
+  <h4>Work</h4>
+  <ul>
+    <li><code>js/app.js</code>: replace <code>deleteUser()</code> with <code>archiveUser(uid, name)</code> / <code>reactivateUser(uid, name)</code>, each an <code>updateDoc</code>-style partial update (not <code>set</code>) per this repo's Firebase safety invariant</li>
+    <li>Archive confirm copy: state plainly that access is revoked everywhere and the record is kept, e.g. "Archive {name}? They'll immediately lose access to every Tinker app. Their role and access settings are saved so you can restore them if they return." Reactivate needs no confirm (non-destructive)</li>
+    <li><code>renderUserCard</code>: swap the Delete button for Archive/Reactivate depending on <code>user.active !== false</code>; show an "Archived {date}" badge + dimmed styling for archived cards</li>
+    <li><code>loadTeamUsers</code>: filter archived users out of the default render; add a "Show archived (N)" toggle near <code>#team-search</code> that reveals them</li>
+    <li><code>downloadTeamCSV</code>: add a Status column (Active/Archived + archivedAt date)</li>
+    <li><code>createTeamMember</code>: decide per the open question above whether to write <code>active: true</code> explicitly</li>
+  </ul>
+</div>
+
+<h2>Phase 3 — Real cleanup + verification</h2>
+<div class="phase">
+  <h3>Acceptance criteria (user outcome)</h3>
+  <p>Christie's actual departed seasonal and past employees are archived (not deleted), Manage Team's default view only shows current staff, and she's confirmed in the Firebase Console that access is genuinely revoked for at least one of them.</p>
+  <div class="bdd">Given Phase 1 and 2 are deployed
+When Christie archives each departed employee via the new UI
+Then Manage Team's default list shrinks to current staff only
+
+Given one archived employee who previously had e.g. kpiData access
+When Christie checks that person's doc in the Firebase Console
+Then active: false is set and appAccess still lists kpiData unchanged
+  (proving revocation is rules-driven, not data-destructive)</div>
+  <h4>Work</h4>
+  <ul>
+    <li>Christie archives the real departed seasonal/past employees using the shipped UI</li>
+    <li>Spot-check one archived doc in the Console per the Firebase safety gate below</li>
+    <li>If practical, confirm with one archived account that a direct app login (e.g. Classbook or KPI) is actually denied post-archive, not just that Manage Team shows them as archived</li>
+  </ul>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+  <li>Rules changes covered by emulator tests before deploy (Phase 1)</li>
+  <li><code>updateDoc</code>-style partial writes, never <code>set</code> without <code>merge</code>, for archive/reactivate</li>
+  <li>No bulk delete/import in this plan — nothing to snapshot</li>
+  <li>New fields (<code>active</code>, <code>archivedAt</code>, <code>archivedBy</code>) on an existing, already-ruled collection — no new collection, no new rule block needed</li>
+  <li>Deploy command: <code>firebase deploy --only firestore:rules</code> from <code>/Users/christiehubley/studio-hub</code>, only after the standing "approved to change firebase" phrase, green tests, and a commit</li>
+  <li>Post-deploy: spot-check one real archived doc in the Console (Phase 3)</li>
+</ul>
+
+<h2>Completeness check — what if this is interrupted mid-way</h2>
+<ul>
+  <li><strong>Interrupted after Phase 1, before Phase 2:</strong> safe. Rules are deployed and tested; no UI references <code>active</code> yet, so no user is archived and behavior for existing users is unchanged (missing <code>active</code> defaults to active everywhere).</li>
+  <li><strong>Interrupted mid-Phase 2:</strong> safe as long as each function (archiveUser, renderUserCard, loadTeamUsers, CSV) is committed individually — a partially-shipped UI at worst shows an inconsistent Archive/Delete label, not data loss, since no destructive write path exists once <code>deleteUser</code> is removed.</li>
+  <li><strong>Interrupted mid-Phase 3:</strong> safe — archiving individual employees is independent per-person; resume by archiving whoever's left.</li>
+</ul>
+
+<h2>Resume instructions</h2>
+<p>Re-open this file. Check the Decisions log below for anything logged mid-execution. Check <code>git log</code> in <code>studio-hub</code> for which phase's commit(s) already landed (commits are per-phase, not batched). Re-run <code>npm test</code> to confirm Phase 1's rules are still green before continuing.</p>
+
+<h2>Decisions log</h2>
+<p><em>(append-only — record any choice made during execution that deviates from or resolves an open question in this plan)</em></p>
+
+</body>
+</html>
