@@ -33,21 +33,19 @@
 
 <h1 id="plan-title">Plan: Archive Employees</h1>
 
-<div class="status" id="plan-status">
-  Status: NOT execution-ready. This plan <strong>supersedes and merges</strong> two prior separate plans
-  — <code>tinker-ticker-archive-employees.html</code> (<code>plan_6kGOCdKV7jBv</code>) and
+<div class="status" id="plan-status" style="background:#f0fdf4;border-left-color:#16a34a;">
+  Status: <strong>EXECUTION-READY.</strong> This plan <strong>supersedes and merges</strong> two prior
+  separate plans — <code>tinker-ticker-archive-employees.html</code> (<code>plan_6kGOCdKV7jBv</code>) and
   <code>studio-hub-archive-employees.html</code> (<code>plan__ArypVn99fHf</code>) — into one, per
   Christie's direct request after finding two coordinated plans more confusing than helpful. Both
   originals stay on disk with a superseded banner pointing here; nothing from either was discarded.
-  Both plans' second-model reviews (run independently, before the merge) found real, confirmed bugs —
-  every fix from both is folded into the phases below. Both open questions from the merge were resolved,
-  then <strong>a second review round (Claude + Codex again, independently) was run specifically against
-  the merged document</strong> and found the merge itself introduced real gaps — not polish — including
-  a non-atomic two-document write, an underspecified race fix, and a genuine hole in the single-trigger
-  premise for people who don't originate in Studio Hub. All directly-fixable findings are already
-  corrected below (see "Second-Model Review, Round 2"). <strong>Two new open questions from that round
-  still need Christie's decision</strong> before this can be marked execution-ready — see "Real scope
-  decisions" under Round 2.
+  Both plans' original second-model reviews, and a Round 2 review run specifically against the merged
+  document (Claude + Codex, independently, twice total), found real, confirmed bugs — every fix from
+  all of that is folded into the phases below. Every open question raised at any point — the original
+  two, plus the two scope decisions Round 2 surfaced — is now resolved (see the "resolved" decision
+  blocks throughout, and the Decisions Log). Begin with Phase 1. The standing "approved to change
+  firebase" phrase and green tests are still required before any actual rules deploy — this
+  execution-ready status covers the plan, not a bypass of that separate gate.
 </div>
 
 <div class="meta" id="plan-meta">
@@ -237,7 +235,7 @@
   separate plan documents coordinating via comments (rejected — see "Why one plan" above).
 </div>
 
-<h2 id="review-findings-2">Second-Model Review, Round 2 — reviewed the merge itself (Claude + Codex, independently), NOT execution-ready</h2>
+<h2 id="review-findings-2">Second-Model Review, Round 2 — reviewed the merge itself (Claude + Codex, independently) — all findings resolved</h2>
 
 <div class="note"><strong>This round found the merge introduced real gaps, not polish items.</strong>
 Codex in particular found the roster-write race is far larger than scoped, the two archive writes
@@ -324,41 +322,32 @@ freshly verified — nothing here is taken on either reviewer's word alone.</div
   </tr>
 </table>
 
-<h3>Real scope decisions — need Christie's call, not something to decide unilaterally</h3>
+<h3>Real scope decisions — resolved</h3>
 
-<div class="open-question">
-  <strong>3. How much of the roster-write race to actually close.</strong> Codex found the race is much
-  bigger than the 3 functions this plan named: <code>saveEmployeeRoster()</code> itself, plus every
-  Ticker function that calls it from a locally-cached array — auto-claim, manual claim, seeding, Add
-  Employee, Remove, Merge, Assign, and PIN changes (<code>app.js:5169, 5771</code>, and others) — all
-  read-modify-write the same document from an in-memory snapshot with no fresh re-read. Any one of them
-  can race the same way the two Studio Hub functions can. Fully closing this means transactionalizing
-  every one of those — a substantially bigger undertaking than "Phase 2's small retrofit," closer to a
-  refactor of Ticker's entire roster-write layer. <strong>Recommendation:</strong> scope this round to
-  the two Studio Hub sync functions plus the new archive transaction (already planned) — those are the
-  <em>automated</em> writers that fire on unrelated actions (granting access, a periodic sync) and are
-  the realistic source of an accidental collision. Ticker's other roster writers are deliberate,
-  single-admin, one-at-a-time actions (adding one employee, setting one PIN) — a genuine collision there
-  requires two admins editing the roster in the same instant, a much narrower window. Treat full
-  transactionalization of every Ticker roster writer as a separate, tracked follow-up, not a blocker for
-  this plan — but this is a real scope tradeoff, not a technical fact, so it needs your explicit sign-off
-  rather than my assumption.
+<div class="decision">
+  <strong>3. How much of the roster-write race to actually close — resolved: scope to the automated
+  writers only, per my recommendation.</strong> Christie found this one too deep in Firestore mechanics
+  to weigh in on herself and asked me to just decide — so, in plain terms: the two Studio Hub functions
+  (auto-add and "Sync Roster") fire automatically, on unrelated actions, without anyone watching for a
+  collision — that's the realistic way two writes land on top of each other by accident. Ticker's other
+  roster actions (adding one person, setting one PIN) are deliberate, one-at-a-time clicks by whoever's
+  sitting at the keyboard — a real collision there needs two people editing the roster in the exact same
+  second, which is a much narrower window. Fixing the two automated writers plus the new archive
+  transaction closes the realistic risk; transactionalizing every remaining Ticker roster function is a
+  bigger, separate cleanup project, tracked as a future follow-up, not a blocker here.
 </div>
 
-<div class="open-question">
-  <strong>4. People who exist only in Ticker's roster, with no Studio Hub <code>users</code> doc.</strong>
-  Confirmed directly: Ticker's own "Add Employee" flow (<code>handleAddEmployee</code>,
-  <code>app.js:5738</code>) creates a roster entry with <code>claimedBy: null</code> and no corresponding
-  <code>users/{uid}</code> document at all. Such a person never appears in Studio Hub's Manage Team and
-  can never be archived by the sole trigger this plan builds — a real hole in the single-trigger premise
-  for anyone added this way rather than through Studio Hub's <code>createTeamMember</code> (which already
-  auto-adds to the Ticker roster today). Two ways to close it, needs a decision: (a) restrict/redirect
-  Ticker's "Add Employee" button so everyone originates in Studio Hub going forward (a policy fix, not a
-  code one, other than maybe a button label change pointing to Studio Hub), or (b) keep a narrow,
-  Ticker-local archive path <em>only</em> for roster entries with no <code>claimedBy</code> and no
-  matching <code>users</code> doc — reintroducing a small piece of exactly the Ticker-side write action
-  this plan just removed, scoped tightly to this one edge case. Recommendation: (a) — it's simpler, and
-  matches how new hires are already handled in practice via <code>createTeamMember</code>.
+<div class="decision">
+  <strong>4. People who exist only in Ticker's roster, with no Studio Hub <code>users</code> doc —
+  resolved: not a live risk, per Christie's actual workflow.</strong> Christie's real onboarding process:
+  add the person in Studio Hub's Manage Team first, grant Tinker Ticker access there, <em>then</em> go
+  into Ticker and do the name-claim and PIN setup herself, before the person's first day — she doesn't use
+  Ticker's own "Add Employee" button as part of this flow, and new hires never go through Ticker's
+  self-service name-claim modal at all under her process. That means the theoretical gap (someone existing
+  only in Ticker's roster, never reachable from Studio Hub's Manage Team) doesn't actually occur in
+  practice today. Not fixing this now — Ticker's "Add Employee" button stays as-is, since restricting it
+  would be solving a problem that isn't happening. Christie noted this can be revisited in a future
+  hardening pass if her process ever changes; not a blocker for this plan.
 </div>
 
 <div class="note">
@@ -735,6 +724,7 @@ Then users/{uid}.active is false with appAccess still listing kpiData unchanged,
   <li><strong>Aug 28 — plans merged into this single document</strong>, per Christie's direct request, after concluding that a single-trigger design no longer justified two separately coordinated plan documents. Both original plans preserved on disk with a superseded banner; no content discarded.</li>
   <li><strong>Aug 28 — both open questions resolved.</strong> Self-service clock-in: Christie confirmed blocking it too, for consistency. Roster-write race retrofit: Christie asked for a recommendation; recommended and confirmed bundling the <code>addToTinkerTickerRoster</code>/<code>syncTimeclockRoster</code> transaction retrofit into Phase 2 now rather than tracking separately, since all three functions share the same document/repo/shape and Phase 2 is already working in this code. Christie then asked for a fresh second-model review of the fully merged, now-decision-complete document before execution-ready is set — see below.</li>
   <li><strong>Aug 28 — second-model review, Round 2</strong> (Claude + Codex, independently, against the fully merged document): found the merge itself introduced real gaps. Fixed directly: Phase 2/3 ordering was actually unsafe (the orphan-trap fix moved into Phase 2 as a hard co-requisite); the two archive writes weren't atomic (redesigned as one cross-document transaction); the transaction retrofit instructions had an implementation gap (now explicit about <code>transaction.get()</code> inside the callback); the name-match fallback was ambiguous (now requires a unique match or no-op); <code>syncTimeclockRoster()</code> didn't filter archived users (now required); two merge-introduced self-contradictions (admin self-archive BDD, Phase 2's visibility overclaim); archived entries had silently lost their Remove button; a manager-facing pointer to an admin-only screen. Two real scope decisions surfaced, not decided unilaterally — see the two new open questions: how much of the broader roster-write race to close (recommended: scope to the automated Studio Hub writers, not every Ticker roster mutator), and how to handle roster-only employees with no Studio Hub <code>users</code> doc (recommended: restrict Ticker's Add Employee flow instead of building a second archive path). Also noted, accepted as out of scope: the Firestore rules don't technically enforce "only Studio Hub writes active" — it's a code convention.</li>
+  <li><strong>Aug 28 — both Round 2 scope decisions resolved.</strong> Race scope: Christie found the tradeoff too deep in Firestore mechanics to evaluate herself and asked me to just decide — scoped to the two automated Studio Hub writers plus the new archive transaction, per my recommendation; full transactionalization of every Ticker roster function tracked as a future follow-up, not a blocker. Roster-only-employee gap: Christie clarified her actual onboarding always adds the person in Studio Hub first, grants Ticker access there, then she personally does the name-claim/PIN setup in Ticker before their first day — she never uses Ticker's own "Add Employee" button for real onboarding, so the theoretical gap doesn't occur in practice. Left as-is, revisitable in a future hardening pass if her process changes. With both resolved, every open question raised across both review rounds is closed — status set to execution-ready.</li>
 </ul>
 
 <h2 id="completeness">Completeness check — what if this is interrupted mid-way</h2>
@@ -751,12 +741,9 @@ Then users/{uid}.active is false with appAccess still listing kpiData unchanged,
 <code>git log</code> in both <code>studio-hub</code> and <code>tinker-timeclock</code> for which phase's
 commits already landed (commits are per-phase, not batched, and phases 1-2 live in studio-hub while
 3-4 live in tinker-timeclock). Re-run <code>npm test</code> in <code>studio-hub</code> to confirm
-Phase 1's rules are still green before continuing. The original two open questions are resolved (see
-"Questions — both resolved"). The Round 2 second-model review is done and its directly-fixable findings
-are already applied — two new open questions from that round remain (see "Real scope decisions" under
-"Second-Model Review, Round 2"): how much of the broader roster-write race to close, and how to handle
-roster-only employees with no Studio Hub <code>users</code> doc. Resolve both before Phase 1 starts; once
-resolved, set the status banner to execution-ready.</p>
+Phase 1's rules are still green before continuing. All open questions from both review rounds are
+resolved (see "Questions — both resolved" and "Real scope decisions — resolved") — this plan is
+execution-ready. Start with Phase 1.</p>
 
 </body>
 </html>
