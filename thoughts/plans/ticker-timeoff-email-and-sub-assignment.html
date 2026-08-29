@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Time Off Email Routing + Auto Sub-Assignment</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-ticker { background: #e0f2fe; color: #075985; }
+  .decision-needed { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Time Off Email Routing + Auto Sub-Assignment</h1>
+
+<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
+  Status: <strong>Drafted, not yet reviewed.</strong> Several open decisions below need Christie's answer
+  before this is execution-ready — flagged inline, not guessed at.
+</div>
+
+<div class="meta">
+  <strong>Goal:</strong> Every time-off request is submitted through Ticker (not email), automatically
+  notifies the right studio's coordinator by email, and confirming a sub writes their shift directly onto
+  their schedule while removing it from the original requester — with zero manual re-entry either way.<br>
+  <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
+  — no Firestore rules changes. New external dependency: an email-sending service (see Phase 1).<br>
+  <strong>Why now:</strong> Staff still request time off by email out of habit; Christie wants Ticker to be
+  the single real channel, with automatic routing to the two people who actually act on these requests
+  (Clay Hub → Maryssa, Tinker Art → Lauren, both cc'd to Anika) instead of relying on staff remembering
+  who to email.<br>
+  <strong>Risk:</strong> Low-medium. No rules changes, but this introduces the app's first real email
+  integration (new API key, new failure mode: emails can silently fail to send in a way push notifications'
+  existing fire-and-forget pattern already tolerates but a coordinator missing a real request cannot).
+</div>
+
+<h2>Current state (confirmed by reading the code, not assumed)</h2>
+<ul>
+  <li>Neither Ticker nor Studio Hub has any email-sending code today — only web push
+  (<code>netlify/functions/send-notification.js</code>, VAPID/<code>web-push</code>). A working
+  reference pattern exists in a <em>different</em> Tinker app, Schedule Viewer
+  (<code>netlify/functions/send-reminders.mjs</code>): Resend SDK, API key via
+  <code>RESEND_API_KEY</code> env var, <code>resend.emails.send({from, to, subject, html})</code>. That
+  file's own recipient map is unpopulated in practice — the pattern is real, the data isn't — so it's a
+  reference, not something to literally reuse as-is.</li>
+  <li>Time off requests live in <code>timeclock_timeoff</code>, submitted via
+  <code>handleSubmitTimeOff()</code> (<code>js/app.js:6571-6676</code>). On submit, it already calls
+  <code>sendPushToAllAdmins('New Time Off Request', ...)</code> (<code>js/app.js:6671</code>) — this plan
+  adds an email alongside that, it does not replace it.</li>
+  <li><strong>No <code>studio</code> field exists anywhere on a time-off request or on a roster entry.</strong>
+  Studio membership lives on the person's own <code>users/{uid}.studios</code> array (set in Studio Hub),
+  and per-shift studio tags (<code>'tinker'</code>/<code>'clayhub'</code>) live inside each day's shift
+  object on their <code>timeclock_schedules</code> doc. See open decision below — routing has to be built
+  from one of these, it doesn't already exist as a field to just read.</li>
+  <li><strong>Sub proposals exist today only as free text.</strong> <code>proposedSubs[]</code>
+  (<code>js/app.js:6614</code>) is <code>{name, email, dates, confirmed}</code> — plain strings a
+  requester types in, not a resolved roster id. <code>toggleSubConfirm()</code>
+  (<code>js/app.js:~6727-6745</code>) only flips a <code>confirmed</code> flag and recomputes
+  <code>coverageStatus</code> — it never touches anyone's actual schedule. There is no existing
+  <code>confirmSub</code>-style function that writes a shift. This is genuinely new logic.</li>
+  <li><strong>Removing the requester's shift on approval already exists and already works.</strong>
+  <code>approveTimeOff()</code> (<code>js/app.js:6963-6991</code>) calls
+  <code>applyTimeOffOverrides(data.uid, data.dates)</code> (<code>js/app.js:7124-7153</code>), which writes
+  a null (day off) or partial-shift override into the requester's own schedule for each requested date, and
+  <code>removeTimeOffOverrides()</code> reverses it on withdraw/deny/un-approve. <strong>Phase 3 below does
+  not need to build this — it already ships.</strong> The only new work is the mirror-image write: putting
+  the confirmed sub's shift onto <em>their</em> schedule.</li>
+</ul>
+
+<div class="decision-needed">
+  <strong>Open decision 1 — studio routing when a request spans both studios or the field can't be
+  determined.</strong> Recommended approach: at submission time, look up which studio each requested date's
+  shift belongs to (via the person's own schedule, same resolution <code>getShiftForDate()</code> already
+  does) and store that resolved list directly on the new request doc (e.g. <code>requestStudios: ['clayhub']</code>)
+  rather than trying to derive it again later from a person's general <code>users.studios</code> membership,
+  which could include a studio they aren't actually scheduled at during the requested dates. If a single
+  request spans both studios, email both Maryssa and Lauren (Anika cc'd once, not twice). If a date has no
+  resolvable shift at all (day was already off), fall back to the person's <code>users.studios</code> array.
+  Confirm this approach before Phase 2 is built.
+</div>
+
+<div class="decision-needed">
+  <strong>Open decision 2 — do Maryssa and Lauren need Ticker accounts for this?</strong> No — this phase
+  only needs their email addresses as static configured recipients (env vars or a small settings doc),
+  completely independent of whether they can log into Ticker itself. That means this plan does
+  <strong>not</strong> depend on the separate "manager access to just Ticker" permissions plan (held for
+  later) — it can ship on its own first. Confirm Maryssa's and Lauren's email addresses before Phase 2.
+</div>
+
+<div class="decision-needed">
+  <strong>Open decision 3 — sub resolution.</strong> A proposed sub today is free text (a name someone
+  typed), which can't be written to a schedule doc without a real uid. Recommended: keep the free-text
+  proposal as-is (a sub might not even be Ticker staff), but at the moment an admin clicks "Confirm," add a
+  required "match to roster" dropdown (same first-name-match convention used elsewhere) before the
+  confirm button is enabled. If no roster match exists (e.g. an external/contract cover), allow confirming
+  the request without a schedule write, showing a note: "No matching roster entry — add their shift
+  manually." Confirm this fallback behavior is acceptable before Phase 3 is built.
+</div>
+
+<div class="decision-needed">
+  <strong>Open decision 4 — does confirming a sub require the request to be approved first, or can they
+  happen in either order?</strong> Today "confirmed" (sub) and "approved" (request) are two independent
+  flags with no ordering dependency. Recommend keeping them independent — a sub can be confirmed before
+  admin approval finishes, since coverage often gets arranged before the paperwork is finalized. The
+  schedule write for the sub happens the moment they're confirmed, regardless of the request's approval
+  status. Flag if this doesn't match how you actually want it to work.
+</div>
+
+<h2>Phase 1 — Email infrastructure</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>Ticker can send a real email from a Netlify function, proven with one test send before anything is
+  wired to real user actions.</p>
+  <div class="bdd">
+    <strong>Given</strong> a Resend API key is set as a Netlify env var,
+    <strong>when</strong> a manual test function is invoked (mirroring Schedule Viewer's
+    <code>test-reminder.mjs</code> pattern),
+    <strong>then</strong> a real email arrives at a real test address.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the Resend API call fails (bad key, rate limit, network error),
+    <strong>when</strong> the send function runs,
+    <strong>then</strong> the failure is logged clearly (not swallowed silently like push notifications'
+    fire-and-forget pattern) — a missed time-off email is a real operational miss, not a cosmetic one.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>No Firestore writes in this phase — infrastructure only.</li>
+    <li>New secret: <code>RESEND_API_KEY</code> as a Netlify env var, never committed to the repo.</li>
+  </ul>
+</div>
+
+<h2>Phase 2 — Route submission emails to the right coordinator</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>The moment someone submits a time-off request in Ticker, the correct coordinator gets a real email
+  with the request details, cc'd to Anika — no one has to remember who to email or check the app.</p>
+  <div class="bdd">
+    <strong>Given</strong> a Clay Hub shift is requested off,
+    <strong>when</strong> the request is submitted,
+    <strong>then</strong> Maryssa receives an email with the requester's name, dates, and reason, cc'd to Anika.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a Tinker Art shift is requested off,
+    <strong>when</strong> submitted,
+    <strong>then</strong> Lauren receives the same, cc'd to Anika.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a request spans dates in both studios,
+    <strong>when</strong> submitted,
+    <strong>then</strong> both Maryssa and Lauren receive it, Anika cc'd once.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the email send fails for any reason,
+    <strong>when</strong> that happens,
+    <strong>then</strong> the request is still saved successfully in Firestore (existing behavior
+    unaffected) and the failure is visibly logged — a broken mail integration must never block or lose a
+    real time-off request.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>New field on the timeoff request doc (<code>requestStudios</code>) — additive, no schema break for
+    existing requests that predate this field.</li>
+    <li>No rules change — email sending happens in a Netlify function, not a Firestore rule.</li>
+    <li><code>await</code> the email send but never let its failure roll back or block the
+    already-working Firestore write.</li>
+  </ul>
+</div>
+
+<h2>Phase 3 — Auto-assign confirmed sub's shift</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>When an admin confirms a specific sub for a time-off request and picks full-shift or custom times,
+  that shift is written directly onto the sub's own schedule — no manual schedule editing needed.
+  Removing it from the original requester already works today via the existing approve flow and needs no
+  changes.</p>
+  <div class="bdd">
+    <strong>Given</strong> an admin confirms a sub who matches exactly one active roster entry, choosing
+    "full shift,"
+    <strong>when</strong> confirmed,
+    <strong>then</strong> the sub's schedule gets an override for that date matching the original
+    requester's normal shift time for that day exactly.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an admin instead enters custom start/end times for the sub,
+    <strong>when</strong> confirmed,
+    <strong>then</strong> the sub's schedule override uses those custom times, not the requester's original ones.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the typed sub name has no matching active roster entry,
+    <strong>when</strong> an admin tries to confirm,
+    <strong>then</strong> they can still mark it confirmed, but see an explicit "no roster match — add
+    their shift manually" note, and no schedule write is attempted.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a sub is un-confirmed after being confirmed,
+    <strong>when</strong> that happens,
+    <strong>then</strong> the override written onto their schedule for that date is removed, mirroring how
+    <code>removeTimeOffOverrides()</code> already reverses the requester-side write on withdraw/deny.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the sub already has their own shift scheduled that day (a genuine double-booking),
+    <strong>when</strong> an admin tries to confirm them for the same date,
+    <strong>then</strong> they see a conflict warning before the override overwrites their existing shift —
+    never a silent overwrite.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Writes to the sub's schedule are scoped overrides for the specific requested date(s) only — never
+    a wholesale schedule replace.</li>
+    <li>Un-confirming must cleanly reverse the write, same pattern as the existing
+    <code>removeTimeOffOverrides()</code>.</li>
+    <li>No rules change — this is a normal, already-permitted <code>timeclock_schedules</code> write.</li>
+  </ul>
+</div>
+
+<h2>Completeness check</h2>
+<p>Phases are ordered by dependency: Phase 2 needs Phase 1's working send function; Phase 3 is fully
+independent of both and could ship first if useful on its own. If interrupted mid-Phase-2, the existing
+push-to-admins behavior and the Firestore write both keep working unaffected — email is strictly additive,
+never a required step for the request itself to succeed.</p>
+
+<h2>Resume instructions</h2>
+<p>Do not start Phase 2 until open decisions 1 and 2 above are confirmed. Do not start Phase 3 until open
+decisions 3 and 4 are confirmed. Phase 1 can be built immediately once Christie has (or creates) a Resend
+API key.</p>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Aug 29 — plan drafted</strong> from Christie's request to move all time-off requests through
+  Ticker with automatic email routing (Clay Hub → Maryssa, Tinker Art → Lauren, both cc Anika) plus
+  auto-assigning a confirmed sub's shift and auto-removing the original requester's (the latter already
+  exists via the current approve flow — confirmed by reading <code>applyTimeOffOverrides</code>, no new
+  work needed there). Four open decisions flagged for Christie rather than assumed: studio-routing method,
+  whether Maryssa/Lauren need Ticker logins for this (they don't), sub-to-roster resolution, and
+  confirm/approve ordering.</li>
+</ul>
+
+</body>
+</html>

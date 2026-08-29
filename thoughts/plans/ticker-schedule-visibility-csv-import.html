@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Schedule Visibility Fix + CSV Future-Schedule Upload</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-ticker { background: #e0f2fe; color: #075985; }
+  .decision-needed { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  ul { padding-left: 22px; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Schedule Visibility Fix + CSV Future-Schedule Upload</h1>
+
+<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
+  Status: <strong>Drafted, not yet reviewed.</strong> No second-model review has run yet. Do not mark
+  execution-ready until at least one review passes, per this repo's own standard.
+</div>
+
+<div class="meta">
+  <strong>Goal:</strong> Christie can look at Schedule Builder and trust that what she sees is today's
+  actual live schedule, not a mix of current and long-dead data. Building next semester's schedule is a
+  single CSV upload with a dry-run preview, not typing paragraphs into a free-text AI parser.<br>
+  <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
+  — no Firestore rules changes, no other app touched.<br>
+  <strong>Why now:</strong> Christie couldn't tell if Schedule Builder was showing current or stale data —
+  turned out to be a real bug (see Phase 1). Separately, she wants each new semester's schedule authored
+  as one CSV (composed with Claude) instead of the current free-text "describe changes in English" AI
+  parser, which is fragile for bulk changes.<br>
+  <strong>Risk:</strong> Low. No rules changes. The one thing to get right is not corrupting the CURRENT
+  live schedule while writing a FUTURE one — solved by reusing the exact <code>mergeFields</code> pattern
+  already proven in this session's Fall 2026 import tool.
+</div>
+
+<h2>Current state (confirmed by reading the code, not assumed)</h2>
+<ul>
+  <li>Every schedule doc already has a clean current/future split: <code>recurring</code>/<code>overrides</code>
+  (current) and an optional <code>futureSchedule</code> sub-object with its own <code>validFrom</code>/
+  <code>validUntil</code> that automatically takes over once its start date arrives. This is resolved by
+  <code>getShiftForDate()</code> (<code>js/app.js:3503-3530</code>) and used everywhere in the app. This
+  plan does not change that mechanism — it only fixes how it's displayed and adds a better way to write to it.</li>
+  <li><strong>Bug found:</strong> in <code>renderAllSchedulesList()</code> (<code>js/app.js:3190-3255</code>),
+  the "Days: Mon, Tue…" line correctly resolves for today (swaps to <code>futureSchedule.recurring</code>
+  once active), but the "Overrides: N" badge (<code>js/app.js:3209, 3240</code>) is
+  <code>Object.keys(sched.overrides || {}).length</code> — an unfiltered lifetime count that includes
+  every past date ever written, including old approved/withdrawn time-off churn. It never looks at
+  <code>futureSchedule.overrides</code> either. This is the direct cause of confusion about whether
+  Schedule Builder shows current or stale data.</li>
+  <li><strong>Dangerous leftover found:</strong> the existing "Import Spreadsheet Schedules" button
+  (<code>index.html</code>, wired to <code>handleImportSpreadsheetSchedules()</code>,
+  <code>js/app.js:5710-5753</code>) is <em>not</em> a reusable tool — it's one-time migration code from
+  last semester's transition. It writes a hardcoded constant (<code>SPREADSHEET_SCHEDULES</code>,
+  <code>js/app.js:5512+</code>, ~200 lines of last semester's data) straight into the CURRENT
+  <code>recurring</code>/<code>overrides</code> fields via plain <code>saveSchedule()</code> →
+  <code>.set(..., {merge:true})</code>, with a hardcoded <code>validUntil: '2026-05-09'</code> — a date
+  that's already passed. If anyone clicked this button today, it would silently corrupt every current
+  live schedule with stale spring data, using the exact recursive-merge bug already identified and fixed
+  once this session in the Fall 2026 import tool. This plan removes it.</li>
+  <li>The "AI Schedule Builder" free-text parser (<code>handleAiParse</code>, <code>js/app.js:4663+</code>,
+  calling <code>/.netlify/functions/schedule-builder</code>) is a separate, working feature for one-off
+  edits ("Remove Kathy from Thursday March 5"). This plan does not remove it — it stays for small ad hoc
+  tweaks. The new CSV uploader is specifically for bulk, whole-semester future-schedule authoring, which
+  is what free text is bad at.</li>
+  <li>The proven safe-write pattern already exists in this session's <code>fall-2026-import.html</code>
+  (moved to <code>~/Desktop/tinker-tools-not-deployed/</code>, not part of the app): name resolution by
+  first name against the live roster (ambiguous/no-match blocks the row), a dry-run preview table with
+  per-row status, a downloadable pre-write JSON snapshot required before the write button unlocks, and
+  <code>mergeFields</code> (not <code>merge:true</code>) so the write replaces named top-level fields
+  wholesale instead of recursively merging stale nested data. This plan turns that one-off tool into a
+  permanent, reusable feature in the app itself.</li>
+</ul>
+
+<div class="decision-needed">
+  <strong>Open question for Christie:</strong> should the new CSV uploader live as a new button in
+  Settings (next to where "Import Spreadsheet Schedules" currently is, before that button is removed),
+  or as its own top-level tab? Recommendation: Settings, since it's an infrequent (per-semester) admin
+  action, not a daily-use view — keeps the main nav uncluttered. Default to this unless told otherwise.
+</div>
+
+<h2>Phase 1 — Fix the Overrides badge</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>Every schedule card in Schedule Builder shows an overrides count that only reflects today-forward
+  dates on whichever schedule (current or active future) is actually in effect — never a lifetime total
+  of dead dates.</p>
+  <div class="bdd">
+    <strong>Given</strong> a schedule doc has 10 overrides dated in the past and 3 dated today or later,
+    <strong>when</strong> Schedule Builder renders that card,
+    <strong>then</strong> the badge reads "Overrides: 3", not "Overrides: 13".
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a person has an active <code>futureSchedule</code> in effect today,
+    <strong>when</strong> Schedule Builder renders their card,
+    <strong>then</strong> the overrides count comes from <code>futureSchedule.overrides</code> (date-filtered),
+    matching what the "Days" line already correctly does — not from the base <code>overrides</code> map.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a schedule doc has zero overrides at all,
+    <strong>when</strong> rendered,
+    <strong>then</strong> the badge reads "Overrides: 0" — no error, no "undefined."
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Read-only display change — no Firestore write anywhere in this phase.</li>
+    <li>No rules change.</li>
+  </ul>
+</div>
+
+<h2>Phase 2 — Remove the dangerous stale migration button</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>The "Import Spreadsheet Schedules" button and its hardcoded <code>SPREADSHEET_SCHEDULES</code>
+  constant are gone. Nobody can accidentally click a button that overwrites current live schedules with
+  last semester's frozen data.</p>
+  <div class="bdd">
+    <strong>Given</strong> Settings is open,
+    <strong>when</strong> an admin looks at the roster panel,
+    <strong>then</strong> there is no "Import Spreadsheet Schedules" button.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the codebase after this phase,
+    <strong>when</strong> searched for <code>SPREADSHEET_SCHEDULES</code> or
+    <code>handleImportSpreadsheetSchedules</code>,
+    <strong>then</strong> nothing is found — dead code fully removed, not just unwired.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Deletion of dead client code only — no data touched, no rules change.</li>
+  </ul>
+</div>
+
+<h2>Phase 3 — CSV future-schedule uploader</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>Christie composes a CSV (with Claude/chat) listing next semester's schedule, uploads it, sees a
+  dry-run preview of exactly what will change per person (including conflicts with any existing active
+  future schedule), downloads a pre-write snapshot, and only then can commit the write — which touches
+  only <code>futureSchedule</code>, never the current live <code>recurring</code>/<code>overrides</code>.</p>
+  <h4>CSV format (proposed, confirm with Christie before building)</h4>
+  <p>One row per person per recurring day: <code>name, day, start, end, studio, validFrom, validUntil</code>.
+  A person can have multiple rows (one per working day). <code>validFrom</code>/<code>validUntil</code>
+  must be identical across all of one person's rows (validated, not silently averaged).</p>
+  <div class="bdd">
+    <strong>Given</strong> a CSV with a name that matches exactly one active roster entry,
+    <strong>when</strong> parsed,
+    <strong>then</strong> the row resolves to that person's real uid (<code>claimedBy || id</code>,
+    same as the existing import tool) and shows "ready" in the dry-run table.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a CSV name matches zero or more than one active roster entry,
+    <strong>when</strong> parsed,
+    <strong>then</strong> that row is flagged no-match/ambiguous and blocked from writing — never guessed.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a person already has an active or pending <code>futureSchedule</code> whose date
+    range overlaps the new CSV's range,
+    <strong>when</strong> the dry-run runs,
+    <strong>then</strong> that row is flagged as a conflict and requires explicit confirmation before
+    being included in the write — never silently overwritten.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the dry-run preview is showing,
+    <strong>when</strong> Christie has not yet downloaded the pre-write snapshot,
+    <strong>then</strong> the write button stays disabled.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the write executes,
+    <strong>when</strong> checked against Firestore afterward,
+    <strong>then</strong> only the <code>futureSchedule</code> field changed on each written doc — the
+    current <code>recurring</code>/<code>overrides</code> fields are byte-for-byte unchanged, verified via
+    <code>mergeFields: ['futureSchedule']</code>, not <code>merge:true</code>.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a malformed CSV (missing column, unparseable time, mismatched validFrom across
+    one person's rows),
+    <strong>when</strong> parsed,
+    <strong>then</strong> the specific bad row is flagged with a clear error and blocked — the rest of the
+    file's valid rows are unaffected.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Write is <code>mergeFields: ['futureSchedule']</code> only — never touches current schedule fields.</li>
+    <li>Dry-run required before write; write button gated on snapshot download, mirroring the Fall 2026 tool.</li>
+    <li>No rules change — <code>futureSchedule</code> is already a permitted field within an already-permitted
+    <code>timeclock_schedules</code> write.</li>
+    <li>Name resolution never guesses — no-match/ambiguous always blocks, never silently picks one.</li>
+  </ul>
+</div>
+
+<h2>Completeness check</h2>
+<p>If interrupted after Phase 1 or 2: no partial state — each phase is independently complete and safe to
+ship alone. If interrupted mid-Phase-3 build: the CSV uploader is new, additive UI; nothing is destructive
+until a real write is triggered, and the write itself requires the explicit snapshot-then-write UI gate,
+so there's no way to leave Firestore in a half-written state from an interrupted coding session.</p>
+
+<h2>Resume instructions</h2>
+<p>Read this plan's Decisions Log for the latest state. Phases are independent and can be built/shipped in
+order (1 → 2 → 3) without waiting for review on all three at once, but do not build Phase 3 without
+Christie confirming the CSV format above first.</p>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Aug 29 — plan drafted</strong> after Christie flagged confusion about whether Schedule
+  Builder shows current or stale data, and asked for a CSV-based future-schedule upload flow. Investigation
+  found a real display bug (unfiltered overrides count) and a dangerous unrelated leftover (the
+  "Import Spreadsheet Schedules" migration button, still wired, still capable of corrupting live data with
+  the same merge-vs-mergeFields bug already fixed once this session). Both folded into this plan. CSV
+  format is proposed, not yet confirmed with Christie — flagged as an open decision above.</li>
+</ul>
+
+</body>
+</html>
