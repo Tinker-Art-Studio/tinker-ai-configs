@@ -78,43 +78,57 @@
   the confirmed sub's shift onto <em>their</em> schedule.</li>
 </ul>
 
-<div class="decision-needed">
-  <strong>Open decision 1 — studio routing when a request spans both studios or the field can't be
-  determined.</strong> Recommended approach: at submission time, look up which studio each requested date's
-  shift belongs to (via the person's own schedule, same resolution <code>getShiftForDate()</code> already
-  does) and store that resolved list directly on the new request doc (e.g. <code>requestStudios: ['clayhub']</code>)
-  rather than trying to derive it again later from a person's general <code>users.studios</code> membership,
-  which could include a studio they aren't actually scheduled at during the requested dates. If a single
-  request spans both studios, email both Maryssa and Lauren (Anika cc'd once, not twice). If a date has no
-  resolvable shift at all (day was already off), fall back to the person's <code>users.studios</code> array.
-  Confirm this approach before Phase 2 is built.
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — studio routing.</strong> At submission time, resolve which studio(s) each
+  requested date's shift belongs to (via the person's own schedule, same resolution
+  <code>getShiftForDate()</code> already does) and store the resolved list on the request doc as
+  <code>requestStudios</code>. If a request spans both studios, email both Maryssa and Lauren, Anika
+  cc'd once, not twice. If a date has no resolvable shift (already a day off), fall back to the person's
+  <code>users.studios</code> array.
+</div>
+
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — recipients.</strong> Maryssa (Clay Hub P&amp;O Coordinator):
+  <code>clayhub@tinkerartstudio.com</code>. Lauren (Tinker EA): <code>admin@tinkerartstudio.com</code>.
+  Both are static configured recipients (env vars), independent of whether either has a Ticker login —
+  this plan does not depend on the separate "manager access to just Ticker" permissions plan.
+</div>
+
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — sub resolution fallback.</strong> If the typed sub name has no matching
+  active roster entry, admin can still mark the sub confirmed, but the app skips attempting to write
+  a schedule entry for them (they're not a Ticker user — there's nothing to write to) and shows a note
+  instead: "No matching roster entry — add their shift manually."
+</div>
+
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — ordering, reversing this plan's original recommendation.</strong> Confirming
+  a sub is only possible <em>after</em> the time-off request itself has been approved — not independently
+  orderable. Before approval, a requester can still propose subs and note coverage arrangements; the
+  formal "Confirm &amp; Assign Shift" action (and the resulting schedule write) stays locked until an
+  admin approves the request.
 </div>
 
 <div class="decision-needed">
-  <strong>Open decision 2 — do Maryssa and Lauren need Ticker accounts for this?</strong> No — this phase
-  only needs their email addresses as static configured recipients (env vars or a small settings doc),
-  completely independent of whether they can log into Ticker itself. That means this plan does
-  <strong>not</strong> depend on the separate "manager access to just Ticker" permissions plan (held for
-  later) — it can ship on its own first. Confirm Maryssa's and Lauren's email addresses before Phase 2.
+  <strong>New, Aug 29 — "already talked to the sub" flag.</strong> Christie wants a way to note that the
+  requester has already personally confirmed coverage with a proposed sub, distinct from an admin's own
+  formal confirmation. Today's <code>coverageNotes</code> field is free text only — there's no structured
+  flag for this. Proposed addition: a checkbox on each <code>proposedSubs[]</code> entry at submission
+  time, <code>requesterPreConfirmed: boolean</code>, shown to admins in the request detail view as e.g.
+  "✓ Requester says already confirmed with this person" — informational only, does not bypass the
+  admin's own required "Confirm &amp; Assign Shift" action from the decision above. Flag if this isn't
+  quite what you meant.
 </div>
 
 <div class="decision-needed">
-  <strong>Open decision 3 — sub resolution.</strong> A proposed sub today is free text (a name someone
-  typed), which can't be written to a schedule doc without a real uid. Recommended: keep the free-text
-  proposal as-is (a sub might not even be Ticker staff), but at the moment an admin clicks "Confirm," add a
-  required "match to roster" dropdown (same first-name-match convention used elsewhere) before the
-  confirm button is enabled. If no roster match exists (e.g. an external/contract cover), allow confirming
-  the request without a schedule write, showing a note: "No matching roster entry — add their shift
-  manually." Confirm this fallback behavior is acceptable before Phase 3 is built.
-</div>
-
-<div class="decision-needed">
-  <strong>Open decision 4 — does confirming a sub require the request to be approved first, or can they
-  happen in either order?</strong> Today "confirmed" (sub) and "approved" (request) are two independent
-  flags with no ordering dependency. Recommend keeping them independent — a sub can be confirmed before
-  admin approval finishes, since coverage often gets arranged before the paperwork is finalized. The
-  schedule write for the sub happens the moment they're confirmed, regardless of the request's approval
-  status. Flag if this doesn't match how you actually want it to work.
+  <strong>New, Aug 29 — confirmation emails, in addition to the schedule write.</strong> Once an admin
+  confirms a specific sub (which, per the ordering decision above, can only happen after the request is
+  already approved), two emails go out automatically, both through this same Ticker-owned Resend
+  integration — nobody opens Gmail manually for either: (1) to the sub, confirming the date/time/studio
+  and noting it's already been added to their Tinker Ticker schedule; (2) to the original requester,
+  confirming who is covering their shift. This is read as "once the SUB is approved/confirmed," not the
+  original time-off approval (which already sends a push notification today, unchanged) — flag if that's
+  not the event you meant.
 </div>
 
 <h2>Phase 1 — Email infrastructure</h2>
@@ -186,8 +200,13 @@
   Removing it from the original requester already works today via the existing approve flow and needs no
   changes.</p>
   <div class="bdd">
-    <strong>Given</strong> an admin confirms a sub who matches exactly one active roster entry, choosing
-    "full shift,"
+    <strong>Given</strong> a time-off request has NOT yet been approved,
+    <strong>when</strong> an admin tries to use "Confirm &amp; Assign Shift" on a proposed sub,
+    <strong>then</strong> the action is unavailable — approval must happen first, per the ordering decision above.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a request has been approved and an admin confirms a sub who matches exactly one
+    active roster entry, choosing "full shift,"
     <strong>when</strong> confirmed,
     <strong>then</strong> the sub's schedule gets an override for that date matching the original
     requester's normal shift time for that day exactly.
@@ -225,6 +244,39 @@
   </ul>
 </div>
 
+<h2>Phase 4 — Confirmation emails to sub and requester</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>The moment a sub is confirmed (Phase 3), both the sub and the original requester get an email
+  confirming the arrangement — through Ticker's own email integration, not a manually-sent Gmail message.</p>
+  <div class="bdd">
+    <strong>Given</strong> an admin confirms a sub with a schedule write that succeeds,
+    <strong>when</strong> that happens,
+    <strong>then</strong> the sub receives an email stating the date, time, and studio they're covering,
+    noting it's already on their Tinker Ticker schedule.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the same confirmation,
+    <strong>when</strong> it happens,
+    <strong>then</strong> the original requester receives an email naming who is covering their shift and
+    for which date(s).
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a sub is confirmed with NO roster match (per the fallback in the decision above,
+    no schedule write happens),
+    <strong>when</strong> that happens,
+    <strong>then</strong> the requester still gets a confirmation email naming the sub, but the sub
+    themselves gets no auto-email (they're not a Ticker user — no address to send to from this system) and
+    the admin is shown the same "add their shift manually" note as before.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Email failure here must not roll back or undo the already-succeeded schedule write from Phase 3 —
+    same "never let email failure break the real action" principle as Phase 2.</li>
+    <li>No rules change.</li>
+  </ul>
+</div>
+
 <h2>Completeness check</h2>
 <p>Phases are ordered by dependency: Phase 2 needs Phase 1's working send function; Phase 3 is fully
 independent of both and could ship first if useful on its own. If interrupted mid-Phase-2, the existing
@@ -232,9 +284,11 @@ push-to-admins behavior and the Firestore write both keep working unaffected —
 never a required step for the request itself to succeed.</p>
 
 <h2>Resume instructions</h2>
-<p>Do not start Phase 2 until open decisions 1 and 2 above are confirmed. Do not start Phase 3 until open
-decisions 3 and 4 are confirmed. Phase 1 can be built immediately once Christie has (or creates) a Resend
-API key.</p>
+<p>All four original open decisions are resolved (see log). Two new items from the Aug 29 follow-up still
+need a quick confirm from Christie before Phase 3/4 are built: the "requesterPreConfirmed" checkbox
+design, and the "once it's approved" email-trigger reading (sub confirmation, not the original request
+approval). Phase 1 can be built immediately once Christie has (or creates) a Resend API key. A second
+model review is planned before execution starts — see log.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -245,6 +299,19 @@ API key.</p>
   work needed there). Four open decisions flagged for Christie rather than assumed: studio-routing method,
   whether Maryssa/Lauren need Ticker logins for this (they don't), sub-to-roster resolution, and
   confirm/approve ordering.</li>
+  <li><strong>Aug 29 — all four original decisions resolved.</strong> Studio routing: resolve per-date via
+  the person's own schedule, store on the request doc, email both coordinators if a request spans both
+  studios. Recipients: Maryssa = <code>clayhub@tinkerartstudio.com</code>, Lauren =
+  <code>admin@tinkerartstudio.com</code>. Sub fallback: no roster match still allows confirming, just skips
+  the schedule write. Ordering: <strong>reversed from this plan's original recommendation</strong> —
+  confirming a sub requires the request to already be approved, not independently orderable. Two new asks
+  surfaced in the same conversation: a "requester already talked to the sub" flag (proposed as a new
+  <code>requesterPreConfirmed</code> checkbox, informational only) and automatic confirmation emails to
+  both the sub and requester once a sub is confirmed — added as a new Phase 4. Both proposals need a quick
+  confirm from Christie, not yet locked. A separate, related ask — one-off shift email reminders (SDOCs,
+  private events, sub shifts) — was deliberately kept OUT of this plan; it shares Phase 1's email
+  infrastructure but has a genuinely different trigger mechanism (time-based, not event-based) and is being
+  discussed separately before deciding whether it's a new phase here or its own plan.</li>
 </ul>
 
 </body>
