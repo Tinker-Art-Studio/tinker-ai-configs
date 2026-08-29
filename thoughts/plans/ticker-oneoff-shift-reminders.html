@@ -36,14 +36,15 @@
 
 <div class="meta">
   <strong>Goal:</strong> Anyone with a genuinely atypical, easy-to-forget shift (SDOCs, break camps,
-  Friday Art Night, booked private events) gets an automatic email confirmation when it's added to their
-  schedule, and a reminder 48 hours before it happens — without anyone needing to remember to check Ticker
-  or manually send a reminder.<br>
+  Friday Art Night) gets an automatic email confirmation when it's added to their schedule, and a reminder
+  48 hours before it happens — without anyone needing to remember to check Ticker or manually send a
+  reminder.<br>
   <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
-  — no Firestore rules changes.<br>
-  <strong>Depends on:</strong> Plan B's Phase 1 (Resend email integration) — this plan reuses that same
-  infrastructure rather than standing up a second one. Should be built after Plan B's Phase 1 ships, or
-  alongside it if convenient.<br>
+  — one small rules touchpoint (see Phase 3's dedup collection), otherwise no rules changes.<br>
+  <strong>Depends on:</strong> a concrete shared email-sending helper that Plan B's Phase 1 must produce as
+  a real, importable artifact (not just "a Netlify function somewhere") — see the open decision below. Also
+  depends on Plan B Phase 3's sub-assignment writes for the double-fire question below. Should be built
+  after Plan B's Phase 1 ships, or alongside it if convenient.<br>
   <strong>Why now:</strong> Standing weekly commitments (regular Friday/Saturday slots) don't need this —
   people already expect those. What's easy to forget is the thing added two months ago in a hallway
   conversation that only shows up once. Christie was previously trying this in a different app (Schedule
@@ -68,20 +69,30 @@ correction happened before landing on the final rule:</p>
 </ul>
 
 <div class="decision-needed">
-  <strong>Final trigger rule (confirmed against real data):</strong> an override is a reminder candidate if
-  its note text contains, case-insensitive: <code>"camp"</code>, OR the whole word <code>"SDOC"</code>, OR
-  the whole word <code>"FAN"</code>, OR (<code>"Private Event"</code> AND NOT <code>"Booking Available"</code>
-  in the same note). "Whole word" for SDOC/FAN means matched with word boundaries, not as a bare substring,
-  so it can't accidentally fire inside an unrelated word.
+  <strong>Final trigger rule, simplified (Aug 29):</strong> an override is a reminder candidate if its note
+  text contains, case-insensitive, the whole word <code>"camp"</code>, <code>"SDOC"</code>, or
+  <code>"FAN"</code> — matched with word boundaries, not as a bare substring, so it can't accidentally fire
+  inside an unrelated word (e.g. "Tiffany" does not match "FAN").
 </div>
 
-<div class="depends">
-  <strong>Operational dependency, not just code:</strong> the "Private Event" keyword only fires once
-  someone editing a Clay Hub slot's note at booking-confirmation time removes "Booking Available" and
-  reflects the real booking. It currently matches zero of Julia's existing entries (all still say "Booking
-  Available") — this is intentional and forward-looking, not a bug. Whoever confirms a private event
-  booking needs to also update that shift's note text for the reminder to fire on it.
+<div class="decision-needed">
+  <strong>Dropped: the "Private Event" keyword.</strong> An earlier draft of this rule also tried to match
+  "Private Event" (excluding "Booking Available") to catch confirmed Clay Hub bookings like Julia Zuniga's
+  "Youth Birthday Party — Eden Bat Mitzvah." Christie corrected this: that entry is part of Julia's
+  standing recurring slot, not a one-off — it should never trigger a reminder, full stop. Rather than
+  build note-text logic to distinguish "booked" from "available" (which depends on someone reliably
+  rewording the note at booking-confirmation time — a real, easy-to-miss workflow step), the simpler and
+  more honest choice is to not try to auto-detect confirmed private events at all. A genuinely new one-off
+  private event (outside anyone's standing rotation) should just get one of the three real keywords in its
+  note when it's created. This is a known limitation, not a gap to engineer around.
 </div>
+
+<h3>Helper text at note entry</h3>
+<p>Wherever a shift note is entered or edited (the override editor in Schedule Builder, and anywhere else
+notes are written), show a short helper line near the note field:
+<em>"Notes containing 'camp,' 'SDOC,' or 'FAN' automatically email the scheduled person a reminder 48
+hours beforehand."</em> This makes the trigger legible to whoever's typing, instead of a hidden rule they'd
+have to be told about separately.</p>
 
 <h3>What this rule includes vs. excludes, confirmed against real Sept–Dec data</h3>
 <table>
@@ -96,7 +107,13 @@ correction happened before landing on the final rule:</p>
     <td>Mackenzie Reinhart's and Shelley Rahim's recurring Fri/Sat birthday-party slots</td>
   </tr>
   <tr>
-    <td>Future booked private events, once the note is updated at booking time to drop "Booking Available"</td>
+    <td>&nbsp;</td>
+    <td>Julia Zuniga's recurring Fri/Sat Clay Hub slots, INCLUDING named bookings like "Youth Birthday Party
+    — Eden Bat Mitzvah" — confirmed by Christie as part of her standing shift, never a reminder candidate,
+    regardless of how the note is worded</td>
+  </tr>
+  <tr>
+    <td>&nbsp;</td>
     <td>Lauren Burkey's "OVERRIDE: short Friday" routine schedule tweaks</td>
   </tr>
   <tr>
@@ -122,9 +139,11 @@ correction happened before landing on the final rule:</p>
     <strong>then</strong> it's still a reminder candidate (via the SDOC keyword).
   </div>
   <div class="bdd">
-    <strong>Given</strong> a note reading "Private Event Booking Available + Make Together: Wall Planters,"
+    <strong>Given</strong> a note reading "Youth Birthday Party — Eden Bat Mitzvah" or any of Julia Zuniga's
+    other recurring Clay Hub slot notes,
     <strong>when</strong> classified,
-    <strong>then</strong> it is NOT a candidate (Booking Available exclusion wins).
+    <strong>then</strong> it is NOT a candidate — no keyword match, confirmed correct by Christie even
+    though it's a specifically-named booking, because it's part of a standing shift, not a one-off.
   </div>
   <div class="bdd">
     <strong>Given</strong> a note reading "Birthday party — Fri party 3:45-5:15" or "Training with Anika,"
@@ -136,9 +155,23 @@ correction happened before landing on the final rule:</p>
     <strong>when</strong> classified,
     <strong>then</strong> it is NOT a candidate — the FAN keyword requires a word boundary, not a bare substring.
   </div>
+  <div class="bdd">
+    <strong>Given</strong> a note containing a word like "SDOCument" or "psdoc" (contains the substring
+    "sdoc" but not as a whole word),
+    <strong>when</strong> classified,
+    <strong>then</strong> it is NOT a candidate — same word-boundary requirement as FAN, tested explicitly
+    for SDOC too (a second-model review caught that only FAN had this negative test, not SDOC).
+  </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Pure function, no Firestore access at all in this phase.</li>
+    <li>Lives in <code>js/schedule-helpers.js</code>, this repo's existing dual-loadable (browser
+    global + Jest <code>require()</code>) pure-function file, alongside
+    <code>partitionSchedulesByRosterActive()</code> — not a new file, per this repo's own established
+    pattern. Word-boundary regex matching already has precedent in this codebase
+    (<code>formatNoteTimes()</code>) to follow.</li>
+    <li>Test coverage required before this phase is done: unit tests in this repo's existing
+    <code>schedule-helpers.test.js</code>, no emulator needed — this is a pure function.</li>
   </ul>
 </div>
 
@@ -146,7 +179,8 @@ correction happened before landing on the final rule:</p>
 <div class="phase">
   <h3>Acceptance criteria</h3>
   <p>The moment an admin saves an override that matches the trigger rule, the person it's assigned to gets
-  an email confirming the date, time, studio, and what it is.</p>
+  an email confirming the date, time, studio, and what it is. The note-entry UI shows the helper text
+  described above so the trigger isn't a hidden rule.</p>
   <div class="bdd">
     <strong>Given</strong> an admin saves a new override matching the trigger rule for someone's schedule,
     <strong>when</strong> the save succeeds,
@@ -164,11 +198,23 @@ correction happened before landing on the final rule:</p>
     <strong>then</strong> the schedule save itself is unaffected and the failure is logged — same
     "never let email break the real write" principle as Plan B.
   </div>
+  <div class="bdd">
+    <strong>Given</strong> the person the shift is assigned to has no resolvable email (an unclaimed roster
+    entry — a real, already-modeled state elsewhere in this app, e.g. the "Contact info available after
+    they sign in" message in the time-off sub picker),
+    <strong>when</strong> a matching override is saved for them,
+    <strong>then</strong> no email attempt is made and no error is thrown — same graceful handling this
+    app already uses for that exact state elsewhere.
+  </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Read-only trigger check plus an email send — no new Firestore writes beyond the schedule save that
     already happens today.</li>
     <li>No rules change.</li>
+    <li>Depends on <code>saveSchedule()</code> (<code>js/firebase-data.js:205-219</code>) actually awaiting
+    its write and surfacing failures — see the shared prerequisite fix noted in Plan 1 (that function is
+    currently synchronous and doesn't await its internal <code>.set()</code> call). Confirm that fix has
+    landed before wiring an email send onto "the save succeeded."</li>
   </ul>
 </div>
 
@@ -177,16 +223,34 @@ correction happened before landing on the final rule:</p>
   <h3>Acceptance criteria</h3>
   <p>A scheduled function runs once daily and emails anyone with a trigger-matching one-off shift exactly
   2 calendar days out — regardless of how long ago it was added to their schedule.</p>
+
+  <div class="decision-needed">
+    <strong>Dedup mechanism, corrected after second-model review.</strong> The original idea — a
+    <code>reminderSentAt</code> flag stored inline on the override object — is unsafe: <code>handleAddOverride()</code>
+    (<code>js/app.js:3071-3098</code>) rebuilds override objects from scratch with only
+    <code>{start, end, studio, note, _type}</code> on every save, so any later edit to that date (even
+    fixing a typo) would silently wipe the flag and cause a duplicate reminder. It would also race with a
+    background reminder function's own write to the same nested field, since an admin's schedule save is a
+    full-document <code>.set()</code>. Corrected approach: track sent reminders in a <strong>new, separate
+    Firestore collection</strong> (e.g. <code>timeclock_reminder_log</code>, one doc per
+    <code>{uid, date}</code> sent), which sidesteps both problems — it's never touched by the schedule
+    editor, so it can't be silently cleared, and it doesn't share a document with anything the editor
+    writes, so there's no collision. <strong>This means Phase 3 is not rules-free after all</strong> — a
+    new collection needs a matching rule in <code>studio-hub/firestore.rules</code>, per this org's
+    standing "every new collection requires a rule, same commit" requirement. Small, additive rule (read/write
+    gated to manager+, same pattern as other Ticker settings collections) — flagged here so it isn't missed.
+  </div>
+
   <div class="bdd">
     <strong>Given</strong> today is 2026-09-19 and someone has a trigger-matching override dated 2026-09-21,
     <strong>when</strong> the daily scheduled function runs,
     <strong>then</strong> that person receives a reminder email.
   </div>
   <div class="bdd">
-    <strong>Given</strong> the same shift was already reminded once,
+    <strong>Given</strong> the same shift was already reminded once (a matching doc exists in
+    <code>timeclock_reminder_log</code>),
     <strong>when</strong> the daily function runs again the next day (or is manually re-triggered),
-    <strong>then</strong> no duplicate reminder is sent — a <code>reminderSentAt</code> flag on the override
-    (or a separate tracking doc) prevents re-sending.
+    <strong>then</strong> no duplicate reminder is sent.
   </div>
   <div class="bdd">
     <strong>Given</strong> a trigger-matching shift is added with LESS than 48 hours' notice (e.g., a
@@ -196,9 +260,27 @@ correction happened before landing on the final rule:</p>
     intentionally does not try to retroactively catch shifts that are already inside the 48-hour window,
     to keep the daily job simple (single fixed lookahead, not a range).
   </div>
+  <div class="bdd">
+    <strong>Given</strong> the trigger-matching override is deleted before the daily function ever runs for
+    it,
+    <strong>when</strong> the function runs,
+    <strong>then</strong> it correctly finds nothing at that date and sends no reminder — no stale
+    scheduled send survives a deletion, since the function re-reads live schedule data each run rather than
+    pre-queuing sends.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the scheduled function runs at a fixed UTC time,
+    <strong>when</strong> "2 days out" is computed,
+    <strong>then</strong> the comparison uses the studio's local calendar date (America/Denver, matching
+    the timezone convention already used by Schedule Viewer's own reference cron), not raw UTC date math —
+    override dates are timezone-naive <code>YYYY-MM-DD</code> strings, so an off-by-one day is a real risk
+    near midnight if this isn't pinned explicitly.
+  </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
-    <li>New field: a sent-reminder flag per override, to prevent duplicate sends — additive, no schema break.</li>
+    <li>New collection <code>timeclock_reminder_log</code> requires a new rule in
+    <code>studio-hub/firestore.rules</code>, added in the same phase/commit as the collection — see the
+    corrected dedup approach above. This is the one rules touchpoint across all three of these plans.</li>
     <li>Runs as a Netlify Scheduled Function — new infrastructure type for this repo (Plan B's functions are
     all on-demand, not scheduled).</li>
     <li>No rules change.</li>
