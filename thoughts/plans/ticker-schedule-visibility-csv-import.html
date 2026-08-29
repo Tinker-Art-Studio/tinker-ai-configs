@@ -58,7 +58,16 @@
   <code>Object.keys(sched.overrides || {}).length</code> — an unfiltered lifetime count that includes
   every past date ever written, including old approved/withdrawn time-off churn. It never looks at
   <code>futureSchedule.overrides</code> either. This is the direct cause of confusion about whether
-  Schedule Builder shows current or stale data.</li>
+  Schedule Builder shows current or stale data. <strong>Second-model review found the identical bug exists
+  a second time</strong>, in <code>viewScheduleFromList()</code>'s detail modal
+  (<code>js/app.js:3329-3488</code>) — the exact view someone would open to double-check what they're
+  seeing on the card. Both locations are in scope for Phase 1, not just the card list.</li>
+  <li><strong>A second, separate <code>futureSchedule</code>-shaped concept exists</strong> that the
+  original investigation missed: a global settings doc at <code>timeclock_settings/futureSchedule</code>
+  drives a summary shown in the AI Schedule Builder UI, distinct from the per-person
+  <code>timeclock_schedules/{uid}.futureSchedule</code> field this plan is about. A CSV import in Phase 3
+  writes only the per-person field — this global summary doc could go stale after a CSV import unless
+  Phase 3 explicitly accounts for it (see Phase 3's checklist).</li>
   <li><strong>Dangerous leftover found:</strong> the existing "Import Spreadsheet Schedules" button
   (<code>index.html</code>, wired to <code>handleImportSpreadsheetSchedules()</code>,
   <code>js/app.js:5710-5753</code>) is <em>not</em> a reusable tool — it's one-time migration code from
@@ -110,18 +119,31 @@
     <strong>when</strong> rendered,
     <strong>then</strong> the badge reads "Overrides: 0" — no error, no "undefined."
   </div>
+  <div class="bdd">
+    <strong>Given</strong> the same stale-count scenario as above,
+    <strong>when</strong> the schedule's detail modal is opened via <code>viewScheduleFromList()</code>
+    instead of just the card list,
+    <strong>then</strong> it shows the same corrected, date-filtered count — the fix applies to both
+    locations, not just the summary card.
+  </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Read-only display change — no Firestore write anywhere in this phase.</li>
     <li>No rules change.</li>
+    <li>Test coverage: this repo's established pure-function test pattern
+    (<code>schedule-helpers.test.js</code>) — extract the date-filtering logic into a testable function
+    rather than inlining it in the render functions, per this repo's own precedent from
+    <code>partitionSchedulesByRosterActive()</code>.</li>
   </ul>
 </div>
 
 <h2>Phase 2 — Remove the dangerous stale migration button</h2>
 <div class="phase">
   <h3>Acceptance criteria</h3>
-  <p>The "Import Spreadsheet Schedules" button and its hardcoded <code>SPREADSHEET_SCHEDULES</code>
-  constant are gone. Nobody can accidentally click a button that overwrites current live schedules with
+  <p>The "Import Spreadsheet Schedules" button (and its click listener), and the hardcoded
+  <code>SPREADSHEET_SCHEDULES</code> constant and <code>handleImportSpreadsheetSchedules()</code> function,
+  are all gone — not just unwired. Nobody can accidentally click a button that overwrites current live
+  schedules with
   last semester's frozen data.</p>
   <div class="bdd">
     <strong>Given</strong> Settings is open,
@@ -178,8 +200,48 @@
     <strong>Given</strong> the write executes,
     <strong>when</strong> checked against Firestore afterward,
     <strong>then</strong> only the <code>futureSchedule</code> field changed on each written doc — the
-    current <code>recurring</code>/<code>overrides</code> fields are byte-for-byte unchanged, verified via
-    <code>mergeFields: ['futureSchedule']</code>, not <code>merge:true</code>.
+    current <code>recurring</code>/<code>overrides</code> fields are byte-for-byte unchanged. Confirmed
+    against the real SDK (this repo is 100% Firebase v8 compat syntax, no v9 <code>updateDoc</code>
+    anywhere): the write must be <code>docRef.set({futureSchedule: {...}}, {mergeFields: ['futureSchedule']})</code>
+    — <code>mergeFields</code> is a <code>.set()</code> option, not valid on <code>.update()</code>. This
+    protects sibling fields (<code>recurring</code>/<code>overrides</code>) but gives zero protection to
+    sub-fields <em>within</em> <code>futureSchedule</code> itself — the write must reconstruct that whole
+    sub-object (<code>recurring</code>, <code>overrides</code>, <code>validFrom</code>, <code>validUntil</code>)
+    each time, following the existing precedent in <code>handleAiSaveAll()</code> (<code>js/app.js:4941-4948</code>),
+    not assume partial-field merging happens automatically inside it.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the CSV has two rows for the same person on the same day,
+    <strong>when</strong> parsed,
+    <strong>then</strong> this is flagged as an error on that row, not silently resolved by taking the
+    first or last one.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a CSV's day column uses a different case or format than the canonical
+    <code>Mon/Tue/Wed/Thu/Fri/Sat/Sun</code> keys this app uses everywhere else,
+    <strong>when</strong> parsed,
+    <strong>then</strong> it's normalized to the canonical form or rejected with a clear error — never
+    silently written under a mismatched key that the rest of the app won't recognize.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an empty CSV, or a CSV where every row fails to parse,
+    <strong>when</strong> uploaded,
+    <strong>then</strong> the dry-run clearly shows zero ready rows and the write button never becomes
+    enabled — no confusing empty-success state.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the write is in progress across many people and fails partway through (network
+    interruption, one doc's write rejected),
+    <strong>when</strong> that happens,
+    <strong>then</strong> the dry-run table clearly marks which specific rows succeeded vs. failed — writes
+    are per-document, not a single atomic transaction, so a partial failure is a real possible state that
+    must be visible, not hidden.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a CSV name resolves to a roster entry that is archived (<code>active: false</code>),
+    <strong>when</strong> parsed,
+    <strong>then</strong> it's blocked the same way a no-match is — archived people don't get new future
+    schedules written for them.
   </div>
   <div class="bdd">
     <strong>Given</strong> a malformed CSV (missing column, unparseable time, mismatched validFrom across
@@ -190,12 +252,36 @@
   </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
-    <li>Write is <code>mergeFields: ['futureSchedule']</code> only — never touches current schedule fields.</li>
+    <li>Write is <code>mergeFields: ['futureSchedule']</code> only — never touches current schedule fields.
+    Uses <code>.set(docRef, data, {mergeFields:[...]})</code> (v8 syntax, matching this whole codebase) —
+    not <code>updateDoc</code>.</li>
     <li>Dry-run required before write; write button gated on snapshot download, mirroring the Fall 2026 tool.</li>
     <li>No rules change — <code>futureSchedule</code> is already a permitted field within an already-permitted
     <code>timeclock_schedules</code> write.</li>
     <li>Name resolution never guesses — no-match/ambiguous always blocks, never silently picks one.</li>
+    <li>No CSV parsing library exists in this repo today — hand-rolled parsing carries real risk for quoted
+    fields/embedded commas. Keep the CSV format simple enough (plain fields, no embedded commas) that naive
+    splitting is safe, or bring in a minimal, dependency-free parser rather than writing a fragile one.</li>
+    <li>After a successful write, check whether <code>timeclock_settings/futureSchedule</code> (the separate
+    global summary doc feeding the AI Schedule Builder UI) needs refreshing too, so it doesn't go stale
+    relative to the per-person data this phase actually writes.</li>
+    <li>Test coverage required: an emulator test (this repo's <code>*.emulator.test.js</code> pattern, via
+    <code>firebase-admin</code> against the Firestore emulator, no mocks) proving a CSV write really only
+    touches <code>futureSchedule</code> and leaves <code>recurring</code>/<code>overrides</code> untouched —
+    this is the core safety claim of this phase and deserves a real test, not just code review.</li>
   </ul>
+</div>
+
+<div class="decision-needed">
+  <strong>Shared prerequisite, found by second-model review — fix before Phase 3 depends on it.</strong>
+  <code>saveSchedule()</code> and <code>deleteSchedule()</code> (<code>js/firebase-data.js:205-230</code>)
+  are not <code>async</code> and don't <code>await</code> their internal <code>.set()</code>/<code>.update()</code>
+  calls — they return <code>true</code> before the write is actually durable, and swallow rejections. This
+  is the same class of bug already found and fixed once this session in <code>addClockEntry()</code>
+  during the Archive Employees feature. Phase 3's CSV writer either needs its own direct, properly-awaited
+  write (bypassing <code>saveSchedule()</code>), or this shared function should be fixed once, the same
+  way <code>addClockEntry()</code> was — recommended, since Plan B's Phases 2-4 rely on the equivalent
+  <code>updateTimeOffRequest()</code> having the same fix.
 </div>
 
 <h2>Completeness check</h2>
@@ -207,7 +293,10 @@ so there's no way to leave Firestore in a half-written state from an interrupted
 <h2>Resume instructions</h2>
 <p>Read this plan's Decisions Log for the latest state. Phases are independent and can be built/shipped in
 order (1 → 2 → 3) without waiting for review on all three at once, but do not build Phase 3 without
-Christie confirming the CSV format above first.</p>
+Christie confirming the CSV format above first. Second-model review recommends building this plan's Phase 1
+first among all three Ticker plans currently drafted — it's the smallest, most self-contained change, and
+both other plans (time-off email/subs, one-off reminders) write new schedule overrides that benefit from
+this plan's display fix already being live.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -219,6 +308,20 @@ Christie confirming the CSV format above first.</p>
   format is proposed, not yet confirmed with Christie — flagged as an open decision above.</li>
   <li><strong>Aug 29 — CSV uploader location confirmed</strong> as Settings, replacing the removed
   button's spot. No other changes to this plan this round.</li>
+  <li><strong>Aug 29 — second-model review</strong> (run jointly with the other two Ticker plans) confirmed
+  the core diagnosis and removal were both accurate, and found real additive gaps rather than any wrong
+  design: the same stale-override-count bug exists a second time in the detail modal
+  (<code>viewScheduleFromList()</code>), not just the card list — folded into Phase 1. A second, separate
+  <code>timeclock_settings/futureSchedule</code> global summary doc (distinct from the per-person field this
+  plan touches) was missed by the original investigation — noted as a possible staleness risk for Phase 3.
+  The <code>mergeFields</code> write was semantically correct but needed the exact v8 <code>.set()</code>
+  syntax pinned down, plus a note that it only protects sibling fields, not sub-fields within
+  <code>futureSchedule</code> itself. Added several missing BDD scenarios (duplicate CSV rows, day-key case
+  normalization, empty CSV, partial-write failure visibility, archived-roster blocking) and a shared
+  prerequisite fix (found across both this plan and Plan B): <code>saveSchedule()</code>/<code>deleteSchedule()</code>
+  don't actually await their own writes today — the same defect already found and fixed once this session
+  in <code>addClockEntry()</code>. Also added an explicit commitment to this repo's real
+  emulator-test pattern, which the original draft didn't mention.</li>
 </ul>
 
 </body>

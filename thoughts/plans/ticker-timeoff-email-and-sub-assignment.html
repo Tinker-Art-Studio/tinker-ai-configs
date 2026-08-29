@@ -90,23 +90,38 @@
 <div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
   <strong>Resolved (Aug 29) — recipients.</strong> Maryssa (Clay Hub P&amp;O Coordinator):
   <code>clayhub@tinkerartstudio.com</code>. Lauren (Tinker EA): <code>admin@tinkerartstudio.com</code>.
-  Both are static configured recipients (env vars), independent of whether either has a Ticker login —
-  this plan does not depend on the separate "manager access to just Ticker" permissions plan.
+  Anika's cc address, confirmed against real code rather than assumed: <code>anika@tinkerartstudio.com</code>
+  (already in use at <code>js/app.js:6775</code>). All three are static configured recipients (env vars),
+  independent of whether either coordinator has a Ticker login — this plan does not depend on the separate
+  "manager access to just Ticker" permissions plan.
 </div>
 
 <div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
-  <strong>Resolved (Aug 29) — sub resolution fallback.</strong> If the typed sub name has no matching
-  active roster entry, admin can still mark the sub confirmed, but the app skips attempting to write
-  a schedule entry for them (they're not a Ticker user — there's nothing to write to) and shows a note
-  instead: "No matching roster entry — add their shift manually."
+  <strong>Resolved (Aug 29) — sub resolution fallback, expanded after second-model review.</strong> There
+  are three states, not two: (1) the typed name matches an active, <em>claimed</em> roster entry — write
+  the schedule override and send Phase 4's email normally. (2) No matching roster entry at all — admin can
+  still mark the sub confirmed, but the app skips the schedule write and shows "No matching roster entry —
+  add their shift manually." (3) <strong>The name matches a roster entry that exists but has never been
+  claimed</strong> (<code>claimedBy: null</code> — someone seeded on the roster who hasn't signed in yet).
+  This is a real, already-modeled state elsewhere in the app (the sub picker already shows "Contact info
+  available after they sign in" for exactly this case, <code>js/app.js:6551</code>) that the original
+  two-state fallback missed — it has no uid to write a schedule override to and no email to send Phase 4's
+  confirmation to, even though it "matches the roster." Treat state (3) the same as state (2): no schedule
+  write, no sub-side email, same manual-add note.
 </div>
 
 <div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
-  <strong>Resolved (Aug 29) — ordering, reversing this plan's original recommendation.</strong> Confirming
-  a sub is only possible <em>after</em> the time-off request itself has been approved — not independently
-  orderable. Before approval, a requester can still propose subs and note coverage arrangements; the
-  formal "Confirm &amp; Assign Shift" action (and the resulting schedule write) stays locked until an
-  admin approves the request.
+  <strong>Resolved (Aug 29) — ordering, corrected after second-model review found this isn't just a
+  decision.</strong> Confirming a sub is only possible <em>after</em> the time-off request itself has been
+  approved. <strong>This requires an actual code change, not just a sign-off</strong> — checked against
+  the real <code>toggleSubConfirm()</code> (<code>js/app.js:6929-6948</code>): it has no internal
+  approval-status check today at all; the only gate is that the "Mark Confirmed" button is currently shown
+  <em>only before</em> approval (<code>js/app.js:6748</code>) — the exact opposite of what's wanted. Phase 3
+  below must invert that visibility condition AND add a real guard inside <code>toggleSubConfirm()</code>
+  itself (not just hide the button), so a stale page, direct console call, or race can't confirm a sub on
+  an unapproved request. Before approval, a requester can still propose subs and note coverage arrangements
+  (including the new pre-confirmation checkbox below) — only the formal "Confirm &amp; Assign Shift" action
+  and its schedule write are gated.
 </div>
 
 <div class="decision-needed">
@@ -131,15 +146,41 @@
   not the event you meant.
 </div>
 
+<div class="decision-needed">
+  <strong>Open decision, found by second-model review — per-sub or per-request?</strong> A single time-off
+  request can have multiple <code>proposedSubs[]</code>, each independently confirmable —
+  <code>coverageStatus</code> only becomes <code>'secured'</code> once ALL of them are confirmed (e.g. two
+  people splitting one day). The plan above doesn't yet specify whether Phase 4's confirmation emails fire
+  the moment <em>each</em> sub is individually confirmed, or only once, when the whole request reaches
+  <code>'secured'</code>. Recommend firing per-sub as each one confirms — a sub covering their piece
+  shouldn't wait on someone else's piece being arranged — but this is a real product call, not a technical
+  one. Confirm before Phase 4 is built.
+</div>
+
 <h2>Phase 1 — Email infrastructure</h2>
 <div class="phase">
   <h3>Acceptance criteria</h3>
   <p>Ticker can send a real email from a Netlify function, proven with one test send before anything is
   wired to real user actions.</p>
+
+  <div class="decision-needed">
+    <strong>Corrected after second-model review — commit to a concrete shared file, not just a "pattern."</strong>
+    This plan originally described Phase 1 as "mirroring Schedule Viewer's <code>test-reminder.mjs</code>
+    pattern" — checked directly, and that file (and its sibling <code>send-reminders.mjs</code>) each
+    inline their own <code>new Resend(...)</code> call and their own non-exported HTML-template function.
+    There is no actual shared, importable helper to reuse, even in the app being cited as the reference —
+    it's a pattern to imitate, not code to import. Since the One-Off Shift Reminders plan explicitly depends
+    on this phase producing something it can reuse (rather than standing up a second Resend integration),
+    Phase 1 must produce one concrete, exported, shared function at
+    <code>netlify/functions/_lib/email.js</code> (e.g. <code>sendEmail({to, cc, subject, html})</code>),
+    that both this plan's later phases AND the One-Off Shift Reminders plan import directly — not each
+    write their own.
+  </div>
+
   <div class="bdd">
     <strong>Given</strong> a Resend API key is set as a Netlify env var,
-    <strong>when</strong> a manual test function is invoked (mirroring Schedule Viewer's
-    <code>test-reminder.mjs</code> pattern),
+    <strong>when</strong> a manual test function is invoked, calling the shared
+    <code>netlify/functions/_lib/email.js</code> helper,
     <strong>then</strong> a real email arrives at a real test address.
   </div>
   <div class="bdd">
@@ -152,6 +193,8 @@
   <ul class="checklist">
     <li>No Firestore writes in this phase — infrastructure only.</li>
     <li>New secret: <code>RESEND_API_KEY</code> as a Netlify env var, never committed to the repo.</li>
+    <li>Deliverable is a real file at a fixed path (<code>netlify/functions/_lib/email.js</code>) — the
+    One-Off Shift Reminders plan cites this exact path once it exists.</li>
   </ul>
 </div>
 
@@ -169,6 +212,15 @@
     <strong>Given</strong> a Tinker Art shift is requested off,
     <strong>when</strong> submitted,
     <strong>then</strong> Lauren receives the same, cc'd to Anika.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> none of the requested dates have a resolvable shift (all already days off, so
+    per-date studio lookup falls back to the requester's <code>users.studios</code>), AND that person
+    belongs to zero or both studios,
+    <strong>when</strong> submitted,
+    <strong>then</strong> the fallback-of-fallback is explicit, not silently dropped: zero studios sends to
+    neither coordinator but still visibly logs a warning (this should be rare enough to investigate, not
+    silently swallowed); both studios sends to both coordinators, same as the multi-studio case above.
   </div>
   <div class="bdd">
     <strong>Given</strong> a request spans dates in both studios,
@@ -234,13 +286,48 @@
     <strong>then</strong> they see a conflict warning before the override overwrites their existing shift —
     never a silent overwrite.
   </div>
+  <div class="bdd">
+    <strong>Given</strong> a sub was confirmed (schedule write done) and then the underlying time-off
+    request is withdrawn, denied, or edited back open,
+    <strong>when</strong> that happens,
+    <strong>then</strong> the sub-side override is also reversed — not just the requester-side one.
+    <code>withdrawTimeOff()</code>/the edit-reopen path today only reverses the requester's own overrides
+    via <code>removeTimeOffOverrides()</code>; this phase must extend that same reversal to also cover a
+    confirmed sub's schedule write, or a sub can be left on a schedule for time off that no longer exists.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a sub declines after already being marked confirmed,
+    <strong>when</strong> an admin un-confirms them,
+    <strong>then</strong> in addition to reversing the schedule write (already covered above), a
+    cancellation note is available — the confirmation email already sent to that sub is not retroactively
+    unsendable, so the un-confirm flow should make it obvious to the admin that a follow-up message may be
+    needed.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> two admins act on the same request's <code>proposedSubs[]</code> at nearly the
+    same time (e.g. one confirms sub A while another edits coverage notes),
+    <strong>when</strong> both writes land,
+    <strong>then</strong> neither is silently lost — <code>proposedSubs</code> updates must go through a
+    transaction (read-modify-write), not a bare <code>updateDoc</code>, since this phase adds a real
+    schedule write and an email send on top of what was previously a low-stakes flag toggle.
+  </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Writes to the sub's schedule are scoped overrides for the specific requested date(s) only — never
     a wholesale schedule replace.</li>
     <li>Un-confirming must cleanly reverse the write, same pattern as the existing
-    <code>removeTimeOffOverrides()</code>.</li>
+    <code>removeTimeOffOverrides()</code> — and per the BDD above, withdrawal/denial/re-edit of the
+    underlying request must also trigger this same reversal on the sub's side, not just the requester's.</li>
+    <li><code>proposedSubs[]</code> updates in this phase must use a transaction, not a bare field update —
+    see the concurrent-edit BDD above.</li>
     <li>No rules change — this is a normal, already-permitted <code>timeclock_schedules</code> write.</li>
+    <li>Older, migrated time-off docs store <code>proposedSubs[].dates</code> as free-text strings, not the
+    live form's array of ISO dates — this phase's date-handling logic must defend against both shapes
+    rather than assume the array format everywhere.</li>
+    <li>Depends on <code>updateTimeOffRequest()</code> (<code>js/firebase-data.js:465-477</code>) actually
+    awaiting and surfacing failures — like <code>saveSchedule()</code> (see Plan 1's shared prerequisite
+    fix), this function is currently synchronous internally. Confirm that fix has landed before this phase
+    ships, since it now carries a real schedule write and an email send on its result.</li>
   </ul>
 </div>
 
@@ -284,11 +371,14 @@ push-to-admins behavior and the Firestore write both keep working unaffected —
 never a required step for the request itself to succeed.</p>
 
 <h2>Resume instructions</h2>
-<p>All four original open decisions are resolved (see log). Two new items from the Aug 29 follow-up still
-need a quick confirm from Christie before Phase 3/4 are built: the "requesterPreConfirmed" checkbox
-design, and the "once it's approved" email-trigger reading (sub confirmation, not the original request
-approval). Phase 1 can be built immediately once Christie has (or creates) a Resend API key. A second
-model review is planned before execution starts — see log.</p>
+<p>All four original open decisions are resolved. Still open, pending Christie's answer: the
+"requesterPreConfirmed" checkbox design, the "once it's approved" email-trigger reading, and (new, from
+second-model review) whether Phase 4's confirmation emails fire per-sub or only at full coverage. The
+ordering fix is now known to require real code changes to <code>toggleSubConfirm()</code>, not just a
+sign-off — see the corrected decision above. Phase 1 must produce the shared
+<code>netlify/functions/_lib/email.js</code> helper as its actual deliverable, since the One-Off Shift
+Reminders plan imports it directly. Phase 1 can otherwise be built immediately once Christie has (or
+creates) a Resend API key.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -309,9 +399,28 @@ model review is planned before execution starts — see log.</p>
   <code>requesterPreConfirmed</code> checkbox, informational only) and automatic confirmation emails to
   both the sub and requester once a sub is confirmed — added as a new Phase 4. Both proposals need a quick
   confirm from Christie, not yet locked. A separate, related ask — one-off shift email reminders (SDOCs,
-  private events, sub shifts) — was deliberately kept OUT of this plan; it shares Phase 1's email
-  infrastructure but has a genuinely different trigger mechanism (time-based, not event-based) and is being
-  discussed separately before deciding whether it's a new phase here or its own plan.</li>
+  FAN, private events) — was spun into its own plan (<code>ticker-oneoff-shift-reminders.html</code>),
+  since it needs genuinely different (scheduled, not event-driven) infrastructure, while explicitly
+  depending on this plan's Phase 1 for email sending.</li>
+  <li><strong>Aug 29 — second-model review</strong> (run jointly with the other two Ticker plans) found one
+  real blocker and several real gaps, all fixed in place rather than requiring a redesign. Blocker: the
+  approval-before-sub-confirm ordering was described as already achievable via existing flags, but
+  <code>toggleSubConfirm()</code> has no internal status gate today — the "Mark Confirmed" button is
+  currently shown only <em>before</em> approval, the opposite of what's wanted — so Phase 3 must now
+  include a real code change (invert the visibility condition, add an internal guard), not just a sign-off.
+  Sub-resolution fallback expanded from two states to three — a roster entry that matches by name but was
+  never claimed (<code>claimedBy: null</code>) has no uid and no email, a real, already-modeled case
+  elsewhere in the app that the original two-state version missed. Anika's cc address locked in
+  (<code>anika@tinkerartstudio.com</code>, confirmed in real code, not assumed). Phase 1 now commits to one
+  concrete, exported email helper (<code>netlify/functions/_lib/email.js</code>) rather than a vague
+  "pattern to mirror," since the reviewer found the cited reference implementation
+  (Schedule Viewer's <code>send-reminders.mjs</code>/<code>test-reminder.mjs</code>) has no actual shared,
+  importable function despite being described as one. Added BDD coverage for: reversing a sub's schedule
+  write when the underlying request is later withdrawn/denied/reopened (not just the requester's side),
+  a decline-after-confirm cancellation-notice gap, a required transaction on concurrent
+  <code>proposedSubs[]</code> edits, the historical string-vs-array shape mismatch in old requests' sub
+  dates, and a zero/multiple-studio fallback-of-fallback case. New open decision: whether Phase 4's
+  confirmation email should fire per-sub-confirmed or only once at full coverage.</li>
 </ul>
 
 </body>
