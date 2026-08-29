@@ -111,50 +111,39 @@
 </div>
 
 <div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
-  <strong>Resolved (Aug 29) — ordering, corrected after second-model review found this isn't just a
-  decision.</strong> Confirming a sub is only possible <em>after</em> the time-off request itself has been
-  approved. <strong>This requires an actual code change, not just a sign-off</strong> — checked against
-  the real <code>toggleSubConfirm()</code> (<code>js/app.js:6929-6948</code>): it has no internal
-  approval-status check today at all; the only gate is that the "Mark Confirmed" button is currently shown
-  <em>only before</em> approval (<code>js/app.js:6748</code>) — the exact opposite of what's wanted. Phase 3
-  below must invert that visibility condition AND add a real guard inside <code>toggleSubConfirm()</code>
-  itself (not just hide the button), so a stale page, direct console call, or race can't confirm a sub on
-  an unapproved request. Before approval, a requester can still propose subs and note coverage arrangements
-  (including the new pre-confirmation checkbox below) — only the formal "Confirm &amp; Assign Shift" action
-  and its schedule write are gated.
+  <strong>Resolved (Aug 29) — ordering stays independent, reverting the "fix" from the second-model
+  review.</strong> The review correctly found that <code>toggleSubConfirm()</code> (<code>js/app.js:6929-6948</code>)
+  has no approval-status gate today, and that the "Mark Confirmed" button currently shows only
+  <em>before</em> approval — but Christie confirmed that's fine as existing behavior, not a bug: a sub can
+  be confirmed before or after the request is formally approved, since real coverage is often arranged
+  before the paperwork catches up. <strong>No code change needed for ordering</strong> — Phase 3 below
+  builds the schedule-write action on top of the existing <code>confirmed</code> toggle exactly as it
+  works today, independent of approval status.
 </div>
 
-<div class="decision-needed">
-  <strong>New, Aug 29 — "already talked to the sub" flag.</strong> Christie wants a way to note that the
-  requester has already personally confirmed coverage with a proposed sub, distinct from an admin's own
-  formal confirmation. Today's <code>coverageNotes</code> field is free text only — there's no structured
-  flag for this. Proposed addition: a checkbox on each <code>proposedSubs[]</code> entry at submission
-  time, <code>requesterPreConfirmed: boolean</code>, shown to admins in the request detail view as e.g.
-  "✓ Requester says already confirmed with this person" — informational only, does not bypass the
-  admin's own required "Confirm &amp; Assign Shift" action from the decision above. Flag if this isn't
-  quite what you meant.
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — no new "already talked to the sub" field.</strong> Walked through how
+  <code>confirmed</code> actually works today: either the requester (owner) or an admin can toggle it on
+  any proposed sub, at any point before the request is fully approved/denied — there's no distinction
+  today between "requester says they've already arranged it" and "admin has verified it," just one shared
+  flag. Christie confirmed one shared flag is enough — no new <code>requesterPreConfirmed</code> field.
+  The existing toggle already serves as the informal "this is arranged" signal.
 </div>
 
-<div class="decision-needed">
-  <strong>New, Aug 29 — confirmation emails, in addition to the schedule write.</strong> Once an admin
-  confirms a specific sub (which, per the ordering decision above, can only happen after the request is
-  already approved), two emails go out automatically, both through this same Ticker-owned Resend
-  integration — nobody opens Gmail manually for either: (1) to the sub, confirming the date/time/studio
-  and noting it's already been added to their Tinker Ticker schedule; (2) to the original requester,
-  confirming who is covering their shift. This is read as "once the SUB is approved/confirmed," not the
-  original time-off approval (which already sends a push notification today, unchanged) — flag if that's
-  not the event you meant.
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — confirmation emails, in addition to the schedule write.</strong> Once a sub
+  is confirmed (independent of the request's own approval status, per the ordering decision above), two
+  emails go out automatically through this same Ticker-owned Resend integration — nobody opens Gmail
+  manually for either: (1) to the sub, confirming the date/time/studio and noting it's already been added
+  to their Tinker Ticker schedule; (2) to the original requester, confirming who is covering their shift.
 </div>
 
-<div class="decision-needed">
-  <strong>Open decision, found by second-model review — per-sub or per-request?</strong> A single time-off
-  request can have multiple <code>proposedSubs[]</code>, each independently confirmable —
-  <code>coverageStatus</code> only becomes <code>'secured'</code> once ALL of them are confirmed (e.g. two
-  people splitting one day). The plan above doesn't yet specify whether Phase 4's confirmation emails fire
-  the moment <em>each</em> sub is individually confirmed, or only once, when the whole request reaches
-  <code>'secured'</code>. Recommend firing per-sub as each one confirms — a sub covering their piece
-  shouldn't wait on someone else's piece being arranged — but this is a real product call, not a technical
-  one. Confirm before Phase 4 is built.
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 29) — per-sub, not per-request.</strong> Worked through a concrete example:
+  Christie's Monday off needs two subs, Kayleigh covering mornings and Shelley covering afternoons. If
+  Kayleigh confirms Tuesday and Shelley confirms Wednesday, Kayleigh's and Christie's emails about
+  Kayleigh's piece go out Tuesday, and Shelley's pair follow Wednesday — confirmed as fine (partial
+  progress emails), rather than waiting for full coverage before sending anything.
 </div>
 
 <h2>Phase 1 — Email infrastructure</h2>
@@ -253,12 +242,14 @@
   changes.</p>
   <div class="bdd">
     <strong>Given</strong> a time-off request has NOT yet been approved,
-    <strong>when</strong> an admin tries to use "Confirm &amp; Assign Shift" on a proposed sub,
-    <strong>then</strong> the action is unavailable — approval must happen first, per the ordering decision above.
+    <strong>when</strong> the requester or an admin confirms a proposed sub who matches exactly one active
+    roster entry, choosing "full shift,"
+    <strong>then</strong> the schedule write happens the same as it would after approval — confirming a
+    sub is independent of the request's approval status, matching existing behavior.
   </div>
   <div class="bdd">
-    <strong>Given</strong> a request has been approved and an admin confirms a sub who matches exactly one
-    active roster entry, choosing "full shift,"
+    <strong>Given</strong> a sub who matches exactly one active roster entry is confirmed, choosing
+    "full shift,"
     <strong>when</strong> confirmed,
     <strong>then</strong> the sub's schedule gets an override for that date matching the original
     requester's normal shift time for that day exactly.
@@ -356,6 +347,13 @@
     themselves gets no auto-email (they're not a Ticker user — no address to send to from this system) and
     the admin is shown the same "add their shift manually" note as before.
   </div>
+  <div class="bdd">
+    <strong>Given</strong> a request needs two subs (e.g. Kayleigh covering mornings, Shelley covering
+    afternoons) and they confirm on different days,
+    <strong>when</strong> each one confirms,
+    <strong>then</strong> that sub's pair of emails (to them and to the requester) fires immediately —
+    per-sub, not held until the whole request reaches full coverage.
+  </div>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Email failure here must not roll back or undo the already-succeeded schedule write from Phase 3 —
@@ -371,14 +369,11 @@ push-to-admins behavior and the Firestore write both keep working unaffected —
 never a required step for the request itself to succeed.</p>
 
 <h2>Resume instructions</h2>
-<p>All four original open decisions are resolved. Still open, pending Christie's answer: the
-"requesterPreConfirmed" checkbox design, the "once it's approved" email-trigger reading, and (new, from
-second-model review) whether Phase 4's confirmation emails fire per-sub or only at full coverage. The
-ordering fix is now known to require real code changes to <code>toggleSubConfirm()</code>, not just a
-sign-off — see the corrected decision above. Phase 1 must produce the shared
-<code>netlify/functions/_lib/email.js</code> helper as its actual deliverable, since the One-Off Shift
-Reminders plan imports it directly. Phase 1 can otherwise be built immediately once Christie has (or
-creates) a Resend API key.</p>
+<p>All decisions are resolved — see log. Ordering stays independent (no code change needed for that).
+Confirmation emails fire per-sub, not per-request. No new field needed beyond the existing
+<code>confirmed</code> toggle. Phase 1 must produce the shared <code>netlify/functions/_lib/email.js</code>
+helper as its actual deliverable, since the One-Off Shift Reminders plan imports it directly. Phase 1 can
+be built immediately once Christie has (or creates) a Resend API key.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -421,6 +416,16 @@ creates) a Resend API key.</p>
   <code>proposedSubs[]</code> edits, the historical string-vs-array shape mismatch in old requests' sub
   dates, and a zero/multiple-studio fallback-of-fallback case. New open decision: whether Phase 4's
   confirmation email should fire per-sub-confirmed or only once at full coverage.</li>
+  <li><strong>Aug 29 — ordering "fix" reverted after Christie reviewed the review.</strong> The prior
+  entry's "blocker" wasn't actually a bug — Christie confirmed the existing independent-ordering behavior
+  (a sub can be confirmed before or after the request's own approval) is what she wants; real-world
+  coverage often gets arranged before the paperwork catches up. No code change needed for ordering after
+  all. Walked through how the existing <code>confirmed</code> toggle works today (either the requester or
+  an admin can set it, no distinction between "informally arranged" and "formally verified") and confirmed
+  one shared flag is sufficient — the proposed <code>requesterPreConfirmed</code> field is dropped, not
+  needed. Per-sub vs. per-request email timing resolved as per-sub, via a worked two-sub example (Kayleigh
+  covering mornings, Shelley covering afternoons — each pair of emails fires as that sub confirms, not
+  held until both are done).</li>
 </ul>
 
 </body>
