@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: One-Off Shift Email Reminders</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-ticker { background: #e0f2fe; color: #075985; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .depends { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  ul { padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 10px 0; }
+  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: One-Off Shift Email Reminders</h1>
+
+<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
+  Status: <strong>Drafted, not yet reviewed.</strong> Trigger keyword rule below was validated against
+  every real override in the live Sept–Dec 2026 schedule before being written down — not guessed.
+</div>
+
+<div class="meta">
+  <strong>Goal:</strong> Anyone with a genuinely atypical, easy-to-forget shift (SDOCs, break camps,
+  Friday Art Night, booked private events) gets an automatic email confirmation when it's added to their
+  schedule, and a reminder 48 hours before it happens — without anyone needing to remember to check Ticker
+  or manually send a reminder.<br>
+  <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
+  — no Firestore rules changes.<br>
+  <strong>Depends on:</strong> Plan B's Phase 1 (Resend email integration) — this plan reuses that same
+  infrastructure rather than standing up a second one. Should be built after Plan B's Phase 1 ships, or
+  alongside it if convenient.<br>
+  <strong>Why now:</strong> Standing weekly commitments (regular Friday/Saturday slots) don't need this —
+  people already expect those. What's easy to forget is the thing added two months ago in a hallway
+  conversation that only shows up once. Christie was previously trying this in a different app (Schedule
+  Viewer); consolidating it here makes more sense now that Ticker is becoming the source of truth for
+  schedules and already has (via Plan B) the email infrastructure this needs.
+</div>
+
+<h2>How the trigger rule was derived (not guessed)</h2>
+<p>A read-only audit tool was run against the live production schedule (19 active people, Sept–Dec 2026,
+229 dated overrides examined) and every override was shown to Christie, sorted by pattern. Two rounds of
+correction happened before landing on the final rule:</p>
+<ul>
+  <li><strong>First pass</strong> tried a structural signal (is this a weekday the person doesn't normally
+  work). Wrong — Julia Zuniga's recurring Friday/Saturday Clay Hub slot, and Mackenzie Reinhart's and
+  Shelley Rahim's recurring Friday/Saturday birthday-party slots, all showed up as "extra days" even though
+  they're standing weekly commitments, just implemented as weekly overrides instead of a recurring pattern.</li>
+  <li><strong>Second pass</strong> moved to content-based keywords, refined against the real data: "camp"
+  alone would have caught nearly everything (SDOC camp, Fall/Thanksgiving/Winter Break camp, Veterans Day
+  camp, Tinker School Day Off Camp) but missed Lauren Burkey's "September 21 SDOC" (no literal "camp" in
+  the text). Erica Podwoiski's recurring monthly "FAN (Friday Art Night)" needed its own keyword. Anika's
+  and Mackenzie's one-off Saturday "Training" entries were confirmed as also excluded.</li>
+</ul>
+
+<div class="decision-needed">
+  <strong>Final trigger rule (confirmed against real data):</strong> an override is a reminder candidate if
+  its note text contains, case-insensitive: <code>"camp"</code>, OR the whole word <code>"SDOC"</code>, OR
+  the whole word <code>"FAN"</code>, OR (<code>"Private Event"</code> AND NOT <code>"Booking Available"</code>
+  in the same note). "Whole word" for SDOC/FAN means matched with word boundaries, not as a bare substring,
+  so it can't accidentally fire inside an unrelated word.
+</div>
+
+<div class="depends">
+  <strong>Operational dependency, not just code:</strong> the "Private Event" keyword only fires once
+  someone editing a Clay Hub slot's note at booking-confirmation time removes "Booking Available" and
+  reflects the real booking. It currently matches zero of Julia's existing entries (all still say "Booking
+  Available") — this is intentional and forward-looking, not a bug. Whoever confirms a private event
+  booking needs to also update that shift's note text for the reminder to fire on it.
+</div>
+
+<h3>What this rule includes vs. excludes, confirmed against real Sept–Dec data</h3>
+<table>
+  <tr><th>Included (fires)</th><th>Excluded (never fires)</th></tr>
+  <tr>
+    <td>~55 SDOC / Break camp / holiday camp entries (Mariah Stotsky, Kayleigh Wood, Kaitlyn Shirley, Leah
+    Trumble, Maryssa O'Dell, Lauren Burkey, Anika Feldmann)</td>
+    <td>Julia Zuniga's recurring Fri/Sat Clay Hub "Booking Available" slots (until booked and re-labeled)</td>
+  </tr>
+  <tr>
+    <td>Erica Podwoiski's 4 monthly "FAN" entries</td>
+    <td>Mackenzie Reinhart's and Shelley Rahim's recurring Fri/Sat birthday-party slots</td>
+  </tr>
+  <tr>
+    <td>Future booked private events, once the note is updated at booking time to drop "Booking Available"</td>
+    <td>Lauren Burkey's "OVERRIDE: short Friday" routine schedule tweaks</td>
+  </tr>
+  <tr>
+    <td>&nbsp;</td>
+    <td>One-off "Training" entries (Anika, Mackenzie) and Shelley's recurring "Training with Anika" slots</td>
+  </tr>
+</table>
+
+<h2>Phase 1 — Candidate detection (pure function, no email yet)</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>A pure, testable function correctly classifies any override note per the rule above, with unit tests
+  covering every example already validated against real data.</p>
+  <div class="bdd">
+    <strong>Given</strong> a note containing "SDOC camp," "Fall Break camp," "Tinker School Day Off Camp,"
+    or "Veterans Day camp,"
+    <strong>when</strong> classified,
+    <strong>then</strong> it's a reminder candidate.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a note reading exactly "September 21 SDOC" (no "camp" substring),
+    <strong>when</strong> classified,
+    <strong>then</strong> it's still a reminder candidate (via the SDOC keyword).
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a note reading "Private Event Booking Available + Make Together: Wall Planters,"
+    <strong>when</strong> classified,
+    <strong>then</strong> it is NOT a candidate (Booking Available exclusion wins).
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a note reading "Birthday party — Fri party 3:45-5:15" or "Training with Anika,"
+    <strong>when</strong> classified,
+    <strong>then</strong> it is NOT a candidate — no keyword match.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a note containing "Tiffany" (contains the substring "fan" but not as a whole word),
+    <strong>when</strong> classified,
+    <strong>then</strong> it is NOT a candidate — the FAN keyword requires a word boundary, not a bare substring.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Pure function, no Firestore access at all in this phase.</li>
+  </ul>
+</div>
+
+<h2>Phase 2 — Immediate confirmation email on add</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>The moment an admin saves an override that matches the trigger rule, the person it's assigned to gets
+  an email confirming the date, time, studio, and what it is.</p>
+  <div class="bdd">
+    <strong>Given</strong> an admin saves a new override matching the trigger rule for someone's schedule,
+    <strong>when</strong> the save succeeds,
+    <strong>then</strong> that person receives a confirmation email with the date/time/studio/description.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an admin saves an override that does NOT match the trigger rule (a routine
+    recurring-style entry),
+    <strong>when</strong> saved,
+    <strong>then</strong> no email is sent.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the email send fails,
+    <strong>when</strong> that happens,
+    <strong>then</strong> the schedule save itself is unaffected and the failure is logged — same
+    "never let email break the real write" principle as Plan B.
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Read-only trigger check plus an email send — no new Firestore writes beyond the schedule save that
+    already happens today.</li>
+    <li>No rules change.</li>
+  </ul>
+</div>
+
+<h2>Phase 3 — 48-hour-ahead daily reminder</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>A scheduled function runs once daily and emails anyone with a trigger-matching one-off shift exactly
+  2 calendar days out — regardless of how long ago it was added to their schedule.</p>
+  <div class="bdd">
+    <strong>Given</strong> today is 2026-09-19 and someone has a trigger-matching override dated 2026-09-21,
+    <strong>when</strong> the daily scheduled function runs,
+    <strong>then</strong> that person receives a reminder email.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the same shift was already reminded once,
+    <strong>when</strong> the daily function runs again the next day (or is manually re-triggered),
+    <strong>then</strong> no duplicate reminder is sent — a <code>reminderSentAt</code> flag on the override
+    (or a separate tracking doc) prevents re-sending.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a trigger-matching shift is added with LESS than 48 hours' notice (e.g., a
+    last-minute SDOC added tomorrow),
+    <strong>when</strong> the daily function's window has already passed for that date,
+    <strong>then</strong> Phase 2's immediate confirmation email is still the person's notice — this phase
+    intentionally does not try to retroactively catch shifts that are already inside the 48-hour window,
+    to keep the daily job simple (single fixed lookahead, not a range).
+  </div>
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>New field: a sent-reminder flag per override, to prevent duplicate sends — additive, no schema break.</li>
+    <li>Runs as a Netlify Scheduled Function — new infrastructure type for this repo (Plan B's functions are
+    all on-demand, not scheduled).</li>
+    <li>No rules change.</li>
+  </ul>
+</div>
+
+<h2>Completeness check</h2>
+<p>Phase 1 has zero side effects and can be built/tested in isolation. Phase 2 is additive to the existing
+save flow. Phase 3 is the only phase needing genuinely new infrastructure (a scheduled function) and is
+fully independent of Phase 2 — either could ship without the other if needed.</p>
+
+<h2>Resume instructions</h2>
+<p>Build after (or alongside) Plan B's Phase 1, since Phase 2 and 3 here both depend on that same Resend
+integration existing first. The trigger rule itself needs no further confirmation — validated against real
+data and confirmed by Christie.</p>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Aug 29 — plan drafted</strong> after Christie asked to consolidate one-off shift reminders
+  (previously being tried in a separate app, Schedule Viewer) into Ticker itself. Trigger definition went
+  through two rounds of correction against a live read-only audit of real schedule data before being
+  finalized: a structural (weekday-based) signal was wrong — several people's standing weekly Friday/
+  Saturday commitments are stored as overrides and would have false-triggered. Settled on a content-keyword
+  rule (camp / SDOC / FAN / Private Event-without-Booking-Available) that was verified to correctly include
+  every real SDOC/Break-camp/FAN entry and exclude every standing-commitment entry in the live Sept–Dec
+  2026 schedule. The "Private Event" keyword is explicitly forward-looking — it fires on zero current data
+  until booking confirmations start updating note text away from "Booking Available."</li>
+</ul>
+
+</body>
+</html>
