@@ -145,6 +145,19 @@ CSS custom properties for Clay Hub apps:
 - **Do not introduce a new visual pattern** without flagging it — consistency across apps matters
 - When starting a new app: copy the CSS variables block from the closest existing app and swap in the palette above
 
+### Documented exceptions
+
+- **Enrollment Board** (`~/tinker-enrollment-board/`) does not use the Nunito + Tinker-purple
+  stack above. It uses Archivo, IBM Plex Mono, and Source Sans 3 on a teal/neutral palette.
+  Reason: its core job is dense, pixel-tuned printable schedules (weekly grid, workshops,
+  "Everything" — each fit to a specific letter-landscape page count), verified working with
+  headless Chrome; restyling to the standard stack would mean re-tuning and re-verifying every
+  page's pagination from scratch for a benefit (visual consistency) this app doesn't need day to
+  day since it isn't multi-app-navigated the way staff-facing tools are. Decided by Christie,
+  2026-08-28 — see `~/tinker-ai-configs/thoughts/plans/enrollment-board.html` (Decision 1) for
+  the full reasoning. Not a one-way door: restyle later if consistency ever outweighs the print
+  risk, but don't "fix" this by accident in the meantime.
+
 ## App UX standards
 
 - Every app needs a "How to Use" help modal accessible to staff
@@ -178,3 +191,4 @@ CSS custom properties for Clay Hub apps:
 | Tinker Playbook | `~/tinker-playbook/` | 8098 | Netlify |
 | Pimpneymouse Farm | `~/pimpneymouse-farm/` | 5175 | Netlify |
 | Tinker Notes | `~/tinker-notes/` | 8099 | Render |
+| Enrollment Board | `~/tinker-enrollment-board/` | 8086 | Netlify |
