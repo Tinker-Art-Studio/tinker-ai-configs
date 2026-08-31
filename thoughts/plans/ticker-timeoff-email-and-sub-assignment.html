@@ -66,7 +66,7 @@
   <li><strong>Sub proposals exist today only as free text.</strong> <code>proposedSubs[]</code>
   (<code>js/app.js:6614</code>) is <code>{name, email, dates, confirmed}</code> — plain strings a
   requester types in, not a resolved roster id. <code>toggleSubConfirm()</code>
-  (<code>js/app.js:~6727-6745</code>) only flips a <code>confirmed</code> flag and recomputes
+  (<code>js/app.js:6929-6948</code>) only flips a <code>confirmed</code> flag and recomputes
   <code>coverageStatus</code> — it never touches anyone's actual schedule. There is no existing
   <code>confirmSub</code>-style function that writes a shift. This is genuinely new logic.</li>
   <li><strong>Removing the requester's shift on approval already exists and already works.</strong>
@@ -110,15 +110,23 @@
   write, no sub-side email, same manual-add note.
 </div>
 
-<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
-  <strong>Resolved (Aug 29) — ordering stays independent, reverting the "fix" from the second-model
-  review.</strong> The review correctly found that <code>toggleSubConfirm()</code> (<code>js/app.js:6929-6948</code>)
-  has no approval-status gate today, and that the "Mark Confirmed" button currently shows only
-  <em>before</em> approval — but Christie confirmed that's fine as existing behavior, not a bug: a sub can
-  be confirmed before or after the request is formally approved, since real coverage is often arranged
-  before the paperwork catches up. <strong>No code change needed for ordering</strong> — Phase 3 below
-  builds the schedule-write action on top of the existing <code>confirmed</code> toggle exactly as it
-  works today, independent of approval status.
+<div class="decision-needed">
+  <strong>Still open (Aug 31) — ordering, corrected a second time after a review-of-the-review caught my
+  own mistake.</strong> The exact code, verified directly:
+  <code>js/app.js:6748</code> — <code>const canToggle = (isOwner || isAdmin) &amp;&amp; ['submitted', 'under_review'].includes(req.status);</code>
+  The "Mark Confirmed" button only renders when <code>canToggle</code> is true. Since
+  <code>approveTimeOff()</code> sets <code>status: 'approved'</code>, which is NOT in that list, <strong>the
+  button disappears the moment a request is approved</strong> — today, a sub can only be confirmed
+  <em>before</em> approval, never after. My previous "Resolved" entry claiming ordering is "independent of
+  approval status, matching existing behavior" was wrong — existing behavior is restricted to pre-approval
+  only, not independent. I misread that as a non-issue twice; this time I'm asking rather than deciding.
+  <br><br>
+  <strong>Christie, the actual choice is:</strong> (a) expand <code>canToggle</code> to also allow
+  confirming when <code>status === 'approved'</code>, so a sub can be confirmed either before or after
+  approval — matching what you described wanting ("if a team member has truly already confirmed, that's
+  all good," regardless of when); or (b) keep today's restriction (pre-approval only) and adjust your
+  workflow to always confirm subs before approving. (a) requires a small, real code change to that one
+  condition; (b) requires none. Which do you want?
 </div>
 
 <div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
@@ -241,11 +249,13 @@
   Removing it from the original requester already works today via the existing approve flow and needs no
   changes.</p>
   <div class="bdd">
-    <strong>Given</strong> a time-off request has NOT yet been approved,
-    <strong>when</strong> the requester or an admin confirms a proposed sub who matches exactly one active
-    roster entry, choosing "full shift,"
-    <strong>then</strong> the schedule write happens the same as it would after approval — confirming a
-    sub is independent of the request's approval status, matching existing behavior.
+    <strong>Pending Christie's answer to the ordering decision above</strong> — this BDD depends on it:
+    <strong>if (a)</strong> [confirm works before or after approval]: <strong>given</strong> a time-off
+    request has already been approved, <strong>when</strong> an admin confirms a proposed sub, <strong>then</strong>
+    the schedule write still succeeds — <code>canToggle</code> was expanded to include the
+    <code>'approved'</code> status. <strong>If (b)</strong> [pre-approval only, unchanged]: <strong>given</strong>
+    a request has already been approved, <strong>when</strong> anyone looks for a way to confirm a sub,
+    <strong>then</strong> there correctly is none — matching today's actual behavior, not a bug.
   </div>
   <div class="bdd">
     <strong>Given</strong> a sub who matches exactly one active roster entry is confirmed, choosing
@@ -260,10 +270,20 @@
     <strong>then</strong> the sub's schedule override uses those custom times, not the requester's original ones.
   </div>
   <div class="bdd">
-    <strong>Given</strong> the typed sub name has no matching active roster entry,
+    <strong>Given</strong> the typed sub name has no matching active roster entry at all (state 2 of the
+    three-state fallback above),
     <strong>when</strong> an admin tries to confirm,
     <strong>then</strong> they can still mark it confirmed, but see an explicit "no roster match — add
     their shift manually" note, and no schedule write is attempted.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the typed sub name matches a real roster entry that has never been claimed
+    (<code>claimedBy: null</code> — state 3, distinct from state 2 above),
+    <strong>when</strong> an admin tries to confirm,
+    <strong>then</strong> the same "add their shift manually" outcome applies — no schedule write (no uid
+    to write to) — but the note shown is specific to this case, e.g. "This person hasn't signed in yet —
+    add their shift manually once they do," not the generic no-match message, so it's clear the roster
+    entry exists and just isn't usable yet.
   </div>
   <div class="bdd">
     <strong>Given</strong> a sub is un-confirmed after being confirmed,
@@ -326,7 +346,10 @@
 <div class="phase">
   <h3>Acceptance criteria</h3>
   <p>The moment a sub is confirmed (Phase 3), both the sub and the original requester get an email
-  confirming the arrangement — through Ticker's own email integration, not a manually-sent Gmail message.</p>
+  confirming the arrangement — through Ticker's own email integration, not a manually-sent Gmail message.
+  Cross-reference: if the copied shift note still contains a One-Off Shift Reminders keyword (camp/SDOC/
+  FAN/Extra Shift), the sub will also get a separate 48-hour reminder from that plan later — confirmed with
+  Christie as intentional, not a bug (see that plan's Decisions Log). No suppression needed between the two.</p>
   <div class="bdd">
     <strong>Given</strong> an admin confirms a sub with a schedule write that succeeds,
     <strong>when</strong> that happens,
@@ -369,11 +392,13 @@ push-to-admins behavior and the Firestore write both keep working unaffected —
 never a required step for the request itself to succeed.</p>
 
 <h2>Resume instructions</h2>
-<p>All decisions are resolved — see log. Ordering stays independent (no code change needed for that).
-Confirmation emails fire per-sub, not per-request. No new field needed beyond the existing
-<code>confirmed</code> toggle. Phase 1 must produce the shared <code>netlify/functions/_lib/email.js</code>
-helper as its actual deliverable, since the One-Off Shift Reminders plan imports it directly. Phase 1 can
-be built immediately once Christie has (or creates) a Resend API key.</p>
+<p><strong>One real open decision remains before Phase 3 can be built</strong>: whether
+<code>canToggle</code> (<code>js/app.js:6748</code>) should be expanded to allow sub-confirmation after a
+request is approved, or left as-is (pre-approval only) — see the decision box above with the exact code
+and the two concrete options. Everything else is resolved: confirmation emails fire per-sub, not
+per-request; no new field needed beyond the existing <code>confirmed</code> toggle; Phase 1 must produce
+the shared <code>netlify/functions/_lib/email.js</code> helper, since the One-Off Shift Reminders plan
+imports it directly. Phase 1 can be built immediately once Christie has (or creates) a Resend API key.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -426,6 +451,19 @@ be built immediately once Christie has (or creates) a Resend API key.</p>
   needed. Per-sub vs. per-request email timing resolved as per-sub, via a worked two-sub example (Kayleigh
   covering mornings, Shelley covering afternoons — each pair of emails fires as that sub confirms, not
   held until both are done).</li>
+  <li><strong>Aug 31 — the "ordering fix reverted" entry above was itself wrong, caught by a second
+  review-of-the-review.</strong> I described existing behavior as "independent of approval status" without
+  actually re-verifying the code — it isn't. <code>canToggle</code> (<code>js/app.js:6748</code>) requires
+  <code>req.status</code> to be <code>'submitted'</code> or <code>'under_review'</code>; <code>'approved'</code>
+  is not in that list, so the "Mark Confirmed" button genuinely disappears once a request is approved.
+  Today's real behavior is pre-approval-only, not independent — the second-model review's original finding
+  (two rounds back) was correct all along; my "revert" incorrectly assumed Christie's correction meant
+  "current behavior is already fine as independent" when current behavior isn't independent at all. Turned
+  back into an open decision rather than guessed a third time — see the box above with the exact code and
+  two concrete options for Christie to choose between. Also fixed in this pass: a stale
+  <code>toggleSubConfirm()</code> line citation, a missing BDD distinguishing the matched-but-unclaimed
+  roster state from the no-match state, and a one-line cross-reference to the One-Off Shift Reminders
+  plan's double-fire agreement (which only existed in that plan's own doc before this).</li>
 </ul>
 
 </body>
