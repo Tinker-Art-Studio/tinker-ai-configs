@@ -25,9 +25,10 @@
 
 <h1 id="plan-title">Plan: Time Off Email Routing + Auto Sub-Assignment</h1>
 
-<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
-  Status: <strong>Drafted, not yet reviewed.</strong> Several open decisions below need Christie's answer
-  before this is execution-ready — flagged inline, not guessed at.
+<div class="status" style="background:#f0fdf4;border-left-color:#16a34a;">
+  Status: <strong>Execution-ready</strong> (Aug 31). Reviewed twice; all decisions resolved, including one
+  genuine ordering bug (see Decisions Log) that took three rounds to correctly identify and resolve as
+  Option A — a real code change to <code>canToggle</code>, not a no-op.
 </div>
 
 <div class="meta">
@@ -110,23 +111,13 @@
   write, no sub-side email, same manual-add note.
 </div>
 
-<div class="decision-needed">
-  <strong>Still open (Aug 31) — ordering, corrected a second time after a review-of-the-review caught my
-  own mistake.</strong> The exact code, verified directly:
-  <code>js/app.js:6748</code> — <code>const canToggle = (isOwner || isAdmin) &amp;&amp; ['submitted', 'under_review'].includes(req.status);</code>
-  The "Mark Confirmed" button only renders when <code>canToggle</code> is true. Since
-  <code>approveTimeOff()</code> sets <code>status: 'approved'</code>, which is NOT in that list, <strong>the
-  button disappears the moment a request is approved</strong> — today, a sub can only be confirmed
-  <em>before</em> approval, never after. My previous "Resolved" entry claiming ordering is "independent of
-  approval status, matching existing behavior" was wrong — existing behavior is restricted to pre-approval
-  only, not independent. I misread that as a non-issue twice; this time I'm asking rather than deciding.
-  <br><br>
-  <strong>Christie, the actual choice is:</strong> (a) expand <code>canToggle</code> to also allow
-  confirming when <code>status === 'approved'</code>, so a sub can be confirmed either before or after
-  approval — matching what you described wanting ("if a team member has truly already confirmed, that's
-  all good," regardless of when); or (b) keep today's restriction (pre-approval only) and adjust your
-  workflow to always confirm subs before approving. (a) requires a small, real code change to that one
-  condition; (b) requires none. Which do you want?
+<div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
+  <strong>Resolved (Aug 31) — ordering, Option A.</strong> <code>canToggle</code>
+  (<code>js/app.js:6748</code>, currently <code>const canToggle = (isOwner || isAdmin) &amp;&amp; ['submitted', 'under_review'].includes(req.status);</code>)
+  will be expanded to also allow toggling when <code>status === 'approved'</code>, so a sub can be
+  confirmed either before or after the request is approved. This is a real, small code change — not a
+  no-op — to that one condition inside <code>openTimeOffDetail()</code> (<code>js/app.js:6680+</code>,
+  where <code>canToggle</code> is computed), required as part of Phase 3 below.
 </div>
 
 <div class="decision-needed" style="background:#eafaf3;border-color:#4EBFB3;">
@@ -249,13 +240,17 @@
   Removing it from the original requester already works today via the existing approve flow and needs no
   changes.</p>
   <div class="bdd">
-    <strong>Pending Christie's answer to the ordering decision above</strong> — this BDD depends on it:
-    <strong>if (a)</strong> [confirm works before or after approval]: <strong>given</strong> a time-off
-    request has already been approved, <strong>when</strong> an admin confirms a proposed sub, <strong>then</strong>
-    the schedule write still succeeds — <code>canToggle</code> was expanded to include the
-    <code>'approved'</code> status. <strong>If (b)</strong> [pre-approval only, unchanged]: <strong>given</strong>
-    a request has already been approved, <strong>when</strong> anyone looks for a way to confirm a sub,
-    <strong>then</strong> there correctly is none — matching today's actual behavior, not a bug.
+    <strong>Given</strong> a time-off request has already been approved,
+    <strong>when</strong> an admin confirms a proposed sub who matches exactly one active roster entry,
+    <strong>then</strong> the schedule write still succeeds — <code>canToggle</code>
+    (<code>js/app.js:6748</code>, inside <code>openTimeOffDetail()</code>) was expanded to include the
+    <code>'approved'</code> status, per Option A.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a time-off request has NOT yet been approved,
+    <strong>when</strong> an admin confirms a proposed sub,
+    <strong>then</strong> the schedule write also succeeds — confirming a sub works in either order now,
+    not just pre-approval as before.
   </div>
   <div class="bdd">
     <strong>Given</strong> a sub who matches exactly one active roster entry is confirmed, choosing
@@ -332,6 +327,9 @@
     <li><code>proposedSubs[]</code> updates in this phase must use a transaction, not a bare field update —
     see the concurrent-edit BDD above.</li>
     <li>No rules change — this is a normal, already-permitted <code>timeclock_schedules</code> write.</li>
+    <li><code>canToggle</code> (<code>js/app.js:6748</code>) must be expanded to also allow
+    <code>status === 'approved'</code>, per the Option A ordering decision — this is a real code change,
+    not just wiring the new schedule-write logic on top of the existing toggle unchanged.</li>
     <li>Older, migrated time-off docs store <code>proposedSubs[].dates</code> as free-text strings, not the
     live form's array of ISO dates — this phase's date-handling logic must defend against both shapes
     rather than assume the array format everywhere.</li>
@@ -392,13 +390,13 @@ push-to-admins behavior and the Firestore write both keep working unaffected —
 never a required step for the request itself to succeed.</p>
 
 <h2>Resume instructions</h2>
-<p><strong>One real open decision remains before Phase 3 can be built</strong>: whether
-<code>canToggle</code> (<code>js/app.js:6748</code>) should be expanded to allow sub-confirmation after a
-request is approved, or left as-is (pre-approval only) — see the decision box above with the exact code
-and the two concrete options. Everything else is resolved: confirmation emails fire per-sub, not
-per-request; no new field needed beyond the existing <code>confirmed</code> toggle; Phase 1 must produce
-the shared <code>netlify/functions/_lib/email.js</code> helper, since the One-Off Shift Reminders plan
-imports it directly. Phase 1 can be built immediately once Christie has (or creates) a Resend API key.</p>
+<p>All decisions are resolved — see log. Ordering: Option A — <code>canToggle</code>
+(<code>js/app.js:6748</code>) gets expanded to also allow <code>status === 'approved'</code>, a real code
+change required in Phase 3. Confirmation emails fire per-sub, not per-request. No new field needed beyond
+the existing <code>confirmed</code> toggle. Phase 1 must produce the shared
+<code>netlify/functions/_lib/email.js</code> helper, since the One-Off Shift Reminders plan imports it
+directly. Phase 1 can be built immediately once Christie has (or creates) a Resend API key. This plan is
+now execution-ready.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -464,6 +462,11 @@ imports it directly. Phase 1 can be built immediately once Christie has (or crea
   <code>toggleSubConfirm()</code> line citation, a missing BDD distinguishing the matched-but-unclaimed
   roster state from the no-match state, and a one-line cross-reference to the One-Off Shift Reminders
   plan's double-fire agreement (which only existed in that plan's own doc before this).</li>
+  <li><strong>Aug 31 — ordering resolved: Option A.</strong> Christie chose to expand
+  <code>canToggle</code> (<code>js/app.js:6748</code>) to also allow <code>status === 'approved'</code>, so
+  a sub can be confirmed either before or after the request itself is approved. This is a real, required
+  code change in Phase 3 — not a no-op, and not something any prior "resolved" entry above correctly
+  described. Plan is now execution-ready.</li>
 </ul>
 
 </body>
