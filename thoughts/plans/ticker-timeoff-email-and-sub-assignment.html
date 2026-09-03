@@ -26,7 +26,7 @@
 <h1 id="plan-title">Plan: Time Off Email Routing + Auto Sub-Assignment</h1>
 
 <div class="status" style="background:#f0fdf4;border-left-color:#16a34a;">
-  Status: <strong>In progress — Phase 1 complete</strong> (Sep 3). Reviewed twice; all decisions resolved,
+  Status: <strong>In progress — Phases 1–2 complete</strong> (Sep 3). Reviewed twice; all decisions resolved,
   including one genuine ordering bug (see Decisions Log) that took three rounds to correctly identify and
   resolve as Option A — a real code change to <code>canToggle</code>, not a no-op.
 </div>
@@ -481,6 +481,28 @@ now execution-ready.</p>
   (<code>js/firebase-data.js:465-477</code>) is still synchronous internally (no <code>await</code>, returns
   <code>true</code> before the write settles or fails) — the prerequisite fix this plan's Phase 2/3 safety
   checklists depend on has NOT landed yet and must be done before either of those phases ships.</li>
+  <li><strong>Sep 3 — Phase 2 built and shipped.</strong> Fixed the <code>updateTimeOffRequest()</code>
+  prerequisite bug flagged in the Phase 1 entry above: now <code>async</code>, properly
+  <code>await</code>s its Firestore <code>.update()</code>, only returns <code>true</code> once the write
+  has actually settled. All existing call sites already <code>await</code>ed it, so this is a pure
+  behavior fix, no call-site changes needed. Added <code>resolveRequestStudios()</code>
+  (<code>js/schedule-helpers.js</code>, 8 unit tests) implementing the studio-routing decision exactly as
+  resolved above: per-date studios come from the caller's own <code>getShiftForDate()</code> lookup against
+  the requester's real schedule, deduped; falls back to <code>users.studios</code> only when zero requested
+  dates had a resolvable shift at all. Wired into <code>handleSubmitTimeOff()</code>
+  (<code>js/app.js</code>): stores the resolved list as <code>requestStudios</code> on the request doc, and
+  on new submissions only (matching the existing <code>sendPushToAllAdmins</code> precedent — edits don't
+  re-notify) fires <code>netlify/functions/send-timeoff-submission-email.js</code>. That function and its
+  routing/template module <code>netlify/functions/_lib/timeoff-routing.js</code> (10 unit tests, including
+  HTML-escaping of the user-typed requester name and reason before they go into the email body) resolve
+  Maryssa/Lauren/Anika exactly as decided above, defaulting to the real resolved addresses but overridable
+  via <code>COORDINATOR_EMAIL_CLAYHUB</code>/<code>COORDINATOR_EMAIL_TINKER</code>/<code>COORDINATOR_EMAIL_CC</code>
+  env vars. A zero-studio result skips the send and logs a visible warning instead of guessing a recipient,
+  per the fallback-of-fallback BDD. Smoke-tested all three Netlify functions locally via <code>netlify
+  dev</code> (no real send attempted — <code>RESEND_API_KEY</code> still isn't set): each returned the
+  expected response shape. Full suite 64/64 green. Committed <code>9d7739f</code>, pushed. No Firestore
+  rules change, no rollback-on-email-failure risk (the write already succeeded before the email call
+  fires).</li>
 </ul>
 
 </body>
