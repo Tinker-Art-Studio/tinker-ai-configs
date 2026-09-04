@@ -37,7 +37,11 @@
   <span class="status-tag ready">execution-ready: true</span> — Approved by Christie in chat, Sep 4, 2026
   ("okay yes, let's mark it execution ready"), after asking directly for my own independent judgment first
   (not just relaying the last review's verdict) and receiving it. Drafted same day from a same-session
-  brainstorm; no app code touched yet.
+  brainstorm.
+  <strong>Progress:</strong> Phases 1 and 2 are built. Phase 1 is deployed and live; Phase 2 is committed
+  locally and <em>not pushed</em> (pushing to GitHub is what deploys Recap, via Render auto-deploy).
+  Phases 3-5 not started. Each built phase has its own status box at the top of its section — read that
+  before the phase body, which describes the design as planned, not necessarily as shipped.
   <strong>Four independent review rounds ran before approval</strong> (round 1: one Claude pass; round 2:
   Claude + Codex with real repo access, found and fixed a genuine security bypass and a risk that this plan's
   own core feature would silently break in production; round 3: Claude + Codex again checking round 2's
@@ -50,9 +54,9 @@
   highest-stakes rule claims (the query-breaking risk, and the update-rule security bypass) are empirically
   verified against a live Firestore emulator, not just reasoned through in prose. Phase 1's real scope grew
   substantially in the process — from "a rules edit" to "a rules edit plus a query audit across ~8 call sites
-  in Recap" — see the Completeness Check. Start with Phase 1 — fixes a real, currently-live access-control
-  gap (see "The read-access bug" below), independent of whether the rest of this plan executes on the same
-  timeline. <strong>Execution-ready does not bypass the separate standing Firebase deploy gate</strong> — no
+  in Recap" — see the Completeness Check. Phase 2's scope grew the same way once real code existed, for the
+  same underlying reason: two more implementation-review rounds found seven real bugs in it (see its status
+  box). <strong>Execution-ready does not bypass the separate standing Firebase deploy gate</strong> — no
   <code>firebase deploy</code> of any kind, rules or indexes, until Christie separately says the literal
   phrase "approved to change firebase," per Resume Instructions. Per this project's own convention (see
   `/development-workflow` and `feedback_execution_needs_second_model_review.md`), each phase that writes or
@@ -596,6 +600,49 @@ today.</p>
 </div>
 
 <h2>Phase 2 — Retroactive meeting-to-thread linking</h2>
+<div class="resolved">
+  <strong>Implemented Sep 4, 2026 — committed, NOT pushed, therefore NOT live.</strong> Three
+  <code>recap</code> commits: <code>3ed07c9</code> (the feature), <code>c6e91d5</code> and
+  <code>ad409f3</code> (fixes from two implementation-review rounds). Pushing to GitHub is what deploys this
+  app — Render auto-deploys on push — so nothing reaches production until someone pushes. No rules change and
+  no <code>firebase deploy</code> of any kind was needed for this phase.
+  <p><strong>What shipped, beyond what this phase's body describes:</strong> the detail-view picker and the
+  three fixes already planned here (transaction, explicit <code>threadNextMeetingId: null</code>, self-link
+  exclusion) all landed. On top of those, both pickers now exclude candidates already linked forward, and the
+  chain-end lookup reports "no end found" instead of returning silently.</p>
+  <p><strong>Two independent implementation-review rounds found seven real bugs — four of them introduced by
+  this phase's own new code.</strong> That is a materially worse first-pass hit rate than the design reviews
+  suggested, and is the honest argument for reviewing implementations separately from designs. Round 1
+  (Codex, real repo access) found five; round 2 (a fresh Claude instance) found four more plus a repo-safety
+  trap. The full list with what each one was is in the Decisions Log. The two most consequential, both
+  reachable with no corrupt data and no unusual timing — only a second person acting between the picker
+  rendering and the click landing:</p>
+  <ul>
+    <li><strong>Readable is not writable.</strong> The picker offered any meeting the viewer could
+    <em>read</em>, but linking writes <code>threadNextMeetingId</code> onto that meeting, and the live update
+    rule only lets a non-manager update meetings they created. A staff member picking a meeting shared with
+    them hit a guaranteed permission-denied. New <code>canLinkToMeeting()</code> now gates both pickers.</li>
+    <li><strong>A target could be dragged into a second thread.</strong> The transaction re-checked
+    <code>threadNextMeetingId</code> but not <code>threadId</code> — and a meeting that has just become the
+    <em>end</em> of thread X legitimately has nothing after it, so that check passes. The new-thread branch
+    would then rewrite its <code>threadId</code> while X's chain still pointed at it. The transaction
+    re-check this phase was designed around was necessary but not sufficient.</li>
+  </ul>
+  <p><strong>Tests:</strong> Recap had no test suite; it has one now (<code>npm test</code> from
+  <code>~/recap</code>, jest wrapped in <code>firebase emulators:exec</code>, following the pattern already
+  used in <code>tinker-timeclock</code>). Pure helpers live in <code>js/thread-link-helpers.js</code> so they
+  can be <code>require()</code>d — <code>js/app.js</code> has top-level <code>document.*</code> calls and
+  can't load in Node, the same constraint <code>studio-hub/js/archive-helpers.js</code> exists for. Check the
+  printed count at run time; do not hardcode it here. Every fix was verified failing-first: the tests covering
+  each change were run against the previous implementation and confirmed to fail.</p>
+  <p><strong>Verification limits, stated plainly:</strong> no part of this was exercised against real
+  Firestore data by a real user. The browser session available was Julia's, whose <code>appAccess</code> does
+  not include <code>'recap'</code> at all — so every Recap read fails for her, and expanding her access is
+  forbidden without Christie's approval (<code>recap/AGENTS.md</code>). UI behaviour was verified by state
+  injection against the running local app (correct control for threaded vs unthreaded meetings, candidate
+  filtering, role-aware filtering, search, and the already-in-a-thread guard), with zero writes. A live
+  manager-session pass is still owed.</p>
+</div>
 <div class="phase">
   <h3>Acceptance criteria</h3>
   <p>From an already-saved meeting's detail view (<code>showMeetingDetail</code>, <code>meetings.html</code>
@@ -766,7 +813,7 @@ today.</p>
   </ul>
 </div>
 
-<div class="depends">
+<div class="resolved">
   <strong>Related bug found Sep 4, 2026, while building the "shared by me" filter and shared-with display
   (a separate, smaller feature request, shipped same day, commit <code>0eab734</code>) — not yet fixed, flag
   for a future phase here since it's the exact same shape as this plan's core fix.</strong>
@@ -788,6 +835,35 @@ today.</p>
   already be sufficient once the query itself is fixed to only ask for what a non-manager can already prove —
   needs the same care this plan's Phase 1 gave the analogous <code>meetings</code> problem, not a rushed
   copy-paste).
+  <p><strong>Resolved Sep 4, 2026 — by removing the feature, not by fixing the query. Christie's call.</strong>
+  Sharing is now manager/admin-only (<code>recap</code> commit <code>3ed07c9</code>: <code>canShare</code>
+  became <code>isCurrentUserManagerOrAbove()</code>). Christie's reasoning, asked as a question and worth
+  recording as product intent rather than a workaround: "can a manager actually share a staff member's
+  meeting? If so, then we really might not need staff to be able to share meetings at all, and that might
+  even be a better feature — we maybe dont want staff to be able to share meetings and assign tasks to
+  others." Checked before answering: the live update rule already lets a manager update any non-personal
+  meeting and does not pin <code>sharedWith</code>, so a manager sharing someone else's meeting already works
+  at the database layer; only the UI gate (<code>createdBy == me || isAdmin()</code>) stood in the way. And
+  Meeting History's "Recorded by" teammate filter is already manager/admin-only, so a manager has a path to
+  find a staff member's meeting. The staff Share button was dead anyway.
+  <strong>Deliberately UI-level only</strong>, also Christie's call: a staff member calling the SDK directly
+  could still set <code>sharedWith</code> on their own meeting. Making that impossible needs a rules edit
+  pinning the field, which needs a <code>firebase deploy</code> and the approval phrase; the agreed plan is to
+  fold it into Phase 3's rules change if it is wanted at all, rather than spend a separate deploy on it.</p>
+  <p><strong>Correction to this box's own proposed fix, which was wrong.</strong> The two-merged-queries
+  pattern described above <em>cannot</em> work for <code>users</code>, and would have been a real dead end for
+  whoever tried it. That pattern works for <code>meetings</code> because the read rule has a per-document
+  branch (<code>sharedWith</code> contains uid) that a <code>where</code> clause can prove. The
+  <code>users</code> block has no such branch: its only read paths are
+  <code>request.auth.uid == userId</code> (a single-document match, unprovable for a list query),
+  <code>isManagerOrAbove()</code>, and <code>isKiosk()</code>. <strong>A staff member cannot list
+  <code>users</code> under any query whatsoever</strong>, so no client-side rewrite fixes it. Making staff
+  sharing work would have required adding a new read branch to the <code>users</code> block — the file shared
+  by all 21 apps — plus emulator tests and a deploy. Avoiding that is a large part of why the manager-only
+  answer is the better one, not merely the cheaper one.</p>
+  <p><strong>Consequence for Phase 3:</strong> that phase's shared users are now populated only by
+  manager/admin action. Phase 3's design is unaffected — it never depended on who created the share — but its
+  premise is narrower than when it was written.</p>
 </div>
 
 <h2>Phase 3 — Interactive sharing (shared users can check things off, live)</h2>
@@ -1095,21 +1171,30 @@ rather than designing its own. Phase 5 benefits from Phase 2 (retroactive linkin
 isn't blocked by it — a thread with only forward-linked meetings still works.</p>
 
 <h2>Resume instructions</h2>
-<p><strong>Approved and execution-ready as of Sep 4, 2026</strong> — nothing built yet, but nothing further
-needed to start. All four original open decisions are resolved; four independent review rounds ran (see the
-Decisions Log for the full account of each — this paragraph deliberately stays a pointer, not a
-re-narration, after an earlier version of it drifted stale mid-round more than once); round 4's punch list
-is fully applied; Christie asked directly for an independent judgment call (not just a relay of the last
-review's verdict), got one, and approved in chat. Start with Phase 1 — now understood as "rules change +
-query audit fixes together," still the most urgent since it fixes a live bug, but no longer the smallest
-phase in this plan. Read this plan's own Phase 1 section at the start of that work, not just this summary.
-Remember the standing gate that plan-level approval does NOT override: no <code>firebase deploy</code> of any
-kind — including <code>--only firestore:indexes</code>, which needs the same "approved to change firebase"
-phrase as rules do, not an exemption — until Christie separately says that literal phrase, for Phase 1's rule
-fix, again for any index deploys, and again for Phase 3's rule addition. Also remember: this project's own
-convention (<code>feedback_execution_needs_second_model_review.md</code>) calls for an independent
-implementation review of each Firestore-writing phase's actual diff, once code exists — plan-level
-execution-ready covers the design, not a substitute for reviewing what actually gets written.</p>
+<p><strong>State as of Sep 4, 2026 (end of session):</strong> Phase 1 is live in production. Phase 2 is
+built, reviewed twice, and committed in <code>~/recap</code> (<code>3ed07c9</code>, <code>c6e91d5</code>,
+<code>ad409f3</code>) but <strong>not pushed</strong>, so it is not live. Phases 3-5 are not started. The
+<code>loadRecapUsers()</code> gap that sat open before Phase 2 is resolved — by making sharing
+manager/admin-only rather than by fixing the query; see its box above, including the correction that this
+plan's originally proposed fix for it could never have worked.</p>
+<p><strong>The open question, and it is genuinely Christie's:</strong> whether to push Phase 2 as-is or run a
+third implementation-review round first. The argument for another round is not ceremony — it is the trend.
+Round 1 found five real bugs, round 2 found four more, and four of the seven were introduced by this phase's
+own new code rather than inherited. Phase 1's design reviews converged (each round narrower than the last);
+Phase 2's implementation reviews did not, yet. The argument against is that every fix has a test verified to
+fail against the code before it, and the remaining risk concentrates in a feature nobody is using yet.</p>
+<p><strong>Also still owed, whenever Phase 2 does go out:</strong> a pass against real data in a live
+manager session. Everything so far was emulator tests plus DOM/state injection — see the Phase 2 status
+box for exactly why (the available browser session was a staff account with no Recap access at all).</p>
+<p><strong>If continuing to Phase 3</strong>, read that phase's own section, and note its narrowed premise
+recorded in the <code>loadRecapUsers()</code> box. Phase 3 needs a rules change and therefore the standing
+gate: no <code>firebase deploy</code> of any kind — including <code>--only firestore:indexes</code>, which
+needs the same phrase as rules do, not an exemption — until Christie separately says the literal phrase
+"approved to change firebase." Plan-level execution-ready has never covered that, and Phase 2 demonstrated
+that it does not cover implementation correctness either: this project's convention
+(<code>feedback_execution_needs_second_model_review.md</code>) calls for an independent review of each
+Firestore-writing phase's actual diff once code exists, and in Phase 2 that convention paid for itself
+twice over.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -1404,6 +1489,78 @@ execution-ready covers the design, not a substitute for reviewing what actually 
   exercise the admin/manager-only parts of this work). Session paused here at Christie's request due to
   context constraints — this log entry plus the box above are the handoff for whoever/whatever resumes next,
   whether that's Phase 2 or the <code>loadRecapUsers()</code> fix.</li>
+
+  <li><strong>Sep 4, 2026 — resumed; the <code>loadRecapUsers()</code> question was answered by narrowing
+  the feature, not by fixing the query.</strong> Asked to choose between starting Phase 2 and fixing
+  <code>loadRecapUsers()</code> first, and given the recommendation to fix it first, Christie asked a better
+  question instead: "can a manager actually share a staff member's meeting? If so, then we really might not
+  need staff to be able to share meetings at all." Checking that turned a rules change across 21 apps into a
+  one-line UI gate — see the full reasoning and the correction of this plan's own wrong proposed fix in the
+  <code>loadRecapUsers()</code> box above Phase 3. Christie also chose UI-level enforcement only, accepting
+  that a staff member could still set <code>sharedWith</code> via the SDK, rather than spending a separate
+  Firebase deploy on pinning the field. Recorded because the plan had framed this as a blocking dependency
+  needing its own phase, and the right answer removed it instead.</li>
+
+  <li><strong>Sep 4, 2026 — Phase 2 implemented</strong> (<code>recap</code> <code>3ed07c9</code>), together
+  with the manager-only sharing change. Beyond the phase as designed: both pickers now exclude candidates
+  already linked forward, and the chain-end lookup surfaces "no end found" rather than returning silently.
+  Recap gained its own emulator test suite (it had none), following <code>tinker-timeclock</code>'s pattern,
+  with pure logic split into <code>js/thread-link-helpers.js</code> so tests can <code>require()</code> it.
+  One self-inflicted bug was caught before commit: the first version of the "already in a thread" guard
+  checked for the <em>presence</em> of <code>threadId</code>, which would have aborted every creation-time
+  link into an existing thread, because <code>startProcessing</code> stamps that field at <code>.add()</code>
+  time before calling the link function. It compares ids now, with a regression test pinning it.</li>
+
+  <li><strong>Sep 4, 2026 — implementation review round 1 (Codex, real repo access): five real bugs.</strong>
+  Run per this project's convention that each Firestore-writing phase's actual diff gets its own review. Every
+  finding was checked against the code rather than accepted on its word. (1) Readable is not writable — the
+  picker offered meetings a staff viewer could read but not update, a guaranteed permission-denied; found
+  independently while re-reading the live rules before the review returned. (2) A target that joined a thread
+  since the picker rendered could be dragged into a second one — the transaction checked
+  <code>threadNextMeetingId</code> but not <code>threadId</code>, and a fresh chain end legitimately has
+  nothing after it, so that check passes. (3) A self-cycle when the chain-end lookup returned the very meeting
+  being linked. (4) The same-thread exception was too loose — it now requires the exact pre-stamped shape
+  (<code>threadId</code> and <code>threadPrevMeetingId</code> both matching). (5) A failed link at creation
+  time left an orphan claiming thread membership, making every later chain-end lookup ambiguous; the
+  pre-stamp is now rolled back on failure. Fixed in <code>c6e91d5</code>, each with an emulator test verified
+  to fail against the previous transaction.</li>
+
+  <li><strong>Sep 4, 2026 — implementation review round 2 (fresh Claude instance): four more, plus a
+  repo-safety trap.</strong> It confirmed round 1's fixes were correct rather than papered over, then found:
+  (1) retroactive linking could move a thread's <code>lastMeetingDate</code> <em>backwards</em>, since the
+  picker has no date constraint and the field was assigned unconditionally — new with this phase, because
+  creation-time linking always appended the newest meeting; (2) a personal meeting could be linked into a work
+  thread, after which the manager branch of <code>queryReadableMeetings</code> filters it out by business and
+  the thread's end becomes unfindable forever; (3) <code>createSplitMeetings()</code> deleted a thread-linked
+  placeholder with a bare <code>.delete()</code>, leaving the predecessor pointing at a deleted document and
+  the thread with no chain end at all — pre-existing, but <em>both</em> reviewers found it independently, the
+  strongest signal of either round, and this phase's own "no end found" error turned it from silent into a
+  hard block; (4) closed-thread meetings were still offered as candidates. Fixed in <code>ad409f3</code>. The
+  reviewer also asked whether <code>/threads</code> requires manager+, which its sandbox couldn't check —
+  verified against the live file: <code>allow read, write: if isManagerOrAbove() || hasAppAccess('recap')</code>,
+  so the staff link path is fine.</li>
+
+  <li><strong>Sep 4, 2026 — a stale <code>firestore.rules</code> copy was found in <code>~/recap</code>, and
+  the audit that followed found another.</strong> Round 2 flagged that <code>recap/firebase.json</code>
+  pointed at an in-repo <code>firestore.rules</code> far looser than production (<code>users</code> read: any
+  signed-in user; <code>threads</code> write: any signed-in user; no manager branch on <code>meetings</code>
+  read). Deploying it would have undone Phase 1 and the privilege-escalation protections for all 21 apps at
+  once. This phase made that materially more likely by adding <code>npm test</code>, which runs the Firebase
+  CLI from that directory. The file and the pointer are gone (<code>ad409f3</code>). Auditing every repo
+  afterwards: <code>pimpneymouse-farm</code> has a local rules file but targets its own separate Firebase
+  project, so it is legitimate and was left alone; <code>clay-hub-booking</code> targets the shared project
+  and carried a 5-block stale copy against studio-hub's ~60 — dormant only because that repo has no
+  <code>firebase.json</code>. Its rules and index were verified redundant against studio-hub, then removed,
+  and its <code>setup-guide.md</code> corrected: it had walked a reader through <code>firebase init
+  firestore</code> → select <code>tinker-hq-apps</code> → "use existing firestore.rules" → deploy, which is a
+  step-by-step path to arming the repo and overwriting production (<code>clay-hub-booking</code>
+  <code>4b4a0c4</code>). The docs were the sharper edge than the files. Separately, the
+  <code>PreToolUse</code> deploy hook was hardened: it compared the session's working directory to
+  studio-hub, so <code>cd ~/recap &amp;&amp; firebase deploy</code> passed while deploying from elsewhere.
+  It now also rejects a <code>cd</code> to anywhere but studio-hub, tested against 11 command shapes
+  including false positives before install. Note the hook only governs commands Claude Code runs — it cannot
+  protect a deploy typed directly into a terminal, which is why deleting the files mattered more than the
+  hook did.</li>
 </ul>
 
 </body>
