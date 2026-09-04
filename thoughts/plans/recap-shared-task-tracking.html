@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Recap Shared Task Tracking</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-recap { background: #fdecd2; color: #8a5a12; }
+  .decision-needed { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .resolved { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .depends { background: #eef4fc; border: 1px solid #a9c6ea; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .status-tag { font-weight: 700; padding: 2px 8px; border-radius: 6px; }
+  .status-tag.not-ready { background: #fde2e2; color: #a11; }
+  .status-tag.ready { background: #d7f5e9; color: #0a7a4e; }
+  ul { padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 10px 0; }
+  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Recap Shared Task Tracking</h1>
+
+<div class="status" style="background:#fdf2f2;border-left-color:#c0392b;">
+  <span class="status-tag not-ready">execution-ready: false</span> — Drafted Sep 4, 2026 from a same-session
+  brainstorm with Christie. No app code touched yet. Phase 1 fixes a real, currently-live access-control gap
+  (see "The read-access bug" below) — worth prioritizing review of that phase specifically, independent of
+  whether the rest of this plan proceeds on the same timeline.
+</div>
+
+<div class="meta">
+  <strong>Goal:</strong> Meeting action items can be tracked to completion by the people they're assigned
+  to, without Christie copy/pasting summaries into email — sharing a meeting lets the recipient actually
+  check things off (live-synced back), everyone can see every open item assigned to them across every
+  meeting and thread in one place, and a set of meetings (most naturally a thread) can be reviewed together
+  to see what's still outstanding after several sessions.<br>
+  <strong>Repo:</strong> <code>~/recap</code> <span class="repo-tag repo-recap">Recap</span> — plus one
+  Firestore rules change in <code>~/studio-hub/firestore.rules</code> (shared by all 21 Tinker apps; this
+  plan only touches the <code>meetings</code> block).<br>
+  <strong>Depends on:</strong> Nothing blocking. Phase 2 (retroactive linking) reuses an existing, already-
+  shipped function unchanged. Phases 4 and 5 depend on Phase 1's rule fix being live (their queries need to
+  actually reach documents across creators) and benefit from Phase 2 existing, but are not hard-blocked by
+  it — a "My Open Tasks" or "review open" view still has real value even before every meeting is linked into
+  threads.<br>
+  <strong>Why now:</strong> Christie: "I'd like to get these meeting notes to the people involved for true
+  tracking of tasks but not just via copy/paste into an email — email gets cluttered quickly." Surfaced
+  alongside this, in the same conversation: sharing a meeting today only grants read access, and while
+  investigating that, a separate, more serious problem was found — the actual Firestore rule doesn't gate
+  read access on sharing at all (see below).
+</div>
+
+<h2>The read-access bug (why Phase 1 exists)</h2>
+<p>Christie's expectation: "Others are not supposed to be able to read other people's [meetings] unless
+it's shared with them, except a manager/admin can see [more broadly]." The live rule in
+<code>/Users/christiehubley/studio-hub/firestore.rules</code> today (lines 388-404) does not do this:</p>
+
+<pre><code>match /meetings/{docId} {
+  allow read: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && (
+      resource.data.createdBy == request.auth.uid
+      || resource.data.business != 'personal'
+    );
+  allow update, delete: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && (
+      resource.data.createdBy == request.auth.uid
+      || (resource.data.business != 'personal' && isManagerOrAbove())
+    );
+}</code></pre>
+
+<p><strong>What it actually does:</strong> the <code>business != 'personal'</code> clause was written to
+distinguish Christie's private reflection memos (<code>business: 'personal'</code>) from ordinary work
+meetings — it was never wired to <code>sharedWith</code> at all. The practical effect: any user with Recap
+access (any role, any appAccess grant) can already read <em>any</em> non-personal meeting, whether or not
+it was ever shared with them via the Share button. <code>sharedWith</code> (written by
+<code>saveShareSettings()</code>, <code>js/app.js:5530</code>) only drives the "Shared with me" notification
+list (<code>js/app.js:5338-5341</code>) — it has never been an access-control gate.</p>
+
+<p><strong>What already works correctly and must not regress:</strong> <code>business: 'personal'</code>
+meetings ARE already creator-only today — even a manager/admin cannot read someone else's personal meeting,
+since the rule's <code>|| business != 'personal'</code> branch simply doesn't apply to them. Phase 1 must
+preserve this exactly.</p>
+
+<div class="decision-needed">
+  <strong>Open decision — "manager sees direct reports":</strong> there is no direct-report/hierarchy
+  concept anywhere in the current data model (checked: no <code>reportsTo</code>, no manager-uid field, no
+  hierarchy of any kind on <code>users</code> docs — roles are flat admin/manager/staff plus a per-app
+  <code>appAccess</code> allowlist, confirmed across every rules block in <code>firestore.rules</code> and
+  Studio Hub's own <code>CLAUDE.md</code>). This plan's Phase 1 uses the closest existing lever — any
+  manager/admin can read any non-personal meeting, not scoped to "their people" — since that's what the
+  current data model actually supports. Building real reporting-line scoping is a separate, larger piece of
+  work (a new field on every user, plus rules logic to match it) and is explicitly NOT included here unless
+  Christie asks for it separately. <strong>Needs Christie's confirmation this is an acceptable interim
+  answer before Phase 1 executes.</strong>
+</div>
+
+<div class="depends">
+  <strong>Dependency checked, confirmed safe:</strong> Studio Hub's Mission Control alert engine
+  (<code>studio-hub/js/alerts.js:497-554</code>, <code>listenToRecap()</code>) also queries the
+  <code>meetings</code> collection with no <code>sharedWith</code> filtering
+  (<code>.where('business', 'in', ['tinker', 'clay'])</code>, no creator/shared scoping). Confirmed this only
+  ever runs for manager/admin users — Studio Hub's own <code>CLAUDE.md</code> states it is "used exclusively
+  by admin and manager roles, staff have no access," and <code>listenToRecap()</code> only starts once
+  <code>AlertEngine.init()</code> runs, which only happens inside Studio Hub. Phase 1's rule (manager/admin
+  keep full non-personal read access) preserves this listener with no changes needed on the Studio Hub side.
+  <strong>Separately noticed, out of scope for this plan:</strong> that listener reads
+  <code>meeting.actionItems</code>, a field that doesn't exist in Recap's actual schema (real data uses
+  <code>meeting.summary.beforeNextMeeting[].items[]</code>) — so it currently produces zero real alerts
+  regardless of this rule change. Pre-existing, unrelated dead code; flagging for awareness only, not fixing
+  here.
+</div>
+
+<h2>Phase 1 — Fix the meetings read/write rule to actually gate on sharing</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>A non-personal meeting is readable only by its creator, anyone in its <code>sharedWith</code> list, or
+  a manager/admin — not by every Recap user by default. A personal meeting remains creator-only, unchanged.
+  Write access (update/delete) is unchanged in this phase — see Phase 3 for the new shared-write case.</p>
+
+  <div class="bdd">
+    <strong>Given</strong> a non-personal meeting created by User A, never shared with User B,
+    <strong>when</strong> User B (a regular staff member with Recap access, not manager/admin) tries to read
+    it,
+    <strong>then</strong> the read is denied. <em>(This is the regression test proving the bug is actually
+    fixed — it currently passes today, incorrectly.)</em>
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the same meeting, now with User B's uid added to <code>sharedWith</code>,
+    <strong>when</strong> User B tries to read it,
+    <strong>then</strong> the read succeeds.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the same never-shared meeting,
+    <strong>when</strong> a manager or admin (User C) tries to read it,
+    <strong>then</strong> the read succeeds — manager/admin oversight preserved per the open decision above.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a <code>business: 'personal'</code> meeting created by User A,
+    <strong>when</strong> a manager/admin who is not the creator tries to read it,
+    <strong>then</strong> the read is denied — personal stays creator-only, no manager override, exactly
+    today's behavior.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a meeting document created before this feature existed, with no
+    <code>sharedWith</code> field at all,
+    <strong>when</strong> any read is evaluated,
+    <strong>then</strong> the rule does not error — must use
+    <code>resource.data.get('sharedWith', [])</code>, not a bare field reference, since Firestore rules
+    throw on referencing a genuinely missing map/array field.
+  </div>
+
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Rule change only, in <code>/Users/christiehubley/studio-hub/firestore.rules</code>, the
+      <code>match /meetings/{docId}</code> block (lines 388-404) — <code>allow update, delete</code>
+      unchanged in this phase.</li>
+    <li>New emulator test cases added to the existing <code>studio-hub/rules.test.js</code> suite (currently
+      29/29 passing) — write the failing tests first (they should fail against today's rule, proving the bug
+      is real), then apply the fix, then green.</li>
+    <li>Deploy: <code>firebase deploy --only firestore:rules</code> from <code>studio-hub/</code> — per
+      standing project policy, <strong>do not deploy until Christie says the literal phrase "approved to
+      change firebase,"</strong> separate from and in addition to tests passing.</li>
+    <li>No new collection, no schema change — existing <code>sharedWith</code> field just becomes
+      load-bearing.</li>
+  </ul>
+</div>
+
+<h2>Phase 2 — Retroactive meeting-to-thread linking</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>From an already-saved meeting's detail view (<code>showMeetingDetail</code>, <code>meetings.html</code>
+  flow), Christie can link it to a previous meeting into a thread — the same outcome as the "Link to
+  previous meeting" picker on the pre-processing screen, just usable after the fact.</p>
+
+  <div class="resolved">
+    <strong>Low-risk by construction:</strong> the actual linking logic already exists, fully general, and
+    is not tied to "new meeting" in any way — <code>linkMeetingToThread(newMeetingId, meetingData,
+    threadLink)</code> (<code>js/app.js:1299-1360</code>) takes two meeting IDs and a thread-link
+    description, batches the writes (new thread creation or append-to-existing-chain, plus
+    <code>threadPrevMeetingId</code>/<code>threadNextMeetingId</code> pointers on both meetings), and
+    commits atomically. This phase reuses it unchanged — it only needs a new UI entry point, not new write
+    logic.</li>
+  </div>
+
+  <div class="bdd">
+    <strong>Given</strong> two saved, unlinked meetings, viewing the newer one's detail page,
+    <strong>when</strong> Christie picks the older one as "this follows,"
+    <strong>then</strong> both meetings get linked into a new thread (or the older meeting's existing thread,
+    if it already has one), identically to what happens today when linking at creation time.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a candidate "previous meeting" that is already linked forward to a different next
+    meeting (i.e. it already has <code>threadNextMeetingId</code> set),
+    <strong>when</strong> Christie tries to pick it as the link target,
+    <strong>then</strong> it is not offered as a valid choice — carries forward the same constraint the
+    existing creation-time picker already enforces (<code>selectThreadForLink</code>,
+    <code>js/app.js:1218-1241</code>, queries for the thread's last meeting specifically), so retroactive
+    linking cannot silently overwrite/corrupt an existing chain.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a meeting that is already part of a thread, viewed from its detail page,
+    <strong>when</strong> Christie opens the linking control,
+    <strong>then</strong> it's clear this meeting already belongs to a thread (shows which one) rather than
+    presenting a confusing "link" action that would create a conflicting second link.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the batched write partially fails (network drop mid-commit),
+    <strong>when</strong> that happens,
+    <strong>then</strong> nothing is left half-linked — <code>batch.commit()</code> is already atomic
+    (existing behavior, unchanged), and the UI surfaces the failure via the existing
+    <code>catch</code>/<code>showToast</code> pattern at <code>js/app.js:1356-1360</code>.
+  </div>
+
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li><code>updateDoc</code>-equivalent batch updates only (existing <code>batch.update()</code> calls,
+      unchanged) — no <code>setDoc</code> overwrite of either meeting document.</li>
+    <li>No new collection, no rules change — <code>threads</code> already has a rule
+      (<code>allow read, write: if isManagerOrAbove() || hasAppAccess('recap')</code>) and this phase writes
+      to it exactly the way the existing creation-time flow already does.</li>
+    <li>No emulator test needed beyond what already exists for <code>linkMeetingToThread</code>'s write
+      shape (none currently exist — note this as a real gap: there is no existing test coverage of
+      <code>linkMeetingToThread</code> today, retroactive or not; adding this phase is a reasonable place to
+      add the first one).</li>
+  </ul>
+</div>
+
+<h2>Phase 3 — Interactive sharing (shared users can check things off, live)</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>Someone a meeting is shared with can toggle action-item completion themselves, and both sides see the
+  change without reloading the page.</p>
+
+  <div class="decision-needed">
+    <strong>Open decision — how far write access extends for a shared user.</strong> Two real options:
+    <ul>
+      <li><strong>(a) Any shared user can toggle any item's <code>done</code> state</strong> — simplest to
+        build and explain, matches how the summary screen already works for the owner (anyone editing it can
+        check off anyone's item). Recommended default.</li>
+      <li><strong>(b) A shared user can only toggle items assigned to them specifically</strong> — matches
+        intuition ("I check off my own tasks") but requires resolving assignee identity, which Phase 4 has
+        its own open decision about (see below) — and Firestore rules cannot cheaply enforce "only your own
+        array entry changed" inside a nested array of maps, so (b) would be UI-enforced only, not
+        rules-enforced, unless paired with a Cloud Function (this project has no Cloud Functions
+        infrastructure today — confirmed, everything here is a direct client SDK write gated by rules).</li>
+    </ul>
+    Recommending (a) for v1, revisit (b) only if it turns out to matter in practice.
+  </div>
+
+  <div class="decision-needed">
+    <strong>Open decision — honest limit of rules-based write scoping.</strong> The safest cheap rule for a
+    shared (non-creator, non-manager) user's write is: allow <code>update</code> if
+    <code>request.auth.uid in resource.data.get('sharedWith', [])</code> AND the only top-level field that
+    changed is <code>summary</code> (i.e. <code>title</code>, <code>createdBy</code>, <code>sharedWith</code>,
+    <code>business</code>, <code>date</code> etc. are all untouched) — enforceable via
+    <code>request.resource.data.diff(resource.data).affectedKeys()</code>. This stops a shared user from
+    reassigning ownership, changing who it's shared with, or deleting the meeting. It does <strong>not</strong>
+    stop a shared user from rewriting the entire <code>summary</code> object client-side (e.g. deleting
+    someone else's item, not just toggling <code>done</code>) — Firestore rules cannot cheaply diff inside a
+    nested array of maps. The UI will only ever send a done-toggle, but a technically savvy shared user could
+    call the SDK directly and write more than that. <strong>This is a real, accepted residual risk for v1,
+    not a claim of full field-level enforcement</strong> — flagging explicitly so it's a known tradeoff, not
+    a surprise later. A stronger version (Cloud Function-mediated toggle) is a legitimate future hardening
+    step if this ever matters in practice.
+  </div>
+
+  <div class="bdd">
+    <strong>Given</strong> User A shares a meeting with User B,
+    <strong>when</strong> User B opens it and checks off an item,
+    <strong>then</strong> the write succeeds, and User A's already-open view of the same meeting updates
+    without a manual reload (requires a real-time listener — <code>onSnapshot</code> is not used anywhere in
+    Recap today; every read is currently a one-time <code>.get()</code>, confirmed by grep. This phase
+    introduces the app's first live listener).
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> User B is not in <code>sharedWith</code> for a given meeting and is not its
+    creator or a manager/admin,
+    <strong>when</strong> User B attempts to write to it directly (bypassing the UI),
+    <strong>then</strong> the write is denied by rules — the UI not offering the control is not the only
+    guard.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> User B has the shared view open and User A deletes the meeting or revokes B's
+    share,
+    <strong>when</strong> that happens,
+    <strong>then</strong> User B's live listener reflects it (the doc disappears from their view or a
+    permission-denied is handled gracefully) rather than erroring visibly or leaving stale UI.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> two people with the meeting open at once both toggle different items within a
+    second of each other,
+    <strong>when</strong> both writes land,
+    <strong>then</strong> neither overwrites the other — requires each toggle to be its own targeted
+    <code>updateDoc</code> write of just the changed array (recomputed from the latest live snapshot,
+    not a stale local copy), not a full-summary overwrite built from whichever client's state is older.
+  </div>
+
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Rules change (second one in this plan): a new <code>allow update</code> branch on
+      <code>match /meetings/{docId}</code> for shared, non-manager users, scoped as described above.
+      Same deploy gate as Phase 1 — needs "approved to change firebase" separately, even if Phase 1 already
+      got approval.</li>
+    <li>New emulator tests: shared user can toggle when only <code>summary</code> changes; shared user's
+      write denied when any other top-level field is touched in the same request; non-shared user's write
+      still denied.</li>
+    <li><code>updateDoc</code>, not <code>setDoc</code> — the client should send a minimal update, not the
+      full document.</li>
+    <li>First use of <code>onSnapshot</code> in this codebase — needs explicit listener cleanup (unsubscribe
+      on navigating away) to avoid leaks, following whatever pattern is established when this is actually
+      designed in detail (not yet — no existing precedent in this repo to point to).</li>
+  </ul>
+</div>
+
+<h2>Phase 4 — Per-person "My Open Tasks" cross-meeting view</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>Any logged-in user can see every action item assigned to them, across every meeting and thread they
+  have access to, in one place — not per-meeting, and not dependent on remembering which meeting it came
+  from.</p>
+
+  <div class="decision-needed">
+    <strong>Open decision — assignee identity is currently just a text label, not a user reference.</strong>
+    <code>beforeNextMeeting[].assignee</code> is free text, generated by the AI from the transcript (e.g.
+    <code>"Christie"</code>, <code>"Julia"</code>, or <code>"Unassigned (needs assignment)"</code> per the
+    server prompt rules) or typed/edited by a human — it is never a user uid. Matching "items assigned to
+    me" needs one of:
+    <ul>
+      <li><strong>(a) Name-string matching</strong> against the logged-in user's <code>name</code> field from
+        their <code>users</code> doc — cheap, no schema change, but fragile to nicknames/typos/AI
+        misspellings ("Christie" vs "Christy" vs "Chris").</li>
+      <li><strong>(b) A real uid-backed assignee field</strong>, added alongside (or replacing) the text
+        label — reliable, but a genuine schema change touching every place <code>assignee</code> is read or
+        written (rendering, editing, drag-and-drop reassignment just shipped this session, the AI
+        summarization prompt, sharing/display) — a bigger phase than a one-line query filter.</li>
+    </ul>
+    Recommending (a) for v1 with a visible "these might not all be exactly right" affordance (e.g. a manual
+    "not mine" dismiss), and treating (b) as a real follow-up if (a) proves too unreliable in practice —
+    <strong>needs Christie's call before this phase is built</strong>, not just before it ships.
+  </div>
+
+  <div class="bdd">
+    <strong>Given</strong> User A is assigned items across three different meetings, some in threads, some
+    not, some already checked off,
+    <strong>when</strong> User A opens "My Open Tasks,"
+    <strong>then</strong> every still-open item assigned to them appears, each identifiable back to its
+    source meeting (title, date, and thread if any).
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an item is checked off from this view,
+    <strong>when</strong> that happens,
+    <strong>then</strong> it writes back to that item's actual meeting document (same underlying data as
+    Phase 3's toggle, not a separate copy) and disappears from this rollup.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a meeting the user has no read access to (per Phase 1's fixed rule — not their own,
+    not shared with them, and they're not manager/admin),
+    <strong>when</strong> this view queries for their items,
+    <strong>then</strong> nothing from that meeting appears — this view must respect the same access rules,
+    not bypass them via a broader query.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the assignee text is <code>"Unassigned (needs assignment)"</code>,
+    <strong>when</strong> this view is built,
+    <strong>then</strong> those items never match anyone's "my tasks" — they need their own separate visibility
+    (out of scope for this phase, worth a future "Unassigned" admin view, not building it here).
+  </div>
+
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Read-only phase — no new writes beyond reusing Phase 3's existing toggle path.</li>
+    <li>No new collection if approach (a) is chosen. If (b) is chosen, no new collection either, but a
+      migration question appears (backfilling existing meetings' assignee text into uids) — flag as its own
+      sub-decision if (b) is picked.</li>
+    <li>Depends on Phase 1 being live — without the rule fix, this view's query would either over-expose
+      (if run with elevated access) or under-return (if naively scoped) other people's meetings.</li>
+  </ul>
+</div>
+
+<h2>Phase 5 — "Review open tasks" rollup across a set of meetings</h2>
+<div class="phase">
+  <h3>Acceptance criteria</h3>
+  <p>Christie can select a set of meetings — first version: a single thread — and see one consolidated,
+  deduplicated-by-person list of everything still open across all of them, to answer "what's still standing
+  after a few sessions."</p>
+
+  <div class="resolved">
+    <strong>Scoped to one thread at a time for v1</strong> — a thread is already a natural, existing grouping
+    (a bounded, ordered chain of meetings), versus an arbitrary multi-select across any meetings which is a
+    fuzzier UI problem (what's the selection model? date range? checkboxes across a long list?) with no clear
+    existing precedent in this app. Generalizing beyond "one thread" is a reasonable v2 if v1 proves useful.
+  </div>
+
+  <div class="bdd">
+    <strong>Given</strong> a thread with 4 linked meetings, each with its own open and closed action items,
+    <strong>when</strong> Christie opens "Review open tasks" for that thread,
+    <strong>then</strong> she sees one list, grouped by assignee, of every item still open across all 4
+    meetings — each item still traceable to which specific meeting it came from.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the same person appears as assignee across multiple meetings in the thread with
+    different open items each time,
+    <strong>when</strong> the rollup renders,
+    <strong>then</strong> their items are grouped together under their name once, not repeated per-meeting
+    under separate headers.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a meeting in the thread hasn't been retroactively linked yet (Phase 2 not run on
+    it, or run after this thread's rollup was last viewed),
+    <strong>when</strong> the rollup is generated,
+    <strong>then</strong> it only reflects meetings actually in the thread at generation time — it's a live
+    query against current thread membership, not a cached/stale list.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> Christie doesn't have read access to one meeting nominally in the thread (edge
+    case — e.g. a personal-business meeting somehow linked in, or an access change mid-thread),
+    <strong>when</strong> the rollup runs,
+    <strong>then</strong> it silently omits what it can't read rather than erroring the whole view.
+  </div>
+
+  <h4>Firebase safety checklist</h4>
+  <ul class="checklist">
+    <li>Read-only phase, same access-rule dependency as Phase 4.</li>
+    <li>Reuses Phase 4's assignee-identity decision — do not re-litigate it separately here.</li>
+    <li>No new collection, no rules change.</li>
+  </ul>
+</div>
+
+<h2>Completeness check</h2>
+<p>Phase 1 is fully independent and should ship first regardless of the rest — it's a correctness fix, not a
+feature. Phase 2 is independent of everything else (reuses existing, unchanged write logic) and could ship
+any time. Phase 3 depends on Phase 1 (the new shared-write rule is additive to Phase 1's read fix, and needs
+it in place first) but not on Phases 4/5. Phases 4 and 5 depend on Phase 1 for correct scoping and share one
+open decision (assignee identity) that should be resolved once, not separately per phase. Phase 5 benefits
+from Phase 2 (retroactive linking) actually being used, but isn't blocked by it — a thread with only
+forward-linked meetings still works.</p>
+
+<h2>Resume instructions</h2>
+<p>Nothing built yet. Two open decisions need Christie's input before any phase past Phase 1 can be marked
+execution-ready: (1) the "manager sees direct reports" interim-answer confirmation (affects Phase 1's exact
+rule text), and (2) assignee-identity matching approach for Phases 4/5 (name-string vs. uid-backed field).
+Phase 3 has its own two decisions (write-scope breadth, and accepting the rules-can't-fully-enforce-nested-
+array-diffing tradeoff) that can be resolved independently of 1/2. Recommend resolving Phase 1's decision
+first via plan-reviewer comment, since it's the smallest, most self-contained, and most urgent (it's fixing
+a live bug) — then decide whether to review the rest of this plan in the same pass or split it off.</p>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Sep 4, 2026 — plan drafted</strong> from a same-session conversation: Christie asked to
+  brainstorm real task tracking (not email) for shared meeting notes, specifically mentioning
+  (1) shared users checking off tasks with live sync, and (2) a consolidated "review of open tasks" across
+  several meetings. While investigating how sharing currently works to answer a direct question ("are edits
+  live on her side, can she check off tasks"), found and flagged the <code>sharedWith</code> read-access gap
+  independently — Christie confirmed this doesn't match her intent and asked it be included. Also folded in
+  retroactive meeting-to-thread linking, raised in the same conversation as a related gap. Research phase
+  confirmed: exact current rule text, the Studio Hub alert-engine dependency on the same collection (checked
+  safe), no direct-report hierarchy exists in the data model, <code>linkMeetingToThread()</code> is already
+  fully general and reusable, no <code>onSnapshot</code> usage anywhere in Recap today, and assignee is
+  free-text with no user-id backing. Two decisions flagged as needing Christie's confirmation before
+  execution-ready: the manager/admin-not-scoped-to-reports interim answer, and the assignee-identity
+  matching approach. Not yet reviewed by a second model or in the browser plan-reviewer.</li>
+</ul>
+
+</body>
+</html>
