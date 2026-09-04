@@ -29,11 +29,11 @@
 
 <h1 id="plan-title">Plan: One-Off Shift Email Reminders</h1>
 
-<div class="status" style="background:#f0fdf4;border-left-color:#16a34a;">
-  Status: <strong>Execution-ready</strong> (Aug 31 — stale "Drafted, not yet reviewed" banner corrected Sep
-  4, the Decisions Log already said execution-ready). Reviewed twice; trigger keyword rule was validated
-  against every real override in the live Sept–Dec 2026 schedule before being written down — not guessed.
-  Depends on Plan B (Time Off Email Routing) Phase 1's shared email helper, which has since shipped.
+<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
+  Status: <strong>In progress — Phases 1–2 complete, Phase 3 blocked</strong> (Sep 4). Phase 3 (the daily
+  48-hour reminder) needs a Firebase service account for server-side Firestore access, blocked by org
+  policy — see Decisions Log for the real options surfaced to Christie. Phases 1–2 are fully independent
+  and shipped regardless, per this plan's own completeness check.
 </div>
 
 <div class="meta">
@@ -367,6 +367,38 @@ data and confirmed by Christie.</p>
   plain UTC with no timezone pinning at all, the exact anti-pattern this plan avoids. Corrected the
   citation rather than leave a fabricated precedent in the plan. This plan is genuinely execution-ready
   now — no open decisions remain.</li>
+  <li><strong>Sep 4 — Phase 1 built and shipped.</strong> <code>isReminderCandidate(note)</code> in
+  <code>js/schedule-helpers.js</code>, word-boundary matched against the four keywords. 16 unit tests
+  covering every BDD, including the real positive/negative examples from the live audit. Zero side
+  effects, matching the plan's own completeness check. Committed <code>0d01e72</code>, pushed.</li>
+  <li><strong>Sep 4 — Phase 2 built, reviewed, one real bug found and fixed.</strong> Wired an immediate
+  confirmation email into <code>handleSaveSchedule()</code>, scoped to the base (currently-active)
+  schedule path only, not the not-yet-active future-schedule path — a judgment call the plan's BDDs don't
+  explicitly address. Required solving a problem the plan didn't spell out at the code level:
+  <code>handleSaveSchedule()</code> always writes the entire overrides map, so a bare "does anything match"
+  check would re-email on every unrelated re-save of an already-matching override — needed a diff against
+  a pre-edit snapshot (<code>scheduleEditOriginalOverrides</code>, captured in
+  <code>openScheduleEditor()</code>). Second-model review caught a real bug in the first version of that
+  diff: it keyed on date-key presence, not content — since <code>editOverride()</code> always
+  deletes-and-re-adds under the same date key, editing an existing non-matching (or day-off) override into
+  a matching one would never have fired, silently defeating the plan's core goal for what's likely a
+  routine admin action. Fixed to compare candidate status transition (false→true) instead of key presence;
+  verified directly across 7 scenarios including both bug cases. Committed <code>46cedc8</code> then
+  <code>b82e505</code>, pushed. Full suite 145/145 green.</li>
+  <li><strong>Sep 4 — Phase 3 blocked, real infrastructure gap, not attempted.</strong> The daily 48-hour
+  reminder needs a Netlify Scheduled Function with direct server-side Firestore access (no user session to
+  authenticate through, unlike Phase 2). That needs a Firebase service account — blocked by Christie's
+  Google Workspace org policy (already known; this is why Schedule Viewer's own reminder function, which
+  needs the same thing, has never actually run in production — confirmed its Netlify env vars are
+  completely empty despite the code referencing <code>FIREBASE_SERVICE_ACCOUNT</code>). The other obvious
+  workaround — the cached Firebase CLI OAuth credentials <code>backup.js</code> already uses on a schedule
+  — is off the table for a new script for a different reason: Christie's standing security rule
+  (established after a prior incident) blocks writing new scripts that use that token for direct Firestore
+  access, since it bypasses the app's security rules entirely. Real options surfaced to Christie, not
+  decided yet: a real Firebase Cloud Function (different deploy tooling), Christie extending
+  <code>backup.js</code> herself, revisiting the org policy, or leaving Phase 3 out of scope — the plan's
+  own completeness check already says Phase 3 is fully independent and either phase can ship without the
+  other.</li>
 </ul>
 
 </body>
