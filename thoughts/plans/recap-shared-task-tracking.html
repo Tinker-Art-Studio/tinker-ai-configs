@@ -262,7 +262,7 @@ today.</p>
     );
 
   allow update: if (isManagerOrAbove() || hasAppAccess('recap'))
-    && (request.resource.data.business != 'personal' || isAdmin())
+    && (resource.data.business == 'personal' || request.resource.data.business != 'personal' || isAdmin())
     && request.resource.data.createdBy == resource.data.createdBy
     && (
       resource.data.createdBy == request.auth.uid
@@ -275,6 +275,29 @@ today.</p>
       || (resource.data.business != 'personal' && isManagerOrAbove())
     );
 }</code></pre>
+
+  <div class="resolved">
+    <strong>Refined in fourth review round — the update-rule personal guard was punishing an unintended
+    case.</strong> The original condition, <code>request.resource.data.business != 'personal' || isAdmin()</code>,
+    applies on <em>every</em> update whose resulting document is personal — not just conversions into
+    personal. Combined with the read/delete rules (which never require <code>isAdmin()</code> for a
+    creator acting on their own document), this meant a non-admin creator of an already-personal meeting
+    could read and delete it forever, but could never update it again — not even an unrelated field like the
+    title — unless they happened to currently be admin. Two real (if narrow) ways this would bite: a legacy
+    personal meeting created by a non-admin before this rule ships (exactly the pre-existing gap this plan
+    documents as currently live and un-enforced), or an admin who creates a personal meeting and is later
+    demoted. Christie confirmed separately that only she has ever created a personal meeting through the
+    app's actual UI (it's always been admin-only there) — so this isn't a live risk to her today, but it's a
+    real, previously undocumented rule-design flaw worth closing since the fix is free. Refined to:
+    <code>resource.data.business == 'personal' || request.resource.data.business != 'personal' || isAdmin()</code>
+    — only requires <code>isAdmin()</code> when a document is actually <em>transitioning into</em>
+    <code>'personal'</code>; a document that's already personal and staying personal can be edited by its
+    own creator regardless of their current role, matching how read/delete already worked. Empirically
+    re-verified against the emulator: a non-admin creator can now edit their own already-personal meeting
+    (fixed), while both original bypasses (non-admin converting a normal meeting to personal; a manager
+    flipping someone else's meeting to personal) remain closed, confirmed by re-running those exact two
+    scenarios against the refined rule.
+  </div>
 
   <div class="resolved">
     <strong>Empirically verified against a live Firestore emulator (Sep 4, 2026)</strong> — not just reasoned
