@@ -92,13 +92,20 @@ it's shared with them, except a manager/admin can see [more broadly]." The live 
     );
 }</code></pre>
 
+<p style="font-size:13px;color:#a11;"><strong>The above is what's live in production today (unchanged).</strong>
+See the fully revised rule this plan actually proposes — including the update-side fix for a bypass both
+review rounds independently found — in Phase 1's own rule block below, rather than here; keeping this quote
+as the accurate "current state" reference point.</p>
+
 <p><strong>What it actually does:</strong> the <code>business != 'personal'</code> clause was written to
 distinguish Christie's private reflection memos (<code>business: 'personal'</code>) from ordinary work
 meetings — it was never wired to <code>sharedWith</code> at all. The practical effect: any user with Recap
 access (any role, any appAccess grant) can already read <em>any</em> non-personal meeting, whether or not
 it was ever shared with them via the Share button. <code>sharedWith</code> (written by
-<code>saveShareSettings()</code>, <code>js/app.js:5530</code>) only drives the "Shared with me" notification
-list (<code>js/app.js:5338-5341</code>) — it has never been an access-control gate.</p>
+<code>saveShareSettings()</code>, <code>js/app.js:5530</code>) drives the "Shared with Me" list and
+notification badge (<code>js/app.js:5280-5345</code>) — it has never been an access-control gate. <em>(Second
+review round corrected this citation: it drives more than a bare "notification list" — the whole Shared
+section and its badge, not just an alert.)</em></p>
 
 <p><strong>What already works correctly and must not regress:</strong> <code>business: 'personal'</code>
 meetings ARE already creator-only today — even a manager/admin cannot read someone else's personal meeting,
@@ -140,32 +147,41 @@ today.</p>
   Hub's Mission Control alert engine (<code>studio-hub/js/alerts.js:497-554</code>,
   <code>listenToRecap()</code>) also queries the <code>meetings</code> collection with no
   <code>sharedWith</code> filtering (<code>.where('business', 'in', ['tinker', 'clay'])</code>, no
-  creator/shared scoping). This matters more than it first looks: Firestore evaluates a list/query's
-  security rule against the query's entire provable result set, not per document — if the rule's condition
-  can't be proven true purely from the query's own <code>where</code> clauses, Firestore rejects the whole
-  query, it does not silently filter results. Today's rule's inner clause (<code>business != 'personal'</code>)
-  <em>is</em> structurally provable from this exact query's <code>where</code> clause, so it succeeds for
-  anyone who passes the outer gate today, manager or not. After Phase 1, a non-manager's inner clause adds
-  <code>sharedWith contains uid</code>, which is <strong>not</strong> provable from this query's
-  <code>where</code> clause — so if a non-manager, non-admin user's client ever actually called
-  <code>listenToRecap()</code>, that query would newly start failing outright post-Phase-1. The question is
-  whether that can happen. First pass at this claim only cited Studio Hub's <code>CLAUDE.md</code> prose
-  ("used exclusively by admin and manager roles") — a documented intent, not verified enforcement, which is
-  exactly the kind of prose-vs-code gap this plan exists to close for Recap's own <code>sharedWith</code>
-  field. Went back and checked the actual code: <code>AlertEngine.init(currentUser, db)</code> is called at
-  <code>studio-hub/js/app.js:258</code>, inside <code>if (currentUser && (currentUser.role === 'admin' ||
-  currentUser.role === 'manager'))</code> — a real code-level gate, not a hidden button. <code>currentUser</code>
-  is populated from the authenticated user's own Firestore <code>users/{uid}</code> doc
-  (<code>handleAuthStateChange</code>, <code>studio-hub/js/app.js:134</code>) — the same source of truth the
-  security rules themselves read via <code>getUserData()</code> — so a staff-role user cannot spoof this
-  client-side check into passing while also having the rules' own <code>isManagerOrAbove()</code> evaluate
-  true, since rules read the authoritative Firestore doc directly, independent of any client claim. One
-  honest caveat, orthogonal to this plan: <code>app.js:127</code> restores a cached <code>currentUser</code>
-  from <code>localStorage</code> before the fresh Firestore-sourced check settles, so there's a theoretical
-  brief-window race on Studio Hub's own page load, unrelated to and unchanged by this plan (today's outer
-  gate — <code>isManagerOrAbove() || hasAppAccess('recap')</code> — already governs that same window
-  identically before and after Phase 1, since Phase 1 only changes the inner clause). Conclusion stands:
-  under normal, settled-state operation, nothing but a manager/admin ever reaches
+  creator/shared scoping). <strong>Note, found in second review round: that query's own value list is itself
+  wrong</strong> — Recap's real business values are <code>tinker</code>, <code>clayhub</code>, <code>both</code>,
+  and <code>personal</code> (confirmed from the actual dropdown, <code>index.html:135-140</code>), not
+  <code>tinker</code>/<code>clay</code> — so this listener has silently never matched <code>clayhub</code> or
+  <code>both</code> meetings either, on top of the already-noted <code>actionItems</code> field-path bug.
+  Not something to hold up as a correct pattern to copy (see the query audit below, which uses the correct
+  three-value list). This matters more than it first looks, independent of that value bug: Firestore
+  evaluates a list/query's security rule against the query's entire provable result set, not per document —
+  if the rule's condition can't be proven true purely from the query's own <code>where</code> clauses,
+  Firestore rejects the whole query, it does not silently filter results. Today's rule's inner clause
+  (<code>business != 'personal'</code>) <em>is</em> structurally provable from this exact query's
+  <code>where</code> clause, so it succeeds for anyone who passes the outer gate today, manager or not. After
+  Phase 1, a non-manager's inner clause adds <code>sharedWith contains uid</code>, which is
+  <strong>not</strong> provable from this query's <code>where</code> clause — so if a non-manager, non-admin
+  user's client ever actually called <code>listenToRecap()</code>, that query would newly start failing
+  outright post-Phase-1. The question is whether that can happen. First pass at this claim only cited Studio
+  Hub's <code>CLAUDE.md</code> prose ("used exclusively by admin and manager roles") — a documented intent,
+  not verified enforcement, which is exactly the kind of prose-vs-code gap this plan exists to close for
+  Recap's own <code>sharedWith</code> field. Went back and checked the actual code:
+  <code>AlertEngine.init(currentUser, db)</code> is called at <code>studio-hub/js/app.js:262</code> (corrected
+  in second review round — 258 is where the enclosing <code>if</code> check begins, not the call itself),
+  inside <code>if (currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager'))</code> — a
+  real code-level gate, not a hidden button. <code>currentUser</code> is populated from the authenticated
+  user's own Firestore <code>users/{uid}</code> doc (<code>handleAuthStateChange</code>,
+  <code>studio-hub/js/app.js:134</code>) — the same source of truth the security rules themselves read via
+  <code>getUserData()</code> — so a staff-role user cannot spoof this client-side check into passing while
+  also having the rules' own <code>isManagerOrAbove()</code> evaluate true, since rules read the authoritative
+  Firestore doc directly, independent of any client claim. <strong>Correction (second review round): the
+  earlier version of this box cited a <code>localStorage</code> cache-restore race at <code>app.js:127</code>
+  as an "honest caveat" — that was wrong, verified directly.</strong> Line 127's <code>localStorage</code>
+  restore is inside a separate <em>demo-mode</em> function entirely (the one logging
+  "admin@studio.com / admin123" demo credentials) — it never runs as part of the real
+  <code>handleAuthStateChange()</code> production auth flow, so there is no such race. Removing that claim
+  rather than repeating an unverified correction of an already-wrong statement. Conclusion stands, on firmer
+  footing than before: under normal, settled-state operation, nothing but a manager/admin ever reaches
   <code>listenToRecap()</code>, so Phase 1's rule change is safe for this dependency.
   <strong>Separately noticed, out of scope for this plan:</strong> that listener reads
   <code>meeting.actionItems</code>, a field that doesn't exist in Recap's actual schema (real data uses
@@ -183,9 +199,181 @@ today.</p>
   <h3>Acceptance criteria</h3>
   <p>A non-personal meeting is readable only by its creator, anyone in its <code>sharedWith</code> list, or
   a manager/admin — not by every Recap user by default. A personal meeting remains creator-only, unchanged.
-  Only an admin can create a <code>business: 'personal'</code> meeting — enforced by rules now, not just
-  hidden in the UI. Write access (update/delete) on existing documents is unchanged in this phase — see
-  Phase 3 for the new shared-write case.</p>
+  Only an admin can create a <code>business: 'personal'</code> meeting, <strong>and a non-admin cannot get
+  around that by creating a normal meeting and then updating it to personal afterward</strong> — closed at
+  both the create and update rule, not just create. Existing Recap queries against <code>meetings</code>
+  keep working for the population they're meant to serve — this phase is not just a rules edit, it requires
+  auditing and fixing every query that would otherwise be silently rejected outright once the rule actually
+  checks <code>sharedWith</code> (see the query audit below). Everything in this Acceptance Criteria section
+  is now backed by an actual passing/failing run against a live Firestore emulator, not just rules-text
+  reasoning — see "Empirically verified" below.</p>
+
+  <div class="resolved">
+    <strong>Resolved (Sep 4, 2026, second review round — real bug, found independently by both a fresh
+    Claude pass and Codex) — the update rule had a bypass that fully defeated the create restriction
+    above.</strong> The existing (unchanged-until-now) <code>allow update</code> branch never checked the
+    <em>new</em> value of <code>business</code> at all — only who's making the request. That meant: (1) any
+    non-admin could create an ordinary meeting, then immediately <code>update</code> it to
+    <code>business: 'personal'</code>, since the creator branch doesn't care what fields changed; (2) worse,
+    a manager who isn't even the creator could flip <em>someone else's</em> non-personal meeting to personal
+    (the manager branch only required the OLD value to be non-personal), which would then lock even other
+    managers out of reading it under the unchanged read rule. Fixed by splitting <code>update</code> and
+    <code>delete</code> into separate rules (required anyway — <code>request.resource.data</code> doesn't
+    exist on a delete, so it can't safely share a combined rule with an update-time field check) and adding
+    the same <code>business != 'personal' || isAdmin()</code> guard to <code>allow update</code>, plus
+    pinning <code>createdBy</code> so a creator can't reassign ownership via update either (a related gap
+    Codex separately flagged). See the full corrected rule block below.
+  </div>
+
+  <pre><code>match /meetings/{docId} {
+  allow create: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && request.resource.data.createdBy == request.auth.uid
+    && (request.resource.data.business != 'personal' || isAdmin());
+
+  allow read: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && (
+      resource.data.createdBy == request.auth.uid
+      || (resource.data.business != 'personal' && (
+           request.auth.uid in resource.data.get('sharedWith', [])
+           || isManagerOrAbove()
+         ))
+    );
+
+  allow update: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && (request.resource.data.business != 'personal' || isAdmin())
+    && request.resource.data.createdBy == resource.data.createdBy
+    && (
+      resource.data.createdBy == request.auth.uid
+      || (resource.data.business != 'personal' && isManagerOrAbove())
+    );
+
+  allow delete: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && (
+      resource.data.createdBy == request.auth.uid
+      || (resource.data.business != 'personal' && isManagerOrAbove())
+    );
+}</code></pre>
+
+  <div class="resolved">
+    <strong>Empirically verified against a live Firestore emulator (Sep 4, 2026)</strong> — not just reasoned
+    through in the abstract. A standalone, throwaway test script (never committed — this is planning, not
+    execution) ran the exact rule above against the real <code>firebase-tools</code> emulator with 8
+    scenarios:
+    <ol>
+      <li>Today's actual "Shared with Me" query (<code>sharedWith array-contains</code>, no
+        <code>business</code> filter) against the <em>new</em> rule → <strong>correctly rejected outright</strong>,
+        confirming the query-breaking risk below is real, not theoretical.</li>
+      <li>The same query with a <code>business</code> filter added → <strong>succeeds</strong>, confirming
+        the fix works.</li>
+      <li>A non-admin creator updating their own non-personal meeting to <code>business: 'personal'</code>
+        (the bypass) → <strong>correctly denied.</strong></li>
+      <li>A manager updating someone else's non-personal meeting to <code>business: 'personal'</code> →
+        <strong>correctly denied.</strong></li>
+      <li>A non-admin attempting to create a <code>business: 'personal'</code> meeting →
+        <strong>correctly denied.</strong></li>
+      <li>An admin creating a <code>business: 'personal'</code> meeting → <strong>correctly succeeds.</strong></li>
+      <li>A creator attempting to reassign <code>createdBy</code> via update → <strong>correctly denied.</strong></li>
+      <li>An ordinary, legitimate edit (creator updating their own non-personal meeting's title) →
+        <strong>correctly succeeds</strong> — confirms the fix doesn't regress normal editing.</li>
+    </ol>
+    All 8 passed as intended. This satisfies this repo's own AGENTS.md requirement ("write a failing emulator
+    test first, then fix, then green") in spirit — the throwaway script IS that failing-then-passing proof;
+    the equivalent permanent test cases still need to be written into <code>studio-hub/rules.test.js</code>
+    itself during execution (this was a planning-phase verification, not the actual implementation).
+  </div>
+
+  <h3>Recap client query audit — required, not optional, part of this phase</h3>
+  <p>Second review round (Codex, with direct read access to both repos) found something neither prior round
+  caught: Firestore rejects a whole list query it cannot prove compliant from the query's own
+  <code>where</code> clauses — it does not silently filter results down to what's actually allowed. Every
+  query below was checked directly against the real code (<code>grep -n "collection('meetings')"</code>
+  across <code>js/app.js</code>, then read in context). Single-document <code>.doc(id).get()</code>/
+  <code>.update()</code>/<code>.add()</code> calls are unaffected (evaluated per-document, not subject to
+  this) — only <code>.where(...)</code> list queries are at risk. Business values, confirmed from the actual
+  dropdown (<code>index.html:135-140</code>): <code>tinker</code>, <code>clayhub</code>, <code>both</code>,
+  <code>personal</code> — four values, not the two-value <code>['tinker','clay']</code> list Studio Hub's
+  (already-buggy) alerts query uses.</p>
+  <table>
+    <tr><th>Query</th><th>Status under new rule</th><th>Fix</th></tr>
+    <tr>
+      <td><code>js/app.js:763</code> — series context, <code>seriesId + createdBy(self)</code></td>
+      <td>Safe — already constrains <code>createdBy == self</code></td>
+      <td>None needed</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:1079</code> — unreviewed-count, <code>seriesId + reviewed==false</code></td>
+      <td>Broken — no createdBy/business/sharedWith constraint</td>
+      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>; new composite index</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:1175</code> — thread-picker "recent meetings," unconstrained
+        <code>orderBy + limit(20)</code></td>
+      <td>Broken for everyone — zero <code>where</code> clauses at all</td>
+      <td>Redesign (see helper below) — not a one-line filter add, since it's meant to show meetings the
+        viewer can actually read, which differs by role</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:1221</code> (<code>selectThreadForLink</code>) — <code>threadId</code> only</td>
+      <td>Broken — no business/createdBy/sharedWith constraint</td>
+      <td>Redesign alongside Phase 2's own fix to this same function (see Phase 2 — this function's claimed
+        chain-safety was also found to be false, needs rework regardless)</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:2516/2522/2528</code> — "view meetings by teammate" (own / admin-viewing-other /
+        manager-viewing-staff branches)</td>
+      <td>Own branch safe (constrains <code>createdBy==self</code>); the other two branches broken — rely on
+        an unenforced "only admin creates personal" assumption Firestore can't take on faith</td>
+      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code> to the admin- and
+        manager-viewing branches; new composite index</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:2950</code> — review-meeting lookup, <code>reviewsSeriesId</code> only</td>
+      <td>Broken — no constraint</td>
+      <td>Add business filter; confirm during implementation whether this is reachable by plain staff (if so,
+        may need <code>createdBy</code> scoping instead/also)</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:4858</code> — rename-thread, <code>threadId</code> only, followed by a batch of
+        per-doc updates</td>
+      <td>The read half is broken (list query); the write half (individual <code>batch.update()</code> calls)
+        is evaluated per-document and is fine once the read succeeds</td>
+      <td>Add business filter to the read query</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:4899</code> — series counts by uid, <code>createdBy(uid)</code> only</td>
+      <td>Safe — already constrains <code>createdBy</code></td>
+      <td>None needed</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:5289/5293</code> — "new shares" badge check, <code>sharedWith array-contains</code>
+        [+ <code>sharedAt &gt;</code>]</td>
+      <td><strong>Broken — this is the core feature this whole plan exists to build</strong>. Empirically
+        confirmed above (test 1).</td>
+      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>; new composite index
+        (<code>sharedWith</code> array-contains + <code>business</code> in [+ <code>sharedAt</code>])</td>
+    </tr>
+    <tr>
+      <td><code>js/app.js:5333</code> (<code>loadSharedMeetings()</code>) — <code>sharedWith array-contains</code>
+        + <code>orderBy(sharedAt)</code></td>
+      <td>Same as above — the actual "Shared with Me" list render</td>
+      <td>Same fix; empirically confirmed working above (test 2)</td>
+    </tr>
+  </table>
+
+  <div class="decision-needed">
+    <strong>Implementation recommendation, not yet built:</strong> rather than patching each broken query
+    site with bespoke role-branching logic, build one reusable helper —
+    <code>queryReadableMeetings(baseConstraints)</code> — that, given the current user's role, either runs a
+    single query (manager/admin: base constraints + business filter, since <code>isManagerOrAbove()</code> is
+    a non-document condition Firestore can take for granted) or two queries run in parallel and merged
+    client-side, deduplicated by doc id (staff: base constraints + <code>createdBy==self</code>, UNION base
+    constraints + <code>sharedWith contains self</code> + business filter). This replaces the ad hoc handling
+    needed at each of the broken sites above with one tested, consistent implementation. <code>js/app.js:1221</code>'s
+    thread-following picker raises a genuine product question this helper alone doesn't resolve — should
+    "continue this thread" be restricted to threads whose <em>every</em> constituent meeting the viewer can
+    read, or is awareness of the thread itself (from wherever the thread list comes from) enough? Worth
+    Christie's input during implementation, not assumed either way here.</strong>
+  </div>
 
   <div class="bdd">
     <strong>Given</strong> a non-personal meeting created by User A, never shared with User B,
@@ -196,8 +384,9 @@ today.</p>
   </div>
   <div class="bdd">
     <strong>Given</strong> the same meeting, now with User B's uid added to <code>sharedWith</code>,
-    <strong>when</strong> User B tries to read it,
-    <strong>then</strong> the read succeeds.
+    <strong>when</strong> User B tries to read it via the fixed "Shared with Me" query (business filter
+    added),
+    <strong>then</strong> the read succeeds — empirically confirmed above, test 2.
   </div>
   <div class="bdd">
     <strong>Given</strong> the same never-shared meeting,
@@ -215,13 +404,40 @@ today.</p>
     <code>business: 'personal'</code> by writing directly (bypassing the UI, which already hides this option
     from them),
     <strong>when</strong> the write is attempted,
-    <strong>then</strong> it is denied — new in this phase, per Christie's plan-reviewer comment confirming
-    "personal" must be exclusively hers to create, not just hidden in the UI.
+    <strong>then</strong> it is denied — per Christie's plan-reviewer comment confirming "personal" must be
+    exclusively hers to create, not just hidden in the UI. Empirically confirmed above, test 5. <em>(Split
+    into its own manager-vs-staff pair of emulator test cases during implementation, since they exercise
+    different branches of the outer gate — one Given covering both here is a documentation simplification,
+    not the actual 1:1 test mapping.)</em>
   </div>
   <div class="bdd">
     <strong>Given</strong> Christie (admin) creates a meeting with <code>business: 'personal'</code>,
     <strong>when</strong> the write is attempted,
-    <strong>then</strong> it succeeds, unchanged from today.
+    <strong>then</strong> it succeeds, unchanged from today. Empirically confirmed above, test 6.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a non-admin creator's own non-personal meeting,
+    <strong>when</strong> they attempt to update it to <code>business: 'personal'</code>,
+    <strong>then</strong> the write is denied — the update-side bypass. Empirically confirmed above, test 3.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a non-personal meeting created by someone other than the requester,
+    <strong>when</strong> a manager (not the creator) attempts to update it to <code>business: 'personal'</code>,
+    <strong>then</strong> the write is denied. Empirically confirmed above, test 4.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> any meeting,
+    <strong>when</strong> its creator attempts to change <code>createdBy</code> to a different uid via
+    update,
+    <strong>then</strong> the write is denied — ownership cannot be reassigned. Empirically confirmed above,
+    test 7.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a creator making an ordinary edit to their own non-personal meeting (e.g. changing
+    the title) that doesn't touch <code>business</code> or <code>createdBy</code>,
+    <strong>when</strong> the write is attempted,
+    <strong>then</strong> it succeeds — regression check, confirming the new guards don't break normal
+    editing. Empirically confirmed above, test 8.
   </div>
   <div class="bdd">
     <strong>Given</strong> a meeting document created before this feature existed, with no
@@ -234,18 +450,33 @@ today.</p>
     explicitly <code>null</code> — <code>uid in null</code> still throws. Low risk given this repo's own
     invariant to strip null/undefined fields before every write (<code>AGENTS.md</code>), but noted here as
     an explicit assumption rather than left implicit: no code path in this app ever writes
-    <code>sharedWith: null</code>.
+    <code>sharedWith: null</code>. <em>(Second review round flagged this repo-wide invariant claim as
+    stronger than what AGENTS.md actually states — narrowed to the specific claim that no Recap write path
+    sets this field to null, which should be verified/type-guarded during implementation rather than assumed
+    from a general convention.)</em>
   </div>
 
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
-    <li>Rule change only, in <code>/Users/christiehubley/studio-hub/firestore.rules</code>, the
-      <code>match /meetings/{docId}</code> block (lines 388-404) — <code>allow read</code> gets the
-      sharedWith fix, <code>allow create</code> gets the admin-only-personal addition, <code>allow update,
-      delete</code> unchanged in this phase.</li>
-    <li>New emulator test cases added to the existing <code>studio-hub/rules.test.js</code> suite (currently
-      29/29 passing) — write the failing tests first (they should fail against today's rule, proving the bug
-      is real), then apply the fix, then green.</li>
+    <li>Rule change, in <code>/Users/christiehubley/studio-hub/firestore.rules</code>, the
+      <code>match /meetings/{docId}</code> block (lines 388-404) — all four of <code>create</code>,
+      <code>read</code>, <code>update</code>, and (newly split out) <code>delete</code> change; see the full
+      block above.</li>
+    <li><strong>Plus real Recap application code changes</strong> — this is not a rules-only phase. Every
+      query in the audit table above marked "Broken" needs its fix landed in the same phase, before the rule
+      change ships, or those features silently stop working the moment the rule deploys.</li>
+    <li>New composite indexes needed in <code>studio-hub/firestore.indexes.json</code> for at least: the
+      <code>sharedWith</code> + <code>business</code> combination (the core Shared-with-Me fix), and
+      <code>seriesId</code>/<code>reviewsSeriesId</code>/<code>threadId</code> + <code>business</code> for
+      the other fixed queries. Deploy via <code>firebase deploy --only firestore:indexes</code> — per this
+      repo's own CLAUDE.md, always free, no approval-phrase gate the way rules changes have (but still only
+      after Christie reviews what's being added).</li>
+    <li>New emulator test cases added to the existing <code>studio-hub/rules.test.js</code> suite — write the
+      failing tests first (mirroring the 8 scenarios already verified against a throwaway script above), then
+      confirm green against the real rule change. <strong>Do not hardcode a test count anywhere in this
+      plan or its execution notes</strong> — check the actual printed count at run time
+      (<code>studio-hub/AGENTS.md</code>'s own stated convention; an earlier draft of this plan violated it
+      by hardcoding "29/29," which was already stale — the real count checked during this review was 90).</li>
     <li>Deploy: <code>firebase deploy --only firestore:rules</code> from <code>studio-hub/</code> — per
       standing project policy, <strong>do not deploy until Christie says the literal phrase "approved to
       change firebase,"</strong> separate from and in addition to tests passing.</li>
