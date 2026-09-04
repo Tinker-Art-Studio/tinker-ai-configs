@@ -33,22 +33,27 @@
 
 <h1 id="plan-title">Plan: Recap Shared Task Tracking</h1>
 
-<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
+<div class="status" style="background:#fdf2f2;border-left-color:#c0392b;">
   <span class="status-tag not-ready">execution-ready: false</span> — Drafted Sep 4, 2026 from a same-session
-  brainstorm with Christie. No app code touched yet. All four open decisions (Phase 1's manager-scope
-  question, Phase 3's write-access breadth and its accepted rules-scoping limit, Phase 4/5's assignee-identity
-  approach) were delegated to and resolved same day — see each phase's "Resolved" box and the Decisions Log.
-  <strong>Independent second-model review completed same day</strong> — found Phase 1's rule logic and BDD
-  coverage sound; one finding treated as a real gap and closed with concrete code verification (Studio Hub's
-  alert-engine dependency, previously only backed by a documentation claim, now backed by an exact
-  code-level gate citation — see the updated "Dependency checked" box); two BDD coverage gaps fixed (Phase 3
-  concurrent-toggle scenario was overstating what its described mechanism actually guarantees, Phase 4 was
-  missing coverage for its own "not mine" dismiss affordance); one phase-ordering overstatement corrected
-  (Phase 3's dependency on Phase 1 is conceptual, not hard technical); one citation-date nit fixed. No
-  contradictions found in the Resolved boxes. <strong>Awaiting Christie's read-through and explicit approval
-  before flipping execution-ready to true</strong> — not doing that unilaterally. Phase 1 fixes a real,
-  currently-live access-control gap (see "The read-access bug" below) — worth prioritizing review of that
-  phase specifically, independent of whether the rest of this plan proceeds on the same timeline.
+  brainstorm with Christie. No app code touched yet. All four original open decisions were delegated to and
+  resolved same day. <strong>Two independent review rounds since:</strong> a first pass found Phase 1's core
+  rule logic sound plus several smaller gaps, all fixed. <strong>A second, deeper pass — a fresh Claude
+  instance plus Codex with direct read access to the real recap/studio-hub repos — found substantially more,
+  since it could verify claims against actual code instead of trusting the plan's prose:</strong> a real
+  security bypass in the update rule that fully defeated the Phase 1 create restriction (found independently
+  by both reviewers), a factually wrong claim about Phase 2's existing chain-safety protection (the code
+  doesn't do what the plan said it did), and — the most consequential finding — that Phase 1's rule fix would
+  silently break several existing Recap queries for real users, "Shared with Me" (this plan's own core
+  feature) among them, due to how Firestore evaluates list-query rules. All of this is now fixed in the
+  document, and <strong>the two highest-stakes claims (the query-breaking risk, and the update-bypass fix)
+  are empirically verified against a live Firestore emulator</strong> — 8 test scenarios, all passing as
+  intended — not just reasoned through in prose. Phase 1's real scope grew from "a rules edit" to "a rules
+  edit plus a query audit across ~8 call sites in Recap" — see the Completeness Check for what that means for
+  sequencing. <strong>Awaiting Christie's read-through and explicit approval before flipping execution-ready
+  to true</strong> — not doing that unilaterally, and given how much changed in this round, a further review
+  pass focused on what's new would be reasonable before considering this fully converged. Phase 1 fixes a
+  real, currently-live access-control gap (see "The read-access bug" below) — worth prioritizing review of
+  that phase specifically, independent of whether the rest of this plan proceeds on the same timeline.
 </div>
 
 <div class="meta">
@@ -372,7 +377,7 @@ today.</p>
     thread-following picker raises a genuine product question this helper alone doesn't resolve — should
     "continue this thread" be restricted to threads whose <em>every</em> constituent meeting the viewer can
     read, or is awareness of the thread itself (from wherever the thread list comes from) enough? Worth
-    Christie's input during implementation, not assumed either way here.</strong>
+    Christie's input during implementation, not assumed either way here.
   </div>
 
   <div class="bdd">
@@ -998,9 +1003,82 @@ but still shouldn't ship without Christie seeing what's being added.</p>
   and a "Resolved" box documenting it. The other new comment asked what the Studio Hub
   <code>meeting.actionItems</code> dead-code note meant and whether it needs fixing — answered directly in
   the reply (pre-existing, isolated, unrelated to this plan, recommended as a quick separate fix, not
-  bundled in): not yet acted on, awaiting Christie's answer on whether to do it. All 5 comments replied to
-  and marked resolved via <code>plan-review resolve --note</code>; queue confirmed empty for this plan
-  afterward.</li>
+  bundled in). All 5 comments replied to and marked resolved via <code>plan-review resolve --note</code>;
+  queue confirmed empty for this plan afterward. <em>(Christie answered the Studio Hub question directly in
+  chat shortly after — see the next entry. A second review round independently flagged this specific
+  paragraph as internally contradicting a later, already-updated part of this same document, since it still
+  read "awaiting Christie's answer" after that answer had already landed elsewhere — fixed by editing this
+  entry in place, since Decisions Log entries describing a now-superseded in-progress state are corrected
+  rather than left standing as a trap for the next reader, unlike settled historical decisions.)</em></li>
+  <li><strong>Sep 4, 2026 — Studio Hub dead-code fix: skipped, by explicit choice.</strong> Christie: "yea I
+  dont think I want, or i need to think about that one. I dont think I want my Recap tasks cluttering up my
+  Studio Hub alert dash necessarily. so let's just skip that for now I think?" Logged in the "Dependency
+  checked" box directly rather than left as an open question — not fixing the <code>actionItems</code>
+  field-path bug, deliberately, not just deprioritized.</li>
+  <li><strong>Sep 4, 2026 — second, deeper review round, run per Christie's request ("Should we now do
+  another round of review with another agent or with codex to make sure this is all safe to move into
+  execution?").</strong> Ran both a fresh Claude Code instance (full plan content inlined, since that
+  session couldn't read files directly) and Codex CLI (<code>codex exec</code>, given real read access via
+  <code>--add-dir</code> to both <code>/Users/christiehubley/recap</code> and
+  <code>/Users/christiehubley/studio-hub</code> — a materially stronger review than round one's Claude pass,
+  since it could independently verify every citation against actual code rather than trust the plan's prose).
+  Every finding from both was checked directly against the real code before being accepted — none taken on
+  faith. Confirmed real and fixed:
+  <ul>
+    <li>A security bypass in the update rule (found independently by both reviewers) that fully defeated
+    the Phase 1 create-time admin-only-personal restriction — closed by splitting <code>update</code>/
+    <code>delete</code> into separate rules and adding the same <code>business != 'personal' || isAdmin()</code>
+    guard to <code>update</code>, plus pinning <code>createdBy</code> (a related gap Codex also found).</li>
+    <li>A materially wrong claim about Phase 2's existing chain-safety — <code>selectThreadForLink()</code>
+    does not check <code>threadNextMeetingId</code> despite its own code comment claiming it does; verified
+    directly, corrected, and given a real fix (<code>threadNextMeetingId == null</code> is now a reliable
+    filter, confirmed every meeting doc sets this field explicitly at creation rather than leaving it
+    absent).</li>
+    <li><strong>The most consequential finding:</strong> Phase 1's rule fix, as originally scoped, would have
+    silently broken several real Recap queries — most importantly "Shared with Me," this plan's own reason
+    for existing — because Firestore rejects a whole list query it cannot prove compliant from the query's
+    own <code>where</code> clauses; it does not filter results down to what's allowed. Verified directly by
+    reading the actual query code (<code>js/app.js:1175, 5289, 5333</code>, and others), then settled
+    empirically rather than left as a theoretical concern — see the emulator verification below. Phase 1 grew
+    a full query-audit table (~8 call sites) and a recommended <code>queryReadableMeetings()</code> helper as
+    a result; Phase 5 was corrected to reuse the same pattern instead of its own (previously incorrect)
+    "silently omit what can't be read" framing.</li>
+    <li>Business values were wrong throughout the plan — the real four are <code>tinker</code>,
+    <code>clayhub</code>, <code>both</code>, <code>personal</code> (confirmed from <code>index.html:135-140</code>),
+    not the two-value <code>tinker</code>/<code>clay</code> list Studio Hub's own alerts query happens to use
+    (which is itself revealed to have a second, independent bug on top of the already-known
+    <code>actionItems</code> field-path issue — not fixed, out of scope, per the standing decision above).</li>
+    <li>Phase 3's shared-write branch was missing an explicit <code>business != 'personal'</code> exclusion —
+    a write-side gap independent of the read-side protection, since Firestore evaluates write rules on their
+    own terms regardless of whether a prior read would have succeeded.</li>
+    <li>Phase 3's concurrency fix was presented as one of two options ("transaction, or a surgical field-path
+    update") — the second option doesn't actually exist under this array-of-maps schema; corrected to name
+    <code>runTransaction()</code> as the only viable mechanism.</li>
+    <li>Phase 4's claim that a new Firestore rule was needed for the "not mine" dismiss field was wrong — the
+    existing <code>users</code> self-update rule already permits writing new fields; verified directly
+    against <code>studio-hub/firestore.rules:117-121</code>. Codex additionally flagged that adding an
+    unnecessary rule there would have been actively risky, not just redundant, given Firestore ORs sibling
+    <code>allow</code> rules together.</li>
+    <li>Several citation corrections: <code>AlertEngine.init()</code>'s call site is line 262, not 258;
+    <code>linkMeetingToThread()</code> and <code>selectThreadForLink()</code>'s exact line ranges corrected;
+    <code>sharedWith</code> drives more than a bare "notification list"; a claimed <code>localStorage</code>
+    cache-race in Studio Hub's auth flow was verified to be wrong (that code path is demo-mode-only, never
+    part of the real production auth flow) and removed rather than left as an inaccurate "honest caveat"; the
+    hardcoded "29/29" rules-test count (itself a violation of this repo's own stated convention against
+    hardcoding that count) was corrected to note the real, checked-at-review-time count of 90, framed as "do
+    not hardcode this" rather than replaced with a new hardcoded number.</li>
+  </ul>
+  <strong>Empirical verification, not just prose:</strong> rather than keep reasoning about Firestore's list-
+  query semantics in the abstract, started the real Firestore emulator (<code>firebase emulators:start --only
+  firestore</code> from <code>studio-hub/</code>) and ran a standalone, throwaway 8-scenario test script
+  against the exact proposed rule (never committed to the repo — this is still planning, not execution) —
+  all 8 passed as intended: the pre-fix query pattern fails, the fixed query succeeds, the update-bypass is
+  closed for both the creator and a non-creator manager, the create restriction holds for both non-admin and
+  admin, ownership reassignment is blocked, and an ordinary legitimate edit still works (no regression).
+  Cleaned up afterward (temp script removed, emulator stopped, confirmed <code>git status</code> clean in
+  <code>studio-hub</code>). <strong>Not yet re-reviewed after these fixes</strong> — given the scope of what
+  changed, recommended (in Resume Instructions) that a further review pass focus specifically on what's new
+  here before considering this plan converged, rather than assuming two rounds is automatically enough.</li>
 </ul>
 
 </body>
