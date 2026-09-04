@@ -78,6 +78,8 @@ it's shared with them, except a manager/admin can see [more broadly]." The live 
 <code>/Users/christiehubley/studio-hub/firestore.rules</code> today (lines 388-404) does not do this:</p>
 
 <pre><code>match /meetings/{docId} {
+  allow create: if (isManagerOrAbove() || hasAppAccess('recap'))
+    && request.resource.data.createdBy == request.auth.uid;
   allow read: if (isManagerOrAbove() || hasAppAccess('recap'))
     && (
       resource.data.createdBy == request.auth.uid
@@ -101,7 +103,25 @@ list (<code>js/app.js:5338-5341</code>) — it has never been an access-control 
 <p><strong>What already works correctly and must not regress:</strong> <code>business: 'personal'</code>
 meetings ARE already creator-only today — even a manager/admin cannot read someone else's personal meeting,
 since the rule's <code>|| business != 'personal'</code> branch simply doesn't apply to them. Phase 1 must
-preserve this exactly.</p>
+preserve this exactly. This holds regardless of who created it — if any user ever created a personal
+meeting, only that user could read it back, so "never seen by anyone else" is already structurally true
+today.</p>
+
+<div class="resolved">
+  <strong>Resolved (Sep 4, 2026, from Christie's plan-reviewer comment) — "personal" should be Christie/admin
+  -only, enforced, not just hidden in the UI.</strong> Checked directly: today, "Personal" only appears as an
+  option in the UI for admins (<code>js/app.js:182</code>, <code>if (!isCurrentUserAdmin())</code> hides the
+  business-type option, the two personal meeting-type options, and the Personal scope toggle from anyone
+  else). But that's a <strong>client-side-only</strong> restriction — the current <code>allow create</code>
+  rule (added to the quote above; not previously shown in this plan) checks nothing about
+  <code>business</code> at all, so nothing at the database level actually stops a non-admin from writing
+  <code>business: 'personal'</code> directly if they bypassed the UI. Since this plan is already touching
+  this exact rule block, Phase 1 now also adds:
+  <code>&& (request.resource.data.business != 'personal' || isAdmin())</code> to <code>allow create</code> —
+  closing the gap at the layer that actually matters, not just the UI layer. This does not change the
+  already-correct read behavior described above; it makes the "who can even create one" question match
+  Christie's stated intent as well as the "who can read it back" question already did.
+</div>
 
 <div class="resolved">
   <strong>Resolved (Sep 4, 2026) — "manager sees direct reports."</strong> Christie delegated this call.
@@ -159,7 +179,9 @@ preserve this exactly.</p>
   <h3>Acceptance criteria</h3>
   <p>A non-personal meeting is readable only by its creator, anyone in its <code>sharedWith</code> list, or
   a manager/admin — not by every Recap user by default. A personal meeting remains creator-only, unchanged.
-  Write access (update/delete) is unchanged in this phase — see Phase 3 for the new shared-write case.</p>
+  Only an admin can create a <code>business: 'personal'</code> meeting — enforced by rules now, not just
+  hidden in the UI. Write access (update/delete) on existing documents is unchanged in this phase — see
+  Phase 3 for the new shared-write case.</p>
 
   <div class="bdd">
     <strong>Given</strong> a non-personal meeting created by User A, never shared with User B,
@@ -185,6 +207,19 @@ preserve this exactly.</p>
     today's behavior.
   </div>
   <div class="bdd">
+    <strong>Given</strong> a non-admin user (manager or staff) attempts to create a meeting with
+    <code>business: 'personal'</code> by writing directly (bypassing the UI, which already hides this option
+    from them),
+    <strong>when</strong> the write is attempted,
+    <strong>then</strong> it is denied — new in this phase, per Christie's plan-reviewer comment confirming
+    "personal" must be exclusively hers to create, not just hidden in the UI.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> Christie (admin) creates a meeting with <code>business: 'personal'</code>,
+    <strong>when</strong> the write is attempted,
+    <strong>then</strong> it succeeds, unchanged from today.
+  </div>
+  <div class="bdd">
     <strong>Given</strong> a meeting document created before this feature existed, with no
     <code>sharedWith</code> field at all,
     <strong>when</strong> any read is evaluated,
@@ -201,8 +236,9 @@ preserve this exactly.</p>
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Rule change only, in <code>/Users/christiehubley/studio-hub/firestore.rules</code>, the
-      <code>match /meetings/{docId}</code> block (lines 388-404) — <code>allow update, delete</code>
-      unchanged in this phase.</li>
+      <code>match /meetings/{docId}</code> block (lines 388-404) — <code>allow read</code> gets the
+      sharedWith fix, <code>allow create</code> gets the admin-only-personal addition, <code>allow update,
+      delete</code> unchanged in this phase.</li>
     <li>New emulator test cases added to the existing <code>studio-hub/rules.test.js</code> suite (currently
       29/29 passing) — write the failing tests first (they should fail against today's rule, proving the bug
       is real), then apply the fix, then green.</li>
@@ -585,6 +621,29 @@ literal phrase "approved to change firebase," for Phase 1's rule fix and again f
   No contradictions found between any Resolved box and the rest of the document. Every finding from this
   round is now addressed in the document itself — nothing outstanding from this review. Not flipping
   execution-ready without Christie's own read-through and explicit approval first.</li>
+  <li><strong>Sep 4, 2026 — correction: Christie had already answered these decisions as actual
+  plan-reviewer comments, which were missed on the first pass.</strong> When Christie said "go answer my
+  questions in the plan reviewer," that was interpreted as an instruction to personally resolve the four
+  <code>decision-needed</code> boxes drafted into the document — but she had, separately and earlier, left 5
+  real comments directly in the browser review tool answering them. Those went unread until she flagged that
+  her questions still showed "pending." Read via <code>plan-review queue list</code> and reconciled: three
+  (Phase 3's write-breadth choice, Phase 4/5's name-matching choice, and confirmation that manager+ seeing
+  unshared non-personal notes is fine) matched what had already been written into the document, essentially
+  by pattern-matching the obvious answer through code investigation rather than actually reading Christie's
+  own words first — a lucky match, not the correct process, and each is now replied to explicitly rather than
+  left to a coincidental match. One raised something genuinely new: Christie asked "is it true I am the ONLY
+  one who has the Personal meeting option... very very important that personal is NEVER able to be seen by
+  anyone else." Checked directly: the "Personal" option is UI-hidden from non-admins already
+  (<code>js/app.js:182</code>), but the actual Firestore <code>allow create</code> rule never enforced this —
+  nothing stopped a non-admin from writing <code>business: 'personal'</code> directly, bypassing the UI. Since
+  Phase 1 already touches this rule block, added real enforcement:
+  <code>(business != 'personal' || isAdmin())</code> on <code>allow create</code>, plus two new BDD scenarios
+  and a "Resolved" box documenting it. The other new comment asked what the Studio Hub
+  <code>meeting.actionItems</code> dead-code note meant and whether it needs fixing — answered directly in
+  the reply (pre-existing, isolated, unrelated to this plan, recommended as a quick separate fix, not
+  bundled in): not yet acted on, awaiting Christie's answer on whether to do it. All 5 comments replied to
+  and marked resolved via <code>plan-review resolve --note</code>; queue confirmed empty for this plan
+  afterward.</li>
 </ul>
 
 </body>
