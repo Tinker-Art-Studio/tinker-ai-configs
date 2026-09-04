@@ -33,14 +33,22 @@
 
 <h1 id="plan-title">Plan: Recap Shared Task Tracking</h1>
 
-<div class="status" style="background:#fdf2f2;border-left-color:#c0392b;">
+<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
   <span class="status-tag not-ready">execution-ready: false</span> — Drafted Sep 4, 2026 from a same-session
   brainstorm with Christie. No app code touched yet. All four open decisions (Phase 1's manager-scope
   question, Phase 3's write-access breadth and its accepted rules-scoping limit, Phase 4/5's assignee-identity
-  approach) were delegated to and resolved same day — see each phase's now-green "Resolved" box and the
-  Decisions Log. Awaiting second-model review before any phase is marked execution-ready. Phase 1 fixes a
-  real, currently-live access-control gap (see "The read-access bug" below) — worth prioritizing review of
-  that phase specifically, independent of whether the rest of this plan proceeds on the same timeline.
+  approach) were delegated to and resolved same day — see each phase's "Resolved" box and the Decisions Log.
+  <strong>Independent second-model review completed same day</strong> — found Phase 1's rule logic and BDD
+  coverage sound; one finding treated as a real gap and closed with concrete code verification (Studio Hub's
+  alert-engine dependency, previously only backed by a documentation claim, now backed by an exact
+  code-level gate citation — see the updated "Dependency checked" box); two BDD coverage gaps fixed (Phase 3
+  concurrent-toggle scenario was overstating what its described mechanism actually guarantees, Phase 4 was
+  missing coverage for its own "not mine" dismiss affordance); one phase-ordering overstatement corrected
+  (Phase 3's dependency on Phase 1 is conceptual, not hard technical); one citation-date nit fixed. No
+  contradictions found in the Resolved boxes. <strong>Awaiting Christie's read-through and explicit approval
+  before flipping execution-ready to true</strong> — not doing that unilaterally. Phase 1 fixes a real,
+  currently-live access-control gap (see "The read-access bug" below) — worth prioritizing review of that
+  phase specifically, independent of whether the rest of this plan proceeds on the same timeline.
 </div>
 
 <div class="meta">
@@ -108,14 +116,37 @@ preserve this exactly.</p>
 </div>
 
 <div class="depends">
-  <strong>Dependency checked, confirmed safe:</strong> Studio Hub's Mission Control alert engine
-  (<code>studio-hub/js/alerts.js:497-554</code>, <code>listenToRecap()</code>) also queries the
-  <code>meetings</code> collection with no <code>sharedWith</code> filtering
-  (<code>.where('business', 'in', ['tinker', 'clay'])</code>, no creator/shared scoping). Confirmed this only
-  ever runs for manager/admin users — Studio Hub's own <code>CLAUDE.md</code> states it is "used exclusively
-  by admin and manager roles, staff have no access," and <code>listenToRecap()</code> only starts once
-  <code>AlertEngine.init()</code> runs, which only happens inside Studio Hub. Phase 1's rule (manager/admin
-  keep full non-personal read access) preserves this listener with no changes needed on the Studio Hub side.
+  <strong>Dependency checked, confirmed safe at the code level (not just design intent).</strong> Studio
+  Hub's Mission Control alert engine (<code>studio-hub/js/alerts.js:497-554</code>,
+  <code>listenToRecap()</code>) also queries the <code>meetings</code> collection with no
+  <code>sharedWith</code> filtering (<code>.where('business', 'in', ['tinker', 'clay'])</code>, no
+  creator/shared scoping). This matters more than it first looks: Firestore evaluates a list/query's
+  security rule against the query's entire provable result set, not per document — if the rule's condition
+  can't be proven true purely from the query's own <code>where</code> clauses, Firestore rejects the whole
+  query, it does not silently filter results. Today's rule's inner clause (<code>business != 'personal'</code>)
+  <em>is</em> structurally provable from this exact query's <code>where</code> clause, so it succeeds for
+  anyone who passes the outer gate today, manager or not. After Phase 1, a non-manager's inner clause adds
+  <code>sharedWith contains uid</code>, which is <strong>not</strong> provable from this query's
+  <code>where</code> clause — so if a non-manager, non-admin user's client ever actually called
+  <code>listenToRecap()</code>, that query would newly start failing outright post-Phase-1. The question is
+  whether that can happen. First pass at this claim only cited Studio Hub's <code>CLAUDE.md</code> prose
+  ("used exclusively by admin and manager roles") — a documented intent, not verified enforcement, which is
+  exactly the kind of prose-vs-code gap this plan exists to close for Recap's own <code>sharedWith</code>
+  field. Went back and checked the actual code: <code>AlertEngine.init(currentUser, db)</code> is called at
+  <code>studio-hub/js/app.js:258</code>, inside <code>if (currentUser && (currentUser.role === 'admin' ||
+  currentUser.role === 'manager'))</code> — a real code-level gate, not a hidden button. <code>currentUser</code>
+  is populated from the authenticated user's own Firestore <code>users/{uid}</code> doc
+  (<code>handleAuthStateChange</code>, <code>studio-hub/js/app.js:134</code>) — the same source of truth the
+  security rules themselves read via <code>getUserData()</code> — so a staff-role user cannot spoof this
+  client-side check into passing while also having the rules' own <code>isManagerOrAbove()</code> evaluate
+  true, since rules read the authoritative Firestore doc directly, independent of any client claim. One
+  honest caveat, orthogonal to this plan: <code>app.js:127</code> restores a cached <code>currentUser</code>
+  from <code>localStorage</code> before the fresh Firestore-sourced check settles, so there's a theoretical
+  brief-window race on Studio Hub's own page load, unrelated to and unchanged by this plan (today's outer
+  gate — <code>isManagerOrAbove() || hasAppAccess('recap')</code> — already governs that same window
+  identically before and after Phase 1, since Phase 1 only changes the inner clause). Conclusion stands:
+  under normal, settled-state operation, nothing but a manager/admin ever reaches
+  <code>listenToRecap()</code>, so Phase 1's rule change is safe for this dependency.
   <strong>Separately noticed, out of scope for this plan:</strong> that listener reads
   <code>meeting.actionItems</code>, a field that doesn't exist in Recap's actual schema (real data uses
   <code>meeting.summary.beforeNextMeeting[].items[]</code>) — so it currently produces zero real alerts
@@ -159,7 +190,12 @@ preserve this exactly.</p>
     <strong>when</strong> any read is evaluated,
     <strong>then</strong> the rule does not error — must use
     <code>resource.data.get('sharedWith', [])</code>, not a bare field reference, since Firestore rules
-    throw on referencing a genuinely missing map/array field.
+    throw on referencing a genuinely missing map/array field. Second-model review confirmed
+    <code>.get(key, default)</code> only substitutes the default when the key is absent, not when it's
+    explicitly <code>null</code> — <code>uid in null</code> still throws. Low risk given this repo's own
+    invariant to strip null/undefined fields before every write (<code>AGENTS.md</code>), but noted here as
+    an explicit assumption rather than left implicit: no code path in this app ever writes
+    <code>sharedWith: null</code>.
   </div>
 
   <h4>Firebase safety checklist</h4>
@@ -249,7 +285,8 @@ preserve this exactly.</p>
     delegated this call. Decision: <strong>(a) any shared user can toggle any item's <code>done</code>
     state</strong> — not restricted to only items assigned to them. Simplest to build and explain, and
     matches how the summary screen already works for the owner (anyone editing it can already check off
-    anyone's item, per the drag-and-drop reassignment work shipped this same session). The alternative
+    anyone's item, per the drag-and-drop reassignment work shipped the previous session, commit
+    <code>2c7f0f4</code>, Sep 3, 2026). The alternative
     (restrict each shared user to only their own assigned items) was rejected for v1: it requires resolving
     assignee identity (Phase 4's own open decision, resolved below) and Firestore rules cannot cheaply
     enforce "only your own array entry changed" inside a nested array of maps — it would end up UI-enforced
@@ -293,6 +330,16 @@ preserve this exactly.</p>
     guard.
   </div>
   <div class="bdd">
+    <strong>Given</strong> User B <em>is</em> validly in <code>sharedWith</code>,
+    <strong>when</strong> User B's write (bypassing the UI) touches any top-level field other than
+    <code>summary</code> in the same request — e.g. also setting <code>sharedWith</code> or
+    <code>createdBy</code>,
+    <strong>then</strong> the whole write is denied — <code>affectedKeys().hasOnly(['summary'])</code> is an
+    all-or-nothing gate on the request, not a partial-accept. <em>(Named explicitly here per second-model
+    review — this exact case was already promised in the Firebase safety checklist's emulator test list but
+    had no matching BDD scenario.)</em>
+  </div>
+  <div class="bdd">
     <strong>Given</strong> User B has the shared view open and User A deletes the meeting or revokes B's
     share,
     <strong>when</strong> that happens,
@@ -303,9 +350,15 @@ preserve this exactly.</p>
     <strong>Given</strong> two people with the meeting open at once both toggle different items within a
     second of each other,
     <strong>when</strong> both writes land,
-    <strong>then</strong> neither overwrites the other — requires each toggle to be its own targeted
-    <code>updateDoc</code> write of just the changed array (recomputed from the latest live snapshot,
-    not a stale local copy), not a full-summary overwrite built from whichever client's state is older.
+    <strong>then</strong> neither overwrites the other. Second-model review flagged that "recompute from the
+    latest live snapshot before writing" is necessary but <strong>not sufficient</strong> — that's still a
+    classic read-modify-write race if both toggles happen inside the same window, and only genuinely
+    prevented by wrapping the toggle in <code>runTransaction()</code> (re-reading the doc inside the
+    transaction and retrying on conflict) or a surgical field-path update targeting just that one item's
+    <code>done</code> flag, not a whole-array rewrite. This is not yet a solved implementation detail — it's
+    the actual requirement Phase 3's implementation must satisfy; do not implement this toggle as a plain
+    read-then-<code>updateDoc</code> pair and assume the "recompute from latest snapshot" framing alone
+    covers it.
   </div>
 
   <h4>Firebase safety checklist</h4>
@@ -374,10 +427,25 @@ preserve this exactly.</p>
     <strong>then</strong> those items never match anyone's "my tasks" — they need their own separate visibility
     (out of scope for this phase, worth a future "Unassigned" admin view, not building it here).
   </div>
+  <div class="bdd">
+    <strong>Given</strong> a name-string match false positive (e.g. an item genuinely meant for a different
+    "Chris" incorrectly matched to this user),
+    <strong>when</strong> the user taps "not mine" on it,
+    <strong>then</strong> it's removed from their "My Open Tasks" view only — the underlying item and its
+    <code>assignee</code> text on the source meeting are untouched, and it does not reappear for this user on
+    a later reload of this view. <em>(Second-model review flagged this as the load-bearing mitigation for the
+    chosen name-matching approach — Phase 4 has no BDD coverage without this scenario.)</em>
+  </div>
 
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
-    <li>Read-only phase — no new writes beyond reusing Phase 3's existing toggle path.</li>
+    <li>Mostly read-only — one small new write: the "not mine" dismiss needs to persist per-user (the BDD
+      above requires it survive a reload), most naturally as a self-writable array field (e.g.
+      <code>dismissedTaskKeys</code>) on the user's own <code>users/{uid}</code> doc — a user writing only
+      their own dismiss list onto their own document is a low-risk, narrowly-scoped write, but it's still a
+      new field this phase introduces and needs its own <code>updateDoc</code> (not <code>setDoc</code>) and
+      a corresponding allow to self-write that one field, not full self-write access to the whole
+      <code>users</code> doc.</li>
     <li>No new collection if approach (a) is chosen. If (b) is chosen, no new collection either, but a
       migration question appears (backfilling existing meetings' assignee text into uids) — flag as its own
       sub-decision if (b) is picked.</li>
@@ -438,8 +506,13 @@ preserve this exactly.</p>
 <h2>Completeness check</h2>
 <p>Phase 1 is fully independent and should ship first regardless of the rest — it's a correctness fix, not a
 feature. Phase 2 is independent of everything else (reuses existing, unchanged write logic) and could ship
-any time. Phase 3 depends on Phase 1 (the new shared-write rule is additive to Phase 1's read fix, and needs
-it in place first) but not on Phases 4/5. Phases 4 and 5 depend on Phase 1 for correct scoping and share one
+any time. Phase 3's dependency on Phase 1 is conceptual/UX, not a hard technical blocker — second-model
+review confirmed Phase 3's new write-rule branch would function correctly on its own regardless of whether
+Phase 1 has shipped, since today's over-broad read rule doesn't interfere with Phase 3's write gate. The real
+reason to sequence Phase 1 first is that shared write only makes sense once shared read actually means
+something — building Phase 3 first would let a shared user edit a meeting that (pre-Phase-1) everyone with
+Recap access could already read anyway, which defeats the point. Phases 4 and 5 depend on Phase 1 for correct
+scoping and share one
 open decision (assignee identity) that should be resolved once, not separately per phase. Phase 5 benefits
 from Phase 2 (retroactive linking) actually being used, but isn't blocked by it — a thread with only
 forward-linked meetings still works.</p>
