@@ -35,9 +35,12 @@
 
 <div class="status" style="background:#fdf2f2;border-left-color:#c0392b;">
   <span class="status-tag not-ready">execution-ready: false</span> — Drafted Sep 4, 2026 from a same-session
-  brainstorm with Christie. No app code touched yet. Phase 1 fixes a real, currently-live access-control gap
-  (see "The read-access bug" below) — worth prioritizing review of that phase specifically, independent of
-  whether the rest of this plan proceeds on the same timeline.
+  brainstorm with Christie. No app code touched yet. All four open decisions (Phase 1's manager-scope
+  question, Phase 3's write-access breadth and its accepted rules-scoping limit, Phase 4/5's assignee-identity
+  approach) were delegated to and resolved same day — see each phase's now-green "Resolved" box and the
+  Decisions Log. Awaiting second-model review before any phase is marked execution-ready. Phase 1 fixes a
+  real, currently-live access-control gap (see "The read-access bug" below) — worth prioritizing review of
+  that phase specifically, independent of whether the rest of this plan proceeds on the same timeline.
 </div>
 
 <div class="meta">
@@ -92,17 +95,16 @@ meetings ARE already creator-only today — even a manager/admin cannot read som
 since the rule's <code>|| business != 'personal'</code> branch simply doesn't apply to them. Phase 1 must
 preserve this exactly.</p>
 
-<div class="decision-needed">
-  <strong>Open decision — "manager sees direct reports":</strong> there is no direct-report/hierarchy
-  concept anywhere in the current data model (checked: no <code>reportsTo</code>, no manager-uid field, no
-  hierarchy of any kind on <code>users</code> docs — roles are flat admin/manager/staff plus a per-app
+<div class="resolved">
+  <strong>Resolved (Sep 4, 2026) — "manager sees direct reports."</strong> Christie delegated this call.
+  Decision: use the only lever the current data model actually supports — any manager/admin can read any
+  non-personal meeting, not scoped to "their people." There is no direct-report/hierarchy concept anywhere
+  in the data model today (checked: no <code>reportsTo</code>, no manager-uid field, no hierarchy of any
+  kind on <code>users</code> docs — roles are flat admin/manager/staff plus a per-app
   <code>appAccess</code> allowlist, confirmed across every rules block in <code>firestore.rules</code> and
-  Studio Hub's own <code>CLAUDE.md</code>). This plan's Phase 1 uses the closest existing lever — any
-  manager/admin can read any non-personal meeting, not scoped to "their people" — since that's what the
-  current data model actually supports. Building real reporting-line scoping is a separate, larger piece of
-  work (a new field on every user, plus rules logic to match it) and is explicitly NOT included here unless
-  Christie asks for it separately. <strong>Needs Christie's confirmation this is an acceptable interim
-  answer before Phase 1 executes.</strong>
+  Studio Hub's own <code>CLAUDE.md</code>), so scoping to "reports only" isn't buildable without a new field
+  on every user plus new rules logic to match it — real, but separate, larger work, not bundled into this
+  plan. If reports-only scoping is ever wanted, it's a follow-up plan, not a Phase 1 rewrite.
 </div>
 
 <div class="depends">
@@ -190,7 +192,7 @@ preserve this exactly.</p>
     description, batches the writes (new thread creation or append-to-existing-chain, plus
     <code>threadPrevMeetingId</code>/<code>threadNextMeetingId</code> pointers on both meetings), and
     commits atomically. This phase reuses it unchanged — it only needs a new UI entry point, not new write
-    logic.</li>
+    logic.
   </div>
 
   <div class="bdd">
@@ -242,25 +244,24 @@ preserve this exactly.</p>
   <p>Someone a meeting is shared with can toggle action-item completion themselves, and both sides see the
   change without reloading the page.</p>
 
-  <div class="decision-needed">
-    <strong>Open decision — how far write access extends for a shared user.</strong> Two real options:
-    <ul>
-      <li><strong>(a) Any shared user can toggle any item's <code>done</code> state</strong> — simplest to
-        build and explain, matches how the summary screen already works for the owner (anyone editing it can
-        check off anyone's item). Recommended default.</li>
-      <li><strong>(b) A shared user can only toggle items assigned to them specifically</strong> — matches
-        intuition ("I check off my own tasks") but requires resolving assignee identity, which Phase 4 has
-        its own open decision about (see below) — and Firestore rules cannot cheaply enforce "only your own
-        array entry changed" inside a nested array of maps, so (b) would be UI-enforced only, not
-        rules-enforced, unless paired with a Cloud Function (this project has no Cloud Functions
-        infrastructure today — confirmed, everything here is a direct client SDK write gated by rules).</li>
-    </ul>
-    Recommending (a) for v1, revisit (b) only if it turns out to matter in practice.
+  <div class="resolved">
+    <strong>Resolved (Sep 4, 2026) — how far write access extends for a shared user.</strong> Christie
+    delegated this call. Decision: <strong>(a) any shared user can toggle any item's <code>done</code>
+    state</strong> — not restricted to only items assigned to them. Simplest to build and explain, and
+    matches how the summary screen already works for the owner (anyone editing it can already check off
+    anyone's item, per the drag-and-drop reassignment work shipped this same session). The alternative
+    (restrict each shared user to only their own assigned items) was rejected for v1: it requires resolving
+    assignee identity (Phase 4's own open decision, resolved below) and Firestore rules cannot cheaply
+    enforce "only your own array entry changed" inside a nested array of maps — it would end up UI-enforced
+    only, not rules-enforced, unless paired with a Cloud Function (this project has no Cloud Functions
+    infrastructure today — confirmed, everything here is a direct client SDK write gated by rules). Revisit
+    only if (a) turns out to matter in practice.
   </div>
 
-  <div class="decision-needed">
-    <strong>Open decision — honest limit of rules-based write scoping.</strong> The safest cheap rule for a
-    shared (non-creator, non-manager) user's write is: allow <code>update</code> if
+  <div class="resolved">
+    <strong>Resolved (Sep 4, 2026) — honest limit of rules-based write scoping, accepted.</strong> Christie
+    delegated this call. Decision: ship with the cheap rules-only version, accept the documented residual
+    risk below rather than building a Cloud Function to close it. The rule: allow <code>update</code> if
     <code>request.auth.uid in resource.data.get('sharedWith', [])</code> AND the only top-level field that
     changed is <code>summary</code> (i.e. <code>title</code>, <code>createdBy</code>, <code>sharedWith</code>,
     <code>business</code>, <code>date</code> etc. are all untouched) — enforceable via
@@ -269,10 +270,11 @@ preserve this exactly.</p>
     stop a shared user from rewriting the entire <code>summary</code> object client-side (e.g. deleting
     someone else's item, not just toggling <code>done</code>) — Firestore rules cannot cheaply diff inside a
     nested array of maps. The UI will only ever send a done-toggle, but a technically savvy shared user could
-    call the SDK directly and write more than that. <strong>This is a real, accepted residual risk for v1,
-    not a claim of full field-level enforcement</strong> — flagging explicitly so it's a known tradeoff, not
-    a surprise later. A stronger version (Cloud Function-mediated toggle) is a legitimate future hardening
-    step if this ever matters in practice.
+    call the SDK directly and write more than that. <strong>Accepted as a real residual risk for v1</strong>
+    — the alternative (a Cloud Function-mediated toggle for true field-level enforcement) is real
+    infrastructure this project doesn't have today, and this risk only matters if a shared user is both
+    technically capable and motivated to bypass the UI, on a document they were already trusted enough to be
+    shared with. Revisit only if that stops being a safe assumption.
   </div>
 
   <div class="bdd">
@@ -330,24 +332,20 @@ preserve this exactly.</p>
   have access to, in one place — not per-meeting, and not dependent on remembering which meeting it came
   from.</p>
 
-  <div class="decision-needed">
-    <strong>Open decision — assignee identity is currently just a text label, not a user reference.</strong>
-    <code>beforeNextMeeting[].assignee</code> is free text, generated by the AI from the transcript (e.g.
-    <code>"Christie"</code>, <code>"Julia"</code>, or <code>"Unassigned (needs assignment)"</code> per the
-    server prompt rules) or typed/edited by a human — it is never a user uid. Matching "items assigned to
-    me" needs one of:
-    <ul>
-      <li><strong>(a) Name-string matching</strong> against the logged-in user's <code>name</code> field from
-        their <code>users</code> doc — cheap, no schema change, but fragile to nicknames/typos/AI
-        misspellings ("Christie" vs "Christy" vs "Chris").</li>
-      <li><strong>(b) A real uid-backed assignee field</strong>, added alongside (or replacing) the text
-        label — reliable, but a genuine schema change touching every place <code>assignee</code> is read or
-        written (rendering, editing, drag-and-drop reassignment just shipped this session, the AI
-        summarization prompt, sharing/display) — a bigger phase than a one-line query filter.</li>
-    </ul>
-    Recommending (a) for v1 with a visible "these might not all be exactly right" affordance (e.g. a manual
-    "not mine" dismiss), and treating (b) as a real follow-up if (a) proves too unreliable in practice —
-    <strong>needs Christie's call before this phase is built</strong>, not just before it ships.
+  <div class="resolved">
+    <strong>Resolved (Sep 4, 2026) — assignee identity is currently just a text label, not a user
+    reference.</strong> Christie delegated this call. Decision:
+    <strong>(a) name-string matching</strong> against the logged-in user's <code>name</code> field from their
+    <code>users</code> doc — cheap, no schema change — paired with a visible "not mine" dismiss affordance so
+    a mismatch is a one-tap fix, not a silent miss. <code>beforeNextMeeting[].assignee</code> is free text,
+    generated by the AI from the transcript (e.g. <code>"Christie"</code>, <code>"Julia"</code>, or
+    <code>"Unassigned (needs assignment)"</code> per the server prompt rules) or typed/edited by a human — it
+    is never a user uid, so exact matching will miss nicknames/typos/AI misspellings ("Christie" vs "Christy"
+    vs "Chris"). The alternative — a real uid-backed assignee field, added alongside or replacing the text
+    label — is reliable but a genuine schema change touching every place <code>assignee</code> is read or
+    written (rendering, editing, the drag-and-drop reassignment shipped this same session, the AI
+    summarization prompt, sharing/display): a bigger phase than a one-line query filter. Treated as a real
+    follow-up if name-matching proves too unreliable in practice, not built now.
   </div>
 
   <div class="bdd">
@@ -447,13 +445,14 @@ from Phase 2 (retroactive linking) actually being used, but isn't blocked by it 
 forward-linked meetings still works.</p>
 
 <h2>Resume instructions</h2>
-<p>Nothing built yet. Two open decisions need Christie's input before any phase past Phase 1 can be marked
-execution-ready: (1) the "manager sees direct reports" interim-answer confirmation (affects Phase 1's exact
-rule text), and (2) assignee-identity matching approach for Phases 4/5 (name-string vs. uid-backed field).
-Phase 3 has its own two decisions (write-scope breadth, and accepting the rules-can't-fully-enforce-nested-
-array-diffing tradeoff) that can be resolved independently of 1/2. Recommend resolving Phase 1's decision
-first via plan-reviewer comment, since it's the smallest, most self-contained, and most urgent (it's fixing
-a live bug) — then decide whether to review the rest of this plan in the same pass or split it off.</p>
+<p>Nothing built yet. All four open decisions are resolved (see each phase's "Resolved" box and the Decisions
+Log) — nothing further needed from Christie before review. Next step: independent second-model review of
+this full document, then address any findings, then Christie's final execution-ready approval in the
+plan-reviewer. Once execution-ready, start with Phase 1 — it's the smallest, most self-contained, and most
+urgent (it's fixing a live bug) — independent of whether the rest of this plan executes on the same
+timeline. Remember the standing gate regardless of plan approval: no <code>firebase deploy</code> of any
+kind until Christie separately says the literal phrase "approved to change firebase," for Phase 1's rule fix
+and again for Phase 3's.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -470,6 +469,16 @@ a live bug) — then decide whether to review the rest of this plan in the same 
   free-text with no user-id backing. Two decisions flagged as needing Christie's confirmation before
   execution-ready: the manager/admin-not-scoped-to-reports interim answer, and the assignee-identity
   matching approach. Not yet reviewed by a second model or in the browser plan-reviewer.</li>
+  <li><strong>Sep 4, 2026 — all four open decisions resolved</strong>, delegated by Christie ("go answer my
+  questions in the plan reviewer"). Manager/admin-sees-everything (not reports-only) confirmed as the
+  Phase 1 answer, since no hierarchy data model exists to scope it tighter. Phase 3: any shared user may
+  toggle any item (not restricted to their own), and the rules-only write-scoping limit (can't prevent a
+  shared user from rewriting the whole <code>summary</code> object, only from touching other top-level
+  fields) is accepted as a documented residual risk rather than building a Cloud Function to close it fully.
+  Phase 4/5: name-string matching against the user's own <code>name</code> field, paired with a manual
+  "not mine" dismiss, chosen over a uid-backed assignee schema change. Each phase's decision box updated
+  in place (edited the source file directly, not re-registered, per this project's plan-reviewer
+  convention). Next: independent second-model review of the full document.</li>
 </ul>
 
 </body>
