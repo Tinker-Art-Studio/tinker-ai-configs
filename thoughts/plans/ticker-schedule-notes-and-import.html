@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Ticker Schedule — Recurring Notes + Dated-Override Import</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-ticker { background: #e0f2fe; color: #075985; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .depends { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .danger { background: #fdecea; border: 1px solid #d9534f; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  ul { padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 10px 0; }
+  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Ticker Schedule — Recurring Notes + Dated-Override Import</h1>
+
+<div class="status" style="background:#fef9e7;border-left-color:#e0b93a;">
+  Status: <strong>Not started — scoped Sep 4, 2026.</strong> Two open items left behind by the Fall 2026
+  schedule update. Phase 1 is a real data-loss bug and should go first. Phase 2 is a recurring
+  every-term chore that currently needs Claude and a file on the Desktop.
+</div>
+
+<div class="meta">
+  <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
+  — no Firestore rules changes for either phase.<br>
+  <strong>Origin:</strong> the Sep 4 session that wrote Fall 2026 schedules for Ivy, Kaitlyn, Kayleigh and
+  Leah. Both items were found while doing that work; neither was fixed at the time.<br>
+  <strong>Prerequisite reading:</strong> the <code>getShiftForDate()</code> precedence trap below. It is
+  the reason the in-app CSV importer was the wrong tool for that update, and it will mislead anyone who
+  builds Phase 2 without knowing about it.
+</div>
+
+<h2>Where Fall 2026 landed (context, already done)</h2>
+<p>Written and verified live on Sep 4 via <code>~/Desktop/tinker-tools-not-deployed/ticker-update-4people.html</code>
+— 74 dated entries across four people, dry-run + snapshot + diff before writing, nothing erased.</p>
+<ul>
+  <li><strong>Ivy</strong> — new schedule; her doc previously had no <code>recurring</code>/<code>overrides</code>
+  at all. Still carries a harmless expired <code>futureSchedule</code> ("Summer 2026", May 26 → Jul 31).</li>
+  <li><strong>Kaitlyn, Leah</strong> — camp days changed from AM-only spans to full-day spans with a note
+  describing both halves (the Kathy Nov 11 pattern).</li>
+  <li><strong>Kayleigh</strong> — standing weekly Saturday moved OUT of <code>recurring</code> into 12
+  specific dated Saturdays, each naming who she's paired with. The six unlisted term Saturdays (Aug 29,
+  Sep 5, Oct 31, Nov 28, Dec 19, Dec 26) are days off — <strong>confirmed correct with Christie, not an
+  oversight.</strong></li>
+  <li>One entry was rescued during the diff: Leah's <strong>Sept 8</strong> early start (2:30pm, "Long day
+  - Meeting Addes") existed live but was absent from the source data, and would have been erased. Note the
+  typo in her note text — preserved verbatim rather than silently edited.</li>
+</ul>
+
+<h2 id="the-trap">⚠️ The <code>getShiftForDate()</code> precedence trap</h2>
+<div class="danger">
+  <code>js/app.js</code>. The guard is a bare <code>if (future)</code>, <strong>not</strong>
+  <code>if (future &amp;&amp; future.recurring)</code>. Any in-range <code>futureSchedule</code>
+  short-circuits and returns <code>null</code> <strong>without ever consulting base <code>overrides</code>
+  or base <code>recurring</code></strong>.
+  <br><br>
+  So writing a <code>futureSchedule</code> with a past <code>validFrom</code> does not layer on top of
+  someone's real schedule — it <strong>silently hides it</strong>. Sibling helpers
+  (<code>countUpcomingOverrides</code>, <code>getNormalRecurringShift</code>) do check
+  <code>future.recurring</code> first; <code>getShiftForDate</code> is the odd one out.
+</div>
+<p>Two consequences that matter for Phase 2:</p>
+<ul>
+  <li>The <strong>in-app CSV importer</strong> (Settings) writes <em>only</em> to
+  <code>futureSchedule</code>, with <code>overrides: {}</code> hardcoded on every write. Its conflict
+  check looks for an <em>existing futureSchedule</em> and cannot see that base-field data is the thing
+  actually in force. For anyone whose live schedule lives in base <code>recurring</code>/<code>overrides</code>
+  — which is nearly everyone — running it would hijack precedence and hide their real schedule behind a
+  no-overrides shell.</li>
+  <li>It is also <strong>weekly-pattern only by design</strong>: the format is
+  <code>name,day,start,end,studio,validFrom,validUntil</code>. No date column, no note column. It cannot
+  express a dated one-off at all. That scope was an explicit decision confirmed with Christie Aug 31 —
+  correct at the time, but it is the gap Phase 2 fills.</li>
+</ul>
+
+<h2>Phase 1 — Recurring notes survive an edit <span style="font-size:13px;font-weight:400;color:#b00;">(data loss, do first)</span></h2>
+<div class="phase">
+<h3>The bug</h3>
+<p>Several people have notes on their <strong>recurring weekly</strong> shifts — not just dated overrides.
+Ivy's Thursday carries <code>14:30 Thursday Huddle · 15:05 1:1 — Maryssa &amp; Ivy</code>; Kaitlyn's and
+Leah's carry class names and 1:1s; Erica's Friday carries <code>FAN (Friday Art Night)</code>.</p>
+<p><code>handleSaveSchedule()</code> rebuilds <code>recurring</code> from the editor grid inputs, and the
+grid has <strong>no note input</strong> — it reads only start, end and studio per day. So opening any of
+those people in the Schedule Builder and clicking Save <strong>silently drops their recurring notes</strong>.
+No warning, no diff, and the notes are only visible again if someone notices they're gone.</p>
+
+<div class="bdd">
+  <strong>Given</strong> Ivy's Thursday recurring shift has the note "14:30 Thursday Huddle · 15:05 1:1 — Maryssa &amp; Ivy"<br>
+  <strong>When</strong> an admin opens her schedule in the Schedule Builder and changes an unrelated day's end time, then saves<br>
+  <strong>Then</strong> her Thursday note is still there afterwards
+</div>
+
+<h3>Approach</h3>
+<p>Add a note field per day to the recurring grid, mirroring the one the per-date override form already
+has. Preferred over silently preserving the existing note behind the scenes: the notes are real content
+people rely on, and they should be editable in the same place the hours are, not invisible-but-preserved.</p>
+<ul class="checklist">
+  <li>Add a note input per weekday row in the schedule editor grid</li>
+  <li><code>handleSaveSchedule()</code> reads it into <code>recurring[day].note</code>, stripping empty
+  strings (Firestore rejects <code>undefined</code>; the codebase convention is to omit rather than store
+  empty)</li>
+  <li>Populate it when the editor opens, from the existing recurring data</li>
+  <li>Confirm the same path is safe for <code>futureSchedule.recurring</code>, which the editor also
+  writes when a future schedule is active</li>
+</ul>
+<div class="decision-needed">
+  <strong>Worth checking before building:</strong> a regression test that loads a schedule with recurring
+  notes, simulates a save with the note input untouched, and asserts the notes survive. This bug is
+  invisible in the UI, so a test is the only thing that will keep it fixed.
+</div>
+</div>
+
+<h2>Phase 2 — Dated-override import in Settings</h2>
+<div class="phase">
+<h3>The chore this removes</h3>
+<p>Every term — fall, spring, summer — there are roughly 70&ndash;75 dated one-off entries to enter: camp
+days, SDOC coverage, split days, half-days, break camps, each with a descriptive note. Neither in-app tool
+can do it (see the trap section above), so each term falls back to a one-off HTML file on the Desktop whose
+payload Claude has to edit by hand. It works and it has real safety rails, but it is not something Christie
+can do alone.</p>
+
+<div class="bdd">
+  <strong>Given</strong> a term's worth of dated shifts with notes, in a CSV<br>
+  <strong>When</strong> Christie imports it from Settings and confirms the dry run<br>
+  <strong>Then</strong> those dates appear on the right people's schedules, existing entries are untouched,
+  and no confirmation emails are sent
+</div>
+
+<h3>Design constraints (each one learned the hard way)</h3>
+<ul>
+  <li><strong>Write to base <code>overrides</code>, never <code>futureSchedule</code></strong> — see the
+  trap section. This is the single most important constraint.</li>
+  <li><strong>Merge by date key; never replace the map.</strong> The Desktop tool replaces
+  <code>overrides</code> wholesale via <code>mergeFields</code>, which is why its payload must carry every
+  entry that should survive — and why the Sep 4 run needed a full snapshot diff to catch that Leah's Sept 8
+  would have been erased. An in-app version should add and update by key so this class of loss is
+  structurally impossible.</li>
+  <li><strong>Reuse the dry-run → snapshot → write flow.</strong> It is proven, Christie is used to it, and
+  it caught a real problem on its first use.</li>
+  <li><strong>Show a diff, not just counts.</strong> The Desktop tool's dry-run table shows old vs new
+  <em>counts</em>; that was enough to notice something was wrong (16 → 15) but not to say what. The
+  snapshot had to be downloaded and diffed separately to find it. An in-app version should name the
+  specific dates being added, changed and removed.</li>
+  <li><strong>Suppress confirmation emails on bulk import.</strong> Currently moot — the trigger is
+  <code>Extra Shift</code> only as of Sep 4, and term entries don't use that phrase. But if the trigger
+  ever widens again, a bulk importer without its own suppression would blast staff. See
+  <em>ticker-oneoff-shift-reminders</em>.</li>
+  <li><strong>Match on full name, not first name.</strong> The existing CSV importer already does this
+  (<code>resolveFutureScheduleTargets</code>) and blocks on zero or multiple matches rather than guessing.
+  Follow it.</li>
+</ul>
+
+<h3>Format sketch</h3>
+<p>A second accepted CSV shape alongside the existing weekly one, distinguished by its header row:</p>
+<table>
+  <tr><th>name</th><th>date</th><th>start</th><th>end</th><th>studio</th><th>note</th></tr>
+  <tr><td>Leah Trumble</td><td>2026-11-11</td><td>08:30</td><td>18:30</td><td>clayhub</td><td>08:30-12:30 SDOC / Break camp (AM) · 15:00-18:30 regular shift</td></tr>
+  <tr><td>Kayleigh Wood</td><td>2026-12-26</td><td colspan="3" style="text-align:center;color:#777;">(blank = day off)</td><td></td></tr>
+</table>
+<div class="depends">
+  <strong>Open question:</strong> notes contain commas and middots routinely, so a naive
+  <code>split(',')</code> will not survive this format — unlike the existing weekly CSV, whose parser
+  explicitly documents that it has no quoted fields and so a plain split is safe. This format needs either
+  real quoted-field parsing or a different delimiter. Decide before building.
+</div>
+</div>
+
+<h2>Completeness check</h2>
+<p>Phase 1 is independent and small — a grid input plus a save-path change, no data migration. Phase 2 is
+larger and benefits from Phase 1 existing first (both touch note handling in the same editor), but does not
+strictly depend on it. Either can ship alone.</p>
+
+<h2>Resume instructions</h2>
+<p>Start with Phase 1 — it is an active data-loss bug affecting people whose schedules were just written,
+and it is the smaller change. Before touching Phase 2, re-read the trap section; it is the thing most
+likely to be re-derived painfully by a future session. Both phases are Ticker-only, no rules changes, and
+Christie's standing rule applies: written approval before editing anything in
+<code>~/tinker-timeclock</code>, and ask before any Netlify deploy.</p>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Sep 4 — plan created</strong> at Christie's request while wrapping up the Fall 2026 schedule
+  update ("let's put in the plan reviewer that we want to fix the recurring notes situation"). Both items
+  were discovered during that work rather than planned: Phase 1 while checking whether the manual Schedule
+  Builder was a viable fallback for entering 73 dated entries, Phase 2 as the answer to "what is my process
+  moving forward with things like this."</li>
+  <li><strong>Sep 4 — Desktop tool kept for now, deliberately.</strong> Christie's call: "I'm okay with the
+  desktop tool route and a wishlist for later to integrate it right into settings." Phase 2 is therefore
+  real but not urgent — the term is already loaded, and the next time it bites is spring.</li>
+</ul>
+
+</body>
+</html>
