@@ -490,16 +490,62 @@ today.</p>
   <h3>Acceptance criteria</h3>
   <p>From an already-saved meeting's detail view (<code>showMeetingDetail</code>, <code>meetings.html</code>
   flow), Christie can link it to a previous meeting into a thread — the same outcome as the "Link to
-  previous meeting" picker on the pre-processing screen, just usable after the fact.</p>
+  previous meeting" picker on the pre-processing screen, just usable after the fact — without being able to
+  corrupt an existing thread chain by picking a target that's already linked forward to something else.</p>
 
   <div class="resolved">
-    <strong>Low-risk by construction:</strong> the actual linking logic already exists, fully general, and
-    is not tied to "new meeting" in any way — <code>linkMeetingToThread(newMeetingId, meetingData,
-    threadLink)</code> (<code>js/app.js:1299-1360</code>) takes two meeting IDs and a thread-link
-    description, batches the writes (new thread creation or append-to-existing-chain, plus
-    <code>threadPrevMeetingId</code>/<code>threadNextMeetingId</code> pointers on both meetings), and
-    commits atomically. This phase reuses it unchanged — it only needs a new UI entry point, not new write
-    logic.
+    <strong>Corrected (Sep 4, 2026, second review round) — the claimed existing chain-safety protection does
+    not actually exist; verified directly, this plan's first draft was wrong.</strong> The first draft
+    claimed <code>selectThreadForLink</code> "queries for the thread's last meeting specifically" and that
+    this phase could safely reuse that existing constraint. Read the actual function
+    (<code>js/app.js:1218-1243</code>) directly: its query is
+    <code>where('threadId','==',thread.id).orderBy('createdAt','desc').limit(1)</code> — it returns the
+    <em>most recently created</em> meeting in the thread, and never checks <code>threadNextMeetingId</code>
+    at all, despite its own code comment claiming otherwise ("Find the last meeting in this thread (the one
+    with no threadNextMeetingId)"). The comment describes intent that was never actually implemented. This
+    phase cannot just add a new UI entry point to unchanged logic — the underlying picker function itself
+    needs a real fix, which benefits the existing creation-time flow too, not just this new retroactive path.
+  </div>
+
+  <div class="resolved">
+    <strong>Real fix, verified against the data model:</strong> every meeting is written with
+    <code>threadNextMeetingId: null</code> explicitly set at creation (<code>js/app.js:1446</code>) — never
+    left absent — so <code>.where('threadNextMeetingId', '==', null)</code> is a reliable, correct Firestore
+    filter for "not yet linked forward" (this would NOT work if the field were sometimes simply missing
+    instead of explicitly null; confirmed it never is). The corrected query:
+    <pre><code>db.collection('meetings')
+  .where('threadId', '==', thread.id)
+  .where('threadNextMeetingId', '==', null)
+  .where('business', 'in', ['tinker', 'clayhub', 'both'])  // Phase 1 provability fix, same query
+  .limit(1)
+  .get();</code></pre>
+    This single change fixes both problems at once: it's now rule-provable (closing this query's entry in
+    Phase 1's audit table) AND it actually implements the "last meeting in thread" guarantee the original
+    code comment only claimed. A well-formed chain has exactly one meeting per thread with
+    <code>threadNextMeetingId == null</code>; if this query ever returns more than one, that's a sign of an
+    existing data problem (see BDD below), not something to silently paper over by picking one arbitrarily.
+  </div>
+
+  <div class="resolved">
+    <strong>Time-of-check/time-of-write race, flagged by Codex — real, needs a transaction.</strong> Even
+    with the corrected query above, there's a window between "UI shows this meeting as a valid, unlinked
+    target" and "the link write actually commits" where a second linking action (this feature being used
+    twice concurrently, unlikely but not impossible) could slip in. <code>linkMeetingToThread()</code>
+    (<code>js/app.js:1299-1362</code>) needs to change from a plain <code>batch.commit()</code> to
+    <code>runTransaction()</code>, re-reading the target meeting's <code>threadNextMeetingId</code> inside the
+    transaction immediately before writing and aborting (surfacing a "someone else just linked this, please
+    retry" toast) if it's no longer <code>null</code>. This changes existing, shipped behavior for the
+    creation-time linking flow too (both paths call the same function) — not purely additive, worth Christie
+    knowing this touches already-working code, not just new code.
+  </div>
+
+  <div class="resolved">
+    <strong>Self-link and same-thread prevention — scoped for v1.</strong> The picker must exclude the
+    meeting currently being viewed from its own candidate list (trivial). Full cycle detection across
+    arbitrarily deep chains is out of scope for v1 — the accepted, low-consequence failure mode is a
+    confusing thread structure, not data loss or a security issue, and building general cycle detection for
+    a feature this narrow is disproportionate. What v1 does guard: the transaction re-check above already
+    prevents the concurrent-double-link case, and self-link is a simple exclusion, not a graph-walk.
   </div>
 
   <div class="bdd">
@@ -510,12 +556,25 @@ today.</p>
   </div>
   <div class="bdd">
     <strong>Given</strong> a candidate "previous meeting" that is already linked forward to a different next
-    meeting (i.e. it already has <code>threadNextMeetingId</code> set),
-    <strong>when</strong> Christie tries to pick it as the link target,
-    <strong>then</strong> it is not offered as a valid choice — carries forward the same constraint the
-    existing creation-time picker already enforces (<code>selectThreadForLink</code>,
-    <code>js/app.js:1218-1241</code>, queries for the thread's last meeting specifically), so retroactive
-    linking cannot silently overwrite/corrupt an existing chain.
+    meeting (i.e. it already has <code>threadNextMeetingId</code> set to something other than null),
+    <strong>when</strong> Christie opens the picker,
+    <strong>then</strong> it is not offered as a valid choice — via the corrected query above, not the
+    previously-claimed-but-nonexistent protection.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the corrected query returns more than one candidate "last meeting" for a single
+    thread (a sign of existing chain corruption, however it happened),
+    <strong>when</strong> that's detected,
+    <strong>then</strong> the picker surfaces this as an error rather than silently picking one — do not mask
+    a real data problem.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> two people (or two tabs) attempt to link something to the same target meeting at
+    nearly the same time,
+    <strong>when</strong> the second transaction's re-check finds <code>threadNextMeetingId</code> is no
+    longer <code>null</code>,
+    <strong>then</strong> the second attempt is aborted with a clear "someone else just linked this" message
+    — no corrupted chain, no silent overwrite.
   </div>
   <div class="bdd">
     <strong>Given</strong> a meeting that is already part of a thread, viewed from its detail page,
@@ -524,24 +583,30 @@ today.</p>
     presenting a confusing "link" action that would create a conflicting second link.
   </div>
   <div class="bdd">
-    <strong>Given</strong> the batched write partially fails (network drop mid-commit),
+    <strong>Given</strong> the current meeting is offered in its own "link to" candidate list,
+    <strong>when</strong> the picker is built,
+    <strong>then</strong> it's excluded — a meeting cannot be linked to itself.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the transaction fails for any other reason (network drop mid-commit),
     <strong>when</strong> that happens,
-    <strong>then</strong> nothing is left half-linked — <code>batch.commit()</code> is already atomic
-    (existing behavior, unchanged), and the UI surfaces the failure via the existing
-    <code>catch</code>/<code>showToast</code> pattern at <code>js/app.js:1356-1360</code>.
+    <strong>then</strong> nothing is left half-linked — <code>runTransaction()</code> guarantees atomicity,
+    and the UI surfaces the failure via the existing <code>catch</code>/<code>showToast</code> pattern
+    (<code>js/app.js:1358-1360</code>), adapted for the transaction wrapper.
   </div>
 
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
-    <li><code>updateDoc</code>-equivalent batch updates only (existing <code>batch.update()</code> calls,
-      unchanged) — no <code>setDoc</code> overwrite of either meeting document.</li>
+    <li><code>runTransaction()</code>, not a plain <code>batch.commit()</code> — a real behavior change to
+      existing, shipped code (<code>linkMeetingToThread</code>), not purely additive.</li>
+    <li>Query fix (<code>threadNextMeetingId == null</code> + business filter) lands as part of this phase,
+      shared with Phase 1's query audit for this same function — don't fix it twice in two different phases.</li>
     <li>No new collection, no rules change — <code>threads</code> already has a rule
       (<code>allow read, write: if isManagerOrAbove() || hasAppAccess('recap')</code>) and this phase writes
       to it exactly the way the existing creation-time flow already does.</li>
-    <li>No emulator test needed beyond what already exists for <code>linkMeetingToThread</code>'s write
-      shape (none currently exist — note this as a real gap: there is no existing test coverage of
-      <code>linkMeetingToThread</code> today, retroactive or not; adding this phase is a reasonable place to
-      add the first one).</li>
+    <li>New emulator/unit test coverage needed: there is no existing test coverage of
+      <code>linkMeetingToThread</code> or <code>selectThreadForLink</code> today — this phase is a reasonable
+      place to add the first tests for both, including the corrected query and the transaction re-check.</li>
   </ul>
 </div>
 
@@ -570,19 +635,27 @@ today.</p>
     <strong>Resolved (Sep 4, 2026) — honest limit of rules-based write scoping, accepted.</strong> Christie
     delegated this call. Decision: ship with the cheap rules-only version, accept the documented residual
     risk below rather than building a Cloud Function to close it. The rule: allow <code>update</code> if
-    <code>request.auth.uid in resource.data.get('sharedWith', [])</code> AND the only top-level field that
-    changed is <code>summary</code> (i.e. <code>title</code>, <code>createdBy</code>, <code>sharedWith</code>,
+    <code>resource.data.business != 'personal'</code> AND <code>request.auth.uid in
+    resource.data.get('sharedWith', [])</code> AND the only top-level field that changed is
+    <code>summary</code> (i.e. <code>title</code>, <code>createdBy</code>, <code>sharedWith</code>,
     <code>business</code>, <code>date</code> etc. are all untouched) — enforceable via
-    <code>request.resource.data.diff(resource.data).affectedKeys()</code>. This stops a shared user from
-    reassigning ownership, changing who it's shared with, or deleting the meeting. It does <strong>not</strong>
-    stop a shared user from rewriting the entire <code>summary</code> object client-side (e.g. deleting
-    someone else's item, not just toggling <code>done</code>) — Firestore rules cannot cheaply diff inside a
-    nested array of maps. The UI will only ever send a done-toggle, but a technically savvy shared user could
-    call the SDK directly and write more than that. <strong>Accepted as a real residual risk for v1</strong>
-    — the alternative (a Cloud Function-mediated toggle for true field-level enforcement) is real
-    infrastructure this project doesn't have today, and this risk only matters if a shared user is both
-    technically capable and motivated to bypass the UI, on a document they were already trusted enough to be
-    shared with. Revisit only if that stops being a safe assumption.
+    <code>request.resource.data.diff(resource.data).affectedKeys()</code>. <strong>The
+    <code>business != 'personal'</code> clause was added in second review round</strong> — Codex correctly
+    pointed out the first draft's shared-write branch didn't explicitly exclude personal meetings, so a
+    malformed or legacy document with both <code>business: 'personal'</code> and a populated
+    <code>sharedWith</code> could have been blindly writable by a listed user even though the read rule
+    already denies them access to it — an independent gap from the read side, not automatically closed by
+    it, since Firestore evaluates write rules on their own terms regardless of whether a prior read would
+    have succeeded. This stops a shared user from reassigning ownership, changing who it's shared with, or
+    deleting the meeting. It does <strong>not</strong> stop a shared user from rewriting the entire
+    <code>summary</code> object client-side (e.g. deleting someone else's item, not just toggling
+    <code>done</code>) — Firestore rules cannot cheaply diff inside a nested array of maps. The UI will only
+    ever send a done-toggle, but a technically savvy shared user could call the SDK directly and write more
+    than that. <strong>Accepted as a real residual risk for v1</strong> — the alternative (a Cloud
+    Function-mediated toggle for true field-level enforcement) is real infrastructure this project doesn't
+    have today, and this risk only matters if a shared user is both technically capable and motivated to
+    bypass the UI, on a document they were already trusted enough to be shared with. Revisit only if that
+    stops being a safe assumption.
   </div>
 
   <div class="bdd">
@@ -621,26 +694,32 @@ today.</p>
     <strong>Given</strong> two people with the meeting open at once both toggle different items within a
     second of each other,
     <strong>when</strong> both writes land,
-    <strong>then</strong> neither overwrites the other. Second-model review flagged that "recompute from the
+    <strong>then</strong> neither overwrites the other. First review round flagged that "recompute from the
     latest live snapshot before writing" is necessary but <strong>not sufficient</strong> — that's still a
-    classic read-modify-write race if both toggles happen inside the same window, and only genuinely
-    prevented by wrapping the toggle in <code>runTransaction()</code> (re-reading the doc inside the
-    transaction and retrying on conflict) or a surgical field-path update targeting just that one item's
-    <code>done</code> flag, not a whole-array rewrite. This is not yet a solved implementation detail — it's
-    the actual requirement Phase 3's implementation must satisfy; do not implement this toggle as a plain
-    read-then-<code>updateDoc</code> pair and assume the "recompute from latest snapshot" framing alone
-    covers it.
+    classic read-modify-write race if both toggles happen inside the same window. <strong>Second review round
+    (Codex) corrected the fix itself, not just the diagnosis:</strong> a "surgical field-path update
+    targeting just that one item's <code>done</code> flag" is not actually available under the current data
+    shape — <code>beforeNextMeeting[].items[]</code> is an array of maps, and Firestore field paths cannot
+    address an array element by numeric index, so there is no such surgical update to reach for. Given this
+    schema, <code>runTransaction()</code> (re-reading the doc inside the transaction and retrying on
+    conflict) is the only viable mechanism, not one of two options. This is not yet a solved implementation
+    detail — it's the actual requirement Phase 3's implementation must satisfy; do not implement this toggle
+    as a plain read-then-<code>updateDoc</code> pair. (An ID-keyed map or subcollection instead of an array
+    would make true field-path updates possible, but that's a real schema change, out of scope for this
+    plan.)
   </div>
 
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
-    <li>Rules change (second one in this plan): a new <code>allow update</code> branch on
-      <code>match /meetings/{docId}</code> for shared, non-manager users, scoped as described above.
-      Same deploy gate as Phase 1 — needs "approved to change firebase" separately, even if Phase 1 already
-      got approval.</li>
+    <li>Rules change (another change to the same <code>match /meetings/{docId}</code> block Phase 1 already
+      revised): a new <code>allow update</code> branch for shared, non-manager users, scoped as described
+      above, including the <code>business != 'personal'</code> guard added in second review round. Same
+      deploy gate as Phase 1 — needs "approved to change firebase" separately, even if Phase 1 already got
+      approval.</li>
     <li>New emulator tests: shared user can toggle when only <code>summary</code> changes; shared user's
       write denied when any other top-level field is touched in the same request; non-shared user's write
-      still denied.</li>
+      still denied; shared user's write denied on a personal meeting even with a (malformed/legacy)
+      populated <code>sharedWith</code>.</li>
     <li><code>updateDoc</code>, not <code>setDoc</code> — the client should send a minimal update, not the
       full document.</li>
     <li>First use of <code>onSnapshot</code> in this codebase — needs explicit listener cleanup (unsubscribe
@@ -712,11 +791,18 @@ today.</p>
   <ul class="checklist">
     <li>Mostly read-only — one small new write: the "not mine" dismiss needs to persist per-user (the BDD
       above requires it survive a reload), most naturally as a self-writable array field (e.g.
-      <code>dismissedTaskKeys</code>) on the user's own <code>users/{uid}</code> doc — a user writing only
-      their own dismiss list onto their own document is a low-risk, narrowly-scoped write, but it's still a
-      new field this phase introduces and needs its own <code>updateDoc</code> (not <code>setDoc</code>) and
-      a corresponding allow to self-write that one field, not full self-write access to the whole
-      <code>users</code> doc.</li>
+      <code>dismissedTaskKeys</code>) on the user's own <code>users/{uid}</code> doc.
+      <strong>Corrected in second review round: no rules change needed for this at all.</strong> First draft
+      assumed a new sibling <code>allow update</code> rule would be required, scoped to just this one field —
+      checked the actual existing self-update rule (<code>studio-hub/firestore.rules:117-121</code>) directly
+      and it already permits this: it only <em>pins</em> specific fields from changing
+      (<code>role</code>, <code>appAccess</code>, <code>studios</code>, <code>active</code>, via
+      <code>fieldUnchanged()</code>) — it does not restrict what else may change, so a user writing a new
+      <code>dismissedTaskKeys</code> field onto their own doc already works today, no rule edit required.
+      Codex separately flagged that adding an unnecessary sibling <code>allow update</code> rule here would
+      have been actively risky, not just redundant — Firestore ORs sibling <code>allow</code> rules together,
+      so a second, less-careful rule on <code>users</code> could accidentally widen what every one of the 21
+      apps sharing this file's self-update path allows. Use the existing rule as-is; add nothing.</li>
     <li>No new collection if approach (a) is chosen. If (b) is chosen, no new collection either, but a
       migration question appears (backfilling existing meetings' assignee text into uids) — flag as its own
       sub-decision if (b) is picked.</li>
@@ -759,45 +845,81 @@ today.</p>
     <strong>then</strong> it only reflects meetings actually in the thread at generation time — it's a live
     query against current thread membership, not a cached/stale list.
   </div>
+  <div class="resolved">
+    <strong>Corrected in second review round — the "silently omits what it can't read" scenario was false
+    for the actual query this phase would use.</strong> A query like
+    <code>where('threadId', '==', threadId)</code> does not return a partial, readable-only subset when some
+    matching documents are outside the requester's access — the same rules-are-not-filters behavior from
+    Phase 1's query audit applies here too: Firestore rejects the whole query outright unless every possible
+    result is provably readable from the query's own <code>where</code> clauses. This phase's query needs the
+    same treatment as Phase 1's fixes — either a business filter (for the manager/admin case) or the
+    two-query own-plus-shared merge pattern (for a staff viewer), reusing the same
+    <code>queryReadableMeetings()</code>-style helper recommended in Phase 1, not a bespoke "catch the
+    permission error per document" approach, which isn't how Firestore list queries actually fail.
+  </div>
+
   <div class="bdd">
-    <strong>Given</strong> Christie doesn't have read access to one meeting nominally in the thread (edge
-    case — e.g. a personal-business meeting somehow linked in, or an access change mid-thread),
-    <strong>when</strong> the rollup runs,
-    <strong>then</strong> it silently omits what it can't read rather than erroring the whole view.
+    <strong>Given</strong> a thread contains a meeting the viewer cannot read (e.g. never shared with them,
+    and they're not manager/admin),
+    <strong>when</strong> the rollup query is built using the same readable-scoping pattern as Phase 1/4,
+    <strong>then</strong> that meeting is excluded from the results by construction — the query itself never
+    asks for documents the viewer can't read, rather than asking for everything and hoping Firestore filters
+    down to what's allowed.
   </div>
 
   <h4>Firebase safety checklist</h4>
   <ul class="checklist">
     <li>Read-only phase, same access-rule dependency as Phase 4.</li>
     <li>Reuses Phase 4's assignee-identity decision — do not re-litigate it separately here.</li>
+    <li>Reuses Phase 1's <code>queryReadableMeetings()</code>-style helper for the thread query itself — this
+      phase's query needs the same role-aware treatment as the broken queries in Phase 1's audit, not a new,
+      separately-designed access pattern.</li>
     <li>No new collection, no rules change.</li>
   </ul>
 </div>
 
 <h2>Completeness check</h2>
-<p>Phase 1 is fully independent and should ship first regardless of the rest — it's a correctness fix, not a
-feature. Phase 2 is independent of everything else (reuses existing, unchanged write logic) and could ship
-any time. Phase 3's dependency on Phase 1 is conceptual/UX, not a hard technical blocker — second-model
-review confirmed Phase 3's new write-rule branch would function correctly on its own regardless of whether
-Phase 1 has shipped, since today's over-broad read rule doesn't interfere with Phase 3's write gate. The real
-reason to sequence Phase 1 first is that shared write only makes sense once shared read actually means
-something — building Phase 3 first would let a shared user edit a meeting that (pre-Phase-1) everyone with
-Recap access could already read anyway, which defeats the point. Phases 4 and 5 depend on Phase 1 for correct
-scoping and share one
-open decision (assignee identity) that should be resolved once, not separately per phase. Phase 5 benefits
-from Phase 2 (retroactive linking) actually being used, but isn't blocked by it — a thread with only
-forward-linked meetings still works.</p>
+<p><strong>Revised in second review round — Phase 1's real scope is bigger than "a correctness fix."</strong>
+It is still the right thing to ship first, but it is no longer just a rules edit: it requires auditing and
+fixing roughly eight client-side queries in Recap (see Phase 1's query audit table), or several core
+features — most importantly "Shared with Me," the actual feature this whole plan exists to build — silently
+break the moment the rule deploys. Treat Phase 1 as "rules change + coordinated client query fixes,"
+landed and tested together, not two separable steps. Phase 2 is <strong>no longer fully independent of
+Phase 1</strong> either — <code>selectThreadForLink</code>'s query fix is shared between both phases (same
+function, same underlying bug), so whichever phase lands first should carry that specific fix, and the other
+should reference it rather than duplicate it. Phase 3's dependency on Phase 1 is conceptual/UX, not a hard
+technical blocker — second-model review confirmed Phase 3's new write-rule branch would function correctly
+on its own regardless of whether Phase 1 has shipped, since today's over-broad read rule doesn't interfere
+with Phase 3's write gate. The real reason to sequence Phase 1 first is that shared write only makes sense
+once shared read actually means something — building Phase 3 first would let a shared user edit a meeting
+that (pre-Phase-1) everyone with Recap access could already read anyway, which defeats the point. Phases 4
+and 5 depend on Phase 1 for correct scoping and share one open decision (assignee identity) that should be
+resolved once, not separately per phase; Phase 5 additionally reuses Phase 1's query-scoping helper directly
+rather than designing its own. Phase 5 benefits from Phase 2 (retroactive linking) actually being used, but
+isn't blocked by it — a thread with only forward-linked meetings still works.</p>
 
 <h2>Resume instructions</h2>
-<p>Nothing built yet. All four open decisions are resolved, and one independent second-model review round is
-complete with every finding addressed in the document itself (see each phase's "Resolved" box and the
-Decisions Log's two entries). Nothing further needed from Christie to unblock a read-through. Next step:
-Christie reads this document and either comments on anything she wants changed, or gives explicit approval
-to flip <code>execution-ready</code> to true — not being flipped unilaterally. Once execution-ready, start
-with Phase 1 — it's the smallest, most self-contained, and most urgent (it's fixing a live bug) —
-independent of whether the rest of this plan executes on the same timeline. Remember the standing gate
-regardless of plan approval: no <code>firebase deploy</code> of any kind until Christie separately says the
-literal phrase "approved to change firebase," for Phase 1's rule fix and again for Phase 3's.</p>
+<p>Nothing built yet. All four original open decisions are resolved. <strong>Two independent review rounds
+are now complete</strong> — a first pass (one fresh Claude instance) whose findings were addressed, and a
+second, deeper pass (a fresh Claude instance plus, separately, Codex with direct read access to both real
+repos) that found and fixed several more substantial issues: a real security bypass in the update rule
+(found independently by both reviewers in round two — strong convergent signal), a factually wrong claim
+about Phase 2's existing safety, a query-breaking risk to the plan's own core feature, and several citation
+corrections. <strong>The query-breaking risk and the update-bypass fix are now empirically verified against
+a live Firestore emulator</strong> (8 scenarios, all passing as intended — see Phase 1), not just reasoned
+through in prose. Nothing further needed from Christie to unblock a read-through. Next step: Christie reads
+this document — given how much changed in round two, a full re-read is worth it, not just a diff-skim — and
+either comments on anything she wants changed, or gives explicit approval to flip
+<code>execution-ready</code> to true. Given the scope growth, a third review round focused specifically on
+what changed in round two (the query audit, the Phase 2 transaction redesign, the Phase 3 personal-guard
+addition) would be reasonable before considering this fully converged, matching how this project's other
+Firestore-rules plans have typically needed multiple rounds before landing. Once execution-ready, start with
+Phase 1 — now understood as "rules change + query audit fixes together," still the most urgent since it
+fixes a live bug, but no longer the smallest phase in this plan. Remember the standing gate regardless of
+plan approval: no <code>firebase deploy</code> of any kind until Christie separately says the literal phrase
+"approved to change firebase," for Phase 1's rule fix and again for Phase 3's. Composite index deploys
+(<code>firebase deploy --only firestore:indexes</code>) don't carry that same gate per this repo's CLAUDE.md,
+but still shouldn't ship without Christie seeing what's being added.</p>
 
 <h2>Decisions Log</h2>
 <ul>
