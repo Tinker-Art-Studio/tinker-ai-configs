@@ -766,6 +766,30 @@ today.</p>
   </ul>
 </div>
 
+<div class="depends">
+  <strong>Related bug found Sep 4, 2026, while building the "shared by me" filter and shared-with display
+  (a separate, smaller feature request, shipped same day, commit <code>0eab734</code>) — not yet fixed, flag
+  for a future phase here since it's the exact same shape as this plan's core fix.</strong>
+  <code>loadRecapUsers()</code> (<code>js/app.js:5587</code>, the function that populates the Share modal's
+  people-picker) runs an unfiltered <code>db.collection('users').get()</code> — the identical list-query
+  problem this entire plan exists to fix for <code>meetings</code>, just on the <code>users</code> collection
+  instead. The <code>users</code> collection's list-read rule is manager+-only
+  (<code>studio-hub/firestore.rules:87-91</code>); a plain staff member's request is silently rejected
+  (caught, logged to console, swallowed) and they see an empty "No other team members with Recap access"
+  picker — meaning <strong>a staff member cannot actually share any meeting with anyone right now</strong>,
+  with no visible error telling them why. Confirmed <code>canShare</code>
+  (<code>js/app.js:3938</code>) already permits any creator to share their own meeting, not just
+  manager/admin — so this is a real, currently-live functional gap, not a deliberately staff-restricted
+  feature. The fix is the same pattern already built for <code>queryReadableMeetings()</code>: a manager/admin
+  can run one query (list is provable for them), everyone else needs two merged queries —
+  <code>appAccess array-contains 'recap'</code> UNION <code>role in ['admin','manager']</code> — deduplicated
+  client-side. Not built yet; flagging here rather than fixing inline since it's a distinct rules-adjacent
+  change (the <code>users</code> list-read rule may need its own look, or the existing manager+-only rule may
+  already be sufficient once the query itself is fixed to only ask for what a non-manager can already prove —
+  needs the same care this plan's Phase 1 gave the analogous <code>meetings</code> problem, not a rushed
+  copy-paste).
+</div>
+
 <h2>Phase 3 — Interactive sharing (shared users can check things off, live)</h2>
 <div class="phase">
   <h3>Acceptance criteria</h3>
@@ -1363,6 +1387,23 @@ execution-ready covers the design, not a substitute for reviewing what actually 
   firestore:indexes</code>, both from <code>studio-hub</code>. Both completed with no errors. Phase 1 is now
   fully live: the <code>sharedWith</code> read gate, the personal-meeting create/update lockdown, and every
   query fix are in production, matching exactly what was tested against the emulator beforehand.</li>
+  <li><strong>Sep 4, 2026 — three small, separately-requested features shipped same day (commit
+  <code>0eab734</code>, pushed and live): "Shared by me" filter, a "Shared with [names]" chip on meeting
+  cards, and click-to-edit meeting titles.</strong> Not part of this plan's original phases — Christie asked
+  for them directly after Phase 1 shipped, as real day-to-day usability gaps (identifying which meetings
+  she'd shared was "hard to identify right now"; a meeting titled "Julia 1:1" was showing "No Series" with no
+  way to fix it or the title after the fact). Investigated the "No Series" report first: confirmed it's not a
+  bug — <code>seriesId</code> is a manual dropdown selection at creation time, completely independent of the
+  freely-typed <code>title</code> field, so nothing links them; the meeting in question could already be
+  retroactively assigned a series via the existing <code>#detail-series-select</code> dropdown in its detail
+  view (<code>js/app.js:4396-4422</code>), which Christie may not have noticed was there. Titles, however,
+  had no equivalent edit path at all — a real, now-closed gap. While building the shared-with display,
+  found and logged (not fixed) the <code>loadRecapUsers()</code> bug described in the box above this phase.
+  All three features verified by direct DOM/state injection against the running local app rather than a live
+  manager session (this session's active browser auth was Julia's, a staff account, which structurally can't
+  exercise the admin/manager-only parts of this work). Session paused here at Christie's request due to
+  context constraints — this log entry plus the box above are the handoff for whoever/whatever resumes next,
+  whether that's Phase 2 or the <code>loadRecapUsers()</code> fix.</li>
 </ul>
 
 </body>
