@@ -35,39 +35,25 @@
 
 <div class="status" style="background:#fdf2f2;border-left-color:#c0392b;">
   <span class="status-tag not-ready">execution-ready: false</span> — Drafted Sep 4, 2026 from a same-session
-  brainstorm with Christie. No app code touched yet. All four original open decisions were delegated to and
-  resolved same day. <strong>Two independent review rounds since:</strong> a first pass found Phase 1's core
-  rule logic sound plus several smaller gaps, all fixed. <strong>A second, deeper pass — a fresh Claude
-  instance plus Codex with direct read access to the real recap/studio-hub repos — found substantially more,
-  since it could verify claims against actual code instead of trusting the plan's prose:</strong> a real
-  security bypass in the update rule that fully defeated the Phase 1 create restriction (found independently
-  by both reviewers), a factually wrong claim about Phase 2's existing chain-safety protection (the code
-  doesn't do what the plan said it did), and — the most consequential finding — that Phase 1's rule fix would
-  silently break several existing Recap queries for real users, "Shared with Me" (this plan's own core
-  feature) among them, due to how Firestore evaluates list-query rules. All of this is now fixed in the
-  document, and <strong>the two highest-stakes claims (the query-breaking risk, and the update-bypass fix)
-  are empirically verified against a live Firestore emulator</strong> — 8 test scenarios, all passing as
-  intended — not just reasoned through in prose. Phase 1's real scope grew from "a rules edit" to "a rules
-  edit plus a query audit across ~8 call sites in Recap" — see the Completeness Check for what that means for
-  sequencing. <strong>A third review round followed (both a fresh Claude pass and Codex again, per Christie's
-  explicit request), specifically checking the round-two fixes rather than re-reviewing from scratch — and
-  found more real issues in those very fixes</strong>, the most serious being a genuine policy error: this
-  plan had claimed composite index deploys don't need the "approved to change firebase" phrase, which
-  directly contradicts the actual standing instruction (all three <code>--only</code> deploy forms require
-  it, indexes included) — if followed as originally written, this would have caused a real approval-gate
-  violation during execution, not just a documentation mistake. Also caught: a self-contradiction where
-  Phase 2's own corrected query used <code>.limit(1)</code> while a BDD scenario two paragraphs later claimed
-  it could detect "more than one" result (structurally impossible), and Phase 2's "fixed" query only being
-  provable for manager/admin, not staff — both found independently by both third-round reviewers, a strong
-  convergence signal. Also found by direct verification: the "every meeting has <code>threadNextMeetingId:
-  null</code>" claim was false for meetings created via the "split meeting" path. All of this is now fixed —
-  see the Decisions Log's most recent entry for the full list. <strong>Awaiting Christie's read-through and
-  explicit approval before flipping execution-ready to true</strong> — not doing that unilaterally. Given
-  three rounds have now run and round three's findings, while real, were narrower and more convergent between
-  reviewers than round two's, this is a reasonable point to bring back to Christie rather than keep iterating
-  further without her input on whether that's still wanted. Phase 1 fixes a real, currently-live
-  access-control gap (see "The read-access bug" below) — worth prioritizing review of that phase specifically,
-  independent of whether the rest of this plan proceeds on the same timeline.
+  brainstorm with Christie. No app code touched yet.
+  <strong>Four independent review rounds have run</strong> (round 1: one Claude pass; round 2: Claude + Codex
+  with real repo access, found and fixed a genuine security bypass and a risk that this plan's own core
+  feature would silently break in production; round 3: Claude + Codex again checking round 2's fixes, found
+  and fixed a real Firebase-approval policy error plus several correctness gaps in those fixes; round 4: one
+  final Claude pass specifically for an execution-ready verdict, found and fixed a rule-design gap plus some
+  document-consistency polish). <strong>Full round-by-round detail lives in the Decisions Log — read it before
+  resuming</strong>, this banner intentionally stays a summary rather than trying to narrate every round
+  inline (an earlier version of this banner did that and drifted out of sync with itself as rounds
+  accumulated). Every finding across all four rounds has been fixed in the document itself; the two
+  highest-stakes rule claims (the query-breaking risk, and the update-rule security bypass) are empirically
+  verified against a live Firestore emulator, not just reasoned through in prose. Phase 1's real scope grew
+  substantially in the process — from "a rules edit" to "a rules edit plus a query audit across ~8 call sites
+  in Recap" — see the Completeness Check. <strong>Awaiting Christie's read-through and explicit approval
+  before flipping execution-ready to true</strong> — not doing that unilaterally. Round 4 gave a direct
+  execution-ready verdict on the document as it stood at that point (see its Decisions Log entry) with a
+  short, mechanical punch list, now applied. Phase 1 fixes a real, currently-live access-control gap (see
+  "The read-access bug" below) — worth prioritizing review of that phase specifically, independent of whether
+  the rest of this plan proceeds on the same timeline.
 </div>
 
 <div class="meta">
@@ -355,9 +341,16 @@ today.</p>
       <td>None needed</td>
     </tr>
     <tr>
-      <td><code>js/app.js:1079</code> — unreviewed-count, <code>seriesId + reviewed==false</code></td>
-      <td>Broken — no createdBy/business/sharedWith constraint</td>
-      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>; may need a composite index — confirm via emulator/deploy, not assumed mandatory (third review round: equality-only compound filters can sometimes be satisfied by Firestore's automatic single-field indexes merged together)</td>
+      <td><code>js/app.js:1079</code> (<code>promptToMarkAsReviewed</code>) — unreviewed-count,
+        <code>seriesId + reviewed==false</code></td>
+      <td>Broken — no createdBy/business/sharedWith constraint. <strong>Checked in fourth review round
+        (following the same caller-verification the third round applied to <code>:2950</code> and
+        <code>:4858</code>, which this row had skipped):</strong> called from the normal end-of-processing
+        flow for any "review meeting" (<code>js/app.js:1625</code>), with no role gate — reachable by plain
+        staff, same as <code>:2950</code>.</td>
+      <td>Full <code>queryReadableMeetings()</code> role-aware treatment, not a bare business filter — same
+        correction already applied to <code>:2950</code> and <code>:4858</code> in the third review round;
+        this row had been missed then.</td>
     </tr>
     <tr>
       <td><code>js/app.js:1175</code> — thread-picker "recent meetings," unconstrained
@@ -428,8 +421,10 @@ today.</p>
     </tr>
   </table>
 
-  <div class="decision-needed">
-    <strong>Implementation recommendation, not yet built:</strong> rather than patching each broken query
+  <div class="resolved">
+    <strong>Implementation recommendation (design settled, not yet built — reclassed from "decision-needed" in
+    fourth review round, since its own content already concludes the open question, it just hadn't been
+    restyled to match):</strong> rather than patching each broken query
     site with bespoke role-branching logic, build one reusable helper —
     <code>queryReadableMeetings(baseConstraints)</code> — that, given the current user's role, either runs a
     single query (manager/admin: base constraints + business filter, since <code>isManagerOrAbove()</code> is
@@ -498,6 +493,16 @@ today.</p>
     <strong>Given</strong> a non-personal meeting created by someone other than the requester,
     <strong>when</strong> a manager (not the creator) attempts to update it to <code>business: 'personal'</code>,
     <strong>then</strong> the write is denied. Empirically confirmed above, test 4.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a non-admin creator's own <em>already-personal</em> meeting (e.g. a legacy document
+    from before this rule shipped),
+    <strong>when</strong> they make an ordinary edit that doesn't touch <code>business</code> (e.g. the
+    title),
+    <strong>then</strong> the write succeeds — added in fourth review round alongside the update-rule
+    refinement above; without it, the original (unrefined) rule would have silently locked such a creator out
+    of ever editing their own document again, a real regression this scenario exists to catch. Empirically
+    confirmed via a separate targeted re-verification (Test A) after the refinement.
   </div>
   <div class="bdd">
     <strong>Given</strong> any meeting,
@@ -702,6 +707,16 @@ today.</p>
     <strong>then</strong> it's excluded — a meeting cannot be linked to itself.
   </div>
   <div class="bdd">
+    <strong>Given</strong> a meeting created via the "split meeting" path (<code>js/app.js:1710-1735</code>,
+    which sets no thread fields at creation, unlike normal meeting creation),
+    <strong>when</strong> it is linked as the new end of a thread via <code>linkMeetingToThread()</code>,
+    <strong>then</strong> it comes out of that write with <code>threadNextMeetingId</code> explicitly set to
+    <code>null</code> — not left absent — so it can correctly be found as a valid "last meeting in thread"
+    candidate by a later follow-up. <em>(Added in fourth review round — this exact fix was described in
+    prose in the Resolved box above but had no matching BDD scenario, unlike every other round-3 fix in this
+    phase.)</em>
+  </div>
+  <div class="bdd">
     <strong>Given</strong> the transaction fails for any other reason (network drop mid-commit),
     <strong>when</strong> that happens,
     <strong>then</strong> nothing is left half-linked — <code>runTransaction()</code> guarantees atomicity,
@@ -802,6 +817,19 @@ today.</p>
     all-or-nothing gate on the request, not a partial-accept. <em>(Named explicitly here per second-model
     review — this exact case was already promised in the Firebase safety checklist's emulator test list but
     had no matching BDD scenario.)</em>
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a <code>business: 'personal'</code> meeting that, however it happened (a malformed
+    write, or a legacy document from before this rule existed), has a populated <code>sharedWith</code>
+    including User B,
+    <strong>when</strong> User B attempts to toggle an item on it,
+    <strong>then</strong> the write is still denied — the <code>resource.data.business != 'personal'</code>
+    guard added to this branch is independent of the read rule; a user who couldn't read the document to
+    begin with must also be unable to blind-write an update to it by guessing/knowing its id. <em>(Added in
+    fourth review round — this exact case was already promised in the Firebase safety checklist's emulator
+    test list, added when the guard itself was added in third review round, but never got a matching BDD
+    scenario until now — the same prose-vs-BDD gap the second-model review already caught once elsewhere in
+    this same phase.)</em>
   </div>
   <div class="bdd">
     <strong>Given</strong> User B has the shared view open and User A deletes the meeting or revokes B's
@@ -1022,27 +1050,23 @@ rather than designing its own. Phase 5 benefits from Phase 2 (retroactive linkin
 isn't blocked by it — a thread with only forward-linked meetings still works.</p>
 
 <h2>Resume instructions</h2>
-<p>Nothing built yet. All four original open decisions are resolved. <strong>Two independent review rounds
-are now complete</strong> — a first pass (one fresh Claude instance) whose findings were addressed, and a
-second, deeper pass (a fresh Claude instance plus, separately, Codex with direct read access to both real
-repos) that found and fixed several more substantial issues: a real security bypass in the update rule
-(found independently by both reviewers in round two — strong convergent signal), a factually wrong claim
-about Phase 2's existing safety, a query-breaking risk to the plan's own core feature, and several citation
-corrections. <strong>The query-breaking risk and the update-bypass fix are now empirically verified against
-a live Firestore emulator</strong> (8 scenarios, all passing as intended — see Phase 1), not just reasoned
-through in prose. Nothing further needed from Christie to unblock a read-through. Next step: Christie reads
-this document — given how much changed in round two, a full re-read is worth it, not just a diff-skim — and
-either comments on anything she wants changed, or gives explicit approval to flip
-<code>execution-ready</code> to true. Given the scope growth, a third review round focused specifically on
-what changed in round two (the query audit, the Phase 2 transaction redesign, the Phase 3 personal-guard
-addition) would be reasonable before considering this fully converged, matching how this project's other
-Firestore-rules plans have typically needed multiple rounds before landing. Once execution-ready, start with
-Phase 1 — now understood as "rules change + query audit fixes together," still the most urgent since it
-fixes a live bug, but no longer the smallest phase in this plan. Remember the standing gate regardless of
-plan approval: no <code>firebase deploy</code> of any kind — including <code>--only firestore:indexes</code>,
-which needs the same "approved to change firebase" phrase as rules do, not an exemption; corrected in third
-review round after an earlier draft of this plan got that wrong — until Christie separately says that phrase,
-for Phase 1's rule fix, again for any index deploys, and again for Phase 3's rule addition.</p>
+<p>Nothing built yet. All four original open decisions are resolved, and four independent review rounds have
+now run (see the Decisions Log for the full account of each — this paragraph deliberately stays a pointer,
+not a re-narration, after an earlier version of it drifted stale mid-round more than once). Nothing further
+needed from Christie to unblock a read-through — round 4 gave a direct "not execution-ready, here's the short
+list" verdict, and every item on that list is now applied to the document. Next step: Christie reads this
+document fresh (worthwhile given four rounds of accumulated edits, not just a diff-skim of the latest change)
+and either comments on anything she wants changed, or gives explicit approval to flip
+<code>execution-ready</code> to true. Whether a fifth review round is warranted first is genuinely her call at
+this point — round 4's findings were mechanical (stale cross-references, one rule refinement, missing BDD
+coverage) rather than new risk classes, a reasonable convergence signal, but this plan has already run longer
+than initially expected and she may reasonably want to just read it herself now rather than keep spending
+review rounds. Once execution-ready, start with Phase 1 — now understood as "rules change + query audit fixes
+together," still the most urgent since it fixes a live bug, but no longer the smallest phase in this plan.
+Remember the standing gate regardless of plan approval: no <code>firebase deploy</code> of any kind —
+including <code>--only firestore:indexes</code>, which needs the same "approved to change firebase" phrase as
+rules do, not an exemption — until Christie separately says that phrase, for Phase 1's rule fix, again for
+any index deploys, and again for Phase 3's rule addition.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -1236,6 +1260,47 @@ for Phase 1's rule fix, again for any index deploys, and again for Phase 3's rul
   extended or precision-corrected. Given round three's findings were narrower in scope than round two's and
   substantially convergent between the two independent reviewers, this is being brought back to Christie now
   rather than continuing to iterate unprompted.</li>
+  <li><strong>Sep 4, 2026 — fourth review round, run per Christie's explicit request ("let's do one more
+  claude agent review to make sure it agrees that it is execution ready").</strong> One fresh Claude instance,
+  asked for a direct, narrow verdict rather than an open-ended re-review: read the whole document fresh and
+  answer whether it's genuinely execution-ready. Verdict: not yet, but the gap was small and mechanical, with
+  a five-item punch list — all five applied:
+  <ul>
+    <li>The status box's own round count was self-contradictory (said "two," then narrated three) — rewritten
+    as a short pointer to this Decisions Log instead of trying to re-narrate every round inline, which is
+    what caused the drift in the first place across rounds 2 and 3.</li>
+    <li>The Resume Instructions paragraph was stale — still describing round 3 as a hypothetical "would be
+    reasonable" future step after round 3 had already happened and been fixed. Rewritten to the same
+    pointer style and given an honest note that a fifth round is genuinely Christie's call, not something to
+    assume is needed by default.</li>
+    <li><strong>A real, previously-uncaught rule-design gap:</strong> Phase 1's update-rule personal guard
+    applied to <em>any</em> update resulting in <code>business: 'personal'</code>, not just conversions into
+    it — meaning a non-admin creator of an already-personal meeting (a legacy document from before this rule
+    existed, the exact scenario this plan documents as currently possible) could read and delete their own
+    document forever but never update it again unless they happened to currently be admin. Christie confirmed
+    separately that only she has ever created a personal meeting through the app's UI, so this wasn't a live
+    risk to her specifically, but it was a real, free-to-fix correctness gap. Refined the rule to only require
+    <code>isAdmin()</code> when a document is actually transitioning into <code>'personal'</code>, not when
+    it's already personal and staying that way — empirically re-verified against the emulator (3 new
+    scenarios: the fix works, and both original bypasses stay closed) before writing it into the document.
+    New BDD scenario added to demonstrate it.</li>
+    <li>The <code>queryReadableMeetings()</code> recommendation box was still styled <code>decision-needed</code>
+    (yellow) despite its own text concluding the question it raised was already resolved — reclassed to
+    <code>resolved</code> so a reader doesn't mistake it for something still awaiting Christie's input.</li>
+    <li>Two BDD scenarios were promised (by a checklist item or by prose in a Resolved box) but never actually
+    written as Given/When/Then: Phase 3's "shared user's write denied on a personal meeting even with a
+    malformed/legacy <code>sharedWith</code>" case, and Phase 2's <code>linkMeetingToThread()</code>
+    defensive <code>threadNextMeetingId: null</code> fix for split-created meetings. Both added.</li>
+  </ul>
+  Also caught and fixed, flagged as "optional, not blocking" by the reviewer but verified and closed anyway
+  since it was cheap to check: <code>js/app.js:1079</code>'s audit-table row had gotten a bare business-filter
+  fix without the same staff-reachability check round 3 had applied to the two structurally identical rows
+  next to it (<code>:2950</code>, <code>:4858</code>) — checked its actual caller
+  (<code>promptToMarkAsReviewed</code>, reached from the ordinary end-of-processing flow for any review
+  meeting, no role gate) and confirmed it needed the same full role-aware fix, not the lighter one it had.
+  <strong>This round's findings were narrower still than round 3's — no new risk classes, mostly
+  cross-reference staleness plus one genuine but low-stakes rule refinement</strong> — consistent with real
+  convergence rather than a plan that keeps surfacing fundamentally new problems each round.</li>
 </ul>
 
 </body>
