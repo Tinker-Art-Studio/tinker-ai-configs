@@ -49,11 +49,25 @@
   are empirically verified against a live Firestore emulator</strong> — 8 test scenarios, all passing as
   intended — not just reasoned through in prose. Phase 1's real scope grew from "a rules edit" to "a rules
   edit plus a query audit across ~8 call sites in Recap" — see the Completeness Check for what that means for
-  sequencing. <strong>Awaiting Christie's read-through and explicit approval before flipping execution-ready
-  to true</strong> — not doing that unilaterally, and given how much changed in this round, a further review
-  pass focused on what's new would be reasonable before considering this fully converged. Phase 1 fixes a
-  real, currently-live access-control gap (see "The read-access bug" below) — worth prioritizing review of
-  that phase specifically, independent of whether the rest of this plan proceeds on the same timeline.
+  sequencing. <strong>A third review round followed (both a fresh Claude pass and Codex again, per Christie's
+  explicit request), specifically checking the round-two fixes rather than re-reviewing from scratch — and
+  found more real issues in those very fixes</strong>, the most serious being a genuine policy error: this
+  plan had claimed composite index deploys don't need the "approved to change firebase" phrase, which
+  directly contradicts the actual standing instruction (all three <code>--only</code> deploy forms require
+  it, indexes included) — if followed as originally written, this would have caused a real approval-gate
+  violation during execution, not just a documentation mistake. Also caught: a self-contradiction where
+  Phase 2's own corrected query used <code>.limit(1)</code> while a BDD scenario two paragraphs later claimed
+  it could detect "more than one" result (structurally impossible), and Phase 2's "fixed" query only being
+  provable for manager/admin, not staff — both found independently by both third-round reviewers, a strong
+  convergence signal. Also found by direct verification: the "every meeting has <code>threadNextMeetingId:
+  null</code>" claim was false for meetings created via the "split meeting" path. All of this is now fixed —
+  see the Decisions Log's most recent entry for the full list. <strong>Awaiting Christie's read-through and
+  explicit approval before flipping execution-ready to true</strong> — not doing that unilaterally. Given
+  three rounds have now run and round three's findings, while real, were narrower and more convergent between
+  reviewers than round two's, this is a reasonable point to bring back to Christie rather than keep iterating
+  further without her input on whether that's still wanted. Phase 1 fixes a real, currently-live
+  access-control gap (see "The read-access bug" below) — worth prioritizing review of that phase specifically,
+  independent of whether the rest of this plan proceeds on the same timeline.
 </div>
 
 <div class="meta">
@@ -65,8 +79,11 @@
   <strong>Repo:</strong> <code>~/recap</code> <span class="repo-tag repo-recap">Recap</span> — plus one
   Firestore rules change in <code>~/studio-hub/firestore.rules</code> (shared by all 21 Tinker apps; this
   plan only touches the <code>meetings</code> block).<br>
-  <strong>Depends on:</strong> Nothing blocking. Phase 2 (retroactive linking) reuses an existing, already-
-  shipped function unchanged. Phases 4 and 5 depend on Phase 1's rule fix being live (their queries need to
+  <strong>Depends on:</strong> Nothing blocking. Phase 2 (retroactive linking) reuses the existing
+  <code>linkMeetingToThread()</code> function, but not unchanged — see Phase 2's own "Resolved" boxes for
+  what actually needed fixing there (a transaction, a query correction, and a defensive field-initialization
+  fix), corrected after an earlier draft of this line overstated how much could be reused as-is. Phases 4 and
+  5 depend on Phase 1's rule fix being live (their queries need to
   actually reach documents across creators) and benefit from Phase 2 existing, but are not hard-blocked by
   it — a "My Open Tasks" or "review open" view still has real value even before every meeting is linked into
   threads.<br>
@@ -285,6 +302,15 @@ today.</p>
     test first, then fix, then green") in spirit — the throwaway script IS that failing-then-passing proof;
     the equivalent permanent test cases still need to be written into <code>studio-hub/rules.test.js</code>
     itself during execution (this was a planning-phase verification, not the actual implementation).
+    <strong>Scope of what this actually covers, stated precisely after third review round flagged the
+    original framing as overclaiming — these 8 scenarios verify the update-bypass fix and the core
+    Shared-with-Me query-breaking risk specifically, not every BDD scenario in this phase.</strong> Not yet
+    covered by an actual emulator run: manager reads of non-personal meetings, personal-read isolation for
+    non-creators, delete behavior, the missing-<code>sharedWith</code>-field case, or any of the other
+    audited queries in the table below — those still need their own emulator test cases written during
+    implementation, following this same method, not assumed to be covered by the 8 already run. Emulator
+    success also doesn't establish that every composite index this phase might need is actually available in
+    production — see the audit table's per-row notes on that.
   </div>
 
   <h3>Recap client query audit — required, not optional, part of this phase</h3>
@@ -308,7 +334,7 @@ today.</p>
     <tr>
       <td><code>js/app.js:1079</code> — unreviewed-count, <code>seriesId + reviewed==false</code></td>
       <td>Broken — no createdBy/business/sharedWith constraint</td>
-      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>; new composite index</td>
+      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>; may need a composite index — confirm via emulator/deploy, not assumed mandatory (third review round: equality-only compound filters can sometimes be satisfied by Firestore's automatic single-field indexes merged together)</td>
     </tr>
     <tr>
       <td><code>js/app.js:1175</code> — thread-picker "recent meetings," unconstrained
@@ -329,20 +355,30 @@ today.</p>
       <td>Own branch safe (constrains <code>createdBy==self</code>); the other two branches broken — rely on
         an unenforced "only admin creates personal" assumption Firestore can't take on faith</td>
       <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code> to the admin- and
-        manager-viewing branches; new composite index</td>
+        manager-viewing branches; may need a composite index, confirm via emulator/deploy rather than assume</td>
     </tr>
     <tr>
       <td><code>js/app.js:2950</code> — review-meeting lookup, <code>reviewsSeriesId</code> only</td>
-      <td>Broken — no constraint</td>
-      <td>Add business filter; confirm during implementation whether this is reachable by plain staff (if so,
-        may need <code>createdBy</code> scoping instead/also)</td>
+      <td>Broken — no constraint. <strong>Corrected in third review round:</strong> checked the caller
+        (<code>renderMeetingsBySeriesLegacy</code>, explicitly labeled "for non-Julia users" — a broad,
+        non-admin-only path) — a bare business filter is not enough here, matching Codex's caution.</td>
+      <td>Full <code>queryReadableMeetings()</code> role-aware treatment, same as the other staff-reachable
+        broken queries — not a one-line business filter add.</td>
     </tr>
     <tr>
       <td><code>js/app.js:4858</code> — rename-thread, <code>threadId</code> only, followed by a batch of
         per-doc updates</td>
-      <td>The read half is broken (list query); the write half (individual <code>batch.update()</code> calls)
-        is evaluated per-document and is fine once the read succeeds</td>
-      <td>Add business filter to the read query</td>
+      <td>The read half is broken (list query). <strong>Corrected in third review round — the write half has
+        its own problem too, not just the read:</strong> the batch updates every matching meeting's
+        <code>threadName</code>, but a thread can span meetings created by different people; under the
+        (unchanged in this phase) update rule, a non-manager can only update their own meetings, so a
+        mixed-ownership thread's rename would partially fail for anyone but a manager/admin.</td>
+      <td>Restrict this feature to manager/admin for v1 — simplest fix that's correct on both the read side
+        (business filter alone is provable for manager/admin, per Phase 1's reasoning) and the write side
+        (managers can already update any non-personal meeting). Broader denormalization design question
+        (should <code>threadName</code> even be copied onto every meeting doc, versus always read live from
+        the <code>threads/{threadId}</code> doc that already exists?) is pre-existing architecture, not
+        something this plan needs to solve — flagged for awareness, not fixed here.</td>
     </tr>
     <tr>
       <td><code>js/app.js:4899</code> — series counts by uid, <code>createdBy(uid)</code> only</td>
@@ -354,8 +390,12 @@ today.</p>
         [+ <code>sharedAt &gt;</code>]</td>
       <td><strong>Broken — this is the core feature this whole plan exists to build</strong>. Empirically
         confirmed above (test 1).</td>
-      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>; new composite index
-        (<code>sharedWith</code> array-contains + <code>business</code> in [+ <code>sharedAt</code>])</td>
+      <td>Add <code>.where('business', 'in', ['tinker','clayhub','both'])</code>. The emulator test above
+        succeeded without manually defining a composite index, but the emulator is more lenient about
+        auto-indexing than production — <code>array-contains</code> combined with <code>in</code> is
+        specifically one of the combinations that more often needs an explicit composite in real Firestore;
+        confirm on first real deploy (Firestore's own error, if it happens, includes a direct
+        index-creation link) rather than assume the emulator result transfers unchanged.</td>
     </tr>
     <tr>
       <td><code>js/app.js:5333</code> (<code>loadSharedMeetings()</code>) — <code>sharedWith array-contains</code>
@@ -371,13 +411,19 @@ today.</p>
     <code>queryReadableMeetings(baseConstraints)</code> — that, given the current user's role, either runs a
     single query (manager/admin: base constraints + business filter, since <code>isManagerOrAbove()</code> is
     a non-document condition Firestore can take for granted) or two queries run in parallel and merged
-    client-side, deduplicated by doc id (staff: base constraints + <code>createdBy==self</code>, UNION base
-    constraints + <code>sharedWith contains self</code> + business filter). This replaces the ad hoc handling
-    needed at each of the broken sites above with one tested, consistent implementation. <code>js/app.js:1221</code>'s
-    thread-following picker raises a genuine product question this helper alone doesn't resolve — should
-    "continue this thread" be restricted to threads whose <em>every</em> constituent meeting the viewer can
-    read, or is awareness of the thread itself (from wherever the thread list comes from) enough? Worth
-    Christie's input during implementation, not assumed either way here.
+    client-side (staff: base constraints + <code>createdBy==self</code>, UNION base constraints +
+    <code>sharedWith contains self</code> + business filter). <strong>Merge semantics, made explicit after
+    third review round flagged the original description as too vague to implement correctly:</strong> run
+    both branch queries WITHOUT a limit applied to each independently, merge their results, deduplicate by
+    document id (a doc could theoretically satisfy both branches), sort by the caller's intended order (e.g.
+    <code>createdAt</code> descending), THEN apply any final limit (e.g. the top 20) to the merged, sorted
+    set — applying <code>limit(20)</code> to each branch independently and merging afterward does not
+    reproduce one correct "top 20 overall" result. This replaces the ad hoc handling needed at each of the
+    broken sites above with one tested, consistent implementation. <code>js/app.js:1221</code>'s
+    thread-following picker originally raised a genuine open product question here — resolved by Phase 2's
+    own fix to that function (see there): applying this exact helper naturally scopes "continue this thread"
+    to meetings in that thread the viewer can actually read, answering the question by construction rather
+    than needing a separate decision.
   </div>
 
   <div class="bdd">
@@ -470,12 +516,22 @@ today.</p>
     <li><strong>Plus real Recap application code changes</strong> — this is not a rules-only phase. Every
       query in the audit table above marked "Broken" needs its fix landed in the same phase, before the rule
       change ships, or those features silently stop working the moment the rule deploys.</li>
-    <li>New composite indexes needed in <code>studio-hub/firestore.indexes.json</code> for at least: the
-      <code>sharedWith</code> + <code>business</code> combination (the core Shared-with-Me fix), and
-      <code>seriesId</code>/<code>reviewsSeriesId</code>/<code>threadId</code> + <code>business</code> for
-      the other fixed queries. Deploy via <code>firebase deploy --only firestore:indexes</code> — per this
-      repo's own CLAUDE.md, always free, no approval-phrase gate the way rules changes have (but still only
-      after Christie reviews what's being added).</li>
+    <li>Composite indexes may be needed in <code>studio-hub/firestore.indexes.json</code> for some of the
+      audit's fixed queries — confirm which ones actually require a composite (equality-only compound
+      queries can often be satisfied by Firestore's automatic single-field indexes merged together; the
+      emulator/a live deploy attempt will say definitively, via the auto-generated index-creation link
+      Firestore returns on a genuine miss — don't assume every fix in the audit table needs one).
+      <strong>Corrected in third review round — a real policy error, not just a documentation nit:</strong>
+      the first draft claimed <code>firebase deploy --only firestore:indexes</code> is exempt from the
+      "approved to change firebase" gate. Checked directly against the actual standing instruction (global
+      <code>CLAUDE.md</code>): it names exactly three <code>--only</code> forms as requiring that literal
+      phrase before deploying — <code>firestore:rules</code>, <code>storage</code>, and
+      <code>firestore:indexes</code> — indexes is explicitly included, not exempt. "Free"/"safe" in that
+      document means blast-radius-safe (won't overwrite unrelated services), not gate-exempt; those are two
+      different axes this draft conflated. <strong>Index deploys need the same "approved to change firebase"
+      approval as the rules deploy, full stop</strong> — this plan's earlier claim, if followed literally
+      during execution, would have caused a real violation of Christie's standing instruction, not a cosmetic
+      error.</li>
     <li>New emulator test cases added to the existing <code>studio-hub/rules.test.js</code> suite — write the
       failing tests first (mirroring the 8 scenarios already verified against a throwaway script above), then
       confirm green against the real rule change. <strong>Do not hardcode a test count anywhere in this
@@ -513,22 +569,50 @@ today.</p>
   </div>
 
   <div class="resolved">
-    <strong>Real fix, verified against the data model:</strong> every meeting is written with
-    <code>threadNextMeetingId: null</code> explicitly set at creation (<code>js/app.js:1446</code>) — never
-    left absent — so <code>.where('threadNextMeetingId', '==', null)</code> is a reliable, correct Firestore
-    filter for "not yet linked forward" (this would NOT work if the field were sometimes simply missing
-    instead of explicitly null; confirmed it never is). The corrected query:
-    <pre><code>db.collection('meetings')
-  .where('threadId', '==', thread.id)
-  .where('threadNextMeetingId', '==', null)
-  .where('business', 'in', ['tinker', 'clayhub', 'both'])  // Phase 1 provability fix, same query
-  .limit(1)
-  .get();</code></pre>
-    This single change fixes both problems at once: it's now rule-provable (closing this query's entry in
-    Phase 1's audit table) AND it actually implements the "last meeting in thread" guarantee the original
-    code comment only claimed. A well-formed chain has exactly one meeting per thread with
-    <code>threadNextMeetingId == null</code>; if this query ever returns more than one, that's a sign of an
-    existing data problem (see BDD below), not something to silently paper over by picking one arbitrarily.
+    <strong>Real fix, verified against the data model — then corrected twice more in third review round,
+    both times by real, independently-confirmed findings.</strong> The normal creation path writes
+    <code>threadNextMeetingId: null</code> explicitly (<code>js/app.js:1446</code>). <strong>But that's not
+    universal — checked further after third review round flagged it: the "split meeting" creation path
+    (<code>js/app.js:1710-1735</code>) sets NO thread fields at all</strong>, confirmed by reading it
+    directly. A split-created meeting that's never been linked into any thread has no <code>threadId</code>
+    either, so it can't match this query's <code>threadId</code> filter regardless — a non-issue for meetings
+    never linked. The real gap is what happens <em>after</em> linking: <code>linkMeetingToThread()</code>
+    only ever wrote <code>threadNextMeetingId</code> onto the OLD "previous" meeting, relying on the "new"
+    meeting already having <code>null</code> from its own creation — true for normally-created meetings, false
+    for a split-created one being linked as the "new" end of a chain. <strong>Fix, folded into this phase:</strong>
+    <code>linkMeetingToThread()</code> must explicitly set <code>threadNextMeetingId: null</code> on the
+    meeting it's linking as the new end of the chain, every time, regardless of what it already has — cheap,
+    idempotent, and closes this for both the retroactive and (already-shipped) creation-time paths going
+    forward. Known limitation, out of this phase's core scope: any split-created meeting already linked into
+    a thread before this fix ships could already be missing the field — worth a one-time data check during
+    implementation, not a blocking migration.
+    <br><br>
+    <strong>The query itself also needs the query-audit's own role-aware treatment, not a bare business
+    filter — corrected after both third-round reviewers independently caught this.</strong> A first correction
+    added only a <code>business</code> filter, matching Phase 1's fix pattern for <em>manager/admin</em>
+    users — but per Phase 1's own provability reasoning, a business-only filter proves nothing for a staff
+    user, whose satisfiable branches are <code>createdBy==self</code> or <code>(business!='personal' &&
+    sharedWith contains self)</code>, neither derivable from this query's <code>where</code> clauses. Sitting
+    right next to Phase 1's own still-open decision-needed box about this exact function — which frames "who
+    can even see this picker" as an open product question — quietly shipping a query that only works for one
+    role was a real, caught inconsistency. Corrected: this query needs the same
+    <code>queryReadableMeetings()</code>-style role split as every other broken query in Phase 1's audit —
+    single query (business filter) for manager/admin, two merged queries
+    (<code>createdBy==self</code> UNION <code>sharedWith contains self</code>, both further filtered by
+    <code>threadId</code> and <code>threadNextMeetingId==null</code>) for staff, deduplicated and the
+    <code>limit</code> applied after merging, not independently on each branch. This also directly answers
+    Phase 1's open product question in the process: a staff user's "continue this thread" picker naturally
+    ends up scoped to meetings in that thread they can actually read (their own, or shared with them) — not
+    the whole thread's membership regardless of access, resolving the ambiguity by construction rather than
+    needing a separate decision.
+    <br><br>
+    <strong><code>.limit(1)</code> corrected to a size check — it directly contradicted this phase's own
+    corruption-detection BDD, caught independently by both third-round reviewers.</strong> A query capped at
+    one result can never surface "more than one candidate" — Firestore truncates server-side before the
+    client ever sees a count. Fixed: fetch without a restrictive limit (or a generous cap like
+    <code>limit(5)</code>, since a well-formed thread should never realistically have more than one match)
+    and check <code>snapshot.size</code> — exactly one is the normal case, zero means "no valid link target,"
+    two or more means real data corruption to surface, not silently resolve by picking the first one.
   </div>
 
   <div class="resolved">
@@ -541,7 +625,9 @@ today.</p>
     transaction immediately before writing and aborting (surfacing a "someone else just linked this, please
     retry" toast) if it's no longer <code>null</code>. This changes existing, shipped behavior for the
     creation-time linking flow too (both paths call the same function) — not purely additive, worth Christie
-    knowing this touches already-working code, not just new code.
+    knowing this touches already-working code, not just new code. The transaction re-check also serves as a
+    second, authoritative safety net for the corruption-detection case above — even if the initial query
+    somehow raced past a genuine size-1 read, the transaction's own re-read inside the write is the last word.
   </div>
 
   <div class="resolved">
@@ -604,8 +690,14 @@ today.</p>
   <ul class="checklist">
     <li><code>runTransaction()</code>, not a plain <code>batch.commit()</code> — a real behavior change to
       existing, shipped code (<code>linkMeetingToThread</code>), not purely additive.</li>
-    <li>Query fix (<code>threadNextMeetingId == null</code> + business filter) lands as part of this phase,
-      shared with Phase 1's query audit for this same function — don't fix it twice in two different phases.</li>
+    <li>Query fix (<code>threadNextMeetingId == null</code> + the role-aware
+      <code>queryReadableMeetings()</code> treatment, not a bare business filter — corrected in third review
+      round) lands as part of this phase, shared with Phase 1's query audit for this same function — don't
+      fix it twice in two different phases, and don't let the two diverge if one gets edited later.</li>
+    <li><code>linkMeetingToThread()</code> must explicitly set <code>threadNextMeetingId: null</code> on the
+      meeting it links as the new chain-end, every call — closes a real gap for meetings created via the
+      "split meeting" path (<code>js/app.js:1710-1735</code>), which sets no thread fields at creation
+      unlike normal meeting creation.</li>
     <li>No new collection, no rules change — <code>threads</code> already has a rule
       (<code>allow read, write: if isManagerOrAbove() || hasAppAccess('recap')</code>) and this phase writes
       to it exactly the way the existing creation-time flow already does.</li>
@@ -812,7 +904,10 @@ today.</p>
       migration question appears (backfilling existing meetings' assignee text into uids) — flag as its own
       sub-decision if (b) is picked.</li>
     <li>Depends on Phase 1 being live — without the rule fix, this view's query would either over-expose
-      (if run with elevated access) or under-return (if naively scoped) other people's meetings.</li>
+      (if run with elevated access) or under-return (if naively scoped) other people's meetings. This view
+      has the identical own-vs-shared query problem the <code>queryReadableMeetings()</code> helper was built
+      for (noted for consistency with Phase 5, which already states this explicitly) — reuse it here too,
+      not a separate bespoke query.</li>
   </ul>
 </div>
 
@@ -921,10 +1016,10 @@ addition) would be reasonable before considering this fully converged, matching 
 Firestore-rules plans have typically needed multiple rounds before landing. Once execution-ready, start with
 Phase 1 — now understood as "rules change + query audit fixes together," still the most urgent since it
 fixes a live bug, but no longer the smallest phase in this plan. Remember the standing gate regardless of
-plan approval: no <code>firebase deploy</code> of any kind until Christie separately says the literal phrase
-"approved to change firebase," for Phase 1's rule fix and again for Phase 3's. Composite index deploys
-(<code>firebase deploy --only firestore:indexes</code>) don't carry that same gate per this repo's CLAUDE.md,
-but still shouldn't ship without Christie seeing what's being added.</p>
+plan approval: no <code>firebase deploy</code> of any kind — including <code>--only firestore:indexes</code>,
+which needs the same "approved to change firebase" phrase as rules do, not an exemption; corrected in third
+review round after an earlier draft of this plan got that wrong — until Christie separately says that phrase,
+for Phase 1's rule fix, again for any index deploys, and again for Phase 3's rule addition.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -1079,6 +1174,45 @@ but still shouldn't ship without Christie seeing what's being added.</p>
   <code>studio-hub</code>). <strong>Not yet re-reviewed after these fixes</strong> — given the scope of what
   changed, recommended (in Resume Instructions) that a further review pass focus specifically on what's new
   here before considering this plan converged, rather than assuming two rounds is automatically enough.</li>
+  <li><strong>Sep 4, 2026 — third review round, run per Christie's explicit request ("Should we now do
+  another round of review... yes let's do that").</strong> Ran both a fresh Claude instance and Codex again
+  (same setup as round two — Codex with <code>--add-dir</code> access to both real repos), this time
+  specifically checking round two's own fixes rather than re-reviewing everything from scratch. Both
+  reviewers independently caught the same two things (strong convergence signal): Phase 2's corrected query
+  used <code>.limit(1)</code> while a BDD scenario claimed it could detect "more than one" matching document —
+  structurally impossible with that limit, fixed by removing the restrictive limit and checking
+  <code>snapshot.size</code> instead; and that same query's business-filter-only fix only proves rule
+  compliance for manager/admin, not staff — sitting inconsistently next to Phase 1's own still-open
+  decision-needed box about this exact function, fixed by giving it the full
+  <code>queryReadableMeetings()</code> role-aware treatment like every other broken query in the audit.
+  <strong>Claude's pass separately caught something more serious than either reviewer's earlier findings:</strong>
+  this plan's own claim that <code>firebase deploy --only firestore:indexes</code> is exempt from the
+  "approved to change firebase" approval gate is factually wrong — checked directly against the actual
+  standing instruction (global <code>CLAUDE.md</code>), which names all three <code>--only</code> forms,
+  indexes included, as requiring that literal phrase before deploying. Had this plan been executed as
+  originally written, an index deploy could have gone out without the approval this project's own standing
+  rules require — a real policy-compliance error this review process exists to catch, not a cosmetic one.
+  Fixed in both places it appeared (Phase 1's checklist, Resume Instructions). <strong>Codex separately
+  verified and disproved a claim from round two:</strong> "every meeting has <code>threadNextMeetingId:
+  null</code>" is false — the "split meeting" creation path (<code>js/app.js:1710-1735</code>) sets no thread
+  fields at all, verified directly. Closed by making <code>linkMeetingToThread()</code> always explicitly set
+  <code>threadNextMeetingId: null</code> on the meeting it links as the new chain-end, rather than relying on
+  creation-time initialization that isn't universal. Also fixed: composite-index-mandatory claims softened to
+  "may be needed, confirm via emulator/deploy" in three places (equality-only compound queries don't always
+  need one, though <code>array-contains</code> + <code>in</code> specifically often does); two more audit-
+  table rows (<code>js/app.js:2950</code>, <code>:4858</code>) corrected from "add a business filter" to
+  either the full role-aware helper or, for the thread-rename feature specifically, restricting it to
+  manager/admin for v1 given a deeper mixed-ownership batch-write problem on top of the read-side issue;
+  explicit merge semantics added to the <code>queryReadableMeetings()</code> helper design (dedupe, sort,
+  THEN limit — not limit-per-branch-then-merge); the "empirically verified" framing in Phase 1 was overstated
+  and narrowed to precisely what the 8 scenarios actually covered; a stale "reuses ... unchanged" claim about
+  <code>linkMeetingToThread()</code> in the top metadata block was corrected; Phase 4 was given the same
+  explicit helper-reuse note Phase 5 already had. <strong>Both reviewers, independently, called the round-two
+  fixes fundamentally sound</strong> — the Phase 1 rule split, Phase 3's guard, and Phase 4's
+  no-new-rule-needed correction all held up under renewed scrutiny; nothing from round two was reversed, only
+  extended or precision-corrected. Given round three's findings were narrower in scope than round two's and
+  substantially convergent between the two independent reviewers, this is being brought back to Christie now
+  rather than continuing to iterate unprompted.</li>
 </ul>
 
 </body>
