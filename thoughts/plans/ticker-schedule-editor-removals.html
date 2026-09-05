@@ -598,6 +598,28 @@ as specified. Corrections to claims made above:</p>
   <code>existingFuture</code>, not the sentinel.</li>
 </ul>
 
+<h2>Empty-map audit — complete (Sep 5)</h2>
+<div class="decision-needed" style="background:#eafaf3;">
+  <strong>Round 3's recommended action, done.</strong> Rather than keep discovering empty-map erasures one
+  per review round, every write that can hand a map to a merge was enumerated and its empty case worked
+  out. <strong>Result: the hazard is confined to two functions.</strong>
+  <table>
+    <tr><th>Write site</th><th>Empty-map exposure</th></tr>
+    <tr><td><code>handleSaveSchedule</code> base branch — <code>js/app.js:3196</code></td><td><strong>EXPOSED</strong> — <code>overrides</code> written unconditionally; 3 live paths reach it empty (#11)</td></tr>
+    <tr><td><code>handleSaveSchedule</code> future branch — <code>js/app.js:3188</code></td><td><strong>EXPOSED</strong> — same three paths, erasing <code>futureSchedule.overrides</code> instead</td></tr>
+    <tr><td><code>handleAiSaveAll</code> — <code>js/app.js:4824</code></td><td><strong>EXPOSED</strong> — hardcoded <code>overrides: {}</code> (#10) and <code>recurring: {}</code> when the AI returns no days (#12)</td></tr>
+    <tr><td><code>handleAiSaveEdits</code> — <code>js/app.js:4951</code>, <code>:4970</code></td><td>Safe — <code>mergedOverrides</code> is built from existing + edits, so it is only empty when there is nothing to lose</td></tr>
+    <tr><td>Confirmed-sub write — <code>js/app.js:7001</code></td><td>Safe — <code>newOverrides</code> starts from existing and adds; same reasoning</td></tr>
+    <tr><td><code>applyTimeOffOverrides</code> — <code>js/app.js:7314</code></td><td>Safe — additive by construction</td></tr>
+    <tr><td><code>removeTimeOffOverrides</code> — <code>js/app.js:7337</code></td><td>Safe — already uses <code>FieldValue.delete()</code> sentinels, so the map is never empty</td></tr>
+    <tr><td>CSV importer — <code>js/app.js:5590</code></td><td>N/A — uses <code>mergeFields</code>, replaces wholesale by design</td></tr>
+  </table>
+  <strong>Conclusion:</strong> one shared write-shape guard applied in
+  <code>handleSaveSchedule</code> and <code>handleAiSaveAll</code> closes every known instance. The
+  pattern that produced three rounds of showstoppers does not extend further than this — every other
+  schedule write builds its map additively from stored data.
+</div>
+
 <h2>Open decisions</h2>
 <div class="decision-needed" style="background:#eafaf3;">
   <strong>RESOLVED Sep 5 — the AI note-seeding question.</strong> Christie's call, after working through a
@@ -620,8 +642,31 @@ as specified. Corrections to claims made above:</p>
   <code>editOverride()</code> so Remove deletes and Edit edits. "Dedup the duplicate grid?" is moot —
   Phase 1 deletes the duplicate renderer outright rather than deduping it.
 </div>
-<div class="decision-needed">
-  <strong>STILL OPEN — 1. What should AI build mode do to existing dated overrides?</strong> Phase 2 must
+<div class="decision-needed" style="background:#eafaf3;">
+  <strong>RESOLVED Sep 5 — all five remaining decisions, Christie's call.</strong>
+  <ol>
+    <li><strong>AI build mode always targets the permanent base schedule</strong>, never
+    <code>futureSchedule</code> — matching what its UI already promises
+    (<code>js/app.js:4588</code>). This also decouples Phase 1 from Phases 6 and 7.</li>
+    <li><strong>A weekday the AI omits means "remove that day."</strong> The build prompt explicitly
+    instructs it to encode "off" as omission
+    (<code>netlify/functions/schedule-builder.js:100</code>), so build mode genuinely replaces rather
+    than merges.</li>
+    <li><strong>"New Schedule" preserves existing dated overrides.</strong> Today it wipes them, but only
+    as a side effect of the empty-map exception, not by design. Preserve now; deleting deliberately
+    becomes possible once Phase 5 lands.</li>
+    <li><strong>AI build mode preserves existing dated overrides</strong> — same reasoning as the note
+    decision: the AI has no way to express them, so its silence carries no intent.</li>
+    <li><strong>Timezone (Phase 7) is logged separately</strong>, not fixed here. Real, but unrelated to
+    the write-semantics work.</li>
+  </ol>
+  The unifying principle behind 2&ndash;4: <strong>a blank or absent value only means "delete" when it
+  came from a source that could have expressed the value.</strong> The AI can express weekdays, so
+  omission means removal. It cannot express notes or dated overrides, so its silence means preserve.
+</div>
+<div class="decision-needed" style="background:#f7f7f7;">
+  <strong>Superseded — the original wording of these five, kept for the record:</strong>
+  <br>1. What should AI build mode do to existing dated overrides? Phase 2 must
   stop sending <code>overrides: {}</code>, but that leaves the question of intent. The UI says "create or
   replace a permanent recurring schedule", which says nothing about dated overrides. Preserving them is
   almost certainly right, but it should be decided rather than inherited.
