@@ -38,10 +38,12 @@
   ("okay yes, let's mark it execution ready"), after asking directly for my own independent judgment first
   (not just relaying the last review's verdict) and receiving it. Drafted same day from a same-session
   brainstorm.
-  <strong>Progress:</strong> Phases 1 and 2 are built. Phase 1 is deployed and live; Phase 2 is committed
-  locally and <em>not pushed</em> (pushing to GitHub is what deploys Recap, via Render auto-deploy).
-  Phases 3-5 not started. Each built phase has its own status box at the top of its section — read that
-  before the phase body, which describes the design as planned, not necessarily as shipped.
+  <strong>Progress (Sep 5, 2026):</strong> Phase 1 is deployed and live. <strong>Phase 2 was built,
+  reviewed four times, and then removed along with the entire threads feature</strong> — see its status box
+  and the Decisions Log. Grouping is by <code>series</code> only now, which already did the job. Phases 3
+  and 4 stand; Phase 5 is rewritten around series. Nothing since Phase 1 is pushed, so production is
+  unchanged. Each phase has a status box at the top of its section — read that before the phase body,
+  which describes the design as planned, not as it ended up.
   <strong>Four independent review rounds ran before approval</strong> (round 1: one Claude pass; round 2:
   Claude + Codex with real repo access, found and fixed a genuine security bypass and a risk that this plan's
   own core feature would silently break in production; round 3: Claude + Codex again checking round 2's
@@ -599,49 +601,38 @@ today.</p>
   </ul>
 </div>
 
-<h2>Phase 2 — Retroactive meeting-to-thread linking</h2>
+<h2>Phase 2 — Retroactive meeting-to-thread linking <em>(built, then removed)</em></h2>
 <div class="resolved">
-  <strong>Implemented Sep 4, 2026 — committed, NOT pushed, therefore NOT live.</strong> Three
-  <code>recap</code> commits: <code>3ed07c9</code> (the feature), <code>c6e91d5</code> and
-  <code>ad409f3</code> (fixes from two implementation-review rounds). Pushing to GitHub is what deploys this
-  app — Render auto-deploys on push — so nothing reaches production until someone pushes. No rules change and
-  no <code>firebase deploy</code> of any kind was needed for this phase.
-  <p><strong>What shipped, beyond what this phase's body describes:</strong> the detail-view picker and the
-  three fixes already planned here (transaction, explicit <code>threadNextMeetingId: null</code>, self-link
-  exclusion) all landed. On top of those, both pickers now exclude candidates already linked forward, and the
-  chain-end lookup reports "no end found" instead of returning silently.</p>
-  <p><strong>Two independent implementation-review rounds found seven real bugs — four of them introduced by
-  this phase's own new code.</strong> That is a materially worse first-pass hit rate than the design reviews
-  suggested, and is the honest argument for reviewing implementations separately from designs. Round 1
-  (Codex, real repo access) found five; round 2 (a fresh Claude instance) found four more plus a repo-safety
-  trap. The full list with what each one was is in the Decisions Log. The two most consequential, both
-  reachable with no corrupt data and no unusual timing — only a second person acting between the picker
-  rendering and the click landing:</p>
-  <ul>
-    <li><strong>Readable is not writable.</strong> The picker offered any meeting the viewer could
-    <em>read</em>, but linking writes <code>threadNextMeetingId</code> onto that meeting, and the live update
-    rule only lets a non-manager update meetings they created. A staff member picking a meeting shared with
-    them hit a guaranteed permission-denied. New <code>canLinkToMeeting()</code> now gates both pickers.</li>
-    <li><strong>A target could be dragged into a second thread.</strong> The transaction re-checked
-    <code>threadNextMeetingId</code> but not <code>threadId</code> — and a meeting that has just become the
-    <em>end</em> of thread X legitimately has nothing after it, so that check passes. The new-thread branch
-    would then rewrite its <code>threadId</code> while X's chain still pointed at it. The transaction
-    re-check this phase was designed around was necessary but not sufficient.</li>
-  </ul>
-  <p><strong>Tests:</strong> Recap had no test suite; it has one now (<code>npm test</code> from
-  <code>~/recap</code>, jest wrapped in <code>firebase emulators:exec</code>, following the pattern already
-  used in <code>tinker-timeclock</code>). Pure helpers live in <code>js/thread-link-helpers.js</code> so they
-  can be <code>require()</code>d — <code>js/app.js</code> has top-level <code>document.*</code> calls and
-  can't load in Node, the same constraint <code>studio-hub/js/archive-helpers.js</code> exists for. Check the
-  printed count at run time; do not hardcode it here. Every fix was verified failing-first: the tests covering
-  each change were run against the previous implementation and confirmed to fail.</p>
-  <p><strong>Verification limits, stated plainly:</strong> no part of this was exercised against real
-  Firestore data by a real user. The browser session available was Julia's, whose <code>appAccess</code> does
-  not include <code>'recap'</code> at all — so every Recap read fails for her, and expanding her access is
-  forbidden without Christie's approval (<code>recap/AGENTS.md</code>). UI behaviour was verified by state
-  injection against the running local app (correct control for threaded vs unthreaded meetings, candidate
-  filtering, role-aware filtering, search, and the already-in-a-thread guard), with zero writes. A live
-  manager-session pass is still owed.</p>
+  <strong>Superseded Sep 5, 2026. Built, reviewed four times, then removed along with the whole threads
+  feature. Never deployed.</strong> Everything below this box describes the design as planned; it is kept
+  as the record of what was tried and why it went, not as a description of the app.
+  <p><strong>What happened.</strong> Phase 2 was implemented (<code>3ed07c9</code>) and then fixed across
+  four independent implementation-review rounds (<code>c6e91d5</code>, <code>ad409f3</code>,
+  <code>635fb4e</code>, <code>d8052d5</code>) which found <strong>13 real bugs</strong>. Then Christie
+  asked the question that ended it: "are threads causing massive issues here? Should we scrap threads and
+  instead just have a filter by meeting type, which would be almost the same functionally?"</p>
+  <p><strong>She was right, and two things already in the app proved it:</strong> the series filter in
+  Meeting History already answers "show me all CHS Ops Meetings", and the series dropdown in a saved
+  meeting's detail view already answers "file this meeting with related ones" — which is precisely what
+  Phase 2's retroactive linking was rebuilding. Threads were a second grouping mechanism layered on a
+  working one.</p>
+  <p><strong>And threads were where the fragility lived.</strong> Nearly all 13 bugs were chain-integrity
+  failures: two chain ends, zero chain ends, self-cycles, dangling pointers, orphaned pre-stamps, a target
+  moving between the picker and the click. That is what a hand-maintained doubly-linked list spread across
+  documents does with no server to enforce its invariants. Grouping by a field has none of those failure
+  modes — a meeting either has a <code>seriesId</code> or it does not.</p>
+  <p><strong>Three facts made the call cheap and clear:</strong> zero threads had ever been created in
+  production (checked across 96 backups covering every surviving meeting back to February), so nothing was
+  lost and nothing needed migrating; <code>threads</code> was the one collection nobody had partitioned by
+  user, which would have broken the moment Anika and Maryssa joined (see the multi-user section below); and
+  Phase 5 becomes simpler expressed over series.</p>
+  <p><strong>What the four rounds were still worth,</strong> stated honestly because the code was thrown
+  away: they established Recap's first test suite, found and fixed the manager-only sharing gap (kept, in
+  <code>3ed07c9</code>), and surfaced a stale <code>firestore.rules</code> copy in this repo that could have
+  overwritten production rules for all 21 apps — plus a second one in <code>clay-hub-booking</code> found by
+  the audit that followed. None of that was thread work. The thread work itself was a sunk cost, and the
+  lesson worth keeping is in the Decisions Log: nobody asked whether the feature was needed until after it
+  had been built and reviewed four times.</p>
 </div>
 <div class="phase">
   <h3>Acceptance criteria</h3>
@@ -1084,6 +1075,15 @@ today.</p>
 </div>
 
 <h2>Phase 5 — "Review open tasks" rollup across a set of meetings</h2>
+<div class="resolved">
+  <strong>Rescoped Sep 5, 2026: "across a thread" becomes "across a series."</strong> Threads no longer
+  exist. A series is the grouping now — and a better fit: it is already per-user, already has a filter UI in
+  Meeting History, and needs no chain to be intact for the rollup to be correct. Everywhere the phase body
+  below says "thread", read "series"; the <code>queryReadableMeetings()</code> scoping it depends on is
+  unchanged and still live. Christie described this outcome herself when scrapping threads: "once we have
+  the piece wired up where you can pull all outstanding tasks into one view, you then kind of see that it's
+  connected."
+</div>
 <div class="phase">
   <h3>Acceptance criteria</h3>
   <p>Christie can select a set of meetings — first version: a single thread — and see one consolidated,
@@ -1150,6 +1150,54 @@ today.</p>
   </ul>
 </div>
 
+<h2>Multi-user: what happens when Anika and Maryssa start using their own logins</h2>
+<p>Added Sep 5, 2026 at Christie's request — "I'd like to consider what happens when more than just me
+starts using their own signed-in version of Recap. Are we going to run into issues if two people are using
+it at the same time?" Answered by reading the code, not from memory. Recap has only ever had one real
+concurrent user, so none of this has been exercised.</p>
+
+<div class="resolved">
+  <strong>Series are already per-user, and each person sets up their own.</strong>
+  <code>loadSeries()</code> filters <code>where('createdBy','==',uid)</code>, so nobody sees anyone else's
+  mailboxes and Christie does not need to provision anything — Anika and Maryssa create their own in
+  Settings. Christie, as admin, deliberately sees all of them there for management.
+  <em>One caveat:</em> the Settings page fetches <strong>all</strong> series and filters client-side, so
+  another user's browser downloads every series name even though none are displayed to them. Not a visible
+  leak, worth closing when convenient, not urgent.
+</div>
+
+<div class="depends">
+  <strong>Meeting types are NOT per-user, and the only "tailoring" that exists is hardcoded to one person.</strong>
+  The nine meeting types are a fixed list in <code>index.html</code>, identical for everyone — except that
+  <code>setupJuliaDefaults()</code> keys off a literal email address (<code>js/app.js</code>) to give Julia
+  auto-numbered "Voice Memo N" titles, a two-option type list, and auto-filled participants. With Julia
+  unlikely to get access, that layer is dead weight, and there is <strong>no general mechanism</strong>
+  behind it. If per-person meeting types are wanted, that is a small real feature, not a setting. Open
+  question, not scheduled.
+</div>
+
+<div class="resolved">
+  <strong>The one genuinely broken thing was <code>threads</code> — and removing threads fixed it.</strong>
+  Thread documents had no owner field at all and every thread query was unfiltered, so the moment a second
+  person created a thread it would appear in everyone's picker. Worse than clutter: opening someone else's
+  thread ran <code>findThreadChainEnd</code> scoped to meetings <em>you</em> can read, found none, and
+  reported "Could not find the end of this thread" — a dead end with a misleading error. Meetings were
+  partitioned properly by Phase 1; threads never were. This was one of the reasons threads went.
+</div>
+
+<div class="depends">
+  <strong>There is no live sync anywhere in Recap — every read is a one-time <code>.get()</code>.</strong>
+  Confirmed: <code>onSnapshot</code> appears nowhere in the codebase. Two people using the app at the same
+  time each hold a stale view until they reload. Today that is mostly harmless because data is partitioned
+  by creator, so they are rarely looking at the same document. It stops being harmless in two places:
+  <strong>Phase 3</strong>, whose entire premise is a shared user checking items off and the owner seeing
+  it without reloading — that phase introduces the app's first listener, and that is the real work in it;
+  and <strong>stale in-memory objects</strong>, which is not hypothetical — round 4 of the Phase 2 reviews
+  found a real corruption path that began with one tab holding a meeting object another tab had already
+  changed. Any future feature where two people touch the same document needs to assume the client's copy
+  is out of date.
+</div>
+
 <h2>Completeness check</h2>
 <p><strong>Revised in second review round — Phase 1's real scope is bigger than "a correctness fix."</strong>
 It is still the right thing to ship first, but it is no longer just a rules edit: it requires auditing and
@@ -1171,30 +1219,41 @@ rather than designing its own. Phase 5 benefits from Phase 2 (retroactive linkin
 isn't blocked by it — a thread with only forward-linked meetings still works.</p>
 
 <h2>Resume instructions</h2>
-<p><strong>State as of Sep 4, 2026 (end of session):</strong> Phase 1 is live in production. Phase 2 is
-built, reviewed twice, and committed in <code>~/recap</code> (<code>3ed07c9</code>, <code>c6e91d5</code>,
-<code>ad409f3</code>) but <strong>not pushed</strong>, so it is not live. Phases 3-5 are not started. The
-<code>loadRecapUsers()</code> gap that sat open before Phase 2 is resolved — by making sharing
-manager/admin-only rather than by fixing the query; see its box above, including the correction that this
-plan's originally proposed fix for it could never have worked.</p>
-<p><strong>The open question, and it is genuinely Christie's:</strong> whether to push Phase 2 as-is or run a
-third implementation-review round first. The argument for another round is not ceremony — it is the trend.
-Round 1 found five real bugs, round 2 found four more, and four of the seven were introduced by this phase's
-own new code rather than inherited. Phase 1's design reviews converged (each round narrower than the last);
-Phase 2's implementation reviews did not, yet. The argument against is that every fix has a test verified to
-fail against the code before it, and the remaining risk concentrates in a feature nobody is using yet.</p>
-<p><strong>Also still owed, whenever Phase 2 does go out:</strong> a pass against real data in a live
-manager session. Everything so far was emulator tests plus DOM/state injection — see the Phase 2 status
-box for exactly why (the available browser session was a staff account with no Recap access at all).</p>
-<p><strong>If continuing to Phase 3</strong>, read that phase's own section, and note its narrowed premise
-recorded in the <code>loadRecapUsers()</code> box. Phase 3 needs a rules change and therefore the standing
-gate: no <code>firebase deploy</code> of any kind — including <code>--only firestore:indexes</code>, which
-needs the same phrase as rules do, not an exemption — until Christie separately says the literal phrase
-"approved to change firebase." Plan-level execution-ready has never covered that, and Phase 2 demonstrated
-that it does not cover implementation correctness either: this project's convention
-(<code>feedback_execution_needs_second_model_review.md</code>) calls for an independent review of each
-Firestore-writing phase's actual diff once code exists, and in Phase 2 that convention paid for itself
-twice over.</p>
+<p><strong>State as of Sep 5, 2026.</strong> Phase 1 is live. Phase 2 and the whole threads feature are
+<em>gone</em> — built, reviewed four times, then removed once it became clear series already did the job
+(see Phase 2's box). Split-meeting was removed the same day for a related reason: it automatically
+fragmented multi-topic recordings, which is wrong for meetings used as a decision log. Grouping is by
+<code>series</code>, and that is the one mechanism — <code>recap/CLAUDE.md</code> now says so, so a future
+"relate these meetings" request reaches for series first instead of rebuilding threads.</p>
+<p><strong>Nothing since Phase 1 is pushed.</strong> Pushing to GitHub is what deploys Recap (Render
+auto-deploy), so production still has Phase 1 plus the three small features from Sep 4. Unpushed commits:
+manager-only sharing, the four review rounds, split removal, threads removal.</p>
+<p><strong>Next, in the order that makes sense:</strong></p>
+<ul>
+  <li><strong>Push</strong>, then use it. What is unpushed is now mostly <em>removal</em>, which is far
+  lower risk than what it replaced, and Christie has had no chance to use any of it. A real week of
+  meetings with Anika and Maryssa will teach more than a fifth review round would.</li>
+  <li><strong>Phase 4 ("My Open Tasks") is the highest-value thing left</strong> — it is what Christie
+  described wanting when she scrapped threads: every open item assigned to her, across every meeting, in
+  one view. It needs no rules change and no new collection. Read its own section; its assignee-identity
+  decision (name-string matching plus a "not mine" dismiss) still stands.</li>
+  <li><strong>Phase 3 (live check-off) is the one with real unknowns left</strong> — a rules change behind
+  the "approved to change firebase" gate, and the app's first <code>onSnapshot</code>. See the multi-user
+  section: no part of this app currently assumes another person can change a document under you.</li>
+  <li><strong>Housekeeping, small:</strong> archive Julia's seven mailboxes (Settings, admin only — a
+  toggle per series, reversible); decide whether to strip the email-keyed Julia personalization layer; and
+  the Settings series over-fetch.</li>
+</ul>
+<p><strong>The standing gates have not moved.</strong> No <code>firebase deploy</code> of any kind —
+including <code>--only firestore:indexes</code> — until Christie says the literal phrase "approved to
+change firebase". And per this project's own convention, any phase that writes Firestore data still gets
+an independent review of its actual diff once code exists. Phase 2 is the strongest evidence yet that this
+convention earns its keep: four rounds, 13 real bugs, and each round found defects in the previous round's
+fixes.</p>
+<p><strong>The lesson worth carrying, though, is not about review.</strong> Four rounds of careful review
+made the thread code progressively more correct and never once asked whether it should exist. The question
+that ended it — "do we even need this?" — came from Christie, after all the work was done. Ask it first
+next time; it is cheaper than any number of review rounds.</p>
 
 <h2>Decisions Log</h2>
 <ul>
@@ -1561,6 +1620,61 @@ twice over.</p>
   including false positives before install. Note the hook only governs commands Claude Code runs — it cannot
   protect a deploy typed directly into a terminal, which is why deleting the files mattered more than the
   hook did.</li>
+
+  <li><strong>Sep 5, 2026 — review rounds 3 and 4: three more bugs, then two more, each round finding
+  defects in the previous round's fixes.</strong> Round 3 (Claude, run because <code>ad409f3</code> was
+  unreviewed) found that the <code>lastMeetingDate</code> clamp added in round 2 had been applied to one
+  branch and not its sibling ten lines below; that routing the split delete through
+  <code>deleteMeeting()</code> had converted a delete that always succeeded into an all-or-nothing batch
+  that could fail entirely (<code>batch.update()</code> on a missing document fails the whole batch with
+  NOT_FOUND — verified on the emulator, not assumed); and that the conditional rollback could silently skip
+  itself on a read failure. Round 4 (Claude, run because <code>635fb4e</code> was unreviewed) found that
+  the existence check from round 3 gated <em>whether</em> each neighbour write happened but still wrote the
+  raw id, pointing a surviving neighbour at a document just proven gone — leaving the thread with zero
+  chain ends, silent and unrepairable where the NOT_FOUND had been loud; and that round 3's "default to
+  rolling back" was backwards, because <code>already-linked</code> can mean our own commit landed and the
+  confirming read then fails for the same correlated network reason. Both rounds' findings were fixed
+  (<code>635fb4e</code>, <code>d8052d5</code>) with tests verified to fail against the prior code. Worth
+  recording: twice in a row, the tests written alongside a fix confirmed the case the author was thinking
+  about rather than the behaviour claimed — round 3 caught that in round 2, round 4 caught it in round 3.</li>
+
+  <li><strong>Sep 5, 2026 — split-meeting removed.</strong> Christie asked what it was and whether it was
+  causing the fragility. It automatically fragmented any recording the AI judged to cover 2+ topics
+  belonging to different series, with no confirmation — a confirm dialog existed in the code but was never
+  called. Production data settled it: it had fired exactly once in seven months (one of Julia's voice
+  memos), and the deciding argument was Christie's own description of the use case — meetings with Anika
+  and Maryssa as an action-item tracker and decision log, where covering several topics is normal and the
+  summary already separates them by header. Seven of the eleven series are Clay Hub topic mailboxes, so a
+  Clay Hub ops meeting covering membership + facilities + staffing matched the split trigger exactly and
+  would have cut its own decision log into pieces the first time Maryssa recorded one. Removed rather than
+  gated behind the existing dialog: if it would fire on most ops meetings, a confirmation is a question
+  answered "no" every time.</li>
+
+  <li><strong>Sep 5, 2026 — threads removed entirely; Phase 2 withdrawn rather than shipped.</strong>
+  Christie, deciding whether to push after four review rounds, asked instead: "are threads causing massive
+  issues here? Should we scrap threads and instead just have a filter by meeting type, which would be
+  almost the same functionally for us I think?" Checking rather than answering from impression showed the
+  functionality already existed twice over — the series filter in Meeting History, and the series dropdown
+  in the detail view that does exactly what Phase 2's retroactive linking was rebuilding. Combined with
+  where the bugs actually were (nearly all 13 were chain-integrity failures inherent to a hand-maintained
+  linked list across documents), zero threads ever existing in production, <code>threads</code> being the
+  one unpartitioned collection, and Phase 5 reading better over series, the answer was clear. Removed the
+  creation-time picker, the retroactive modal, the link transaction, chain-end lookup, thread navigation,
+  the by-thread view, Settings thread management, the collection, the helper module and both test files
+  (<code>13c48c2</code>, ~2,000 lines). Kept: manager-only sharing, Phase 1's live query fixes, and the
+  test harness. <code>recap/CLAUDE.md</code> now documents the grouping model and why the second mechanism
+  went, so this is not rebuilt by accident.
+  <br><strong>The process lesson, recorded deliberately:</strong> four review rounds made the thread code
+  steadily more correct and never asked whether it should exist. "Do we even need this?" came from
+  Christie, after the work was done. That question belongs before the first review round, not after the
+  fourth.</li>
+
+  <li><strong>Sep 5, 2026 — multi-user behaviour audited</strong> at Christie's request, ahead of Anika and
+  Maryssa getting their own logins. Findings written up in their own section above: series are already
+  per-user and self-serve; meeting types are not per-user at all and the only personalization that exists
+  is hardcoded to one email address; Settings over-fetches series and filters client-side; there is no live
+  sync anywhere in the app, which is fine while data is partitioned by creator but is the actual substance
+  of Phase 3. The one genuinely broken thing was thread ownership, which the threads removal resolved.</li>
 </ul>
 
 </body>
