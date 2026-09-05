@@ -35,8 +35,8 @@
 <h1 id="plan-title">Plan: Ticker Schedule Editor — Removals Silently Fail</h1>
 
 <div class="status" style="background:#fdecea;border-left-color:#d9534f;">
-  Status: <strong>NOT STARTED — code frozen. Round 2 complete; NOT execution-ready.</strong>
-  Created Sep 5, 2026; revised same day after round 2.
+  Status: <strong>NOT STARTED — code frozen. Restructured after round 2; round 3 review in progress.</strong>
+  Created Sep 5, 2026; restructured same day.
   <br><br>
   <strong>Round 2 (Claude + Codex, independently) says do not execute.</strong> Both converged on the same
   headline: Phase 1's "low risk" dedup would make Phase 2 destructive, recreating the exact note loss this
@@ -205,100 +205,171 @@ They split on the remedy:</p>
   another manager added while the editor sat open.
 </div>
 
-<h2>Proposed phases</h2>
-<p>Ordering is not arbitrary — Phase 1 is a prerequisite, not a cleanup.</p>
+<h2>Phases</h2>
+<div class="decision-needed">
+  <strong>Restructured Sep 5, round 3 revision.</strong> The previous structure was found unsafe by round
+  2 (dedup would make note-deletion destructive). Christie chose the spine below: <strong>make
+  <code>aiEditInBuilder()</code> reuse <code>openScheduleEditor()</code> instead of hand-rolling its own
+  setup.</strong> That one change collapses symptoms #7, #8, #9 and the note-seeding hazard into a single
+  fix, because those bugs all trace to the AI path re-implementing — incompletely — what
+  <code>openScheduleEditor()</code> already does correctly.
+  <br><br>
+  Per <code>AGENTS.md</code>, each Firestore-writing phase now carries its own failing-test-first
+  requirement rather than deferring all regression coverage to the end.
+</div>
 
 <div class="phase">
-<h3>Phase 1 — Reset stale editor state in <code>aiEditInBuilder()</code> <span class="sev sev-high">prerequisite &middot; shippable alone</span></h3>
-<p><strong>Scope widened Sep 5</strong> after review question 2 — see open decision 3. There are
-<strong>five</strong> pieces of state <code>openScheduleEditor()</code> sets that
-<code>aiEditInBuilder()</code> does not reset, not two:</p>
+<h3>Phase 0 — Measure the unknowns <span class="sev sev-high">gates 3, 5, 6</span></h3>
+<p>Four probes, one emulator run. This repo's rule is measure-don't-infer, and it has already been earned
+three times in this work (see Decisions Log). None of these are currently asserted by any test.</p>
 <ul class="checklist">
-  <li><code>scheduleEditOriginalOverrides</code> (symptom #7) — assigned in exactly one place,
-  <code>js/app.js:2981</code>. Latent today; becomes destructive the moment Phase 3 derives deletions
-  from it, since it would emit deletions for the <em>previous</em> employee's dates against
-  <em>this</em> employee's document.</li>
-  <li><code>window._editingFutureSchedule</code> (symptom #8) — assigned only at
-  <code>js/app.js:2975</code>, never cleared. Sends an AI-builder save into
-  <code>futureSchedule</code> instead of the live schedule.</li>
-  <li><strong>The <code>validFrom</code>/<code>validUntil</code> inputs (symptom #9) — an ACTIVE bug
-  today.</strong> <code>handleSaveSchedule()</code> reads them from the DOM
-  (<code>js/app.js:3165-3166</code>) and writes them when truthy, so the previously-opened employee's
-  date range is written onto this one.</li>
-  <li>Also fold in the <strong>template dedup</strong>: the two grid renderers
-  (<code>:2991</code>, <code>:4777</code>) are identical apart from two <code>placeholder</code>
-  attributes. Extract one <code>renderWeekGrid()</code> so the note column cannot be added to one and
-  not the other. Low risk; this phase already touches the function.</li>
+  <li><code>FieldValue.delete()</code> at <strong>depth 2</strong> — <code>futureSchedule.recurring.Sat</code></li>
+  <li><code>FieldValue.delete()</code> at <strong>depth 3</strong> — <code>futureSchedule.recurring.Mon.note</code> (Phase 3 needs this in the future branch)</li>
+  <li><strong>Sentinel through an object spread.</strong> <code>js/app.js:3179</code> writes
+  <code>{ ...existingFuture, recurring: {..., Sat: DELETE} }</code>. Does a sentinel survive being spread
+  into a nested merge?</li>
+  <li><strong>Delete of a key that is not there remotely.</strong> Phase 5 emits a delete for every empty
+  weekday column derived from <code>DAYS</code>, so most saves will send deletes for keys that never
+  existed. Error, or no-op?</li>
 </ul>
-<p><strong>Symptom #9 alone justifies shipping this phase on its own</strong>, ahead of the rest of the
-plan — it is corrupting date ranges today and its fix does not depend on anything else here.</p>
-<div class="bdd">
-  <strong>Given</strong> an admin edits Kathy's schedule (range 2026-08-24 &rarr; 2026-12-31), then closes it<br>
-  <strong>When</strong> they open the AI builder on Leah and save<br>
-  <strong>Then</strong> Leah keeps her own date range, her own future-schedule targeting, and no override
-  belonging to Kathy's dates is touched
-</div>
-<div class="bdd">
-  <strong>Given</strong> an admin edits Kathy's schedule, closes it, then opens the AI builder on Leah<br>
-  <strong>When</strong> they save Leah from the AI-populated grid<br>
-  <strong>Then</strong> no override belonging to Kathy's dates is touched on Leah's document
-</div>
+<p><em>Already measured Sep 5, no probe needed:</em> an explicitly-written empty map <strong>overwrites</strong>
+the target map — this is what makes symptom #10 real.</p>
 </div>
 
 <div class="phase">
-<h3>Phase 2 — Make notes clearable (fixes #3, #4)</h3>
-<p>A day or override that survives but whose note was cleared must emit
-<code>FieldValue.delete()</code> for that nested <code>note</code> key. The pure helper must stay pure —
-take the sentinel as a parameter, or have the caller apply it.</p>
+<h3>Phase 1 — <code>aiEditInBuilder()</code> reuses <code>openScheduleEditor()</code> <span class="sev sev-high">the spine &middot; shippable alone</span></h3>
+<p>Today <code>aiEditInBuilder()</code> (<code>js/app.js:4744-4801</code>) hand-rolls the editor setup: it
+sets <code>editingScheduleUid</code>, blanks <code>editingOverrides</code>, fills
+<code>early-clock-min</code>, and renders <strong>its own duplicate copy</strong> of the weekday grid from
+AI output. It does not set <code>scheduleEditOriginalOverrides</code>, does not set
+<code>window._editingFutureSchedule</code>, and does not populate the validity-date inputs.</p>
+<p><strong>Change it to call <code>openScheduleEditor(uid)</code> first, then overlay only the AI's
+hours</strong> (start / end / studio) onto the rendered grid inputs.</p>
+<p>What that fixes, in one move:</p>
+<table>
+  <tr><th>Symptom</th><th>Why it goes away</th></tr>
+  <tr><td>#7 stale <code>scheduleEditOriginalOverrides</code></td><td><code>openScheduleEditor()</code> sets it from the target's own doc (<code>js/app.js:2981</code>)</td></tr>
+  <tr><td>#8 stale <code>_editingFutureSchedule</code></td><td>Recomputed from the target's doc (<code>js/app.js:2970-2975</code>) — <strong>never hardcoded to <code>false</code></strong>, which round 2 showed would create a new silent failure</td></tr>
+  <tr><td>#9 stale validity dates</td><td>Populated from the target's doc (<code>js/app.js:2987-2988</code>)</td></tr>
+  <tr><td>Note-seeding hazard</td><td>The grid is seeded from the stored schedule, so note inputs arrive pre-filled with the person's real notes. <strong>Blank then genuinely means "a human cleared this," everywhere</strong> — no <code>notesAuthoritative</code> flag, no special case</td></tr>
+  <tr><td>Duplicate grid renderer</td><td>Deleted outright rather than deduped — there is only one renderer left</td></tr>
+</table>
+<div class="bdd">
+  <strong>Given</strong> Kaitlyn's Wednesday carries the note "11:30 Leadership Team Meeting &middot; 12:30 1:1 — Kathy &amp; Kaitlyn &middot; 17:00 Teen Paint &amp; Draw"<br>
+  <strong>When</strong> an admin runs AI build mode on her and opens Edit in Builder<br>
+  <strong>Then</strong> the AI's new hours are shown, and her existing Wednesday note is still there in the note box
+</div>
+<div class="bdd">
+  <strong>Given</strong> an admin edited Kathy (range 2026-08-24 &rarr; 2026-12-31), then closed her<br>
+  <strong>When</strong> they open the AI builder on Leah and save<br>
+  <strong>Then</strong> Leah keeps her own date range, her own future-schedule targeting, and no override of Kathy's is touched
+</div>
+<p><strong>Tests:</strong> a failing test first, asserting the target's own bounds/notes/overrides are
+loaded — not the previously-opened employee's.</p>
+<p><strong>Shippable alone.</strong> Symptoms #8 and #9 are active today and this fixes them without
+depending on any other phase.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — Fix <code>handleAiSaveAll()</code> (symptom #10) <span class="sev sev-high">ACTIVE data loss &middot; independent</span></h3>
+<p>The only phase addressing a bug that is <strong>destroying data in production today</strong>. It is also
+the only phase reaching that code path at all — <code>handleAiSaveAll()</code>
+(<code>js/app.js:4824-4829</code>) bypasses <code>handleSaveSchedule()</code> entirely, so no other phase
+here touches it.</p>
+<ul class="checklist">
+  <li><strong>Never send <code>overrides: {}</code>.</strong> Omit the field when there is no override
+  patch. An explicitly-written empty map overwrites — measured.</li>
+  <li>Decide deliberately what build mode should do to <strong>existing dated overrides</strong>. The UI
+  says "create or replace a permanent recurring schedule" (<code>js/app.js:4588</code>), which says
+  nothing about dated overrides. Preserving them is almost certainly the intent.</li>
+  <li>Same function deep-merges <code>recurring</code> (<code>js/app.js:4827</code>), so omitted weekdays
+  are not removed either — symptom #1 through a second path.</li>
+  <li>Until this ships, the standing mitigation is: <strong>do not use "Save All Schedules" in AI build
+  mode on anyone who already has a schedule.</strong></li>
+</ul>
+<div class="bdd">
+  <strong>Given</strong> Leah has 16 dated overrides<br>
+  <strong>When</strong> an admin uses AI build mode on her and clicks "Save All Schedules"<br>
+  <strong>Then</strong> all 16 dated overrides are still there afterwards
+</div>
+<p><strong>Tests:</strong> failing test first, on the AI bulk-save write shape specifically.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — Notes visible, editable, and clearable</h3>
+<p>Only safe <em>after</em> Phase 1, which is what makes a blank note box meaningful.</p>
+<ul class="checklist">
+  <li>Add a note input per weekday to the (now single) grid renderer.</li>
+  <li>A day that survives with a cleared note emits <code>FieldValue.delete()</code> for that nested
+  <code>note</code> key. Depends on Phase 0's depth-3 probe for the future branch.</li>
+  <li>Keep the pure helper pure — pass the sentinel in, do not build it inside.</li>
+  <li>Same treatment for override notes (<code>js/app.js:3162</code>), which have the same defect.</li>
+</ul>
 <div class="bdd">
   <strong>Given</strong> Ivy's Thursday has the note "14:30 Thursday Huddle"<br>
-  <strong>When</strong> an admin clears that note field and saves<br>
+  <strong>When</strong> an admin clears that note box and saves<br>
   <strong>Then</strong> reloading shows no note on Thursday, and her hours are unchanged
 </div>
 </div>
 
 <div class="phase">
-<h3>Phase 2b — Make abandoning an override edit safe <span class="sev sev-high">must ship WITH Phase 3</span></h3>
-<p><strong>Added Sep 5</strong> in response to review question 1 — see open decision 1 for the worked
-example. <code>editOverride()</code> (<code>js/app.js:3068</code>) currently does
-<code>delete editingOverrides[dateStr]</code> so that "Add Override" re-adds the edited value. That is
-byte-identical to what <strong>Remove</strong> does (<code>js/app.js:3064</code>), so the save path
-cannot distinguish "removed this" from "started editing this and walked away."</p>
-<p>Today that ambiguity is harmless, because neither one actually deletes anything. Phase 3 removes that
-safety net. Shipping Phase 3 without this turns a harmless mis-click into a destructive one on the
-most-used editing gesture in the editor.</p>
+<h3>Phase 4 — Make abandoning an override edit safe <span class="sev sev-high">must ship WITH Phase 5</span></h3>
+<p><code>editOverride()</code> (<code>js/app.js:3068</code>) does
+<code>delete editingOverrides[dateStr]</code> so "Add Override" re-adds it — byte-identical to what
+<strong>Remove</strong> does (<code>js/app.js:3064</code>). The save path cannot tell them apart. Harmless
+today because nothing deletes; destructive the moment Phase 5 lands.</p>
 <ul class="checklist">
-  <li>Stop deleting the key on edit. Track the date being edited instead, and have
-  <code>handleAddOverride()</code> replace that entry.</li>
-  <li>Side benefit: the row stops vanishing from the list while you edit it.</li>
-  <li>After this, Remove and Edit are genuinely distinguishable, and open decision 1 needs no behaviour
-  trade-off at all.</li>
+  <li>Stop deleting the key up front; track the date being edited instead.</li>
+  <li><strong>Handle the move gesture</strong> (round 2 catch): Edit Nov 11 &rarr; change the date to
+  Nov 12 &rarr; Add currently <em>moves</em> the override. Without explicitly deleting the tracked key
+  when it differs from the submitted date, this becomes a <strong>duplicate</strong> — Nov 11 kept and
+  Nov 12 added.</li>
+  <li>Reset the tracked date on: editor open, AI-editor open, successful Add, Remove of the same date,
+  and successful save. Edit A then Edit B must not leave A queued for deletion.</li>
 </ul>
 <div class="bdd">
   <strong>Given</strong> Leah has an override on 2026-11-11<br>
   <strong>When</strong> an admin clicks Edit on it, does not press "Add Override", and saves<br>
   <strong>Then</strong> her 2026-11-11 override is unchanged — not deleted
 </div>
+<div class="bdd">
+  <strong>Given</strong> the same override<br>
+  <strong>When</strong> an admin clicks Edit, changes the date to 2026-11-12, and presses Add<br>
+  <strong>Then</strong> the override has moved — 2026-11-12 exists and 2026-11-11 does not
+</div>
 </div>
 
 <div class="phase">
-<h3>Phase 3 — Make removals real (fixes #1, #2, #5)</h3>
+<h3>Phase 5 — Make removals real (fixes #1, #2, #5)</h3>
 <ul class="checklist">
-  <li><strong>Weekdays</strong>: derive from <code>DAYS</code> — the grid always renders all 7 columns, so
-  emit <code>FieldValue.delete()</code> whenever a column has no hours. No remote read needed.</li>
-  <li><strong>Overrides</strong>: diff against <code>scheduleEditOriginalOverrides</code> (correct only
-  once Phase 1 lands). Compute the delete set with <code>Object.keys</code>/<code>in</code>,
-  <strong>never truthiness</strong> — a day-off override is <code>null</code>, which is falsy but must be
-  preserved, not deleted.</li>
+  <li><strong>Weekdays</strong>: derive from <code>DAYS</code> — the grid always renders 7 columns — and
+  emit <code>FieldValue.delete()</code> for any column with no hours.</li>
+  <li><strong>Overrides</strong>: diff against <code>scheduleEditOriginalOverrides</code>. Compute with
+  <code>Object.keys</code>/<code>Object.hasOwn</code>, <strong>never truthiness</strong> — a day-off
+  override is <code>null</code>, falsy but must be preserved. Round 2 verified this diff is otherwise
+  correct, including the concurrency direction.</li>
+  <li><strong>The <code>forceNew</code> case</strong> (round 2 catch):
+  <code>openScheduleEditor(uid, true)</code> (<code>js/app.js:314</code>) sets
+  <code>base = {recurring:{}, overrides:{}}</code>, so the snapshot is empty even though the remote doc
+  has overrides. The diff would then be <code>{}</code> vs <code>{}</code> &rarr; empty delete set, and
+  "New Schedule" would clear weekdays while every stale override silently survives. Decide explicitly
+  what "New Schedule" means.</li>
   <li><strong>Validity bounds</strong>: write explicit <code>null</code> when cleared.
-  <code>getShiftForDate()</code> already treats null as unbounded.</li>
-  <li><strong>Keep two payloads.</strong> The sentinel-laden map is for the write only. The clean map is
-  what <code>sendOneOffReminderConfirmations()</code> reads — do not let sentinels reach it.</li>
+  <code>getShiftForDate()</code> already treats null as unbounded, and round 2 verified every consumer
+  null-checks.</li>
+  <li><strong>Never send an empty patch map</strong> — omit the field instead. This is not a nicety; an
+  empty map overwrites (symptom #10) and would destroy the concurrency safety this approach is chosen
+  for.</li>
+  <li><strong>Two payloads.</strong> The sentinel-laden map is for the write only.
+  <code>sendOneOffReminderConfirmations()</code> gets the clean map — and should be made defensive
+  anyway: it is called without <code>await</code> (<code>js/app.js:3204</code>), so a sentinel reaching
+  <code>isReminderCandidate()</code> throws into an unhandled rejection with no visible error, after the
+  save already succeeded.</li>
 </ul>
 <div class="bdd">
   <strong>Given</strong> Kayleigh works a standing Saturday<br>
   <strong>When</strong> an admin clears Saturday in the editor and saves<br>
-  <strong>Then</strong> she no longer appears on Saturdays in Who's Working, and her other days are unchanged
+  <strong>Then</strong> she no longer appears on Saturdays, and her other days are unchanged
 </div>
 <div class="bdd">
   <strong>Given</strong> Leah has a day-off override on 2026-11-23 (stored as <code>null</code>)<br>
@@ -308,136 +379,28 @@ most-used editing gesture in the editor.</p>
 </div>
 
 <div class="phase">
-<h3>Phase 4 — <code>futureSchedule</code>, depth 2 (fixes #6)</h3>
-<p><strong>Measure first.</strong> No test covers removal at depth 2. Probe whether
-<code>FieldValue.delete()</code> resolves correctly at
-<code>futureSchedule.recurring.Sat</code> before assuming it does — this repo's own convention, and the
-reason the original premise here was caught as wrong.</p>
-<div class="depends">
-  <strong>Note the existing inconsistency:</strong> the CSV importer (<code>js/app.js:5588-5591</code>) writes
-  <code>futureSchedule</code> with <code>{mergeFields:['futureSchedule']}</code>, which replaces it
-  wholesale (proven by <code>future-schedule-write.emulator.test.js:80</code>), while the editor's future
-  branch deep-merges. Same field, two different removal semantics. Worth resolving deliberately rather
-  than adding a third behaviour.
-</div>
-</div>
-
-<div class="phase">
-<h3>Phase 5 — Test wiring and honest comments</h3>
+<h3>Phase 6 — <code>futureSchedule</code> (fixes #6) <span class="sev sev-med">depends on Phase 0</span></h3>
 <ul class="checklist">
-  <li><code>recurring-note-merge.emulator.test.js</code> is untracked <strong>and absent from
-  <code>package.json</code>'s explicit jest file list</strong>, so <code>npm test</code> never runs it.
-  Wire it in.</li>
-  <li>Its tests currently assert the <strong>broken</strong> behaviour, so they would keep passing after a
-  fix. Flip them to assert the corrected write shape, and keep only the parts not already covered by
-  <code>remove-timeoff-overrides.emulator.test.js:41</code>.</li>
-  <li>Add per-test document cleanup, matching the other emulator suites.</li>
-  <li>Correct the <code>buildRecurringDay()</code> comment and the test name that still assert the
-  retracted data-loss claim.</li>
+  <li>Apply Phases 3 and 5 to the future branch, gated on Phase 0's depth-2/depth-3/spread results.</li>
+  <li><strong>Validity bounds in the future branch</strong> (round 2 catch): it keeps
+  <code>...(validFrom ? {validFrom} : {})</code> and spreads <code>...existingFuture</code> from the
+  <code>allSchedules</code> cache, so a cleared future range cannot be cleared and the stale cached range
+  is rewritten on every save.</li>
+  <li><strong>Reconcile the three <code>futureActive</code> predicates</strong>:
+  <code>openScheduleEditor:2972</code> requires <code>future &amp;&amp; future.recurring</code>;
+  <code>handleAiSaveEdits:4932</code> and <code>getShiftForDate:3553</code> require only
+  <code>future</code>. Resolve here rather than adding a fourth.</li>
+  <li>Resolve the two competing semantics on this one field: the CSV importer replaces it wholesale via
+  <code>{mergeFields:['futureSchedule']}</code> (<code>js/app.js:5588-5591</code>, proven by
+  <code>future-schedule-write.emulator.test.js:80-112</code>), while the editor deep-merges it.</li>
 </ul>
 </div>
 
-<h2>Open decisions — needed before execution</h2>
-<div class="decision-needed">
-  <strong>1. Edit-then-save becomes a real deletion.</strong>
-  <em>Answered Sep 5 in response to Christie's review comment ("explain this more clearly with a specific
-  example"). The recommendation has CHANGED as a result — see below.</em>
-
-  <h3 style="margin-top:14px;">How the Edit button actually works</h3>
-  <p>In the override list, each row has <strong>Edit</strong> and <strong>Remove</strong>. Clicking
-  <strong>Edit</strong> (<code>editOverride()</code>, <code>js/app.js:3068</code>) does two things:
-  it copies that date's values down into the form, and then —</p>
-  <pre style="background:#f5f5f5;padding:10px;border-radius:6px;font-size:12px;">// Remove the old override so "Add Override" saves the edit
-delete editingOverrides[dateStr];</pre>
-  <p>— it <strong>deletes the row</strong>. The row disappears from the list. It only comes back when you
-  press <strong>Add Override</strong>, which re-adds it with your edited values.</p>
-
-  <h3>The worked example</h3>
-  <p>Leah has an override on <strong>Wed Nov 11</strong>: 8:30am&ndash;6:30pm, Clay Hub, note
-  "SDOC / Break camp (AM) &middot; regular shift".</p>
-  <ol>
-    <li>Admin opens Leah's schedule and clicks <strong>Edit</strong> on Nov 11, meaning to change the end
-    time. The Nov 11 row vanishes from the list; its values appear in the form below.</li>
-    <li>The admin gets interrupted, or changes their mind, or simply doesn't realise "Add Override" is
-    required to commit the edit — and clicks <strong>Save Schedule</strong>.</li>
-  </ol>
-  <table>
-    <tr><th></th><th>What happens to Leah's Nov 11</th></tr>
-    <tr><td><strong>Today</strong></td><td>Nothing. The date was absent from the write, and merge:true leaves it untouched. It reappears on reload. The vanishing row was a lie, but nothing was lost.</td></tr>
-    <tr><td><strong>After Phase 3</strong></td><td><strong>Deleted.</strong> Leah is no longer scheduled for the Nov 11 camp day at all.</td></tr>
-  </table>
-
-  <h3>Why this is sharper than it first looked</h3>
-  <div class="danger">
-    <strong>Remove and abandoned-Edit leave <code>editingOverrides</code> in the identical state.</strong>
-    Both do exactly <code>delete editingOverrides[dateStr]</code> (<code>js/app.js:3064</code> and
-    <code>:3095</code>). The save path <em>cannot tell them apart</em>. So Phase 3 necessarily makes
-    "clicked Edit and walked away" behave exactly like "clicked Remove."
-  </div>
-
-  <h3>Revised recommendation — do NOT simply accept this</h3>
-  <p>The original recommendation here was "accept it; the current no-op is the more surprising behaviour."
-  Working the example through changes that. Accepting it turns a <strong>harmless</strong> mis-click into
-  a <strong>destructive</strong> one, on the single most-used editing gesture, in the same change that
-  removes the merge behaviour currently absorbing the mistake.</p>
-  <p><strong>Instead, fix <code>editOverride()</code> so abandoning an edit is safe.</strong> Rather than
-  deleting the key up front, keep it and track which date is being edited, so that
-  <code>handleAddOverride()</code> replaces it and abandoning the edit leaves the override untouched.
-  The row also stops vanishing while you edit it, which is better UI regardless.</p>
-  <p>This is small, and it removes the need for Christie to sign off on a behaviour change at all —
-  Remove deletes, Edit edits, and neither surprises anyone. <strong>Proposed as a new Phase 2b, and it
-  must ship with Phase 3, not after.</strong></p>
-</div>
-<div class="decision-needed">
-  <strong>2. Scope of bug #8</strong> (<code>aiEditInBuilder</code> never sets
-  <code>_editingFutureSchedule</code>, so an AI-builder save can land in <code>futureSchedule</code>
-  instead of the live schedule for anyone with an active future schedule).
-  <strong>Recommendation: log it separately</strong> rather than widen this plan — it is a distinct bug
-  with a distinct fix. Christie's call.
-</div>
-<div class="decision-needed">
-  <strong>3. Should the AI builder's duplicate grid be deduplicated?</strong>
-  <em>Answered Sep 5 in response to Christie's review comment ("does this need to be planned out more
-  specifically or is it low risk?").</em>
-
-  <p><strong>Short answer: the template dedup is genuinely low risk. But asking the question exposed a
-  third stale-state field, and that part is NOT low risk — it is an active bug today.</strong></p>
-
-  <h3>The template half: low risk</h3>
-  <p>Compared directly at <code>HEAD</code>. The two grid templates
-  (<code>js/app.js:2991</code> and <code>:4777</code>) are <strong>character-for-character identical
-  except for two <code>placeholder</code> attributes</strong> on the start/end inputs. Same markup, same
-  <code>data-day</code>/<code>data-field</code> hooks, same studio select.</p>
-  <p>So the "divergence" flagged in review is not pre-existing — it is a divergence the abandoned diff
-  <em>would have created</em>, by adding a note column to one renderer and not the other. Extracting one
-  shared <code>renderWeekGrid()</code> is a mechanical refactor of identical code, verifiable by
-  confirming both entry points produce the same DOM. It does not need its own plan.</p>
-
-  <h3>The state half: not low risk, and worse than catalogued</h3>
-  <p>The meaningful difference between the two entry points was never the template — it is
-  <strong>which state each one resets</strong>:</p>
-  <table>
-    <tr><th>Set on open</th><th><code>openScheduleEditor()</code></th><th><code>aiEditInBuilder()</code></th></tr>
-    <tr><td><code>editingScheduleUid</code></td><td>yes</td><td>yes</td></tr>
-    <tr><td><code>editingOverrides</code></td><td>yes</td><td>yes</td></tr>
-    <tr><td><code>scheduleEditOriginalOverrides</code></td><td>yes</td><td><strong>NO</strong> — symptom #7</td></tr>
-    <tr><td><code>window._editingFutureSchedule</code></td><td>yes</td><td><strong>NO</strong> — symptom #8</td></tr>
-    <tr><td><code>schedule-valid-from</code> / <code>-until</code> inputs</td><td>yes (<code>:2988-2989</code>)</td><td><strong>NO</strong> — symptom #9</td></tr>
-  </table>
-  <div class="danger">
-    <strong>Symptom #9 is an ACTIVE bug right now — it does not need Phase 3 to become dangerous.</strong>
-    <code>handleSaveSchedule()</code> reads the validity bounds straight from the DOM
-    (<code>js/app.js:3165-3166</code>) and writes them when truthy. Open Kathy (whose range is
-    2026-08-24 &rarr; 2026-12-31), close her, then use the AI builder on someone else and save —
-    <strong>Kathy's date range is written onto that person's schedule.</strong> A wrong
-    <code>validFrom</code>/<code>validUntil</code> silently switches their whole recurring schedule off
-    outside that window, via <code>getShiftForDate()</code>'s range check.
-  </div>
-  <p><strong>Recommendation:</strong> fold the template dedup into <strong>Phase 1</strong>, which already
-  has to touch <code>aiEditInBuilder()</code> for the state reset — one function, one place to verify,
-  no separate plan. But treat the state resets as the substance of that phase, and reset
-  <strong>all five</strong> fields above, not just the two originally catalogued. Symptom #9 arguably
-  justifies shipping Phase 1 on its own, ahead of the rest of this plan.</p>
+<div class="phase">
+<h3>Phase 7 — Timezone (log or fix, Christie's call)</h3>
+<p>Future-schedule activation compares UTC dates (<code>js/app.js:2970</code>, again at
+<code>4931</code>) while the studio runs on Mountain Time, so in the evening it can switch a calendar day
+early — changing which branch is edited and which schedule is read. Independent of everything above.</p>
 </div>
 
 <h2 id="round2">Round 2 review — the plan is NOT execution-ready</h2>
@@ -543,13 +506,56 @@ delete editingOverrides[dateStr];</pre>
   <code>handleSaveSchedule()</code> entirely, so no other phase reaches it.</li>
 </ol>
 
+<h2>Open decisions</h2>
+<div class="decision-needed" style="background:#eafaf3;">
+  <strong>RESOLVED Sep 5 — the AI note-seeding question.</strong> Christie's call, after working through a
+  concrete example on Kaitlyn's schedule (her four weekly days each carry a note listing the classes she
+  teaches): <strong>existing notes must be preserved.</strong>
+  <br><br>
+  What settled it: a blank note box in the AI editor carries <em>zero information about intent</em> — the
+  AI did not decline to write a note, its schema has no note field
+  (<code>netlify/functions/schedule-builder.js:93-97</code>). Treating "no information" as "delete this"
+  is the bug. The errors are also asymmetric: a preserved stale note is visible and correctable; a deleted
+  one is silent and unrecoverable.
+  <br><br>
+  Implemented not as a "don't delete notes here" exception but as <strong>Phase 1</strong> — seed the
+  editor from the stored schedule, then overlay AI hours. Blank then means "a human cleared this"
+  everywhere, no special case. This is what makes Phase 3 safe.
+</div>
+<div class="decision-needed" style="background:#eafaf3;">
+  <strong>RESOLVED Sep 5 — two decisions from the previous structure are now moot.</strong>
+  "Edit-then-save becomes a real deletion — accept it?" no longer requires a trade-off: Phase 4 fixes
+  <code>editOverride()</code> so Remove deletes and Edit edits. "Dedup the duplicate grid?" is moot —
+  Phase 1 deletes the duplicate renderer outright rather than deduping it.
+</div>
+<div class="decision-needed">
+  <strong>STILL OPEN — 1. What should AI build mode do to existing dated overrides?</strong> Phase 2 must
+  stop sending <code>overrides: {}</code>, but that leaves the question of intent. The UI says "create or
+  replace a permanent recurring schedule", which says nothing about dated overrides. Preserving them is
+  almost certainly right, but it should be decided rather than inherited.
+</div>
+<div class="decision-needed">
+  <strong>STILL OPEN — 2. What should "New Schedule" mean?</strong> The <code>forceNew</code> path opens a
+  blank editor against a doc that still has overrides. Under Phase 5 it would clear weekdays while every
+  stale override silently survives. Options: genuinely wipe the doc, or carry the existing overrides into
+  the blank editor so what you see is what you save.
+</div>
+<div class="decision-needed">
+  <strong>STILL OPEN — 3. Timezone (Phase 7): fix now or log separately?</strong> Independent of
+  everything else here.
+</div>
+
 <h2>Completeness check</h2>
-<p>Phase 1 is independent, must ship first, and is <strong>shippable on its own</strong> — symptom #9 is
-an active bug whose fix depends on nothing else here. Phase 2 is independent of 3.
-<strong>Phase 2b must ship with Phase 3</strong>, never after: Phase 3 removes the merge behaviour that
-currently makes an abandoned override edit harmless. Phase 3 depends on Phase 1. Phase 4 depends on a
-measurement not yet taken. Phase 5 is cleanup that should ship with whatever lands. No phase requires a
-Firestore rules change, and no new collection is introduced.</p>
+<p><strong>Phase 0</strong> gates 3, 5 and 6. <strong>Phase 1</strong> is the spine and is shippable
+alone — it fixes active symptoms #8 and #9 and depends on nothing. <strong>Phase 2</strong> is fully
+independent and addresses the only bug currently destroying data, so it can ship first or in parallel.
+<strong>Phase 3</strong> depends on Phase 1 (which is what makes a blank note box meaningful).
+<strong>Phase 4 must ship with Phase 5</strong>, never after — Phase 5 removes the merge behaviour that
+currently makes an abandoned override edit harmless. <strong>Phase 5</strong> depends on Phases 0, 1
+and 4. <strong>Phase 6</strong> depends on Phase 0. <strong>Phase 7</strong> is independent.
+No phase requires a Firestore rules change, and no new collection is introduced.</p>
+<p>Suggested shipping order if splitting: <strong>2 &rarr; 1 &rarr; 0 &rarr; 3 &rarr; (4+5) &rarr; 6</strong>.
+Phase 2 first because it is live data loss; Phase 1 next because it is active and unblocks the rest.</p>
 
 <h2>Resume instructions</h2>
 <p><strong>Do not write code from this plan yet.</strong> It needs at least one more review round, per
@@ -593,6 +599,13 @@ described at the top.</p>
   an inherited assumption. Measured against the emulator: <strong>it does overwrite.</strong> So AI build
   mode's "Save All Schedules" has been erasing every dated override for everyone it saves, live, with no
   UI warning. Third time in this work that measurement overturned inference.</li>
+  <li><strong>Sep 5 — restructured around a single spine, at Christie's direction.</strong> Rather than
+  patch the note-seeding hazard with a flag, make <code>aiEditInBuilder()</code> reuse
+  <code>openScheduleEditor()</code> and overlay AI hours onto a properly-loaded editor. Symptoms #7, #8,
+  #9 and the note-seeding hazard all trace to the AI path re-implementing that setup incompletely, so one
+  fix retires all four and deletes the duplicate grid renderer instead of deduping it. Christie's instinct
+  ("it should preserve existing notes") drove this; the example that settled it was Kaitlyn, whose four
+  weekly notes list the classes she teaches and would have been deleted wholesale.</li>
   <li><strong>Sep 5 — line citations corrected.</strong> Round 2 caught that roughly half the citations
   resolved against the <em>stashed</em> tree rather than HEAD, including the one the Decisions Log
   presents as independently verified. All numbers re-derived against HEAD <code>9feba92</code>. Since
