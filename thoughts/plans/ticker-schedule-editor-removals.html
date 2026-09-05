@@ -102,6 +102,7 @@ absence means deletion. It does not.</p>
   <tr><td>6</td><td>All of 1–5 again, one level deeper inside <code>futureSchedule</code></td><td><span class="sev sev-med">med</span></td><td>pre-existing, <strong>unverified</strong></td></tr>
   <tr><td>7</td><td><code>aiEditInBuilder()</code> leaves <code>scheduleEditOriginalOverrides</code> stale</td><td><span class="sev sev-high">high</span></td><td>latent — becomes destructive the moment deletes exist</td></tr>
   <tr><td>8</td><td><code>aiEditInBuilder()</code> never sets <code>_editingFutureSchedule</code>; nothing resets it</td><td><span class="sev sev-med">med</span></td><td>pre-existing, separate bug</td></tr>
+  <tr><td>9</td><td><code>aiEditInBuilder()</code> never resets the <code>validFrom</code>/<code>validUntil</code> inputs — the previous employee's date range is written onto this one</td><td><span class="sev sev-high">high</span></td><td><strong>pre-existing and ACTIVE today</strong> — found Sep 5 answering review question 2</td></tr>
 </table>
 
 <p><strong>Every symptom above is silent.</strong> The editor shows the change, Save reports success, and
@@ -152,14 +153,35 @@ They split on the remedy:</p>
 <p>Ordering is not arbitrary — Phase 1 is a prerequisite, not a cleanup.</p>
 
 <div class="phase">
-<h3>Phase 1 — Reset stale editor state in <code>aiEditInBuilder()</code> <span class="sev sev-high">prerequisite</span></h3>
-<p><code>scheduleEditOriginalOverrides</code> is assigned in exactly one place
-(<code>js/app.js:2981</code>, inside <code>openScheduleEditor()</code>).
-<code>aiEditInBuilder()</code> sets <code>editingScheduleUid</code> and resets
-<code>editingOverrides</code>, but leaves that snapshot stale from whoever was edited last.</p>
-<p>Today that is harmless. Once deletions are derived from a diff against that snapshot, it means
-<strong>emitting deletions for the previous employee's dates against this employee's document</strong>.
-This must land before Phase 3, or the fix introduces worse data loss than the bug it repairs.</p>
+<h3>Phase 1 — Reset stale editor state in <code>aiEditInBuilder()</code> <span class="sev sev-high">prerequisite &middot; shippable alone</span></h3>
+<p><strong>Scope widened Sep 5</strong> after review question 2 — see open decision 3. There are
+<strong>five</strong> pieces of state <code>openScheduleEditor()</code> sets that
+<code>aiEditInBuilder()</code> does not reset, not two:</p>
+<ul class="checklist">
+  <li><code>scheduleEditOriginalOverrides</code> (symptom #7) — assigned in exactly one place,
+  <code>js/app.js:2981</code>. Latent today; becomes destructive the moment Phase 3 derives deletions
+  from it, since it would emit deletions for the <em>previous</em> employee's dates against
+  <em>this</em> employee's document.</li>
+  <li><code>window._editingFutureSchedule</code> (symptom #8) — assigned only at
+  <code>js/app.js:2975</code>, never cleared. Sends an AI-builder save into
+  <code>futureSchedule</code> instead of the live schedule.</li>
+  <li><strong>The <code>validFrom</code>/<code>validUntil</code> inputs (symptom #9) — an ACTIVE bug
+  today.</strong> <code>handleSaveSchedule()</code> reads them from the DOM
+  (<code>js/app.js:3177-3178</code>) and writes them when truthy, so the previously-opened employee's
+  date range is written onto this one.</li>
+  <li>Also fold in the <strong>template dedup</strong>: the two grid renderers
+  (<code>:2991</code>, <code>:4791</code>) are identical apart from two <code>placeholder</code>
+  attributes. Extract one <code>renderWeekGrid()</code> so the note column cannot be added to one and
+  not the other. Low risk; this phase already touches the function.</li>
+</ul>
+<p><strong>Symptom #9 alone justifies shipping this phase on its own</strong>, ahead of the rest of the
+plan — it is corrupting date ranges today and its fix does not depend on anything else here.</p>
+<div class="bdd">
+  <strong>Given</strong> an admin edits Kathy's schedule (range 2026-08-24 &rarr; 2026-12-31), then closes it<br>
+  <strong>When</strong> they open the AI builder on Leah and save<br>
+  <strong>Then</strong> Leah keeps her own date range, her own future-schedule targeting, and no override
+  belonging to Kathy's dates is touched
+</div>
 <div class="bdd">
   <strong>Given</strong> an admin edits Kathy's schedule, closes it, then opens the AI builder on Leah<br>
   <strong>When</strong> they save Leah from the AI-populated grid<br>
@@ -176,6 +198,30 @@ take the sentinel as a parameter, or have the caller apply it.</p>
   <strong>Given</strong> Ivy's Thursday has the note "14:30 Thursday Huddle"<br>
   <strong>When</strong> an admin clears that note field and saves<br>
   <strong>Then</strong> reloading shows no note on Thursday, and her hours are unchanged
+</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2b — Make abandoning an override edit safe <span class="sev sev-high">must ship WITH Phase 3</span></h3>
+<p><strong>Added Sep 5</strong> in response to review question 1 — see open decision 1 for the worked
+example. <code>editOverride()</code> (<code>js/app.js:3068</code>) currently does
+<code>delete editingOverrides[dateStr]</code> so that "Add Override" re-adds the edited value. That is
+byte-identical to what <strong>Remove</strong> does (<code>js/app.js:3064</code>), so the save path
+cannot distinguish "removed this" from "started editing this and walked away."</p>
+<p>Today that ambiguity is harmless, because neither one actually deletes anything. Phase 3 removes that
+safety net. Shipping Phase 3 without this turns a harmless mis-click into a destructive one on the
+most-used editing gesture in the editor.</p>
+<ul class="checklist">
+  <li>Stop deleting the key on edit. Track the date being edited instead, and have
+  <code>handleAddOverride()</code> replace that entry.</li>
+  <li>Side benefit: the row stops vanishing from the list while you edit it.</li>
+  <li>After this, Remove and Edit are genuinely distinguishable, and open decision 1 needs no behaviour
+  trade-off at all.</li>
+</ul>
+<div class="bdd">
+  <strong>Given</strong> Leah has an override on 2026-11-11<br>
+  <strong>When</strong> an admin clicks Edit on it, does not press "Add Override", and saves<br>
+  <strong>Then</strong> her 2026-11-11 override is unchanged — not deleted
 </div>
 </div>
 
@@ -237,12 +283,54 @@ reason the original premise here was caught as wrong.</p>
 
 <h2>Open decisions — needed before execution</h2>
 <div class="decision-needed">
-  <strong>1. Edit-then-save becomes a real deletion.</strong> <code>editOverride()</code>
-  (<code>js/app.js:3081-3103</code>) removes the key so that "Add Override" re-adds it. Today, editing an
-  override and saving <em>without</em> re-adding silently does nothing. After Phase 3 it becomes a real
-  deletion. <strong>Recommendation: accept it</strong> — it is what the UI implies, and the current no-op
-  is the more surprising behaviour. Needs Christie's explicit sign-off since it changes what an existing
-  gesture does.
+  <strong>1. Edit-then-save becomes a real deletion.</strong>
+  <em>Answered Sep 5 in response to Christie's review comment ("explain this more clearly with a specific
+  example"). The recommendation has CHANGED as a result — see below.</em>
+
+  <h3 style="margin-top:14px;">How the Edit button actually works</h3>
+  <p>In the override list, each row has <strong>Edit</strong> and <strong>Remove</strong>. Clicking
+  <strong>Edit</strong> (<code>editOverride()</code>, <code>js/app.js:3068</code>) does two things:
+  it copies that date's values down into the form, and then —</p>
+  <pre style="background:#f5f5f5;padding:10px;border-radius:6px;font-size:12px;">// Remove the old override so "Add Override" saves the edit
+delete editingOverrides[dateStr];</pre>
+  <p>— it <strong>deletes the row</strong>. The row disappears from the list. It only comes back when you
+  press <strong>Add Override</strong>, which re-adds it with your edited values.</p>
+
+  <h3>The worked example</h3>
+  <p>Leah has an override on <strong>Wed Nov 11</strong>: 8:30am&ndash;6:30pm, Clay Hub, note
+  "SDOC / Break camp (AM) &middot; regular shift".</p>
+  <ol>
+    <li>Admin opens Leah's schedule and clicks <strong>Edit</strong> on Nov 11, meaning to change the end
+    time. The Nov 11 row vanishes from the list; its values appear in the form below.</li>
+    <li>The admin gets interrupted, or changes their mind, or simply doesn't realise "Add Override" is
+    required to commit the edit — and clicks <strong>Save Schedule</strong>.</li>
+  </ol>
+  <table>
+    <tr><th></th><th>What happens to Leah's Nov 11</th></tr>
+    <tr><td><strong>Today</strong></td><td>Nothing. The date was absent from the write, and merge:true leaves it untouched. It reappears on reload. The vanishing row was a lie, but nothing was lost.</td></tr>
+    <tr><td><strong>After Phase 3</strong></td><td><strong>Deleted.</strong> Leah is no longer scheduled for the Nov 11 camp day at all.</td></tr>
+  </table>
+
+  <h3>Why this is sharper than it first looked</h3>
+  <div class="danger">
+    <strong>Remove and abandoned-Edit leave <code>editingOverrides</code> in the identical state.</strong>
+    Both do exactly <code>delete editingOverrides[dateStr]</code> (<code>js/app.js:3064</code> and
+    <code>:3095</code>). The save path <em>cannot tell them apart</em>. So Phase 3 necessarily makes
+    "clicked Edit and walked away" behave exactly like "clicked Remove."
+  </div>
+
+  <h3>Revised recommendation — do NOT simply accept this</h3>
+  <p>The original recommendation here was "accept it; the current no-op is the more surprising behaviour."
+  Working the example through changes that. Accepting it turns a <strong>harmless</strong> mis-click into
+  a <strong>destructive</strong> one, on the single most-used editing gesture, in the same change that
+  removes the merge behaviour currently absorbing the mistake.</p>
+  <p><strong>Instead, fix <code>editOverride()</code> so abandoning an edit is safe.</strong> Rather than
+  deleting the key up front, keep it and track which date is being edited, so that
+  <code>handleAddOverride()</code> replaces it and abandoning the edit leaves the override untouched.
+  The row also stops vanishing while you edit it, which is better UI regardless.</p>
+  <p>This is small, and it removes the need for Christie to sign off on a behaviour change at all —
+  Remove deletes, Edit edits, and neither surprises anyone. <strong>Proposed as a new Phase 2b, and it
+  must ship with Phase 3, not after.</strong></p>
 </div>
 <div class="decision-needed">
   <strong>2. Scope of bug #8</strong> (<code>aiEditInBuilder</code> never sets
@@ -252,16 +340,57 @@ reason the original premise here was caught as wrong.</p>
   with a distinct fix. Christie's call.
 </div>
 <div class="decision-needed">
-  <strong>3. Should the AI builder's duplicate grid be deduplicated?</strong> The two grid renderers have
-  now diverged (one has a note column, one does not). That divergence is both the reason wholesale
-  replacement is unsafe and a standing trap for future edits. Merging them into one renderer would remove
-  a whole class of future bug, but widens this change.
+  <strong>3. Should the AI builder's duplicate grid be deduplicated?</strong>
+  <em>Answered Sep 5 in response to Christie's review comment ("does this need to be planned out more
+  specifically or is it low risk?").</em>
+
+  <p><strong>Short answer: the template dedup is genuinely low risk. But asking the question exposed a
+  third stale-state field, and that part is NOT low risk — it is an active bug today.</strong></p>
+
+  <h3>The template half: low risk</h3>
+  <p>Compared directly at <code>HEAD</code>. The two grid templates
+  (<code>js/app.js:2991</code> and <code>:4791</code>) are <strong>character-for-character identical
+  except for two <code>placeholder</code> attributes</strong> on the start/end inputs. Same markup, same
+  <code>data-day</code>/<code>data-field</code> hooks, same studio select.</p>
+  <p>So the "divergence" flagged in review is not pre-existing — it is a divergence the abandoned diff
+  <em>would have created</em>, by adding a note column to one renderer and not the other. Extracting one
+  shared <code>renderWeekGrid()</code> is a mechanical refactor of identical code, verifiable by
+  confirming both entry points produce the same DOM. It does not need its own plan.</p>
+
+  <h3>The state half: not low risk, and worse than catalogued</h3>
+  <p>The meaningful difference between the two entry points was never the template — it is
+  <strong>which state each one resets</strong>:</p>
+  <table>
+    <tr><th>Set on open</th><th><code>openScheduleEditor()</code></th><th><code>aiEditInBuilder()</code></th></tr>
+    <tr><td><code>editingScheduleUid</code></td><td>yes</td><td>yes</td></tr>
+    <tr><td><code>editingOverrides</code></td><td>yes</td><td>yes</td></tr>
+    <tr><td><code>scheduleEditOriginalOverrides</code></td><td>yes</td><td><strong>NO</strong> — symptom #7</td></tr>
+    <tr><td><code>window._editingFutureSchedule</code></td><td>yes</td><td><strong>NO</strong> — symptom #8</td></tr>
+    <tr><td><code>schedule-valid-from</code> / <code>-until</code> inputs</td><td>yes (<code>:2988-2989</code>)</td><td><strong>NO</strong> — symptom #9</td></tr>
+  </table>
+  <div class="danger">
+    <strong>Symptom #9 is an ACTIVE bug right now — it does not need Phase 3 to become dangerous.</strong>
+    <code>handleSaveSchedule()</code> reads the validity bounds straight from the DOM
+    (<code>js/app.js:3177-3178</code>) and writes them when truthy. Open Kathy (whose range is
+    2026-08-24 &rarr; 2026-12-31), close her, then use the AI builder on someone else and save —
+    <strong>Kathy's date range is written onto that person's schedule.</strong> A wrong
+    <code>validFrom</code>/<code>validUntil</code> silently switches their whole recurring schedule off
+    outside that window, via <code>getShiftForDate()</code>'s range check.
+  </div>
+  <p><strong>Recommendation:</strong> fold the template dedup into <strong>Phase 1</strong>, which already
+  has to touch <code>aiEditInBuilder()</code> for the state reset — one function, one place to verify,
+  no separate plan. But treat the state resets as the substance of that phase, and reset
+  <strong>all five</strong> fields above, not just the two originally catalogued. Symptom #9 arguably
+  justifies shipping Phase 1 on its own, ahead of the rest of this plan.</p>
 </div>
 
 <h2>Completeness check</h2>
-<p>Phase 1 is independent and must ship first. Phase 2 is independent of 3. Phase 3 depends on 1.
-Phase 4 depends on a measurement not yet taken. Phase 5 is cleanup that should ship with whatever lands.
-No phase requires a Firestore rules change, and no new collection is introduced.</p>
+<p>Phase 1 is independent, must ship first, and is <strong>shippable on its own</strong> — symptom #9 is
+an active bug whose fix depends on nothing else here. Phase 2 is independent of 3.
+<strong>Phase 2b must ship with Phase 3</strong>, never after: Phase 3 removes the merge behaviour that
+currently makes an abandoned override edit harmless. Phase 3 depends on Phase 1. Phase 4 depends on a
+measurement not yet taken. Phase 5 is cleanup that should ship with whatever lands. No phase requires a
+Firestore rules change, and no new collection is introduced.</p>
 
 <h2>Resume instructions</h2>
 <p><strong>Do not write code from this plan yet.</strong> It needs at least one more review round, per
