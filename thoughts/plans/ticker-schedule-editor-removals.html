@@ -35,8 +35,19 @@
 <h1 id="plan-title">Plan: Ticker Schedule Editor — Removals Silently Fail</h1>
 
 <div class="status" style="background:#fdecea;border-left-color:#d9534f;">
-  Status: <strong>NOT STARTED — code frozen. Restructured after round 2; round 3 review in progress.</strong>
-  Created Sep 5, 2026; restructured same day.
+  Status: <strong>NOT STARTED — code frozen. THREE review rounds done; still NOT execution-ready.</strong>
+  Created and restructured Sep 5, 2026.
+  <br><br>
+  <strong>⚠️ Read <a href="#mitigation">the corrected mitigation</a> first — four live ways to erase
+  someone's dated overrides, and the previous mitigation wording steered users into one of them.</strong>
+  <br><br>
+  <strong>The pattern worth naming, from round 3:</strong> three rounds, three showstoppers, all the same
+  shape — a real defect gets correctly diagnosed at one call site and is then assumed to be confined
+  there. Round 1 localised note loss to the write shape; round 2 localised it to the input state; round 3
+  found the empty-map erasure had been localised to <code>handleAiSaveAll()</code> when it lives in
+  <code>handleSaveSchedule()</code> too. <strong>Before writing code, enumerate every place a map is
+  handed to <code>set(…, {merge:true})</code> and work out the empty case for each</strong>, rather than
+  fixing only the instances this plan happens to name.
   <br><br>
   <strong>Round 2 (Claude + Codex, independently) says do not execute.</strong> Both converged on the same
   headline: Phase 1's "low risk" dedup would make Phase 2 destructive, recreating the exact note loss this
@@ -111,8 +122,35 @@ absence means deletion. It does not.</p>
   <tr><td>7</td><td><code>aiEditInBuilder()</code> leaves <code>scheduleEditOriginalOverrides</code> stale</td><td><span class="sev sev-high">high</span></td><td>latent — becomes destructive the moment deletes exist</td></tr>
   <tr><td>8</td><td><code>aiEditInBuilder()</code> never sets <code>_editingFutureSchedule</code>; nothing resets it</td><td><span class="sev sev-med">med</span></td><td>pre-existing, separate bug</td></tr>
   <tr><td>9</td><td><code>aiEditInBuilder()</code> never resets the <code>validFrom</code>/<code>validUntil</code> inputs — the previous employee's date range is written onto this one</td><td><span class="sev sev-high">high</span></td><td><strong>pre-existing and ACTIVE today</strong> — found Sep 5 answering review question 2</td></tr>
-  <tr><td><strong>10</strong></td><td><strong>AI Schedule Builder "Save All Schedules" ERASES every dated override on the people it saves</strong></td><td><span class="sev sev-high">SEVERE</span></td><td><strong>ACTIVE, LIVE, MEASURED</strong> — found round 2, Sep 5</td></tr>
+  <tr><td><strong>10</strong></td><td><strong>AI "Save All Schedules" erases every top-level dated override on the people it saves</strong></td><td><span class="sev sev-high">SEVERE</span></td><td><strong>ACTIVE, LIVE, MEASURED</strong> — round 2</td></tr>
+  <tr><td><strong>11</strong></td><td><strong>The same empty-map erasure reaches the wire from THREE more live paths</strong>, all via <code>handleSaveSchedule()</code>: "Edit in Builder"&rarr;Save, "New Schedule"&rarr;Save, and abandoning an edit on a sole override</td><td><span class="sev sev-high">SEVERE</span></td><td><strong>ACTIVE, LIVE</strong> — round 3</td></tr>
+  <tr><td><strong>12</strong></td><td><code>handleAiSaveAll()</code> also writes <code>recurring: {}</code> when the AI returns no days — <strong>erases the entire base schedule</strong></td><td><span class="sev sev-high">SEVERE</span></td><td>ACTIVE — round 3</td></tr>
+  <tr><td><strong>13</strong></td><td><code>handleAiSaveAll()</code> ignores <code>futureSchedule</code>: for anyone with an active one, the write lands in <code>recurring</code> where <code>getShiftForDate()</code> shadows it — save succeeds, nothing changes</td><td><span class="sev sev-med">med</span></td><td>ACTIVE — round 3</td></tr>
 </table>
+
+<h3 id="mitigation">🚨 CORRECTED mitigation — read this before touching the app</h3>
+<div class="danger">
+  <strong>The previous mitigation in this plan was wrong and actively harmful.</strong> It said "do not use
+  <em>Save All Schedules</em> in AI build mode" — which steers a cautious manager toward reviewing people
+  one at a time via <strong>"Edit in Builder"</strong>, and that is symptom #11 path 1. Both erase.
+  <br><br>
+  <strong>Until symptoms #10–#13 are fixed, do NOT:</strong>
+  <ol>
+    <li><strong>AI Schedule Builder &rarr; build mode &rarr; "Save All Schedules"</strong>
+    (<code>js/app.js:4824-4829</code>)</li>
+    <li><strong>AI Schedule Builder &rarr; "Edit in Builder" &rarr; Save.</strong>
+    <code>aiEditInBuilder()</code> blanks <code>editingOverrides</code> (<code>js/app.js:4771</code>) and
+    the Save button is wired to <code>handleSaveSchedule</code> (<code>js/app.js:319</code>), which puts
+    <code>overrides</code> in the payload unconditionally (<code>js/app.js:3196</code>)</li>
+    <li><strong>"New Schedule" on someone who already has a schedule &rarr; Save</strong>
+    (<code>forceNew</code> gives a blank base, <code>js/app.js:2967</code>)</li>
+    <li><strong>Edit on someone's ONLY override, then Save without pressing "Add Override"</strong>
+    (<code>js/app.js:3090</code>)</li>
+  </ol>
+  <strong>Safe:</strong> the normal Schedule Builder on an existing person — their overrides are loaded,
+  so the map is non-empty — and AI <strong>edit</strong> mode (<code>handleAiSaveEdits</code>), which
+  merges.
+</div>
 
 <h3 id="symptom10">🚨 Symptom #10 — the AI builder's "Save All Schedules" destroys dated overrides</h3>
 <div class="danger">
@@ -505,6 +543,60 @@ early — changing which branch is edited and which schedule is read. Independen
   <li><strong>New: fix <code>handleAiSaveAll</code> (symptom #10)</strong> — it bypasses
   <code>handleSaveSchedule()</code> entirely, so no other phase reaches it.</li>
 </ol>
+
+<h2>Round 3 corrections</h2>
+<p>Two independent reviews again. Both found the restructured spine directionally right but not shippable
+as specified. Corrections to claims made above:</p>
+<table>
+  <tr><th>Claim</th><th>Round 3 verdict</th></tr>
+  <tr><td>"Phase 2 is the only phase reaching that code path"</td><td><strong>False.</strong> The empty-map defect lives independently in <code>handleSaveSchedule()</code> too. <strong>Phase 2 must widen from "fix <code>handleAiSaveAll</code>" to "never write an empty map, from any path"</strong> — one shared write-shape guard. Round 3 calls this the single highest-value edit in the plan.</td></tr>
+  <tr><td>Phase 4 "harmless today because nothing deletes"</td><td><strong>False</strong> — destructive today in the sole-override case (#11 path 3). Phase 4 has standalone value and need not wait for Phase 5.</td></tr>
+  <tr><td>Phase 5's <code>forceNew</code> analysis</td><td><strong>Inverted.</strong> Today <code>forceNew</code> <em>wipes</em> overrides; the plan said they "silently survive". Phase 5's omit-the-empty-map rule would <em>change</em> that to preservation — a behaviour change, not a non-fix. Open decision 2 was being made without knowing today's answer is already "wipe".</td></tr>
+  <tr><td>"Three <code>futureActive</code> predicates"</td><td><strong>Six sites, two variants</strong>: <code>future &amp;&amp; future.recurring</code> at <code>js/app.js:2972</code>, <code>:3235</code>, <code>js/schedule-helpers.js:59</code>, <code>:254</code>; bare <code>future</code> at <code>js/app.js:3552</code>, <code>:4932</code>. A <code>futureSchedule</code> with truthy-but-empty <code>recurring</code> is invisible to the editor yet makes <code>getShiftForDate()</code> return null every day in range — silently marking someone off all week.</td></tr>
+  <tr><td>Sentinel reaching <code>isReminderCandidate()</code> "throws"</td><td><strong>Wrong mechanism.</strong> <code>RegExp.prototype.test</code> string-coerces, so a sentinel silently yields <code>false</code> — the reminder just never fires. Separate payloads still right; the stated reason was not.</td></tr>
+  <tr><td>Why wholesale replacement was rejected (round 1)</td><td>Right outcome, <strong>narrower reason than reality</strong>: <code>openScheduleEditor</code>'s own grid has no note inputs either, so wholesale replacement would have wiped notes from the <em>normal</em> editor too, not just the AI path.</td></tr>
+  <tr><td>"The AI path re-implements incompletely what <code>openScheduleEditor</code> does correctly"</td><td><strong>Overstated.</strong> <code>openScheduleEditor</code> never resets the Add-Override form inputs either. Phase 4's reset list must cover those.</td></tr>
+</table>
+
+<h3>New blockers on Phase 1 (the spine)</h3>
+<ul>
+  <li><strong>Document resolution.</strong> <code>openScheduleEditor</code> does a single exact-uid cache
+  lookup (<code>js/app.js:2966</code>), but a schedule can still live under an <code>emp_*</code> id for a
+  since-claimed employee — which is why <code>handleAiSaveEdits</code> uses a <strong>three-way
+  fallback</strong> (<code>js/app.js:4921-4923</code>), the kiosk does the same, and
+  <code>reassignSchedule()</code> exists at all. On a miss, Phase 1 opens a blank editor that <em>looks</em>
+  correctly loaded and then saves to a uid with no doc — the precise failure the spine claims to
+  eliminate. <strong>Phase 1 needs one shared canonical target resolver.</strong></li>
+  <li><strong>Omitted weekdays are undefined.</strong> The build prompt says "If a description says 'off'
+  for a day, don't include that day in recurring"
+  (<code>netlify/functions/schedule-builder.js:100</code>) — omission is meaningful. Overlaying only
+  AI-present days leaves stored days intact, so AI build mode silently becomes a merge rather than a
+  replace. Same "blank means what?" ambiguity the note decision resolved; decide it the same way.</li>
+  <li><strong>AI build mode may target <code>futureSchedule</code>.</strong> Its UI promises the
+  "permanent … year-round base schedule" (<code>js/app.js:4588</code>), but recomputing
+  <code>_editingFutureSchedule</code> correctly routes the save into the future branch — which Phase 6
+  says is the most broken. <strong>Phase 1 is therefore coupled to Phase 6</strong>, and to Phase 7 if
+  future targeting is retained (that branch is chosen on a UTC date boundary).</li>
+  <li><strong><code>earlyClockInMinutes</code> regression.</strong> It IS in the AI schema and
+  <code>aiEditInBuilder</code> sets it today (<code>js/app.js:4774</code>); "overlay only start/end/studio"
+  drops it.</li>
+  <li>Phase 1 must also retain what <code>openScheduleEditor</code> does not do: setting the employee
+  picker (<code>js/app.js:4761</code>) and the scroll (<code>:4799-4800</code>).</li>
+  <li><strong>Its test is too narrow.</strong> A UI-state assertion misses the wrong-document and
+  wrong-branch failures. Per <code>AGENTS.md</code> this phase needs a failing <em>write-shape</em>
+  emulator test — specifically that an Edit-in-Builder save no longer erases overrides.</li>
+</ul>
+
+<h3>Phase 0 gaps</h3>
+<ul>
+  <li><strong>Depth 4 unprobed</strong> — <code>futureSchedule.overrides.&lt;date&gt;.note</code>, which
+  Phase 6 needs when it applies Phase 3 to the future branch.</li>
+  <li><strong>A map whose entries are ALL delete sentinels.</strong> Removing the last override yields
+  <code>{d1: DELETE}</code> — non-empty by key count but empty of values. Deletes, or the erasing
+  empty-map case? Unmeasured, and a common Phase 5 path.</li>
+  <li>"Sentinel through an object spread" is mis-framed: <code>js/app.js:3179</code> spreads
+  <code>existingFuture</code>, not the sentinel.</li>
+</ul>
 
 <h2>Open decisions</h2>
 <div class="decision-needed" style="background:#eafaf3;">
