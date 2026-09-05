@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Ticker Schedule Editor — Removals Silently Fail</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-ticker { background: #e0f2fe; color: #075985; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .depends { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .danger { background: #fdecea; border: 1px solid #d9534f; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  ul { padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 10px 0; }
+  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+  .sev { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+  .sev-high { background: #f8d7da; color: #842029; }
+  .sev-med { background: #fff3cd; color: #664d03; }
+  .sev-low { background: #e2e3e5; color: #41464b; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Ticker Schedule Editor — Removals Silently Fail</h1>
+
+<div class="status" style="background:#fdecea;border-left-color:#d9534f;">
+  Status: <strong>NOT STARTED — code frozen pending further review.</strong> Created Sep 5, 2026.
+  Christie's call: <em>"This is getting complicated and I think we need more rounds of review on it
+  before I'm ready to touch the code. This is a super important app to the entire business and impacts
+  all my employees."</em>
+  <br><br>
+  Two independent reviews (Claude + Codex) have run against the diagnosis and the partial diff. They
+  <strong>disagreed on the fix</strong>, and the disagreement was material — see
+  <a href="#disagreement">The reviewer disagreement</a>. No further code should be written until this
+  plan is reviewed again and marked execution-ready.
+</div>
+
+<div class="meta">
+  <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
+  — no Firestore rules changes.<br>
+  <strong>Blast radius:</strong> <code>timeclock_schedules/{uid}</code> for every employee. Schedules drive
+  Who's Working, My Schedule, kiosk late/grace/streak logic, and the scheduled-vs-actual comparison used
+  when reviewing payroll. 16 of 18 staff currently carry notes on their recurring weekly shifts.<br>
+  <strong>Origin:</strong> found Sep 5 while attempting a different fix, after Christie challenged the
+  scope of that fix. See the Decisions Log — the original premise was <strong>wrong</strong>, and the real
+  bugs were found only by testing against the emulator instead of reasoning about the code.
+</div>
+
+<h2>⚠️ Uncommitted code is sitting in the working tree right now</h2>
+<div class="danger">
+  <code>~/tinker-timeclock</code> has <strong>uncommitted changes</strong> from the abandoned first
+  attempt: a note field added to the schedule editor grid, a <code>buildRecurringDay()</code> helper with
+  tests, CSS, and an untracked emulator test file.
+  <br><br>
+  <strong>This matters because Netlify deploys from the working directory, not from a commit.</strong>
+  The next <code>netlify deploy --prod</code> from this repo would ship that code — including a known bug
+  (a cleared note cannot be saved as cleared). Decide its disposition before any unrelated deploy:
+  stash it, commit it to a branch, or revert it.
+  <br><br>
+  Nothing in it is lost work — every piece is described in this plan and can be rebuilt.
+</div>
+
+<h2>What is actually broken</h2>
+<p>All of the following share one root cause: <code>saveSchedule()</code>
+(<code>js/firebase-data.js:205</code>) writes with <code>set(..., {merge:true})</code>, and Firestore
+<strong>recursively merges nested map fields</strong>. A key that is <em>absent</em> from the written map
+is left untouched remotely rather than removed. The editor rebuilds the whole map every save and assumes
+absence means deletion. It does not.</p>
+
+<table>
+  <tr><th>#</th><th>Symptom</th><th>Severity</th><th>Status</th></tr>
+  <tr><td>1</td><td>Clearing a recurring weekday does not remove it — person stays scheduled</td><td><span class="sev sev-high">high</span></td><td>pre-existing</td></tr>
+  <tr><td>2</td><td>Removing a dated override does not remove it</td><td><span class="sev sev-high">high</span></td><td>pre-existing</td></tr>
+  <tr><td>3</td><td>Clearing a note on a kept weekday does not clear it</td><td><span class="sev sev-high">high</span></td><td>would be introduced by the abandoned diff</td></tr>
+  <tr><td>4</td><td>Clearing a note on a kept override does not clear it</td><td><span class="sev sev-med">med</span></td><td>pre-existing</td></tr>
+  <tr><td>5</td><td>Clearing <code>validFrom</code>/<code>validUntil</code> does not clear them</td><td><span class="sev sev-med">med</span></td><td>pre-existing</td></tr>
+  <tr><td>6</td><td>All of 1–5 again, one level deeper inside <code>futureSchedule</code></td><td><span class="sev sev-med">med</span></td><td>pre-existing, <strong>unverified</strong></td></tr>
+  <tr><td>7</td><td><code>aiEditInBuilder()</code> leaves <code>scheduleEditOriginalOverrides</code> stale</td><td><span class="sev sev-high">high</span></td><td>latent — becomes destructive the moment deletes exist</td></tr>
+  <tr><td>8</td><td><code>aiEditInBuilder()</code> never sets <code>_editingFutureSchedule</code>; nothing resets it</td><td><span class="sev sev-med">med</span></td><td>pre-existing, separate bug</td></tr>
+</table>
+
+<p><strong>Every symptom above is silent.</strong> The editor shows the change, Save reports success, and
+the data is unchanged. There is no error and no warning. That is what makes this worth doing carefully:
+the failure mode is someone turning up for a shift that was supposed to be gone.</p>
+
+<h3>Measured, not assumed</h3>
+<p>Emulator probe (<code>recurring-note-merge.emulator.test.js</code>, untracked) against a real doc:</p>
+<pre style="background:#f5f5f5;padding:12px;border-radius:6px;font-size:12px;">days present after clearing Sat:            Mon, Sat
+override dates after removing 2026-11-11:  2026-11-11, 2026-11-23</pre>
+<p>Corroborating evidence already in the repo: <code>js/app.js:7340-7346</code> contains a prose comment
+describing this exact trap, and <code>removeTimeOffOverrides()</code> works around it with
+<code>FieldValue.delete()</code>. The time-off flow was fixed; the main editor never was.</p>
+
+<div class="depends">
+  <strong>Firestore nuance that makes this worse, not better:</strong> an explicitly written <em>empty</em>
+  map <em>does</em> overwrite the target. So removing the <strong>last</strong> weekday or the
+  <strong>last</strong> override appears to work, while removing one of several silently fails. Anyone
+  spot-checking the fix could easily test the working case and conclude it is fine.
+</div>
+
+<h2 id="disagreement">The reviewer disagreement — and why it matters</h2>
+<p>Both reviewers confirmed the diagnosis and both independently caught bug #3 in the attempted fix.
+They split on the remedy:</p>
+
+<table>
+  <tr><th></th><th>Recommended</th><th>Rationale</th></tr>
+  <tr><td><strong>Codex</strong></td><td>Replace <code>recurring</code>/<code>overrides</code> wholesale (<code>update()</code> or <code>mergeFields</code>)</td><td>The editor already builds the complete map, so there is nothing to preserve by merging. One change fixes all cases.</td></tr>
+  <tr><td><strong>Claude</strong></td><td>Per-key <code>FieldValue.delete()</code></td><td>Wholesale replacement would cause real data loss via a second code path.</td></tr>
+</table>
+
+<div class="danger">
+  <strong>Claude is right, and this was verified directly rather than taken on trust.</strong>
+  <code>aiEditInBuilder()</code> (<code>js/app.js:4791-4808</code>) renders its <strong>own duplicate copy
+  of the weekday grid with no note inputs</strong> — start, end and studio only. Both grids feed the same
+  <code>handleSaveSchedule()</code>. Under wholesale replacement, saving from that path would wipe the
+  recurring notes of all 16 affected staff.
+  <br><br>
+  The recursive merge that causes bugs #1–#6 is currently the only thing preventing that. Adopting the
+  simpler-sounding fix would have shipped exactly the data loss this work originally (and wrongly)
+  claimed to be fixing.
+  <br><br>
+  Claude also flagged that diff-based deletes are safer under concurrency: they will not clobber a key
+  another manager added while the editor sat open.
+</div>
+
+<h2>Proposed phases</h2>
+<p>Ordering is not arbitrary — Phase 1 is a prerequisite, not a cleanup.</p>
+
+<div class="phase">
+<h3>Phase 1 — Reset stale editor state in <code>aiEditInBuilder()</code> <span class="sev sev-high">prerequisite</span></h3>
+<p><code>scheduleEditOriginalOverrides</code> is assigned in exactly one place
+(<code>js/app.js:2981</code>, inside <code>openScheduleEditor()</code>).
+<code>aiEditInBuilder()</code> sets <code>editingScheduleUid</code> and resets
+<code>editingOverrides</code>, but leaves that snapshot stale from whoever was edited last.</p>
+<p>Today that is harmless. Once deletions are derived from a diff against that snapshot, it means
+<strong>emitting deletions for the previous employee's dates against this employee's document</strong>.
+This must land before Phase 3, or the fix introduces worse data loss than the bug it repairs.</p>
+<div class="bdd">
+  <strong>Given</strong> an admin edits Kathy's schedule, closes it, then opens the AI builder on Leah<br>
+  <strong>When</strong> they save Leah from the AI-populated grid<br>
+  <strong>Then</strong> no override belonging to Kathy's dates is touched on Leah's document
+</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — Make notes clearable (fixes #3, #4)</h3>
+<p>A day or override that survives but whose note was cleared must emit
+<code>FieldValue.delete()</code> for that nested <code>note</code> key. The pure helper must stay pure —
+take the sentinel as a parameter, or have the caller apply it.</p>
+<div class="bdd">
+  <strong>Given</strong> Ivy's Thursday has the note "14:30 Thursday Huddle"<br>
+  <strong>When</strong> an admin clears that note field and saves<br>
+  <strong>Then</strong> reloading shows no note on Thursday, and her hours are unchanged
+</div>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — Make removals real (fixes #1, #2, #5)</h3>
+<ul class="checklist">
+  <li><strong>Weekdays</strong>: derive from <code>DAYS</code> — the grid always renders all 7 columns, so
+  emit <code>FieldValue.delete()</code> whenever a column has no hours. No remote read needed.</li>
+  <li><strong>Overrides</strong>: diff against <code>scheduleEditOriginalOverrides</code> (correct only
+  once Phase 1 lands). Compute the delete set with <code>Object.keys</code>/<code>in</code>,
+  <strong>never truthiness</strong> — a day-off override is <code>null</code>, which is falsy but must be
+  preserved, not deleted.</li>
+  <li><strong>Validity bounds</strong>: write explicit <code>null</code> when cleared.
+  <code>getShiftForDate()</code> already treats null as unbounded.</li>
+  <li><strong>Keep two payloads.</strong> The sentinel-laden map is for the write only. The clean map is
+  what <code>sendOneOffReminderConfirmations()</code> reads — do not let sentinels reach it.</li>
+</ul>
+<div class="bdd">
+  <strong>Given</strong> Kayleigh works a standing Saturday<br>
+  <strong>When</strong> an admin clears Saturday in the editor and saves<br>
+  <strong>Then</strong> she no longer appears on Saturdays in Who's Working, and her other days are unchanged
+</div>
+<div class="bdd">
+  <strong>Given</strong> Leah has a day-off override on 2026-11-23 (stored as <code>null</code>)<br>
+  <strong>When</strong> an admin removes a <em>different</em> override and saves<br>
+  <strong>Then</strong> 2026-11-23 is still a day off — the null was not mistaken for a deletion
+</div>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — <code>futureSchedule</code>, depth 2 (fixes #6)</h3>
+<p><strong>Measure first.</strong> No test covers removal at depth 2. Probe whether
+<code>FieldValue.delete()</code> resolves correctly at
+<code>futureSchedule.recurring.Sat</code> before assuming it does — this repo's own convention, and the
+reason the original premise here was caught as wrong.</p>
+<div class="depends">
+  <strong>Note the existing inconsistency:</strong> the CSV importer (<code>js/app.js:5602</code>) writes
+  <code>futureSchedule</code> with <code>{mergeFields:['futureSchedule']}</code>, which replaces it
+  wholesale (proven by <code>future-schedule-write.emulator.test.js:80</code>), while the editor's future
+  branch deep-merges. Same field, two different removal semantics. Worth resolving deliberately rather
+  than adding a third behaviour.
+</div>
+</div>
+
+<div class="phase">
+<h3>Phase 5 — Test wiring and honest comments</h3>
+<ul class="checklist">
+  <li><code>recurring-note-merge.emulator.test.js</code> is untracked <strong>and absent from
+  <code>package.json</code>'s explicit jest file list</strong>, so <code>npm test</code> never runs it.
+  Wire it in.</li>
+  <li>Its tests currently assert the <strong>broken</strong> behaviour, so they would keep passing after a
+  fix. Flip them to assert the corrected write shape, and keep only the parts not already covered by
+  <code>remove-timeoff-overrides.emulator.test.js:41</code>.</li>
+  <li>Add per-test document cleanup, matching the other emulator suites.</li>
+  <li>Correct the <code>buildRecurringDay()</code> comment and the test name that still assert the
+  retracted data-loss claim.</li>
+</ul>
+</div>
+
+<h2>Open decisions — needed before execution</h2>
+<div class="decision-needed">
+  <strong>1. Edit-then-save becomes a real deletion.</strong> <code>editOverride()</code>
+  (<code>js/app.js:3081-3103</code>) removes the key so that "Add Override" re-adds it. Today, editing an
+  override and saving <em>without</em> re-adding silently does nothing. After Phase 3 it becomes a real
+  deletion. <strong>Recommendation: accept it</strong> — it is what the UI implies, and the current no-op
+  is the more surprising behaviour. Needs Christie's explicit sign-off since it changes what an existing
+  gesture does.
+</div>
+<div class="decision-needed">
+  <strong>2. Scope of bug #8</strong> (<code>aiEditInBuilder</code> never sets
+  <code>_editingFutureSchedule</code>, so an AI-builder save can land in <code>futureSchedule</code>
+  instead of the live schedule for anyone with an active future schedule).
+  <strong>Recommendation: log it separately</strong> rather than widen this plan — it is a distinct bug
+  with a distinct fix. Christie's call.
+</div>
+<div class="decision-needed">
+  <strong>3. Should the AI builder's duplicate grid be deduplicated?</strong> The two grid renderers have
+  now diverged (one has a note column, one does not). That divergence is both the reason wholesale
+  replacement is unsafe and a standing trap for future edits. Merging them into one renderer would remove
+  a whole class of future bug, but widens this change.
+</div>
+
+<h2>Completeness check</h2>
+<p>Phase 1 is independent and must ship first. Phase 2 is independent of 3. Phase 3 depends on 1.
+Phase 4 depends on a measurement not yet taken. Phase 5 is cleanup that should ship with whatever lands.
+No phase requires a Firestore rules change, and no new collection is introduced.</p>
+
+<h2>Resume instructions</h2>
+<p><strong>Do not write code from this plan yet.</strong> It needs at least one more review round, per
+Christie, and it should be re-reviewed <em>as a plan</em> before any phase is executed — the first attempt
+here was built on a premise that turned out to be false, and was only caught by measurement. Per this
+repo's own standing rule, each Firestore-writing phase also needs its own implementation review plus a
+Console spot-check after it lands, not just passing tests.</p>
+<p>Before executing: resolve the three open decisions, and deal with the uncommitted working tree
+described at the top.</p>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Sep 5 — original premise was wrong.</strong> This work began as "recurring notes are
+  silently wiped on save," pitched as an active data-loss bug affecting 16 of 18 staff. Christie
+  challenged the framing ("isn't this a bug that applies to everyone?"), which prompted actually testing
+  it against the emulator rather than reasoning from the code. <strong>The notes were never being
+  wiped</strong> — <code>{merge:true}</code> preserves them. The premise was retracted. The same test run
+  surfaced the real bugs, which are the opposite problem: removals silently no-op. Lesson recorded here
+  because it is the whole reason this plan exists: Firestore write semantics must be measured, not
+  inferred.</li>
+  <li><strong>Sep 5 — two independent reviews run</strong> (Claude Code + Codex) rather than one, given
+  the wrong first diagnosis. Both confirmed the removal diagnosis; both independently caught that the
+  attempted fix could not clear a note. They disagreed on the remedy.</li>
+  <li><strong>Sep 5 — wholesale replacement rejected in favour of per-key deletes.</strong> Codex's
+  recommendation was simpler and was initially accepted. It was then verified directly and found unsafe:
+  <code>aiEditInBuilder()</code> renders a second weekday grid with no note inputs feeding the same save
+  path, so wholesale replacement would wipe every recurring note for real. Verified by reading
+  <code>js/app.js:4791-4808</code>, not taken on either reviewer's word.</li>
+  <li><strong>Sep 5 — code frozen pending more review</strong> at Christie's request, on the grounds that
+  Ticker is business-critical and affects every employee. The partial diff was left uncommitted; its
+  deploy risk is flagged at the top of this plan.</li>
+</ul>
+
+</body>
+</html>
