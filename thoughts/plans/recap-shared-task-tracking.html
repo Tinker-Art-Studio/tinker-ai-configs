@@ -988,7 +988,61 @@ today.</p>
   </ul>
 </div>
 
-<h2>Phase 4 — Per-person "My Open Tasks" cross-meeting view</h2>
+<h2>Phase 4 — Open Tasks view (merges old Phases 4 and 5)</h2>
+<div class="resolved">
+  <strong>Rescoped Sep 5, 2026, against real production data — read this before the phase body below,
+  which is the pre-data design.</strong>
+  <p><strong>Phases 4 and 5 have collapsed into one feature.</strong> With threads gone, "my open tasks
+  across every meeting" and "open tasks across a thread" are the same view with a different scope selector
+  (mine / a series). Building them together is materially cheaper than sequentially, and it is what
+  Christie described wanting.</p>
+  <p><strong>There is already a real backlog.</strong> 158 action items across 17 meetings, 148 still open.
+  This is not a speculative feature — those commitments exist today and cannot be seen together.</p>
+  <p><strong>Check-off already works</strong> per meeting (<code>item.done</code>, real checkboxes,
+  persisted). Only the cross-meeting view is missing.</p>
+  <p><strong>Assignee matching: use word-boundary matching, NOT the exact matching this plan originally
+  chose.</strong> Measured against real data, exact matching would miss <strong>29% of Christie's items,
+  24% of Maryssa's, and 48% of Anika's</strong> — because the AI writes real-world assignees:
+  <code>Christie and Anika</code>, <code>Anika or Christie</code>, <code>Carey/Christie</code>,
+  <code>Maryssa (with Anika collaboration)</code>, <code>Julia and Maryssa</code>. Exact matching drops
+  every shared task. Word-boundary matching catches all of them, and nothing in the real data over-matches
+  (no person's name is contained inside another's). The "not mine" dismiss affordance stays as the
+  correction path for a genuine false positive.</p>
+  <p><strong>Two data-shape facts the implementation must handle:</strong> assignee lives on the
+  <em>group</em> (<code>beforeNextMeeting[].assignee</code>), not on the item; and <strong>133 of 158 items
+  are plain strings</strong>, not <code>{text, done}</code> objects, so they carry no done state at all.
+  <code>normalizeItem()</code> converts on read, but raw data stays strings until something writes back —
+  a rollup reading many meetings will see both shapes.</p>
+  <p><strong>Scope, decided by Christie:</strong> defaults to her own open items, with a toggle to see
+  everyone's. She is admin and running the studio, so following up on what Maryssa and Anika owe is the
+  same job. Access is unchanged — the view can only ever show meetings the viewer could already read, via
+  the live <code>queryReadableMeetings()</code>.</p>
+  <p><strong>The <code>Unassigned (needs assignment)</code> bucket gets surfaced</strong> as its own group:
+  26 items, the second-largest after Christie's own, and commitments nobody currently owns. This plan
+  previously deferred them to a hypothetical future view; at 16% of everything that was wrong.</p>
+  <div class="depends">
+    <strong>Deferred by decision, not difficulty: assigning an item from within the rollup.</strong>
+    Christie wanted it and asked whether it adds fragility. Honest answer: the move logic already exists
+    (drag-and-drop between assignee groups, shipped <code>2c7f0f4</code>) and is ~10 lines to reuse. But
+    that existing code does a <strong>blind whole-object overwrite</strong> —
+    <code>update({ summary: meeting.summary })</code> from a possibly-stale in-memory copy. In the detail
+    view the copy is seconds old; a rollup is by nature a stale snapshot of many documents, so the same
+    write becomes much more likely to clobber. Doing it safely means a transaction that re-reads the
+    meeting and locates the item by text rather than index (indices shift) — perhaps 30 lines, well
+    understood after this plan's own four rounds of transaction work. Deferred anyway because Christie can
+    already assign by opening the meeting, and the rollup's real job is to make the 26 unassigned items
+    <em>visible</em>. Ship the view first with a near-zero write surface, then decide whether cross-meeting
+    assignment is worth it once the view has changed how the work actually feels.
+  </div>
+  <div class="depends">
+    <strong>Pre-existing bug found while scoping this, logged not fixed:</strong> the existing
+    drag-and-drop reassignment (and every <code>saveDetail()</code> caller) overwrites the whole
+    <code>summary</code> object from an in-memory copy that is never refreshed. Two tabs open on the same
+    meeting will silently lose one of the two edits. This is the same read-modify-write hazard the Phase 2
+    reviews kept finding, on a different collection path, and it is live today. Worth its own small fix;
+    deliberately not bundled into this phase.
+  </div>
+</div>
 <div class="phase">
   <h3>Acceptance criteria</h3>
   <p>Any logged-in user can see every action item assigned to them, across every meeting and thread they
@@ -1074,8 +1128,11 @@ today.</p>
   </ul>
 </div>
 
-<h2>Phase 5 — "Review open tasks" rollup across a set of meetings</h2>
+<h2>Phase 5 — "Review open tasks" across a series <em>(merged into Phase 4)</em></h2>
 <div class="resolved">
+  <strong>Merged into Phase 4 on Sep 5, 2026</strong> — with threads gone it is the same view with a
+  different scope selector. Kept below for its BDD scenarios, which still apply to the series scope.
+  <br>
   <strong>Rescoped Sep 5, 2026: "across a thread" becomes "across a series."</strong> Threads no longer
   exist. A series is the grouping now — and a better fit: it is already per-user, already has a filter UI in
   Meeting History, and needs no chain to be intact for the rollup to be correct. Everywhere the phase body
