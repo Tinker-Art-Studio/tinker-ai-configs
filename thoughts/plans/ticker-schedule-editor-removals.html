@@ -103,7 +103,55 @@ absence means deletion. It does not.</p>
   <tr><td>7</td><td><code>aiEditInBuilder()</code> leaves <code>scheduleEditOriginalOverrides</code> stale</td><td><span class="sev sev-high">high</span></td><td>latent — becomes destructive the moment deletes exist</td></tr>
   <tr><td>8</td><td><code>aiEditInBuilder()</code> never sets <code>_editingFutureSchedule</code>; nothing resets it</td><td><span class="sev sev-med">med</span></td><td>pre-existing, separate bug</td></tr>
   <tr><td>9</td><td><code>aiEditInBuilder()</code> never resets the <code>validFrom</code>/<code>validUntil</code> inputs — the previous employee's date range is written onto this one</td><td><span class="sev sev-high">high</span></td><td><strong>pre-existing and ACTIVE today</strong> — found Sep 5 answering review question 2</td></tr>
+  <tr><td><strong>10</strong></td><td><strong>AI Schedule Builder "Save All Schedules" ERASES every dated override on the people it saves</strong></td><td><span class="sev sev-high">SEVERE</span></td><td><strong>ACTIVE, LIVE, MEASURED</strong> — found round 2, Sep 5</td></tr>
 </table>
+
+<h3 id="symptom10">🚨 Symptom #10 — the AI builder's "Save All Schedules" destroys dated overrides</h3>
+<div class="danger">
+  <strong>This is live in production right now and does not require any of this plan's changes to be
+  dangerous. It is the most serious finding in this work.</strong>
+  <br><br>
+  <code>handleAiSaveAll()</code> (<code>js/app.js:4823-4829</code>) does not go through
+  <code>handleSaveSchedule()</code> at all. It writes, for each matched employee:
+  <pre style="background:#fff;padding:10px;border-radius:6px;font-size:12px;">await saveSchedule(uid, {
+  name: matchedEmp.name,
+  earlyClockInMinutes: sched.earlyClockInMinutes || 15,
+  recurring: sched.recurring || {},
+  overrides: {}          // &lt;-- this
+});</pre>
+
+  <p><strong>Measured against the emulator, Sep 5:</strong></p>
+  <pre style="background:#fff;padding:10px;border-radius:6px;font-size:12px;">overrides AFTER writing `overrides: {}` with merge:true -> []
+VERDICT: ERASED (empty map overwrites)</pre>
+
+  <p>Firestore's recursive merge has a documented exception: an explicitly written <strong>empty</strong>
+  map <em>replaces</em> the target map rather than merging into it. So every use of
+  <strong>"Save All Schedules"</strong> in AI build mode wipes <strong>all dated overrides</strong> for
+  every person it saves — camp days, day-offs, one-off shifts, approved time-off markers, everything.</p>
+
+  <p><strong>The UI gives no warning.</strong> Its help text (<code>js/app.js:4588</code>) reads:
+  <em>"Create or replace a permanent recurring schedule (no date range). Use this for new hires or
+  changing someone's year-round base schedule."</em> Nothing there suggests dated overrides are affected,
+  and "changing someone's year-round base schedule" is exactly the case where they would already have
+  overrides worth keeping.</p>
+
+  <p><strong>Concrete exposure:</strong> running AI build mode on Ivy, Kaitlyn, Kayleigh or Leah today
+  would erase the 74 dated entries written on Sep 4.</p>
+
+  <p><strong>Immediate mitigation, before any code changes:</strong> do not use "Save All Schedules" in
+  AI <em>build</em> mode on anyone who already has a schedule. AI <em>edit</em> mode is a different code
+  path (<code>handleAiSaveEdits</code>, <code>js/app.js:4842+</code>) which merges overrides rather than
+  replacing them, and is not implicated.</p>
+
+  <p><strong>Two corollaries for this plan:</strong></p>
+  <ul>
+    <li>Any fix confined to <code>handleSaveSchedule()</code> does <strong>not</strong> reach this path.
+    Phase 3 as originally written would not have fixed recurring removals here either.</li>
+    <li>The "never send an empty patch map" rule is not just a concurrency nicety — it is load-bearing.
+    A write payload whose override patch is empty must <strong>omit the field</strong>, never send
+    <code>{}</code>.</li>
+  </ul>
+</div>
 
 <p><strong>Every symptom above is silent.</strong> The editor shows the change, Save reports success, and
 the data is unchanged. There is no error and no warning. That is what makes this worth doing carefully:
