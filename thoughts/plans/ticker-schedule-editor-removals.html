@@ -35,7 +35,15 @@
 <h1 id="plan-title">Plan: Ticker Schedule Editor — Removals Silently Fail</h1>
 
 <div class="status" style="background:#fdecea;border-left-color:#d9534f;">
-  Status: <strong>NOT STARTED — code frozen pending further review.</strong> Created Sep 5, 2026.
+  Status: <strong>NOT STARTED — code frozen. Round 2 complete; NOT execution-ready.</strong>
+  Created Sep 5, 2026; revised same day after round 2.
+  <br><br>
+  <strong>Round 2 (Claude + Codex, independently) says do not execute.</strong> Both converged on the same
+  headline: Phase 1's "low risk" dedup would make Phase 2 destructive, recreating the exact note loss this
+  plan claims to avoid. Round 2 also found <strong>symptom #10 — an active, live data-loss bug</strong>
+  unrelated to any planned change. See <a href="#round2">Round 2 review</a> and
+  <a href="#symptom10">symptom #10</a>. The phase structure below is known-wrong in specific ways and
+  needs restructuring before code is written.
   Christie's call: <em>"This is getting complicated and I think we need more rounds of review on it
   before I'm ready to touch the code. This is a super important app to the entire business and impacts
   all my employees."</em>
@@ -111,7 +119,7 @@ absence means deletion. It does not.</p>
   <strong>This is live in production right now and does not require any of this plan's changes to be
   dangerous. It is the most serious finding in this work.</strong>
   <br><br>
-  <code>handleAiSaveAll()</code> (<code>js/app.js:4823-4829</code>) does not go through
+  <code>handleAiSaveAll()</code> (<code>js/app.js:4824-4829</code>) does not go through
   <code>handleSaveSchedule()</code> at all. It writes, for each matched employee:
   <pre style="background:#fff;padding:10px;border-radius:6px;font-size:12px;">await saveSchedule(uid, {
   name: matchedEmp.name,
@@ -161,7 +169,7 @@ the failure mode is someone turning up for a shift that was supposed to be gone.
 <p>Emulator probe (<code>recurring-note-merge.emulator.test.js</code>, untracked) against a real doc:</p>
 <pre style="background:#f5f5f5;padding:12px;border-radius:6px;font-size:12px;">days present after clearing Sat:            Mon, Sat
 override dates after removing 2026-11-11:  2026-11-11, 2026-11-23</pre>
-<p>Corroborating evidence already in the repo: <code>js/app.js:7340-7346</code> contains a prose comment
+<p>Corroborating evidence already in the repo: <code>js/app.js:7327-7332</code> contains a prose comment
 describing this exact trap, and <code>removeTimeOffOverrides()</code> works around it with
 <code>FieldValue.delete()</code>. The time-off flow was fixed; the main editor never was.</p>
 
@@ -184,7 +192,7 @@ They split on the remedy:</p>
 
 <div class="danger">
   <strong>Claude is right, and this was verified directly rather than taken on trust.</strong>
-  <code>aiEditInBuilder()</code> (<code>js/app.js:4791-4808</code>) renders its <strong>own duplicate copy
+  <code>aiEditInBuilder()</code> (<code>js/app.js:4744-4801</code>) renders its <strong>own duplicate copy
   of the weekday grid with no note inputs</strong> — start, end and studio only. Both grids feed the same
   <code>handleSaveSchedule()</code>. Under wholesale replacement, saving from that path would wipe the
   recurring notes of all 16 affected staff.
@@ -215,10 +223,10 @@ They split on the remedy:</p>
   <code>futureSchedule</code> instead of the live schedule.</li>
   <li><strong>The <code>validFrom</code>/<code>validUntil</code> inputs (symptom #9) — an ACTIVE bug
   today.</strong> <code>handleSaveSchedule()</code> reads them from the DOM
-  (<code>js/app.js:3177-3178</code>) and writes them when truthy, so the previously-opened employee's
+  (<code>js/app.js:3165-3166</code>) and writes them when truthy, so the previously-opened employee's
   date range is written onto this one.</li>
   <li>Also fold in the <strong>template dedup</strong>: the two grid renderers
-  (<code>:2991</code>, <code>:4791</code>) are identical apart from two <code>placeholder</code>
+  (<code>:2991</code>, <code>:4777</code>) are identical apart from two <code>placeholder</code>
   attributes. Extract one <code>renderWeekGrid()</code> so the note column cannot be added to one and
   not the other. Low risk; this phase already touches the function.</li>
 </ul>
@@ -306,7 +314,7 @@ most-used editing gesture in the editor.</p>
 <code>futureSchedule.recurring.Sat</code> before assuming it does — this repo's own convention, and the
 reason the original premise here was caught as wrong.</p>
 <div class="depends">
-  <strong>Note the existing inconsistency:</strong> the CSV importer (<code>js/app.js:5602</code>) writes
+  <strong>Note the existing inconsistency:</strong> the CSV importer (<code>js/app.js:5588-5591</code>) writes
   <code>futureSchedule</code> with <code>{mergeFields:['futureSchedule']}</code>, which replaces it
   wholesale (proven by <code>future-schedule-write.emulator.test.js:80</code>), while the editor's future
   branch deep-merges. Same field, two different removal semantics. Worth resolving deliberately rather
@@ -397,7 +405,7 @@ delete editingOverrides[dateStr];</pre>
 
   <h3>The template half: low risk</h3>
   <p>Compared directly at <code>HEAD</code>. The two grid templates
-  (<code>js/app.js:2991</code> and <code>:4791</code>) are <strong>character-for-character identical
+  (<code>js/app.js:2991</code> and <code>:4777</code>) are <strong>character-for-character identical
   except for two <code>placeholder</code> attributes</strong> on the start/end inputs. Same markup, same
   <code>data-day</code>/<code>data-field</code> hooks, same studio select.</p>
   <p>So the "divergence" flagged in review is not pre-existing — it is a divergence the abandoned diff
@@ -419,7 +427,7 @@ delete editingOverrides[dateStr];</pre>
   <div class="danger">
     <strong>Symptom #9 is an ACTIVE bug right now — it does not need Phase 3 to become dangerous.</strong>
     <code>handleSaveSchedule()</code> reads the validity bounds straight from the DOM
-    (<code>js/app.js:3177-3178</code>) and writes them when truthy. Open Kathy (whose range is
+    (<code>js/app.js:3165-3166</code>) and writes them when truthy. Open Kathy (whose range is
     2026-08-24 &rarr; 2026-12-31), close her, then use the AI builder on someone else and save —
     <strong>Kathy's date range is written onto that person's schedule.</strong> A wrong
     <code>validFrom</code>/<code>validUntil</code> silently switches their whole recurring schedule off
@@ -431,6 +439,109 @@ delete editingOverrides[dateStr];</pre>
   <strong>all five</strong> fields above, not just the two originally catalogued. Symptom #9 arguably
   justifies shipping Phase 1 on its own, ahead of the rest of this plan.</p>
 </div>
+
+<h2 id="round2">Round 2 review — the plan is NOT execution-ready</h2>
+<div class="danger">
+  <strong>Two independent reviews (Claude + Codex) ran against this plan on Sep 5 and independently
+  converged on the same headline finding.</strong> Both say do not execute yet. The phase structure below
+  is now known to be wrong in specific ways and needs restructuring before any code is written.
+</div>
+
+<h3>🔴 Headline: Phase 1's "low risk" dedup makes Phase 2 destructive</h3>
+<div class="danger">
+  Both reviewers found this independently. The chain:
+  <ol>
+    <li><code>aiEditInBuilder()</code> builds its grid from <code>aiParsedSchedules[idx].recurring</code>
+    (<code>js/app.js:4765-4769</code>) — <strong>not</strong> from the stored document.</li>
+    <li>That AI data <strong>never has a <code>note</code></strong>: the build-mode schema at
+    <code>netlify/functions/schedule-builder.js:93-97</code> specifies exactly
+    <code>{start, end, studio}</code>.</li>
+    <li>Phase 1 dedups the two grids; Phase 2 adds the note column to the shared renderer.</li>
+    <li>Opening the AI builder therefore renders note inputs that are <strong>empty because the AI never
+    produced one</strong> — not because anyone cleared them.</li>
+    <li>Phase 2's rule ("a day that survives but whose note was cleared emits
+    <code>FieldValue.delete()</code>") then fires on <strong>every</strong> AI-populated day.</li>
+  </ol>
+  <strong>Result: note deletion for every affected staff member — the exact data loss this plan claims to
+  have avoided by rejecting wholesale replacement.</strong> Per-key deletion moved the hazard from the
+  write shape to the input state; it did not remove it.
+  <br><br>
+  <strong>Root cause, stated properly:</strong> <code>aiEditInBuilder()</code> seeds the editor from AI
+  output rather than from the stored document. Wholesale-vs-per-key only changes how that manifests.
+  <br><br>
+  <strong>Consequence for this plan:</strong> the claim "the template dedup is genuinely low risk" is
+  <strong>true today and false the moment a note column exists</strong>. The two call sites feed the
+  shared renderer from different data sources with different authority. This is a Phase 2 design
+  decision, not a Phase 1 cleanup, and must be resolved before dedup ships.
+</div>
+
+<h3>Corrections to claims made above</h3>
+<table>
+  <tr><th>Claim in this plan</th><th>Round 2 verdict</th></tr>
+  <tr><td>"Phase 1 is shippable alone"</td><td><strong>Partly wrong.</strong> The three state resets are. The dedup is not (see headline). And resetting <code>_editingFutureSchedule = false</code> would introduce a <em>new</em> silent failure — an AI-builder save on someone with an active future schedule would write to <code>recurring</code>, which <code>getShiftForDate()</code> shadows for the whole future window, so the edit is unreadable. It must be <strong>recomputed</strong> from the target's doc, mirroring <code>js/app.js:2970-2975</code>, never hardcoded.</td></tr>
+  <tr><td>"All symptoms share one root cause"</td><td><strong>Overstated.</strong> #7–#9 are stale UI/global state bugs, not recursive-merge bugs. #10 is the opposite failure — a silent mass removal.</td></tr>
+  <tr><td>"Five pieces of state"</td><td><strong>Miscount.</strong> Four values (original overrides, future flag, validFrom, validUntil). The grid template is not state.</td></tr>
+  <tr><td>Symptom #8 is a "separate bug" to log</td><td><strong>It is ACTIVE and high-risk</strong>, and the plan contradicts itself by fixing it in Phase 1 while open decision 2 says log it separately. Resolve.</td></tr>
+  <tr><td>"Phase 2 is independent"</td><td><strong>False</strong> until the AI note-seeding decision and the future-branch write shape are resolved.</td></tr>
+  <tr><td>"Per-key deletes are safer under concurrency"</td><td><strong>True, with a load-bearing qualification:</strong> never send an empty patch map. <code>{}</code> overwrites (now measured — see symptom #10), which defeats the very protection being claimed.</td></tr>
+  <tr><td>"Working tree is clean"</td><td>Imprecise — <code>deno.lock</code> is untracked. It is unrelated and pre-dates this work, but say so.</td></tr>
+  <tr><td>"16 of 18 staff carry recurring notes"</td><td><strong>Not verifiable from the repo.</strong> It was derived from the Aug 27 import payload, which is a snapshot, not live data. It gates severity — confirm against production before execution rather than carrying it forward as established.</td></tr>
+  <tr><td>Line citations</td><td><strong>Roughly half resolved against the STASHED tree, not HEAD</strong> — including the load-bearing <code>aiEditInBuilder</code> citation in the Decisions Log. Since execution begins with <code>git stash pop</code>, they would have drifted again. <strong>Corrected against HEAD <code>9feba92</code> on Sep 5</strong>; all numbers in this plan are now HEAD-relative.</td></tr>
+</table>
+
+<h3>Cases the plan misses entirely</h3>
+<ul>
+  <li><strong>The "move" gesture breaks under Phase 2b.</strong> Today: Edit Nov 11 &rarr; change the date
+  to Nov 12 &rarr; Add = a move, because the original key was already deleted. After Phase 2b, unless the
+  tracked key is explicitly deleted when it differs from the submitted date, you get a
+  <strong>duplicate</strong> — Nov 11 kept <em>and</em> Nov 12 added.</li>
+  <li><strong><code>forceNew</code> makes "New Schedule" half-work.</strong>
+  <code>openScheduleEditor(uid, true)</code> (<code>js/app.js:314</code>) sets
+  <code>base = {recurring:{}, overrides:{}}</code>, so <code>scheduleEditOriginalOverrides = {}</code>
+  even though the remote doc still has overrides. Under Phase 3, weekdays get cleared (derived from
+  <code>DAYS</code>) but the override diff is <code>{}</code> vs <code>{}</code> &rarr; empty delete set.
+  A manager clicks "New Schedule", sees a blank editor, saves — and every stale override survives,
+  invisibly.</li>
+  <li><strong>Three different "is the future schedule active?" predicates.</strong>
+  <code>openScheduleEditor:2972</code> requires <code>future && future.recurring</code>;
+  <code>handleAiSaveEdits:4932-4934</code> and <code>getShiftForDate:3553</code> require only
+  <code>future</code>. Resolve them in Phase 4 rather than adding a fourth.</li>
+  <li><strong><code>sendOneOffReminderConfirmations</code> is not awaited</strong>
+  (<code>js/app.js:3204</code>). A note-level sentinel reaching it is a truthy non-string handed to
+  <code>isReminderCandidate()</code> &rarr; throws inside an un-awaited async call &rarr; unhandled
+  rejection with no user-visible error, <em>after</em> the save succeeded. Keep the payloads separate
+  <em>and</em> make the call defensive.</li>
+  <li><strong>Future-branch validity bounds can't be cleared either.</strong> That branch keeps
+  <code>...(validFrom ? {validFrom} : {})</code> and spreads <code>...existingFuture</code> from the
+  <code>allSchedules</code> cache, so a cleared future range is un-clearable and the stale cached range is
+  rewritten on every future-branch save. Phase 4's scope must widen beyond "probe depth-2 delete".</li>
+  <li><strong>Timezone.</strong> Future-schedule activation compares UTC dates
+  (<code>js/app.js:2970</code>, and again at <code>4931</code>) while the studio runs on Mountain Time, so
+  in the evening it can switch a calendar day early — changing which branch is edited. Include or log
+  deliberately.</li>
+  <li><strong>Tests are sequenced wrong.</strong> <code>AGENTS.md</code> requires a failing emulator test
+  <em>before</em> each Firestore-writing fix. Phase 5 currently holds all regression coverage; it must
+  move into the phase it guards.</li>
+</ul>
+
+<h3>Proposed resequencing (from round 2, not yet accepted)</h3>
+<ol>
+  <li><strong>Phase 0 — measure.</strong> Four probes, one emulator run, gating everything else:
+  depth-2 and depth-3 <code>FieldValue.delete()</code>; whether a sentinel survives an object spread into
+  a nested merge (<code>js/app.js:3179</code> does exactly that); and delete-of-a-key-that-does-not-exist
+  (Phase 3 would emit these on most saves). <em>The empty-map question is already answered — measured
+  Sep 5, see symptom #10.</em></li>
+  <li><strong>Phase 1a — state resets only</strong>, no dedup. Genuinely shippable alone; fixes active
+  symptoms #8 and #9. <code>_editingFutureSchedule</code> recomputed, not hardcoded.</li>
+  <li><strong>Phase 2 — notes</strong>, with the dedup folded in and the <code>aiEditInBuilder</code>
+  note-seeding decision made explicitly.</li>
+  <li><strong>Phase 2b + 3 together</strong>, with the move-gesture and <code>forceNew</code> cases
+  resolved.</li>
+  <li><strong>Phase 4</strong> — widened to validity bounds and the three <code>futureActive</code>
+  predicates.</li>
+  <li><strong>New: fix <code>handleAiSaveAll</code> (symptom #10)</strong> — it bypasses
+  <code>handleSaveSchedule()</code> entirely, so no other phase reaches it.</li>
+</ol>
 
 <h2>Completeness check</h2>
 <p>Phase 1 is independent, must ship first, and is <strong>shippable on its own</strong> — symptom #9 is
@@ -466,10 +577,27 @@ described at the top.</p>
   recommendation was simpler and was initially accepted. It was then verified directly and found unsafe:
   <code>aiEditInBuilder()</code> renders a second weekday grid with no note inputs feeding the same save
   path, so wholesale replacement would wipe every recurring note for real. Verified by reading
-  <code>js/app.js:4791-4808</code>, not taken on either reviewer's word.</li>
+  <code>js/app.js:4744-4801</code>, not taken on either reviewer's word.</li>
   <li><strong>Sep 5 — code frozen pending more review</strong> at Christie's request, on the grounds that
   Ticker is business-critical and affects every employee. The partial diff was left uncommitted; its
   deploy risk is flagged at the top of this plan.</li>
+  <li><strong>Sep 5 — round 2 run (Claude + Codex), plan judged NOT execution-ready.</strong> Both
+  reviewers independently found that Phase 1's dedup would make Phase 2 destructive — per-key deletion
+  relocated the note-loss hazard from the write shape to the input state rather than removing it. This is
+  the <em>second</em> time this work has proposed a fix that would cause the data loss it set out to
+  prevent, which is itself the argument for the freeze.</li>
+  <li><strong>Sep 5 — symptom #10 found and MEASURED.</strong> Round 2 flagged that
+  <code>handleAiSaveAll()</code> writes <code>overrides: {}</code> and asked whether an explicitly-written
+  empty map overwrites. That claim existed in this repo only as a code comment
+  (<code>remove-timeoff-overrides.emulator.test.js:42-46</code>) and had never been asserted by a test —
+  an inherited assumption. Measured against the emulator: <strong>it does overwrite.</strong> So AI build
+  mode's "Save All Schedules" has been erasing every dated override for everyone it saves, live, with no
+  UI warning. Third time in this work that measurement overturned inference.</li>
+  <li><strong>Sep 5 — line citations corrected.</strong> Round 2 caught that roughly half the citations
+  resolved against the <em>stashed</em> tree rather than HEAD, including the one the Decisions Log
+  presents as independently verified. All numbers re-derived against HEAD <code>9feba92</code>. Since
+  execution begins with <code>git stash pop</code>, whoever executes must re-check them again at that
+  point.</li>
 </ul>
 
 </body>
