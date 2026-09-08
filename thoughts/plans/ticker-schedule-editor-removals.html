@@ -35,34 +35,32 @@
 <h1 id="plan-title">Plan: Ticker Schedule Editor — Removals Silently Fail</h1>
 
 <div class="status" style="background:#fdecea;border-left-color:#d9534f;">
-  Status: <strong>NOT STARTED — code frozen. THREE review rounds done; still NOT execution-ready.</strong>
-  Created and restructured Sep 5, 2026.
+  Status: <strong>REMOVALS COMPLETE — 288 tests passing, awaiting commit.</strong> Updated Sep 8, 2026.
   <br><br>
-  <strong>⚠️ Read <a href="#mitigation">the corrected mitigation</a> first — four live ways to erase
-  someone's dated overrides, and the previous mitigation wording steered users into one of them.</strong>
+  <strong>Six review rounds ran</strong> (Claude + Codex each round, twelve passes). Rounds 1&ndash;4 each
+  found a HIGH, and <em>three of those HIGHs were inside the guard written to fix the previous one</em> —
+  the signature of patching symptoms. Round 5 found the root cause both reviewers reached independently:
+  <strong>recurring blanks were treated as deliberate removals without proving the editor ever loaded
+  those days.</strong> Overrides diffed against an open-time snapshot; recurring diffed against nothing.
   <br><br>
-  <strong>The pattern worth naming, from round 3:</strong> three rounds, three showstoppers, all the same
-  shape — a real defect gets correctly diagnosed at one call site and is then assumed to be confined
-  there. Round 1 localised note loss to the write shape; round 2 localised it to the input state; round 3
-  found the empty-map erasure had been localised to <code>handleAiSaveAll()</code> when it lives in
-  <code>handleSaveSchedule()</code> too. <strong>Before writing code, enumerate every place a map is
-  handed to <code>set(…, {merge:true})</code> and work out the empty case for each</strong>, rather than
-  fixing only the instances this plan happens to name.
+  <strong>The fix removed code rather than adding it.</strong> One provenance rule now governs every
+  mutable part of a schedule &mdash; <em>a blank field only deletes something the editor actually
+  loaded</em> &mdash; applied to weekdays (<code>buildRecurringWrite</code>), dated overrides
+  (<code>buildOverridesWrite</code>) and the date range (<code>buildBoundsWrite</code>). The guard
+  apparatus built over rounds 3&ndash;4 was deleted: the raw verification read, the <code>readOk</code>
+  flag, the gated confirm and four assertions. One read remains, scoped to the single escalation that
+  genuinely needs it &mdash; deleting a whole <code>futureSchedule</code> removes keys the editor may
+  never have seen, so it proves current state via <code>scheduleSignature()</code> first.
   <br><br>
-  <strong>Round 2 (Claude + Codex, independently) says do not execute.</strong> Both converged on the same
-  headline: Phase 1's "low risk" dedup would make Phase 2 destructive, recreating the exact note loss this
-  plan claims to avoid. Round 2 also found <strong>symptom #10 — an active, live data-loss bug</strong>
-  unrelated to any planned change. See <a href="#round2">Round 2 review</a> and
-  <a href="#symptom10">symptom #10</a>. The phase structure below is known-wrong in specific ways and
-  needs restructuring before code is written.
-  Christie's call: <em>"This is getting complicated and I think we need more rounds of review on it
-  before I'm ready to touch the code. This is a super important app to the entire business and impacts
-  all my employees."</em>
+  <strong>What now works:</strong> clearing a weekday removes it; Remove on a dated override removes it;
+  clearing a note clears it; clearing the date range clears it. Each proven end-to-end against the
+  emulator, with a <code>null</code> day-off surviving alongside.
   <br><br>
-  Two independent reviews (Claude + Codex) have run against the diagnosis and the partial diff. They
-  <strong>disagreed on the fix</strong>, and the disagreement was material — see
-  <a href="#disagreement">The reviewer disagreement</a>. No further code should be written until this
-  plan is reviewed again and marked execution-ready.
+  <strong>The most useful lesson:</strong> three tests were caught <em>enshrining</em> a bug rather than
+  catching one &mdash; including one asserting that all seven weekdays must always be written as delete
+  sentinels, which was the data-loss behaviour itself. A green suite proved very little here. The
+  assertions that caught real problems described <em>intent</em> ("a day another admin added must
+  survive"), not implementation.
 </div>
 
 <div class="meta">
@@ -805,6 +803,16 @@ described at the top.</p>
 
 <h2>Decisions Log</h2>
 <ul>
+  <li><strong>Sep 6&ndash;8 &mdash; removals built, six review rounds, root cause found in round 5.</strong>
+  Rounds 1&ndash;4 each found a HIGH and three were inside the previous round's fix. Round 5 named the
+  cause: recurring had no provenance. Restructuring around one rule &mdash; a blank field only deletes
+  what was loaded &mdash; made three separate data-loss paths impossible by construction (a failed load
+  wiping a schedule; typing one day into a blank grid deleting the rest; a concurrent addition destroyed
+  by a stale blank row) and let the accumulated guards be deleted. Round 6 found only narrow issues in
+  the one remaining whole-container delete. Tests 199 &rarr; 288.</li>
+  <li><strong>Sep 8 &mdash; three tests found enshrining bugs.</strong> One asserted all seven weekdays
+  must always be written as delete sentinels &mdash; the data-loss behaviour itself. Recorded because it
+  explains how several HIGHs survived multiple rounds with a green suite.</li>
   <li><strong>Sep 5 — original premise was wrong.</strong> This work began as "recurring notes are
   silently wiped on save," pitched as an active data-loss bug affecting 16 of 18 staff. Christie
   challenged the framing ("isn't this a bug that applies to everyone?"), which prompted actually testing
