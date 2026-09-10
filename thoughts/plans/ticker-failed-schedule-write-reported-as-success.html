@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Ticker — A Failed Schedule Write Is Reported As Success</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 36px; border-bottom: 2px solid #eee; padding-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 22px; }
+  .status { border-left: 4px solid #999; padding: 10px 16px; margin: 16px 0; font-size: 14px; }
+  .meta { background: #f7f7f7; border-radius: 8px; padding: 14px 18px; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fbfbfb; border-left: 3px solid #4EBFB3; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .bdd strong { color: #2a7a72; }
+  .checklist li { margin-bottom: 6px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+  .repo-tag { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; }
+  .repo-ticker { background: #e0f2fe; color: #075985; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .depends { background: #fff8e6; border: 1px solid #e0b93a; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  .danger { background: #fdecea; border: 1px solid #d9534f; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13.5px; }
+  ul { padding-left: 22px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin: 10px 0; }
+  th, td { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+  .sev { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+  .sev-high { background: #f8d7da; color: #842029; }
+  .sev-med { background: #fff3cd; color: #664d03; }
+  .sev-low { background: #e2e3e5; color: #41464b; }
+  .ok { background: #e7f7ed; color: #17603a; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Ticker — A Failed Schedule Write Is Reported As Success</h1>
+
+<div class="status" style="background:#fdecea;border-left-color:#d9534f;">
+  Status: <strong>execution-ready: false</strong> — <strong>v2, revised after review round 1.</strong>
+  <strong>One product decision is outstanding</strong> (staff withdrawal, below) and blocks Phase 3.
+  Written Sep 9, 2026.
+  <br><br>
+  <strong>This is a LIVE bug.</strong> Found Sep 9 2026 by both reviewers during the time-off fix, and
+  deliberately not bundled into that change: it is broad, affects many paths, and needs its own scoped
+  fix and review.
+  <br><br>
+  <strong>Review round 1 (Claude + Codex) rejected v1 of this plan.</strong> Both independently found that
+  its Phase 1 &mdash; the phase labelled "inert" &mdash; would have written <code>{ok, applied}</code> into
+  the live <code>appliedOverrides</code> field, which <code>removeTimeOffOverrides()</code> would then read
+  as two date keys. That would have <em>caused</em> the unrecoverable state this plan exists to prevent.
+  Codex additionally found three blocking issues v1 missed entirely: the second write in each flow is
+  unchecked too, staff cannot write schedules at all (so the fix would break a currently-advertised
+  action), and this repo has no way to force a write failure in a test today. All verified against the
+  code before this revision. <strong>The v1 phase plan is superseded; do not execute it.</strong>
+  <br><br>
+  <strong>Review round 2 (Claude + Codex) ALSO rejected the plan.</strong> Both independently reached the
+  same three conclusions: Phase 0's approach does not unblock anything (the real blocker is that
+  <code>app.js</code> cannot be <code>require()</code>d <em>at all</em>, not that failures cannot be
+  forced); Phase 2's rollback is best-effort, not a correctness guarantee, and can destroy a concurrent
+  writer's data; and the staff-withdrawal design has no manager-side completion action, so it would strand
+  requests. Claude additionally found that <strong>the offline threat model in this plan is backwards</strong>
+  and that a live, failure-independent bug exists today. See "Round 2 findings" below.
+  <strong>v3 is required before execution.</strong>
+</div>
+
+<h2 id="round2">Round 2 findings — all verified, all still open</h2>
+
+<div class="danger">
+  <strong>LIVE BUG, independent of this plan — <code>approveTimeOff</code> has no re-entrancy guard.</strong>
+  <em>(Claude, round 2.)</em><br>
+  <code>approveTimeOff()</code> (<code>app.js</code>:7333) does not disable its button and never checks
+  <code>data.status</code> before acting. Two admins, or one impatient double-click, run
+  <code>applyTimeOffOverrides</code> twice. The second run captures the day-off marker the first run
+  wrote and stores <code>{ had: true, previousOverride: null }</code> — so the eventual reversal restores
+  a phantom Day Off instead of the real shift. For a partial day it permanently restores the request's own
+  reduced shift.
+  <br><br>
+  <strong>This needs no write failure at all. It is reachable today by double-clicking Approve.</strong>
+  It is arguably more likely to fire than the bug this plan was written about, and the fix is small:
+  disable the button, and bail if <code>data.status === 'approved'</code>. Compare
+  <code>submitConfirmSub</code> (:7167), which already disables its button.
+</div>
+
+<div class="danger">
+  <strong>HIGH — the offline threat model here is backwards.</strong> <em>(Claude, round 2.)</em><br>
+  Offline persistence is enabled (<code>firebase-config.js</code>,
+  <code>enablePersistence({synchronizeTabs:true})</code>, awaited at <code>firebase-data.js</code>:17).
+  With it on, <code>await set()</code> <strong>does not reject when offline</strong> — it stays pending
+  until the server acknowledges. So <code>saveSchedule</code> never returns <code>false</code> offline;
+  <code>approveTimeOff</code> simply <em>hangs</em>, with no toast and no error, and this plan's guard
+  never runs. Likewise <code>get()</code> falls back to cache, so <code>loadSchedule</code> returns
+  <strong>stale data, not <code>null</code></strong>.
+  <br><br>
+  Consequence #4 above is therefore wrong on its offline half: <strong>rules denial is the real trigger,
+  not offline.</strong> And offline combines with the re-entrancy bug above — a manager who sees nothing
+  happen clicks Approve again, both writes flush on reconnect, and the double-apply corruption lands with
+  no failure ever reported.
+</div>
+
+<div class="danger">
+  <strong>HIGH — "absent schedule document = success" is right for apply and WRONG for reverse.</strong>
+  <em>(Claude, round 2.)</em><br>
+  v2 made this a blanket rule. For <em>reverse</em> with a non-empty <code>appliedOverrides</code> map, an
+  absent document means the overrides' document is gone or has <em>moved</em> — and reporting success lets
+  Phase 3 clear the record, producing exactly the unrecoverable state this plan exists to prevent.
+  <br><br>
+  It is reachable, not theoretical: a seeded request stores <code>uid = claimedBy || id</code>
+  (:5516), so an unclaimed employee's approved request carries an <code>emp_…</code> id; when they later
+  claim their name, <code>migrateSchedule</code> moves the document to their auth uid; then
+  <code>removeTimeOffOverrides('emp_…', map)</code> finds nothing and "succeeds". Note
+  <code>removeTimeOffOverrides</code> takes a raw uid and does <strong>not</strong> go through
+  <code>resolveScheduleTarget()</code> — the resolver this repo added for precisely this identity split.
+</div>
+
+<div class="depends">
+  <strong>Phase 0 is aimed at the wrong blocker — both reviewers, independently.</strong><br>
+  Pointing <code>firebase.json</code> at the shared rules file would not break the existing 338 tests (they
+  use the Admin SDK, which the emulator grants owner access, so rules are bypassed either way) — but it
+  would not make a single Phase 2–4 scenario executable either. Those scenarios require <em>calling</em>
+  <code>approveTimeOff()</code>, and <code>js/app.js</code> has no <code>module.exports</code> and cannot
+  be <code>require()</code>d. Every existing emulator test re-implements the write <em>shape</em> rather
+  than executing the function, which is exactly why they cannot tell a guard placed before
+  <code>updateTimeOffRequest</code> from one placed after.
+  <br><br>
+  <strong>Phase 0 must be EXTRACT, not authorize:</strong> move <code>applyTimeOffOverrides</code>,
+  <code>removeTimeOffOverrides</code> and the approve-and-record orchestration into a
+  <code>require()</code>able module — <code>schedule-helpers.js</code> is the established precedent —
+  taking <code>{ loadSchedule, saveSchedule, updateTimeOffRequest }</code> as injected dependencies.
+  Forcing a failure then costs one line, needs no rules change and no cross-repo coupling, and the tests
+  execute the real code. It also sidesteps the "no mock Firestore" tension: the <em>data layer</em> is
+  injected, Firestore is not mocked.
+  <br><br>
+  Claude also warned against the rules-file route on its own terms: the path is outside the repo, so it
+  breaks any non-sibling checkout and CI; an unrelated <code>studio-hub</code> edit would fail Ticker's
+  whole suite; and it would create pressure to edit the shared production rules file to make Ticker's
+  tests green — the file whose regression breaks all eight apps at once.
+</div>
+
+<div class="danger">
+  <strong>HIGH — Phase 2's rollback is best-effort, not a correctness guarantee.</strong> <em>(Codex, round 2.)</em><br>
+  Two concrete states where compensating with the in-memory <code>applied</code> map makes things
+  <em>worse</em>:
+  <ol>
+    <li><strong>Concurrent edit.</strong> Apply captures shift A and writes Day Off; another operation
+      writes a legitimate shift B on that date; the request update fails; rollback restores A and destroys B.</li>
+    <li><strong>Overlapping approvals.</strong> Request A captures shift X and writes Day Off; request B
+      approves the same date, captures the Day Off and writes its own; A's request update fails; A's
+      rollback restores X, silently undoing B's successful approval while B still reads as approved.</li>
+  </ol>
+  And the double-failure case (schedule write lands, request update fails, rollback also fails) leaves a
+  live override with no durable provenance — so "retrying after the cause is fixed works normally" is
+  false there, because retrying invokes the non-idempotent apply. Claude's cheap mitigation: on rollback
+  failure, persist the map under a <em>different</em> field name (<code>pendingReversal</code>, never
+  <code>appliedOverrides</code>, so no existing reader misparses it). Losing the map is strictly worse than
+  an odd field on a non-approved request.
+  <br><br>
+  Codex's position is that a real fix needs one of: a transaction across both documents, provenance on
+  each override plus conditional compensation, or a durable recovery record written atomically with the
+  schedule change. <strong>This is the open architectural question for v3.</strong>
+</div>
+
+<div class="danger">
+  <strong>HIGH — the staff-withdrawal design does not hold up as specified.</strong> <em>(Both, round 2.)</em><br>
+  <ul>
+    <li><strong>There is no manager completion path.</strong> <code>withdrawTimeOff</code> has exactly one
+      call site (:6950), gated on <code>isOwner</code> — an admin who is not the owner never sees a
+      Withdraw button. "The manager completes it through the existing manager path" is false; that path
+      does not exist. Phase 3 must add an explicit <em>Complete withdrawal</em> action.</li>
+    <li><strong><code>autoCompletePassedTimeOff()</code> would silently swallow the flag.</strong> It runs
+      on every admin visit to the Time Off tab and flips any <code>approved</code> request whose dates have
+      passed to <code>completed</code> (:6263). A request flagged on Friday and left over a weekend past its
+      dates becomes <code>completed</code> — which removes both the Withdraw and the Return-to-Under-Review
+      buttons and drops it into the "past" filter, with the overrides still live.</li>
+    <li><strong>Needs Action would not show it</strong> (:6289 filters to submitted/under_review), and the
+      dashboard query has the same restriction (<code>firebase-data.js</code>:460).</li>
+    <li><strong><code>isOwner</code> and <code>isAdmin</code> are not exclusive</strong> (:6793) — Christie
+      both owns and administers her own requests, so "branch on role" would tell her to wait for a manager
+      to action her own time off. Branch on capability, admin winning.</li>
+    <li><strong>Nothing clears the flag</strong>, and an admin Edit resets <code>appliedOverrides</code> to
+      empty (:6711) while leaving it set — a later completion would then reverse against an empty map.</li>
+    <li><strong>The rules permit far more than the flag.</strong> <em>(Codex.)</em> The staff update rule
+      checks only <code>resource.data.uid == request.auth.uid</code>, so a staff member can already write
+      <code>status</code>, <code>appliedOverrides</code>, <code>reviewAction</code>, <code>reviewedBy</code>
+      and <code>uid</code> directly. "No rules change needed" is true only in the narrow sense that the flag
+      write passes; the "staff requests, manager completes" boundary would be <strong>UI-only</strong>
+      unless the rule pins manager-owned fields. That is a real finding about existing rules, independent
+      of this plan.</li>
+  </ul>
+</div>
+
+<div class="depends">
+  <strong>MEDIUM — corrections and smaller round-2 findings, all verified:</strong>
+  <ul>
+    <li><strong>Phase 5 would break <code>app.js</code>:2485</strong>, which v2 did not check:
+      <code>const ok = updateClockEntry(entryId, updates); if (ok) {…}</code> is <em>unawaited</em>, so
+      making the function async turns <code>ok</code> into an always-truthy Promise and the guard silently
+      stops working. This is payroll-adjacent. v2's "verified safe" holds for <code>deleteSchedule</code>
+      only. Separately, <code>saveStreakData</code> sits in the clock-in/out path, where awaiting a real
+      round-trip adds kiosk latency and needs a deliberate decision.</li>
+    <li><strong>Reverse is convergent, not conflict-free.</strong> Retrying a reversal days later
+      overwrites whatever is on that date <em>now</em> with the value captured at approval time. Phase 3's
+      "keep the map so it can be retried" needs an explicit <code>reversalPending</code> marker — cleared
+      on success — because <code>withdrawTimeOff</code> already leaves a map describing a reversal that
+      <em>did</em> happen, and nothing can currently tell the two apart.</li>
+    <li><strong><code>reverseConfirmedTimeOffSubs</code> ignores <code>confirmTimeOffSub</code>'s own
+      result</strong> (:7316). A <code>sub-changed</code> abort leaves a sub whose schedule write was
+      reversed but whose <code>confirmed</code> flag stays true — the inverse inconsistency.</li>
+    <li><strong>A failed <code>saveSchedule</code> is atomic</strong> — nothing is written — so retry after
+      a <em>failed apply</em> is safe. The asymmetry only bites when the write succeeded and something
+      after it failed. v2's framing over-generalised and would mislead whoever implements Phase 2's retry.</li>
+    <li><strong>Line numbers have drifted</strong> — <code>approveTimeOff</code> is :7333,
+      <code>unapproveTimeOff</code> :7455. Re-derive before editing.</li>
+  </ul>
+</div>
+
+<h2>Goal</h2>
+
+<p>
+  When a schedule write fails, the manager is told it failed — and the app does not record the change as
+  having happened. Today the opposite is true: approving time off can tell the manager
+  <em>"Request approved — schedule updated"</em>, notify the employee that they are approved, and store a
+  record of overrides that were never written.
+</p>
+
+<div class="meta">
+  <strong>Repo:</strong> <code>~/tinker-timeclock</code> <span class="repo-tag repo-ticker">Ticker only</span>
+  — no Firestore rules changes, no new collections, no migration.<br>
+  <strong>Collections touched:</strong> <code>timeclock_schedules/{uid}</code> (writes),
+  <code>timeclock_timeoff/{docId}</code> (writes). Both already have rules
+  (<code>firestore.rules</code>:320 and :338, manager+ read/write).<br>
+  <strong>Blast radius:</strong> every time-off approval, un-approval, denial, withdrawal, edit-reopen and
+  sub confirm/un-confirm. Schedules drive Who's Working, My Schedule, kiosk late/grace/streak logic and
+  the scheduled-vs-actual comparison.<br>
+  <strong>Why it matters more now:</strong> schedule removals actually remove as of <code>66dcbc8</code>
+  (Sep 8). The gap between "the UI says it worked" and "the data changed" has real consequences it did not
+  have when the writes were no-ops anyway.
+</div>
+
+<h2>Root cause</h2>
+
+<p>
+  Two functions in <code>js/firebase-data.js</code> turn failure into an ordinary-looking return value:
+</p>
+
+<ul>
+  <li><code>saveSchedule()</code> (:205) catches its own errors and returns <code>false</code>.</li>
+  <li><code>loadSchedule()</code> (:183) catches its own errors and returns <code>null</code> — the same
+    value it returns for an employee who legitimately has no schedule document. <strong>A failed read and
+    an absent document are indistinguishable.</strong></li>
+</ul>
+
+<p>
+  Two callers then discard that signal entirely, and every path downstream of them assumes the schedule
+  changed.
+</p>
+
+<h3>Every <code>saveSchedule</code> call site (audited Sep 9, corrected after review)</h3>
+
+<table>
+  <tr><th>Site</th><th>Checks the result?</th><th>Behaviour on failure</th></tr>
+  <tr>
+    <td><code>app.js:3442</code> — schedule editor save</td>
+    <td><span class="sev ok">YES</span></td>
+    <td>Alerts "Failed to save schedule", keeps the editor open. Correct.</td>
+  </tr>
+  <tr>
+    <td><code>app.js:5181</code> — AI apply-all edits</td>
+    <td><span class="sev ok">YES</span></td>
+    <td>Counts into <code>saved</code>/<code>skipped</code>, reports both. Correct.</td>
+  </tr>
+  <tr>
+    <td><code>app.js:7216</code> — confirm sub</td>
+    <td><span class="sev sev-med">HALF</span></td>
+    <td>The <em>write</em> is checked correctly (<code>saveOk</code> before the request doc is touched) —
+      this is still the template to copy. But its <strong>rollback</strong> at :7231 discards
+      <code>removeTimeOffOverrides()</code>'s result and then tells the manager
+      <em>"The schedule write was rolled back"</em> unconditionally. v1 of this plan marked this row
+      fully safe; both reviewers corrected it. A false success claim living inside the previous round's
+      own guard.</td>
+  </tr>
+  <tr>
+    <td><code>app.js:7542</code> — <code>applyTimeOffOverrides()</code></td>
+    <td><span class="sev sev-high">NO</span></td>
+    <td>Returns its <code>applied</code> map regardless. Callers store it and mark the request approved.</td>
+  </tr>
+  <tr>
+    <td><code>app.js:7567</code> — <code>removeTimeOffOverrides()</code></td>
+    <td><span class="sev sev-high">NO</span></td>
+    <td>Returns normally. Callers then clear the rollback metadata.</td>
+  </tr>
+</table>
+
+<h3>The four concrete consequences</h3>
+
+<div class="danger">
+  <strong>1. <span class="sev sev-high">HIGH</span> An approval can be recorded against a write that never landed.</strong><br>
+  <code>approveTimeOff()</code> (:7332) calls <code>applyTimeOffOverrides()</code>, then unconditionally
+  writes <code>status: 'approved'</code> and <code>appliedOverrides</code>, toasts
+  <em>"Request approved — schedule updated"</em>, and pushes <em>"Your time off request has been
+  approved"</em> to the employee. If the schedule write failed, the employee is still scheduled to work,
+  believes they are approved, and the request now carries a record of overrides that do not exist.
+  <em>(Correction from v1: this path sends a push notification only. The time-off email is tied to sub
+  confirmation, not approval.)</em>
+</div>
+
+<div class="danger">
+  <strong>2. <span class="sev sev-high">HIGH</span> A failed reversal can destroy the rollback metadata — unrecoverable.</strong><br>
+  <code>unapproveTimeOff()</code> (:7452) calls <code>removeTimeOffOverrides()</code>, then writes
+  <code>appliedOverrides: null</code>. On a failed removal the schedule still holds the time-off
+  overrides <em>and</em> the record of what to restore is gone. Nothing in the app can recover it. The
+  edit-reopen path (:6709, then <code>formData.appliedOverrides = {}</code> at :6711) has the identical
+  shape, as does <code>reverseConfirmedTimeOffSubs()</code> (:7311), which clears each sub's
+  <code>appliedOverrides</code> through the transaction regardless of whether the schedule write landed.
+  <br><br>
+  <code>withdrawTimeOff()</code> (:7420) and <code>denyTimeOff()</code> are less severe — they change
+  status but leave <code>appliedOverrides</code> intact, so the data needed to reverse survives.
+  <strong>Do not refactor them into clearing it.</strong>
+</div>
+
+<div class="danger">
+  <strong>3. <span class="sev sev-high">HIGH</span> The <em>second</em> write in each flow is unchecked too.</strong>
+  <em>(Missed in v1; found by Codex, verified.)</em><br>
+  <code>updateTimeOffRequest()</code> (<code>firebase-data.js</code>:474) catches its own errors and
+  returns <code>false</code>, and none of these flows check it. So the mirror-image failure is equally
+  reachable: the schedule write <em>succeeds</em>, the request update fails, and the app still toasts
+  success and pushes the notification. That leaves a live override with <strong>no durable record that
+  it exists</strong> — arguably worse than the failure this plan was written to fix, because
+  <code>appliedOverrides</code> was never stored at all.
+  <br><br>
+  A fix that only checks <code>saveSchedule</code> converts one silent failure into a louder version of
+  the other. Both writes in every touched flow must be checked.
+</div>
+
+<div class="danger">
+  <strong>4. <span class="sev sev-med">MEDIUM</span> A failed <em>read</em> is a silent no-op that reports success.</strong><br>
+  Both override functions open with <code>const schedule = await loadSchedule(uid); if (!schedule) return</code>.
+  A permission error or offline moment therefore does nothing at all and tells the caller it succeeded —
+  and is indistinguishable from an employee who genuinely has no schedule document, which is a legitimate
+  case that <em>should</em> succeed. Given this repo's failure history is rules regressions, and rules
+  regressions deny reads too, this may be the likelier trigger of the two.
+</div>
+
+<h3>The asymmetry that decides the failure rule</h3>
+
+<div class="depends">
+  <strong>Reversal is idempotent. Application is not.</strong> This is the single most important thing to
+  understand before writing any of the code below, and v1 of this plan got the rule wrong because it
+  missed this.
+  <ul>
+    <li><strong>Reverse is safe to retry.</strong> <code>resolveOverrideRestore()</code>
+      (<code>schedule-helpers.js</code>:574) either restores a fixed captured value or emits
+      <code>FieldValue.delete()</code>. Running it twice converges on the same state.</li>
+    <li><strong>Apply is NOT safe to retry.</strong> <code>applyTimeOffOverrides()</code> recaptures
+      <code>had</code>/<code>previousOverride</code> from <em>current</em> state on every run. Re-applying
+      over an already-applied override records <code>had: true, previousOverride: null</code> — the day-off
+      marker it wrote itself — so the <em>next</em> reversal restores a phantom Day Off instead of deleting
+      it. This is the same class of bug the <code>before</code> snapshot at :7511 fixed within a single
+      call, reappearing across calls.</li>
+  </ul>
+  So the two directions get two different failure rules:
+  <table>
+    <tr><th>Direction</th><th>Order</th><th>On failure</th></tr>
+    <tr><td><strong>Apply</strong> (approve, seed)</td><td>schedule write &rarr; verify &rarr; then touch the request doc</td>
+      <td><strong>Abort, persist nothing.</strong> Re-applying is corrupting, so a half-recorded apply must not exist.</td></tr>
+    <tr><td><strong>Reverse</strong> (unapprove, withdraw, deny, edit-reopen, un-confirm sub, bulk sub reversal)</td>
+      <td>schedule write &rarr; verify &rarr; then clear <code>appliedOverrides</code></td>
+      <td><strong>Never clear <code>appliedOverrides</code> for a reversal that did not land.</strong>
+        Do <em>not</em> abort the status change — see the decision below. Report loudly, keep the record, stay retryable.</td></tr>
+  </table>
+</div>
+
+<div class="decision-needed">
+  <strong>DECIDED Sep 9, 2026 by Christie — staff withdrawal of an approved request becomes a request a manager completes.</strong>
+  <br><br>
+  <em>The problem:</em> <code>firestore.rules</code>:321 grants <code>timeclock_schedules</code> writes to
+  manager+ only; staff are read-only. But <code>app.js</code>:6949 offers <strong>Withdraw Request</strong>
+  to the request's owner — a staff member — including when the request is <code>approved</code> and
+  therefore has overrides to remove. Today that silently fails and tells them it worked. Simply honouring
+  the failure would block staff from withdrawing at all.
+  <br><br>
+  <em>The decision:</em> staff keep direct one-click withdrawal for <code>submitted</code> and
+  <code>under_review</code> requests — those have no <code>appliedOverrides</code>, so no schedule write is
+  needed and nothing changes for them. Withdrawing an <strong>approved</strong> request instead sets a
+  <code>withdrawalRequested</code> flag on the request and notifies a manager, who completes the actual
+  reversal through the existing manager path. Rejected: a privileged Netlify endpoint (new attack surface)
+  and widening the schedule rule for staff (schedules feed payroll comparison and kiosk logic).
+  <br><br>
+  <strong>Verified: this needs no rules change.</strong> The staff update rule
+  (<code>firestore.rules</code>:345) is <code>allow update: if hasAppAccess('timeclock') &amp;&amp;
+  resource.data.uid == request.auth.uid</code> — no <code>hasOnly()</code> field allowlisting — so a staff
+  member can already write a new field to their own request. The <code>hasOnly</code> caveat raised in the
+  safety checklist was checked and does not apply here.
+  <br><br>
+  <strong>Phases 3 and 4 are unblocked.</strong> Phase 3 gains the withdrawal-request path as part of its
+  scope.
+</div>
+
+<h3>Adjacent, same family — named so they are not mistaken for covered</h3>
+
+<ul>
+  <li><strong>The unawaited-write family.</strong> <code>deleteSchedule()</code>
+    (<code>firebase-data.js</code>:221) is not <code>async</code> and does not <code>await</code> its
+    delete — it returns <code>true</code> before the write resolves, so the caller at
+    <code>app.js</code>:3786 awaits a bare <code>true</code> and a rejection surfaces as an unhandled
+    promise rejection. <code>updateClockEntry()</code> (:116), <code>saveSettings()</code> (:320) and
+    <code>saveStreakData()</code> (:550) have the identical defect. <code>addClockEntry()</code> was
+    already fixed for exactly this and its comment at :36 explains why; its four siblings were left
+    behind. <em>(v1 claimed making these async might break a synchronous call site. Verified false — the
+    sole <code>deleteSchedule</code> caller already awaits. The change is safe.)</em></li>
+  <li><strong><code>migrateSchedule()</code></strong> (:276) returns <code>false</code> on failure,
+    discarded at all three call sites (<code>app.js</code>:5264, :5357, :6111) — and the roster's
+    <code>claimedBy</code> is written <em>before</em> it, so a failure leaves the roster claimed and the
+    schedule orphaned under the <code>emp_</code> id. The codebase already knows
+    (<code>schedule-helpers.js</code>:394 says "migrateSchedule() failures during claiming are
+    swallowed") and pays for it with three-way fallback lookups. <strong>Out of scope here</strong>,
+    named so the next audit does not think it was covered.</li>
+  <li><strong>Schedule writes outside <code>app.js</code> entirely.</strong>
+    <code>schedule-import.html</code>:270 and <code>summer-camp-sync.html</code>:739, :807 write
+    <code>timeclock_schedules</code> directly and go through none of this. Out of scope.</li>
+  <li><strong>The confirm-sub write is not actually scoped.</strong> Its comment at :7202 says "Scoped
+    overrides only — never a wholesale schedule replace", but the code writes
+    <code>{ ...baseSubSchedule, overrides: newOverrides }</code> — the whole document. That is the
+    stale-read clobber <code>233bcfe</code> fixed on the other paths. Out of scope for this plan, but it
+    is a live inconsistency between a comment and its code, which is how the last round's bugs hid.</li>
+</ul>
+
+<h2>Phases</h2>
+
+<div class="phase">
+  <h3>Phase 0 — Decide how a failure gets forced in a test <span class="sev sev-high">blocks everything</span></h3>
+  <p>
+    <strong>Acceptance criteria:</strong> the suite can make a schedule read or write fail on demand, and
+    a test proves it. Nothing else changes.
+  </p>
+  <div class="danger">
+    <strong>This repo cannot currently test any failure path.</strong> <code>firebase.json</code> loads
+    <em>no</em> rules file, so the emulator "will default to allowing all reads and writes" (it prints
+    this warning on every <code>npm test</code> run), and the existing emulator tests use the Admin SDK,
+    which bypasses rules anyway. Every phase below has "the write fails" as its most valuable scenario.
+    If forcing failure is awkward, every later phase will quietly skip its best test — and this project
+    has already been burned by tests that enshrined a bug instead of catching it.
+  </div>
+  <ul>
+    <li>Preferred: point <code>firebase.json</code> at <code>/Users/christiehubley/studio-hub/firestore.rules</code>
+      and add an authenticated-client test context via <code>@firebase/rules-unit-testing</code> (already
+      used in <code>studio-hub</code>). This buys real rules-denied failures <em>and</em> makes the staff
+      authorization question above testable rather than theoretical.</li>
+    <li>Fallback: inject the data layer so <code>saveSchedule</code>/<code>loadSchedule</code> can be made
+      to fail for one call. Note this sits close to the repo's "no mock Firestore tests" rule — the
+      distinction is that the <em>orchestration</em> is under test, not Firestore itself. Get agreement
+      before relying on it.</li>
+    <li>Whichever is chosen, a test must assert that a forced failure actually fails, so the mechanism
+      itself cannot silently stop working and turn every failure-path test green.</li>
+  </ul>
+  <div class="bdd">
+    <strong>Given</strong> the failure mechanism is armed for a schedule write<br>
+    <strong>When</strong> a write is attempted<br>
+    <strong>Then</strong> it rejects, and the test observing it sees the rejection
+  </div>
+</div>
+
+<div class="phase">
+  <h3>Phase 1 — Add result-reporting helpers WITHOUT changing any existing return contract</h3>
+  <p>
+    <strong>Acceptance criteria (user outcome):</strong> nothing changes for anyone. This phase only adds
+    the ability to tell "worked", "failed" and "nothing to do" apart.
+  </p>
+  <div class="danger">
+    <strong>v1 got this badly wrong and it must not be repeated.</strong> v1 proposed changing
+    <code>applyTimeOffOverrides()</code> to return <code>{ ok, applied }</code> and called the phase
+    inert. It is not: that return value is already <em>persisted</em> at <code>app.js</code>:5557 and
+    :7349 as the <code>appliedOverrides</code> field. Live documents would have gained
+    <code>appliedOverrides: { ok: true, applied: {…} }</code>, and
+    <code>removeTimeOffOverrides()</code> would then have iterated <code>ok</code> and
+    <code>applied</code> as if they were dates — writing <code>overrides.ok</code> and
+    <code>overrides.applied</code> into schedule documents and never removing the real dates. A phase
+    labelled additive would have caused the exact unrecoverable state this plan exists to prevent.
+  </div>
+  <ul>
+    <li>Add <strong>new, separately named</strong> functions and leave every existing signature alone:
+      <code>loadScheduleResult(uid)</code> &rarr; <code>{ ok, schedule }</code>,
+      <code>applyTimeOffOverridesResult(uid, dates)</code> &rarr; <code>{ ok, applied }</code>,
+      <code>removeTimeOffOverridesResult(uid, applied)</code> &rarr; <code>{ ok }</code>.</li>
+    <li>The existing three delegate to the new ones and keep their current return shapes exactly, so
+      every current caller is untouched. Same pattern as <code>getHfwaByDateRangeResult</code>
+      (<code>e3e9324</code>).</li>
+    <li><strong>An absent schedule document is <code>ok: true</code></strong> with an empty
+      <code>applied</code> — that employee has no shifts to override, which is a success. Only a failed
+      <em>read</em> or a failed <em>write</em> is <code>ok: false</code>. Conflating these is the original
+      bug in miniature; the fix must not simply invert it into false failures.</li>
+    <li>Confirm <code>_ready</code> cannot be transiently false during boot or an offline moment — both
+      <code>saveSchedule</code> and <code>loadSchedule</code> return their failure sentinel on
+      <code>!_ready</code>, and a new alert firing at startup would be exactly the "fix inverts the bug"
+      outcome.</li>
+  </ul>
+  <div class="bdd">
+    <strong>Given</strong> the existing callers at <code>app.js</code>:5557 and :7349<br>
+    <strong>When</strong> Phase 1 ships<br>
+    <strong>Then</strong> <code>appliedOverrides</code> in Firestore still contains only date keys — a
+    stored <code>ok</code> or <code>applied</code> key is a hard failure of this phase
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an employee with no schedule document (edge case)<br>
+    <strong>When</strong> <code>applyTimeOffOverridesResult</code> runs<br>
+    <strong>Then</strong> it returns <code>{ ok: true, applied: {} }</code> — nothing to do is not a failure
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the schedule read is denied (failure path)<br>
+    <strong>When</strong> <code>applyTimeOffOverridesResult</code> runs<br>
+    <strong>Then</strong> it returns <code>{ ok: false }</code> and writes nothing
+  </div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — An approval is only recorded if BOTH writes actually landed</h3>
+  <p>
+    <strong>Acceptance criteria (user outcome):</strong> if either write fails while Christie approves
+    time off, she is told the approval did not go through, the request keeps its previous status, and the
+    employee is not notified. Retrying after the cause is fixed works normally.
+  </p>
+  <ul>
+    <li><code>approveTimeOff()</code>: on <code>ok: false</code> from the schedule write, alert and return
+      <strong>before</strong> <code>updateTimeOffRequest</code> — no status change, no
+      <code>appliedOverrides</code>, no toast, no push.</li>
+    <li>Also check <code>updateTimeOffRequest</code>'s own boolean. If the schedule write landed but the
+      request update failed, the override is live with no record of it. <strong>Roll the schedule write
+      back</strong> using the <code>applied</code> map still in memory — reversal is idempotent, so this
+      is safe — and report the outcome honestly, including if the rollback itself failed. Copy the shape
+      at <code>app.js</code>:7216–7233, which already does this, and fix its unchecked rollback while
+      there.</li>
+    <li>The seed/migration path (:5528) creates the request as <code>status: 'approved'</code>
+      <em>before</em> attempting the schedule write, so "skip writing <code>appliedOverrides</code>" is
+      not enough — it would leave an approved request whose schedule never changed. Either create it in a
+      non-approved state and promote it only after the write lands, or skip creating the request at all
+      on a failed write. <em>(Found by Codex; v1's proposed fix here did not work.)</em></li>
+  </ul>
+  <div class="bdd">
+    <strong>Given</strong> a submitted request and a working connection<br>
+    <strong>When</strong> Christie approves it<br>
+    <strong>Then</strong> the overrides are written, the request is approved and the employee is notified — unchanged from today
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a request whose employee has no schedule document (edge case)<br>
+    <strong>When</strong> Christie approves it<br>
+    <strong>Then</strong> the approval still succeeds with an empty <code>appliedOverrides</code> — this must not regress into a false failure
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the schedule write will fail (failure path)<br>
+    <strong>When</strong> Christie approves the request<br>
+    <strong>Then</strong> assert <em>on the request document</em> that <code>status !== 'approved'</code> and
+    <code>appliedOverrides</code> is absent — not merely that an error was shown. A guard placed after
+    <code>updateTimeOffRequest</code> would pass an "error was displayed" assertion and fail this one.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> the schedule write succeeds but the request update fails (failure path)<br>
+    <strong>When</strong> Christie approves the request<br>
+    <strong>Then</strong> the schedule override is rolled back, the request is not approved, and no approval push is sent
+  </div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — A failed reversal never destroys the record of what to restore</h3>
+  <p>
+    <strong>Acceptance criteria (user outcome):</strong> if removing overrides fails, Christie is told,
+    and the <code>appliedOverrides</code> record survives so the reversal can be retried. No state is
+    reachable where the schedule holds time-off overrides that nothing knows how to remove.
+  </p>
+  <ul>
+    <li><strong>The rule is "never clear what did not land" — NOT "abort the flow".</strong> v1 said abort;
+      both reviewers showed that is worse for deny and withdraw, because a persistent write failure would
+      make a request impossible to deny or withdraw <em>at all</em>. Today those paths at least complete
+      the status change and leave a visible, manually fixable stale override. Let the status change
+      proceed; keep <code>appliedOverrides</code>; report loudly.</li>
+    <li><code>unapproveTimeOff()</code> (:7464) and the edit-reopen path (:6709/:6711): never write
+      <code>appliedOverrides: null</code> or <code>{}</code> after a failed removal.</li>
+    <li>Check <code>updateTimeOffRequest</code>'s result here too, for the same reason as Phase 2.</li>
+    <li><code>withdrawTimeOff()</code> and <code>denyTimeOff()</code>: surface the failure; do not start
+      clearing <code>appliedOverrides</code> in these paths, since preserving it is what currently keeps
+      them recoverable.</li>
+    <li><strong>Staff withdrawal of an approved request</strong> (per the decision above): branch on role.
+      A manager withdrawing runs the reversal as now. The owner withdrawing an <code>approved</code>
+      request sets <code>withdrawalRequested</code> / <code>withdrawalRequestedAt</code> instead of
+      attempting a schedule write they cannot perform, tells them a manager will confirm it, and pushes to
+      admins using the existing <code>sendPushToAllAdmins</code> path. Withdrawal of
+      <code>submitted</code> / <code>under_review</code> requests is unchanged — no overrides exist, so no
+      schedule write is involved.</li>
+    <li>The admin view needs to surface <code>withdrawalRequested</code> so it cannot be missed — the
+      Needs Action filter is the natural home.</li>
+  </ul>
+  <div class="bdd">
+    <strong>Given</strong> an approved request with applied overrides<br>
+    <strong>When</strong> Christie un-approves it and the removal succeeds<br>
+    <strong>Then</strong> the overrides are gone, status is "under review", <code>appliedOverrides</code> is cleared — unchanged from today
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an approved request whose <code>appliedOverrides</code> is already empty (edge case)<br>
+    <strong>When</strong> Christie un-approves it<br>
+    <strong>Then</strong> it succeeds without attempting a removal — the existing <code>Object.keys(...).length</code> guard still applies
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a staff member's own APPROVED request with applied overrides<br>
+    <strong>When</strong> they tap Withdraw<br>
+    <strong>Then</strong> the request is flagged <code>withdrawalRequested</code>, a manager is notified,
+    the status is NOT yet withdrawn, and no schedule write is attempted — assert no denied write appears,
+    since a rules denial in the console is the thing this path exists to avoid
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a staff member's own SUBMITTED request (no overrides)<br>
+    <strong>When</strong> they tap Withdraw<br>
+    <strong>Then</strong> it withdraws immediately, exactly as today — this must not regress into needing a manager
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an approved request seeded with
+    <code>appliedOverrides: { '2026-10-01': { had: true, previousOverride: {…} } }</code> and a removal that will fail<br>
+    <strong>When</strong> Christie un-approves it<br>
+    <strong>Then</strong> assert <em>on the request document</em> that <code>appliedOverrides</code> is
+    still that exact map, byte for byte. A fix that checks the flag after the update passes an
+    "error was shown" assertion and fails this one.
+  </div>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Sub-coverage reversals collect failures instead of aborting</h3>
+  <p>
+    <strong>Acceptance criteria (user outcome):</strong> if one sub's coverage shift cannot be removed,
+    every other sub's still is, Christie is told exactly which person failed, and only that person's
+    confirmation is left in place.
+  </p>
+  <ul>
+    <li><strong>No mid-loop <code>return</code>.</strong> <code>reverseConfirmedSubScheduleWrites()</code>
+      (:7300) and <code>reverseConfirmedTimeOffSubs()</code> (:7311) loop over several subs. Aborting on
+      the first failure would leave subs 2 and 3 never reversed at all — strictly worse than today's
+      best-effort pass. Collect failures, run every reversal that can succeed, report afterwards by name.</li>
+    <li><code>reverseConfirmedTimeOffSubs()</code> must not clear a sub's <code>appliedOverrides</code>
+      through the transaction when that sub's schedule write failed.</li>
+    <li><code>unconfirmTimeOffSub()</code> (:7265): on a failed removal, do not proceed to
+      <code>confirmTimeOffSub()</code> — the existing comment explains the ordering was chosen so a
+      failure leaves the safer inconsistent state, and that reasoning still holds; the manager should now
+      be told rather than left to discover it.</li>
+    <li>Fix the confirm-sub rollback at :7228–7233 so it stops claiming a rollback it did not verify.</li>
+  </ul>
+  <div class="bdd">
+    <strong>Given</strong> a confirmed sub with a coverage shift<br>
+    <strong>When</strong> Christie un-confirms them and the removal succeeds<br>
+    <strong>Then</strong> the shift is removed and the sub shows as un-confirmed — unchanged from today
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a request with three confirmed subs where only sub #1's schedule write fails (edge case)<br>
+    <strong>When</strong> Christie withdraws the request<br>
+    <strong>Then</strong> subs #2 and #3 are fully reversed, sub #1 keeps its <code>appliedOverrides</code>
+    and its confirmed flag, and the message names sub #1 specifically. Assert every sub's schedule and
+    metadata, not only the failed one.
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> a confirm-sub whose request update fails AND whose rollback also fails (failure path)<br>
+    <strong>When</strong> the flow completes<br>
+    <strong>Then</strong> the manager is told the rollback did not happen — never the current unconditional
+    "The schedule write was rolled back"
+  </div>
+</div>
+
+<div class="phase">
+  <h3>Phase 5 — The unawaited-write family <span class="sev sev-low">separable</span></h3>
+  <p>
+    <strong>Acceptance criteria (user outcome):</strong> deleting a schedule that fails to delete reports
+    a failure instead of appearing to work.
+  </p>
+  <ul>
+    <li>Make <code>deleteSchedule()</code> <code>async</code>, <code>await</code> the delete, return
+      <code>false</code> in the <code>catch</code>. Its sole caller (<code>app.js</code>:3786) already
+      awaits, so this is safe — <em>v1's stated hazard here was verified not to exist.</em></li>
+    <li>Same treatment for <code>updateClockEntry()</code>, <code>saveSettings()</code> and
+      <code>saveStreakData()</code>, following <code>addClockEntry()</code>'s already-fixed shape, and
+      check each of their call sites.</li>
+    <li>Also: the swallowed schedule delete during employee removal (<code>app.js</code>:6010).</li>
+  </ul>
+  <div class="bdd">
+    <strong>Given</strong> a delete that will be denied (failure path)<br>
+    <strong>When</strong> Christie deletes the schedule<br>
+    <strong>Then</strong> she sees a failure message instead of a success, and no unhandled promise rejection reaches the console
+  </div>
+</div>
+
+<h2>Firebase safety checklist</h2>
+
+<ul class="checklist">
+  <li><strong>Rules updated?</strong> Not needed <em>for manager paths</em>. No new collection;
+    <code>timeclock_schedules</code> (:321) and <code>timeclock_timeoff</code> (:338) both already have
+    manager+ read/write. Two caveats: (a) the staff-withdrawal decision above may require a rules or
+    architecture change depending on which option is chosen; (b) if any phase adds a new field to
+    <code>timeclock_timeoff</code> — a <code>reversalPending</code> marker is the obvious design — check
+    that collection's <code>update</code> rule for field allowlisting first, or the write recording a
+    failure would itself be denied.</li>
+  <li><strong>Snapshot before bulk ops?</strong> Not applicable — no bulk operation, no migration, no
+    delete of existing data. This change only <em>declines</em> to write in cases where it currently
+    writes wrongly.</li>
+  <li><strong><code>updateDoc</code> not <code>setDoc</code>?</strong> This plan changes no write
+    payload. Noting honestly that <code>saveSchedule</code> uses <code>set(..., { merge: true })</code>
+    rather than <code>.update()</code>, which sits in tension with the repo's stated invariant — it is
+    deliberate, because confirm-sub may legitimately create a schedule document that does not exist yet.
+    Changing it is out of scope here and should not be smuggled into this fix.</li>
+  <li><strong>Empty fields stripped?</strong> Unchanged. <code>omitEmptyMaps</code> and the provenance
+    rules from <code>5ec9eb7</code>/<code>66dcbc8</code> stay exactly as they are — this plan must not
+    alter what gets written, only whether the caller believes it happened.</li>
+  <li><strong>Emulator test before each write phase?</strong> <span class="sev sev-high">NOT YET
+    POSSIBLE</span> — see Phase 0. The existing suites named here
+    (<code>remove-timeoff-overrides.emulator.test.js</code>, <code>timeoff-sub-confirm.emulator.test.js</code>)
+    <em>re-implement</em> the write shape with the Admin SDK rather than executing the orchestration
+    functions in <code>app.js</code>, and <code>firebase.json</code> loads no rules file at all. They
+    therefore cannot catch a guard placed after the request update, an unchecked <code>false</code>, or a
+    success toast after a failure. v1 of this plan assumed this coverage existed; it does not.</li>
+  <li><strong>Console spot-check per write phase?</strong> Yes — required by the workflow and not
+    substitutable by a green suite. Per phase: approve a real request, confirm the overrides appear on
+    <code>timeclock_schedules/{uid}</code>, then un-approve and confirm they are gone.</li>
+</ul>
+
+<div class="depends">
+  <strong>Testing the failure path is the hard part of this plan.</strong> Every phase's most important
+  scenario is "the write fails", and the emulator succeeds by default. The suite needs a way to force a
+  rejection — a stubbed <code>saveSchedule</code>/<code>loadSchedule</code> for the pure-logic paths, or
+  an emulator rules-denied write for the end-to-end ones. <strong>Decide the mechanism in Phase 1</strong>,
+  because if forcing failure is awkward, every later phase will be tempted to skip its most valuable test.
+  A phase whose failure path is untested has not actually been verified.
+</div>
+
+<h2>Completeness check — what if this is interrupted mid-way?</h2>
+
+<p>
+  Safe to interrupt between any two phases. Phase 0 touches only test infrastructure. Phase 1 is genuinely
+  additive <em>because it adds new function names rather than changing existing ones</em> — stopping after
+  it leaves the app behaving exactly as it does today. Phases 2 and 5 are independent. Phases 3 and 4 are
+  <strong>not</strong> as independent as v1 claimed: denial reaches schedule removal only through Phase 4's
+  sub helper, and withdrawal and edit-reopen use both the requester and the sub reversal paths. Treat 3 and
+  4 as one unit that can be interrupted between them only if the interim state is checked.
+</p>
+
+<p>
+  <strong>Phase order is by severity and dependency.</strong> Phase 0 blocks everything, because without a
+  way to force a failure no phase can verify its most important scenario. Phase 2 is the case Christie hits
+  most often; Phases 3 and 4 are the unrecoverable ones but are blocked on the staff-withdrawal decision.
+  If only one phase ever ships after 0 and 1, Phase 2 is the most valuable.
+</p>
+
+<h2>Resume instructions</h2>
+
+<ol>
+  <li>Read this plan, then <code>~/.claude/projects/-Users-christiehubley/memory/timeclock-app.md</code>
+    and the wishlist entry for this bug.</li>
+  <li><code>cd ~/tinker-timeclock &amp;&amp; git log --oneline -8</code> — phase commits are
+    <code>phase N: …</code> and say what changed.</li>
+  <li><code>npm test</code> — 338 tests as of <code>1fe7d8c</code>. The count grows; do not hardcode it.</li>
+  <li>Check the Decisions log below for anything that deviated from this plan.</li>
+  <li>Each remaining phase is a separate commit plus its own second-model implementation review before the
+    next phase starts.</li>
+</ol>
+
+<h2>Out of scope</h2>
+
+<ul>
+  <li><strong>Not</strong> making <code>saveSchedule</code>/<code>loadSchedule</code> throw instead of
+    returning a sentinel. That would change every one of the five call sites at once, including the three
+    that already handle failure correctly, and would risk regressing the paths that work. The
+    result-object pattern is additive and leaves working callers untouched.</li>
+  <li><strong>Not</strong> adding retry or offline queueing. Report the failure; let the human retry.</li>
+  <li><strong>Not</strong> auditing the other silent-failure returns in <code>firebase-data.js</code>
+    (<code>loadAllSchedules</code>, <code>addHfwaEntry</code>, <code>getRecentEntries</code>, …). Same
+    family, but this plan is scoped to the schedule write path that is actively misreporting. Worth its
+    own pass later.</li>
+  <li><strong>Not</strong> wrapping the schedule write and the request write in a Firestore transaction.
+    Both reviewers noted that compensation-after-failure remains vulnerable to the compensation itself
+    failing, and that a transaction across both documents is the robust answer. It is also a much larger
+    change to a code path that just took six rounds to stabilise. Recorded as the right long-term shape;
+    this plan does check-and-compensate instead, which is a strict improvement on checking nothing.</li>
+  <li><strong>Not</strong> fixing <code>migrateSchedule()</code>, the schedule writes in
+    <code>schedule-import.html</code> / <code>summer-camp-sync.html</code>, or confirm-sub's unscoped
+    whole-document write. All named above so a later audit does not assume they were covered.</li>
+</ul>
+
+<h2>Decisions log</h2>
+
+<p><em>Append-only. Any choice made during execution that deviates from the plan above goes here with its reason.</em></p>
+
+<ul>
+  <li><strong>Sep 9, 2026 — plan written.</strong> Phase order set by severity and blast radius rather
+    than by file, so that stopping early still leaves the highest-value fixes in place.</li>
+  <li><strong>Sep 9, 2026 — result-object pattern chosen</strong> over throwing, to avoid touching the
+    three call sites that already handle failure correctly (<code>app.js</code>:3442, :5181, :7216).
+    Consistent with <code>getHfwaByDateRangeResult</code> added in <code>e3e9324</code> the same day.</li>
+  <li><strong>Sep 9, 2026 — an absent schedule document is a success, not a failure.</strong> Conflating
+    "this employee has no schedule" with "the read failed" is the existing bug in miniature; the fix must
+    not simply invert it and start reporting false failures for staff who legitimately have no schedule.</li>
+  <li><strong>Sep 9, 2026 — v1 REJECTED at review round 1 (Claude + Codex, run independently).</strong>
+    Both found that v1's "inert" Phase 1 would corrupt live <code>appliedOverrides</code> data. Revised to
+    add new function names instead of changing existing return contracts. This is the second time in two
+    days that a fix in this area was caught being a new instance of the bug it was fixing — the same
+    pattern the Sep 5-8 rounds recorded.</li>
+  <li><strong>Sep 9, 2026 — failure rule split by direction.</strong> Apply aborts and persists nothing;
+    reverse proceeds but never clears <code>appliedOverrides</code>. Driven by the idempotency asymmetry:
+    <code>applyTimeOffOverrides</code> recaptures <code>had</code>/<code>previousOverride</code> from
+    current state, so re-applying corrupts the reversal record, whereas
+    <code>resolveOverrideRestore</code> converges on re-run. v1's blanket "abort" rule would have made
+    deny and withdraw impossible under a persistent write failure.</li>
+  <li><strong>Sep 9, 2026 — both writes must be checked, not just the schedule write.</strong>
+    <code>updateTimeOffRequest</code> also swallows failure. Checking only <code>saveSchedule</code> would
+    convert one silent failure into a louder version of its mirror image.</li>
+  <li><strong>Sep 9, 2026 — Phase 0 added.</strong> Verified that <code>firebase.json</code> loads no
+    rules file and the existing emulator tests use the Admin SDK, so no failure path is testable today.
+    v1 assumed this coverage existed.</li>
+  <li><strong>Sep 9, 2026 — v2 REJECTED at review round 2 (Claude + Codex).</strong> Both independently
+    found Phase 0 aimed at the wrong blocker, Phase 2's rollback unsafe under concurrency, and the
+    staff-withdrawal design missing its manager-side completion. Claude additionally found a LIVE
+    failure-independent bug (no re-entrancy guard on approve) and that the offline threat model was
+    backwards — writes hang rather than fail. v3 required. <strong>Two rounds, two rejections, and both
+    rounds found that the proposed fix contained a new instance of the bug it was fixing.</strong> That is
+    the same signature the Sep 5-8 work recorded, and it is the reason this plan is not being rushed to
+    execution.</li>
+  <li><strong>Sep 9, 2026 — RESOLVED, but needs more scope than recorded: staff withdrawal.</strong> Christie chose the manager-completes
+    option: staff withdrawing an <em>approved</em> request flags it for a manager rather than attempting a
+    schedule write they lack permission for; direct withdrawal is unchanged for submitted/under-review
+    requests. Verified this needs no rules change — the staff update rule has no field allowlisting.
+    Phases 3 and 4 unblocked.</li>
+</ul>
+
+</body>
+</html>
