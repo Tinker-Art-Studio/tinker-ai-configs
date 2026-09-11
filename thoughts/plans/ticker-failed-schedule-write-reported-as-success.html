@@ -456,114 +456,262 @@
 <div class="phase">
   <h3>Phase 0 — Make the orchestration reachable from a test <span class="sev sev-high">blocks everything</span></h3>
   <p>
-    <strong>Acceptance criteria (user outcome):</strong> nothing changes for anyone. Approving, un-approving,
-    withdrawing and denying behave exactly as they do today. What changes is that a test can now CALL these
-    functions and make their reads and writes fail on demand.
+    <strong>Acceptance criteria (user outcome):</strong> nothing changes for anyone. Approving,
+    un-approving, withdrawing and denying behave exactly as they do today. What changes is that a test can
+    CALL these functions and make their reads and writes fail on demand.
+  </p>
+  <p>
+    <em>Revised after Phase 0 review (Claude + Codex, Sep 10). Both approved the direction and rejected the
+    specifics. The version below incorporates their findings; the load-breaking one would have taken the
+    whole app down.</em>
   </p>
 
   <div class="danger">
-    <strong>v2's Phase 0 aimed at the wrong blocker.</strong> It proposed loading real rules into the
-    emulator so writes could be denied. Both reviewers independently showed that would not unblock a single
-    scenario: every Phase 2&ndash;4 test needs to <em>call</em> <code>approveTimeOff()</code>, and
-    <code>js/app.js</code> has no <code>module.exports</code> and a top-level
-    <code>document.addEventListener()</code>, so it cannot be <code>require()</code>d at all. Every existing
+    <strong>Why v2's Phase 0 was aimed at the wrong blocker.</strong> It proposed loading real rules into
+    the emulator so writes could be denied. That would not unblock a single scenario: every Phase 2&ndash;4
+    test needs to <em>call</em> <code>approveTimeOff()</code>, and <code>js/app.js</code> has no
+    <code>module.exports</code> and a top-level <code>document.addEventListener()</code>. Every existing
     emulator test re-implements the write <em>shape</em> with the Admin SDK rather than executing the real
-    function &mdash; which is exactly why none of them can tell a guard placed before
-    <code>updateTimeOffRequest</code> from one placed after.
-    <br><br>
-    The rules route was also actively bad on its own terms: the shared rules file lives outside this repo,
-    so it breaks any non-sibling checkout and CI; an unrelated <code>studio-hub</code> edit would fail
-    Ticker's whole suite; and it would create pressure to edit the shared production rules file to make
-    Ticker's tests green &mdash; the file whose regression breaks all eight apps at once.
+    function &mdash; which is why none can tell a guard placed before <code>updateTimeOffRequest</code>
+    from one placed after. The rules route was also bad on its own terms: the shared rules file lives
+    outside this repo, so it breaks non-sibling checkouts and CI, an unrelated <code>studio-hub</code> edit
+    would fail Ticker's whole suite, and it would create pressure to edit the shared production rules file
+    to make Ticker's tests green.
   </div>
+
+  <h4>This is not one refactor. It is two safe moves and one rewrite.</h4>
+  <p>
+    Review's headline structural finding: <code>applyTimeOffOverrides</code> (<code>app.js</code>:7615) and
+    <code>removeTimeOffOverrides</code> (:7659) are near-byte-identical moves.
+    <strong><code>approveTimeOff</code> is not.</strong> Its app.js side becomes a switch over five distinct
+    exits with three different refresh behaviours &mdash; roughly forty new lines of branching, identical to
+    nothing, in the highest-risk function in the repo. <strong>The "byte-identical diff review" criterion
+    cannot check that part at all</strong>, and nothing in the suite covers it today.
+  </p>
+  <table>
+    <tr><th>Exit</th><th>app.js</th><th>refresh list</th><th>re-render</th><th>reopen detail</th><th>message</th></tr>
+    <tr><td><code>!doc.exists</code></td><td>:7366</td><td>no</td><td>no</td><td>no</td><td>alert</td></tr>
+    <tr><td>not approvable</td><td>:7376</td><td>yes</td><td>yes</td><td>yes</td><td>alert</td></tr>
+    <tr><td>conditional write aborted</td><td>:7407</td><td>yes</td><td>yes</td><td>yes</td><td>alert, 2 variants on <code>result.reason</code></td></tr>
+    <tr><td>success</td><td>:7444</td><td>yes</td><td>yes</td><td>yes</td><td>toast + push, <em>after</em> the re-render, gated on <code>data.uid</code></td></tr>
+    <tr><td><code>catch</code></td><td>:7449</td><td>no</td><td>no</td><td>no</td><td>alert</td></tr>
+  </table>
+  <p>
+    <strong>Give the two moves and the rewrite different acceptance criteria.</strong> The moves are proven
+    by a byte-identical diff; the rewrite needs the exit-table test described under "Proving it changed
+    nothing".
+  </p>
 
   <h4>What gets extracted</h4>
   <ul>
-    <li><code>applyTimeOffOverrides()</code> (<code>app.js</code>:7574)</li>
-    <li><code>removeTimeOffOverrides()</code> (<code>app.js</code>:7620)</li>
-    <li>The approve-and-record orchestration from <code>approveTimeOff()</code> &mdash; the decision logic
-      only: status allowlist, apply, conditional write, rollback branch. NOT the DOM work
-      (<code>confirm</code>, <code>alert</code>, <code>showToast</code>, re-render), which stays in
-      <code>app.js</code> and is what the source assertions already pin.</li>
+    <li><code>applyTimeOffOverrides()</code> (<code>app.js</code>:7615) &mdash; byte-identical move.</li>
+    <li><code>removeTimeOffOverrides()</code> (<code>app.js</code>:7659) &mdash; byte-identical move.</li>
+    <li><code>APPROVABLE_FROM</code> (<code>app.js</code>:7341) &mdash; policy, not UI. Moves, and is
+      <strong>deleted from app.js</strong>; see the load hazard below.</li>
+    <li><strong>The request read.</strong> <code>approveTimeOff</code> opens with a raw
+      <code>getDb().collection('timeclock_timeoff').doc(requestId).get()</code> (:7365). It must move, or
+      "a test can make reads fail" is not met for the read that gates everything. <strong>There is no
+      <code>getTimeOffRequest()</code> in firebase-data.js</strong> &mdash; verified, zero matches. Add
+      <code>getTimeOffRequestResult(id) &rarr; { ok, exists, data }</code>, shaped like
+      <code>getHfwaByDateRangeResult</code> (firebase-data.js:354) so a failed read stays distinguishable
+      from a deleted request. Returning <code>data | null</code> instead would collapse those two into one
+      alert &mdash; the exact anti-pattern the HFWA work fixed three commits ago.</li>
+    <li>The approve decision logic: validate status &rarr; apply &rarr; conditional write &rarr; rollback.</li>
   </ul>
-
-  <h4>Where it goes, and why not schedule-helpers.js</h4>
   <p>
-    A new <code>js/timeoff-schedule.js</code>, dual-mode exactly like <code>schedule-helpers.js</code>
-    (browser global via <code>&lt;script&gt;</code> plus <code>module.exports</code> for Jest, with the same
-    header explaining why). <strong>Not</strong> added to <code>schedule-helpers.js</code>: that file's
-    header states it has "no Firestore, no DOM", and its whole value is that the contract is unambiguous.
-    Orchestration that performs IO through injected dependencies is a different kind of thing, and blurring
-    the two would cost more than a second file.
+    <strong>Stays in app.js:</strong> <code>confirm</code>, the button disable,
+    <code>_timeoffActionInFlight</code> (it is double-click UI, and
+    <code>schedule-editor-wiring.test.js</code> depends on it staying), <code>alert</code>,
+    <code>showToast</code>, <code>renderAdminAllTimeOff</code>, <code>openTimeOffDetail</code>,
+    <code>getAllTimeOffRequests</code>, <code>sendPushToUser</code>. <strong>The result object must carry
+    <code>data.uid</code> back out</strong>, or the push gate breaks.
   </p>
+
+  <div class="danger">
+    <strong>THE LOAD HAZARD &mdash; this would have taken the whole app down.</strong>
+    <code>APPROVABLE_FROM</code> is a top-level <code>const</code> (<code>app.js</code>:7341). A second
+    top-level <code>const</code> of the same name in another classic script is
+    <code>SyntaxError: Identifier 'APPROVABLE_FROM' has already been declared</code>, thrown at parse of the
+    second script. <strong>app.js never executes &mdash; white screen, whole app dead</strong>, not a
+    handler-level error.
+    <br><br>
+    A second, quieter version: <code>schedule-helpers.js</code> exports <strong>bare top-level
+    functions</strong>, not a namespace. Follow that precedent literally and the new file's global
+    <code>applyTimeOffOverrides</code> collides with app.js's same-named wrapper. Function declarations do
+    not throw on redeclaration &mdash; the later script silently wins, app.js loads second, its wrapper
+    wins, and the wrapper calls <code>TimeOffSchedule.applyTimeOffOverrides</code>, which does not exist.
+    Silent <code>TypeError</code> on click.
+    <br><br>
+    <strong>Both are killed by one decision: wrap the new file in an IIFE assigning a single
+    <code>TimeOffSchedule</code> global, plus <code>module.exports</code>.</strong> This is a deliberate
+    divergence from <code>schedule-helpers.js</code>, not a copy of it &mdash; the file header must say so
+    and say why.
+  </div>
 
   <h4>How the dependencies are injected</h4>
-  <p>
-    Each function takes a <code>deps</code> object as its last argument:
-    <code>{ loadSchedule, saveSchedule, updateTimeOffRequestIfStatus, deleteField }</code>.
-    <code>deleteField</code> is the <code>firebase.firestore.FieldValue.delete()</code> sentinel, which
-    cannot be referenced outside a browser &mdash; <strong>this repo already injects that exact sentinel</strong>
-    as <code>DELETE_FIELD</code> into <code>buildRecurringWrite</code>/<code>buildOverridesWrite</code>
-    (<code>app.js</code>:3209), so the pattern is established rather than invented here.
-  </p>
+  <ul>
+    <li><strong>Per-function deps, not one shared object.</strong> Each extracted function receives only
+      what it uses: apply needs <code>{ loadSchedule, saveSchedule }</code>; remove needs
+      <code>{ loadSchedule, saveSchedule, deleteField }</code>; the orchestration needs the rest. A single
+      shared builder that eagerly evaluates <code>firebase.firestore.FieldValue.delete()</code> would give
+      <code>applyTimeOffOverrides</code> &mdash; which today never touches <code>firebase</code> at all
+      &mdash; a throw path it does not currently have. That is a self-inflicted behaviour change in a phase
+      claiming neutrality.</li>
+    <li><strong>Built lazily, per call.</strong> Never at parse time. <code>_ready</code> flips false&rarr;true
+      after <code>initAppFirestore()</code>, <code>currentUser</code> is reassigned at sign-in, and the
+      sentinel needs <code>firebase</code> loaded. A factory called once at load is strictly worse &mdash;
+      it <em>is</em> the parse-time capture this is trying to avoid.</li>
+    <li><strong><code>currentUser</code> and <code>new Date()</code> pass as thunks</strong>, not values.
+      Today <code>reviewedBy</code> and <code>reviewedAt</code> (:7401) are evaluated <em>after</em> the
+      schedule write. Passing values would move that earlier: with a null <code>currentUser</code>, today
+      the schedule write lands and then throws (leaving a live override with no record); after an eager
+      move it would throw first and write nothing. <em>Strictly better &mdash; and still a behaviour change
+      in a phase claiming neutrality.</em> Preserve the timing exactly; fix it in a later phase where it is
+      visible.</li>
+    <li><strong><code>resolveOverrideRestore</code> is NOT injected.</strong> It was missing from v3.1's
+      deps list entirely, and <code>removeTimeOffOverrides</code> calls it (:7666) &mdash; under Node that
+      is a <code>ReferenceError</code>. <code>require()</code> it in the module's Node branch and read the
+      browser global otherwise. <em>The reviewers split here: Codex preferred injecting it. Injection wins
+      on explicitness, but it would let a test stub the exact restore-versus-delete decision these tests
+      exist to exercise, and the function is pure and already properly covered. Requiring it is the
+      call.</em></li>
+    <li><strong><code>deleteField</code></strong> is the <code>FieldValue.delete()</code> sentinel. This repo
+      already injects that exact sentinel as <code>DELETE_FIELD</code> (<code>app.js</code>:3209), so the
+      pattern is established, not invented here. It is also what makes the emulator-backed test below
+      possible.</li>
+    <li><strong>Destructure at the top of each moved function</strong> (<code>const { loadSchedule,
+      saveSchedule } = deps;</code>) so the body underneath stays byte-for-byte identical. That is what
+      makes the byte-identical review criterion mean anything.</li>
+    <li><strong>Stub shapes must match production.</strong> <code>updateTimeOffRequestIfStatus</code>
+      returns <code>{ success, reason, status }</code> with
+      <code>reason &isin; {not-ready, not-found, status-changed, error}</code>, and the rollback branch reads
+      <code>result.status</code>. A stub omitting <code>status</code> silently exercises a path production
+      never takes. Build stubs from one shared factory returning the real shapes &mdash; note
+      <code>loadSchedule</code> returns <code>{ uid, ...data }</code>, not a bare <code>{ overrides }</code>.</li>
+  </ul>
   <div class="depends">
-    <strong>app.js keeps thin wrappers with the SAME names and signatures</strong>, so not one of the ten
-    call sites changes:
-    <pre style="font-size:12px; background:#f7f7f7; padding:10px; border-radius:6px; overflow-x:auto;">async function applyTimeOffOverrides(uid, dates) {
-  return TimeOffSchedule.applyTimeOffOverrides(uid, dates, timeOffDeps());
-}</pre>
-    They stay <code>async function</code> declarations rather than becoming <code>const</code>, so hoisting
-    behaves identically. <code>timeOffDeps()</code> builds the object <strong>lazily on each call</strong>,
-    never at parse time &mdash; <code>firebase.firestore.FieldValue</code> and <code>getDb()</code> are not
-    guaranteed to exist when <code>app.js</code> is first evaluated, and capturing them eagerly would throw
-    on load. That is the single most likely way this phase breaks the app.
+    app.js keeps thin wrappers with the SAME names and signatures, so none of the ten call sites changes.
+    Verified: <code>applyTimeOffOverrides</code> at :5560, :7388;
+    <code>removeTimeOffOverrides</code> at :6713, :6732, :7235, :7275, :7307, :7432, :7515, :7575. All ten
+    <code>await</code>; two use the return value, eight discard it; a wrapper returning the inner promise
+    preserves both.
+    <br><br>
+    They must stay <code>async function</code> declarations, not <code>const</code> &mdash; the inline
+    <code>onclick</code> handlers require <em>global function declarations</em>, which is the load-bearing
+    reason (hoisting is the lesser one).
+    <strong>Do not add try/catch to any wrapper:</strong> the rollback call at :7432 runs inside
+    <code>approveTimeOff</code>'s own try, so a wrapper that caught would convert the abort-specific alert
+    into the generic "Failed to approve request."
   </div>
 
   <h4>Wiring that must not be forgotten</h4>
   <ul>
-    <li><code>index.html</code>: a <code>&lt;script&gt;</code> tag for the new file <em>before</em>
-      <code>app.js</code> (:1049 is where <code>schedule-helpers.js</code> sits).</li>
-    <li><code>sw.js</code>: add it to the pre-cache list, and <strong>bump the cache version</strong>. The
-      worker is cache-first, so a returning admin would otherwise get a new <code>app.js</code> against a
-      missing new file and hit a <code>ReferenceError</code> before anything renders. There is already a
-      test asserting <code>schedule-helpers.js</code> is pre-cached for exactly this reason
-      (<code>schedule-editor-wiring.test.js</code>) &mdash; add its twin.</li>
-    <li><code>package.json</code>: add any new test file to the enumerated jest list, or it silently never
+    <li><code>index.html</code>:1078 is where <code>schedule-helpers.js</code> sits &mdash; the new tag goes
+      beside it, before <code>app.js</code>.</li>
+    <li><strong>Verify the deployed script path with a real HTTP request.</strong>
+      <code>netlify.toml</code> redirects <code>/*</code> to <code>/index.html</code> with
+      <strong>status 200</strong>, so a mistyped <code>src</code> does <em>not</em> 404 &mdash; it returns
+      index.html as <code>text/html</code>, the browser parses HTML as JS and throws, and because
+      <code>response.ok</code> is true, <strong>sw.js caches the HTML as your JS file</strong>. Checking by
+      eye will not catch this.</li>
+    <li><code>sw.js</code>: add to <code>APP_SHELL</code> and bump the cache version.
+      <em>Correction to v3.1: the shell is versioned as a unit &mdash; activate deletes every non-current
+      cache and claims clients &mdash; so the "new app.js against a missing new file" ReferenceError is hard
+      to actually reach. The real consequence of forgetting it is that the file is fetched on demand and
+      runtime-cached, so it works online and breaks OFFLINE ONLY. Write the twin test for the offline
+      failure, not for a load-time ReferenceError that will not reproduce.</em></li>
+    <li><code>package.json</code>: add each new test file to the enumerated jest list, or it silently never
       runs.</li>
+    <li><strong>No <code>firestore.rules</code> change and no Firebase deploy of any kind.</strong> No new
+      collection, no new document path. Worth stating explicitly given the shared-rules blast radius.
+      A <strong>Netlify deploy is required</strong> for this to reach anyone, and that costs credits.</li>
+    <li>Keep the untracked <code>deno.lock</code> out of the commit.</li>
   </ul>
 
-  <h4>What this buys, immediately</h4>
-  <p>
-    Forcing a failure becomes one line &mdash; <code>{ saveSchedule: async () =&gt; false }</code> &mdash;
-    with no rules change, no cross-repo coupling, and the tests executing the real code rather than a copy
-    of it. It also retires the standing problem that the shipped functions have no behavioural coverage at
-    all.
-  </p>
   <div class="decision-needed">
-    <strong>Worth being explicit about the "no mock Firestore tests" rule.</strong> This injects the
-    <em>data layer</em>; it does not mock Firestore. The write shapes stay covered by the existing emulator
-    tests, which keep running unchanged, and the new tests cover orchestration &mdash; the ordering and
-    branching that the emulator can never see because it never calls these functions. If that distinction
-    is not acceptable, Phase 0 has no viable alternative and the whole plan should be reconsidered rather
-    than worked around.
+    <strong>The "no mock Firestore tests" rule &mdash; the bright line, in the plan rather than in an
+    argument.</strong> Injecting the data layer is not mocking Firestore: these tests assert control flow,
+    not write shape. The permitted assertions are <em>that</em> <code>saveSchedule</code> was called, with
+    which uid, in what order, and <em>whether its <code>false</code> return was respected</em>. Forbidden:
+    merge semantics, sentinel behaviour, nested-map merging. The moment a test writes
+    <code>expect(saved.overrides['2026-09-21']).toBe(DELETE_SENTINEL)</code> as proof a field gets deleted,
+    the rule is broken &mdash; that stays emulator-only.
+    <br><br>
+    <strong>The residual gap, named rather than hidden:</strong> after Phase 0 the real
+    <code>removeTimeOffOverrides</code> runs only against stubs, while the real write is exercised only by
+    an Admin-SDK <em>copy</em>. Not worse than today, but not closed.
+    <br><br>
+    <strong>And the one test that closes it.</strong> <code>loadSchedule</code>/<code>saveSchedule</code>
+    use an API surface the Admin SDK shares verbatim, so real emulator-backed adapters can be injected and
+    the actual extracted orchestration run against actual Firestore, with
+    <code>admin.firestore.FieldValue.delete()</code> as <code>deleteField</code> &mdash; which is precisely
+    why the sentinel is injected. <strong>Add exactly one.</strong> It turns the argument above from a
+    position to defend into a demonstration.
+  </div>
+
+  <h4>Characterization tests &mdash; as <code>test.failing</code>, asserting the DESIRED behaviour</h4>
+  <div class="depends">
+    v3.1 said these should "describe today's behaviour including the bugs" and "FAIL when the fixing phase
+    lands". Both reviewers rejected that: a permanently red suite is a broken build, and the first person to
+    see red will "fix" the test. A test asserting today's wrong value is also precisely the shape this repo
+    has been burned by four times.
+    <br><br>
+    <strong>Use <code>test.failing</code>, asserting the CORRECT contract</strong> &mdash; the pattern
+    already in this repo at <code>timeoff-status-guard.emulator.test.js</code> (<code>872f674</code>). It
+    passes while the defect exists, and Jest treats an unexpected pass as a FAILURE, so the moment a later
+    phase fixes the bug the suite goes red and forces the test to be promoted to an ordinary one. It cannot
+    enshrine the defect, because it never asserts the defective value.
+    <pre style="font-size:12px; background:#f7f7f7; padding:10px; border-radius:6px; overflow-x:auto;">test.failing('KNOWN DEFECT (Phase 2 promotes this): a rejected schedule save must not yield an applied record', async () =&gt; {
+  const result = await applyTimeOffOverrides(uid, dates, {
+    loadSchedule: async () =&gt; schedule,
+    saveSchedule: async () =&gt; false,
+  });
+  expect(result).toEqual({ success: false, reason: 'schedule-write-failed' });
+});</pre>
+    Rules: own file, header naming the phase that promotes each one; title starts <code>KNOWN DEFECT</code>;
+    never a bare negative assertion (a too-loose one matches both old and new behaviour, so it does not fail
+    when the fix lands and the signal evaporates).
+    <br><br>
+    <strong>One target was mis-placed in v3.1:</strong> "a failed read is indistinguishable from an absent
+    document" is not a property of <code>applyTimeOffOverrides</code> &mdash; it belongs to
+    <code>loadSchedule</code> (firebase-data.js:184, which returns <code>null</code> for
+    <code>!_ready</code>, for a thrown read, AND for a genuinely absent doc). Characterize it where it
+    lives, or the test pins the wrong function and a later phase fixes the other one.
   </div>
 
   <h4>Proving the refactor changed nothing</h4>
-  <p>
-    This moves live write-path code, so the risk is a silent behaviour change during the move &mdash; not a
-    new feature going wrong.
-  </p>
+  <div class="danger">
+    <strong>v3.1's criterion &mdash; "no existing test may be edited" &mdash; is self-contradictory, and
+    following it would have walked straight into this repo's signature failure.</strong>
+    <code>schedule-editor-wiring.test.js</code> slices <code>app.js</code> <em>by function name</em>. After
+    extraction those <code>indexOf</code> calls find the three-line WRAPPERS, and every
+    <code>not.toMatch(...)</code> in the shrunken slice <strong>passes vacuously</strong> &mdash; including
+    the abort-branch assertions and the "no bare updateTimeOffRequest" check. Silent green, no signal.
+  </div>
   <ul>
-    <li>All existing tests must pass unchanged (372 at <code>787d7e3</code>; the count grows, do not
-      hardcode it). No existing test may be edited to accommodate the move &mdash; if one needs editing,
-      behaviour changed.</li>
-    <li>Characterization tests written <strong>against the extracted functions before any other phase
-      touches them</strong>, describing today's behaviour including the bugs: a failed
-      <code>saveSchedule</code> still yields a fully populated <code>applied</code> record, an absent
-      schedule document is a silent no-op, and a failed read is indistinguishable from an absent document.
-      These are the baseline later phases will deliberately change &mdash; each one should FAIL when the
-      phase that fixes it lands, which is how we will know the fix took effect.</li>
-    <li>A diff review confirming the moved bodies are byte-identical apart from the injected dependencies.</li>
+    <li><strong>The workable criterion:</strong> no existing <em>behavioural</em> assertion may be weakened
+      or deleted. <code>schedule-helpers.test.js</code> and all six <code>*.emulator.test.js</code> must
+      pass <em>unedited</em> &mdash; none of them reads app.js source, so that holds cleanly and is a real
+      check. <code>schedule-editor-wiring.test.js</code> is a source-location file by construction; editing
+      it is expected, not evidence of a behaviour change.</li>
+    <li><strong>Replace, never re-point.</strong> Every source assertion that Phase 0 makes reachable should
+      become a behavioural one <em>in the same commit</em>. Those assertions exist only because the code was
+      unreachable; text-matching on now-reachable logic is pure vacuous-pass risk. The apply/remove body
+      slices get deleted and replaced; "no bare updateTimeOffRequest" becomes "the apply dep was never
+      called"; the rollback assertions become "the remove dep was called with <code>(uid, applied)</code>";
+      the allowlist assertions become "approve succeeds from each of the three statuses and aborts from
+      approved/completed". The confirmed-sub slice and the onclick-button assertions <em>stay</em> &mdash;
+      that code is not moving.</li>
+    <li><strong>Every surviving slice gets a length guard</strong>, the pattern this repo already invented
+      (<code>expect(fn.length).toBeGreaterThan(N)</code>). That is the single cheapest defence against a
+      vacuous pass.</li>
+    <li><strong>The exit-table test.</strong> A table-driven test over the extracted orchestration
+      asserting, for each of the five exits, the exact ordered sequence of dep calls plus the returned
+      result code &mdash; then app.js-side source assertions mapping each code to its DOM sequence. This is
+      the only thing that pins "same messages, same order", and it is the only coverage the risky third of
+      this phase will have.</li>
+    <li>A diff review confirming the two moved bodies are byte-identical apart from the destructured deps.</li>
+    <li>All other tests pass (372 at <code>787d7e3</code>; the count grows, do not hardcode it).</li>
   </ul>
 
   <div class="bdd">
@@ -574,23 +722,28 @@
     capability this whole phase exists to create
   </div>
   <div class="bdd">
-    <strong>Given</strong> the app running in a browser<br>
-    <strong>When</strong> an admin approves, un-approves, withdraws or denies a request<br>
-    <strong>Then</strong> every outcome is identical to before the extraction &mdash; same writes, same
-    messages, same order
+    <strong>Given</strong> each of the five exits of the approve orchestration<br>
+    <strong>When</strong> the extracted function runs<br>
+    <strong>Then</strong> the ordered sequence of dependency calls and the returned result code are exactly
+    what today's code produces &mdash; the rewrite's only real safety net
   </div>
   <div class="bdd">
-    <strong>Given</strong> a returning admin whose service worker cached the previous version (failure path)<br>
-    <strong>When</strong> they load the app after this ships<br>
-    <strong>Then</strong> the new file is present and no <code>ReferenceError</code> occurs &mdash; the
-    cache version was bumped and the file pre-cached
+    <strong>Given</strong> the app running in a browser<br>
+    <strong>When</strong> an admin approves, un-approves, withdraws or denies<br>
+    <strong>Then</strong> every outcome is identical to before &mdash; same writes, same messages, same order
+  </div>
+  <div class="bdd">
+    <strong>Given</strong> an admin with no network (failure path)<br>
+    <strong>When</strong> they open the app after this ships<br>
+    <strong>Then</strong> the new file is served from the pre-cache and nothing throws &mdash; the offline
+    case is the one the APP_SHELL entry actually protects
   </div>
   <div class="bdd">
     <strong>Given</strong> <code>firebase.firestore.FieldValue</code> is not yet initialised at script
     evaluation time (failure path)<br>
     <strong>When</strong> <code>app.js</code> loads<br>
-    <strong>Then</strong> nothing throws, because the dependencies are built per call rather than captured
-    at parse time
+    <strong>Then</strong> nothing throws, because dependencies are built per call rather than captured at
+    parse time
   </div>
 </div>
 
@@ -941,6 +1094,16 @@
   <li><strong>Sep 9, 2026 — Phase 0 added.</strong> Verified that <code>firebase.json</code> loads no
     rules file and the existing emulator tests use the Admin SDK, so no failure path is testable today.
     v1 assumed this coverage existed.</li>
+  <li><strong>Sep 10, 2026 — Phase 0 reviewed and rewritten (v3.2).</strong> Both reviewers approved the
+    extraction direction and rejected the specifics. The load-breaking finding: <code>APPROVABLE_FROM</code>
+    is a top-level <code>const</code>, so declaring it in a second classic script is a SyntaxError that
+    kills app.js entirely — a white screen, not a handler error. Also: the request read has to move and
+    needs a new <code>getTimeOffRequestResult()</code> (none exists); <code>resolveOverrideRestore</code>
+    was missing from the deps; "no existing test may be edited" was self-contradictory and would have left
+    the wiring test passing vacuously; and the characterization tests should be <code>test.failing</code>
+    asserting the DESIRED behaviour rather than tests asserting today's wrong values. Phase 0 is also not
+    one refactor — two byte-identical moves plus a genuine rewrite of approveTimeOff's five exits, which
+    needs its own acceptance criteria.</li>
   <li><strong>Sep 10, 2026 — re-entry guard shipped separately and is LIVE</strong>
     (<code>4280b75</code>, <code>872f674</code>, <code>787d7e3</code>; deployed and pushed Sep 10), ahead of this plan and with its own approach + implementation review. Its
     implementation review found that aborting after the schedule write had landed was WORSE than the bug
