@@ -861,6 +861,90 @@ today.</p>
 
 <h2>Phase 3 — Interactive sharing (shared users can check things off, live)</h2>
 <div class="resolved">
+  <strong>LIVE — client Sep 11, 2026 (<code>1f46f42</code>, Render); rules Sep 14, 2026 (<code>studio-hub</code>
+  <code>b2c73c5</code>, deployed with <code>--only firestore:rules</code> after "approved to change firebase";
+  the first attempt failed on an expired CLI login and released nothing).</strong>
+  Shipped as the split proposed in the scope note below — the rules change plus the client change,
+  without the live listener. Christie agreed (a) alone is the right first step and chose the
+  <em>narrowed</em> rule (see the gap box). What is in the diff:
+  <ul>
+    <li><strong>Rules</strong> (<code>studio-hub/firestore.rules</code>, meetings): a third
+    <code>allow update</code> branch — a non-manager user in a list-shaped <code>sharedWith</code> may
+    update a non-personal meeting when no top-level field other than <code>summary</code> changes value,
+    and inside <code>summary</code> nothing but <code>beforeNextMeeting</code> changes
+    (<code>onlyActionItemsChanged()</code>). All-or-nothing on what <em>changed</em>: an
+    <code>updatedAt</code> added alongside the tick denies the whole write; naming an unchanged field is a
+    no-op and passes, because <code>affectedKeys()</code> diffs values, not the write mask. Both sides must
+    already hold a <code>summary</code> map.</li>
+    <li><strong>Also in the same deploy, as earmarked on Sep 5:</strong> a non-manager creator can no longer
+    set <code>sharedWith</code> on create or change it on update, even via the SDK
+    (<code>fieldUnchanged('sharedWith')</code> on the creator branch, by value; an empty-or-absent check on
+    create). Verified first that no staff-reachable write path touches <code>sharedWith</code> — only the
+    manager-only Share modal does.</li>
+    <li><strong>Client</strong> (<code>recap</code>): <code>collectOpenTasks()</code> carries
+    <code>sharedWith</code> and <code>business</code> on each task; <code>canEditTaskMeeting()</code> mirrors
+    the rule's three branches and enables the Open Tasks checkbox. The existing unit test asserting "staff
+    canNOT edit a merely shared task" was corrected, not added to — it pinned the rule's old limitation, not
+    product intent. The tick's lookup-and-flip moved into <code>applyTaskDone()</code> in
+    <code>js/task-helpers.js</code> so the emulator test runs the shipped code instead of a hand mirror.</li>
+    <li><strong>The detail view stays read-only for shared users, on purpose</strong> — its check-off
+    overwrites the whole summary from an in-memory copy, which the new rule would <em>accept</em> whenever
+    only <code>beforeNextMeeting</code> differs. Read-only is now derived from data
+    (<code>canEditMeetingDetail()</code>: creator or manager edits, everyone else reads), not from the
+    <code>_isShared</code> flag the "Shared with me" list sets — see the review round below for why that
+    mattered. <code>js/task-helpers.js</code> now loads on all four pages.</li>
+    <li><strong>Tests:</strong> rules tests 130 → 162 in <code>studio-hub</code>, including the exact
+    dotted-path write the app sends inside a <code>runTransaction</code>; recap 60 → 79. Three mutation runs
+    proved the new rules tests bite: dropping the summary-level narrowing failed exactly the 4 narrowing
+    tests, dropping the top-level <code>hasOnly(['summary'])</code> failed 5, dropping the personal guard on
+    the shared branch failed 1.</li>
+  </ul>
+  <p><strong>Deploy order — REVERSED from the first draft, and it matters:</strong> push the
+  <em>client</em> first (Render, free), confirm it is live, <em>then</em> deploy rules. Rules-first would open
+  the round-1 hole below in the old client for the window between the two deploys. Client-first is benign:
+  an enabled checkbox gets a friendly "may no longer be shared with you" toast until the rules land. Grant
+  Maryssa's Recap access only after both are live — she has none today, so no stale tab of hers can exist.
+  Half (b), <code>onSnapshot</code>, remains unbuilt and is not needed for her case.</p>
+  <div class="depends">
+    <strong>Implementation review — two independent reviewers (Claude + Codex), three rounds, all fixed
+    before shipping.</strong> Round 1 found two HIGHs I had missed: (1) the Open Tasks "source meeting" link
+    opens <code>meetings.html#meeting=…</code>, whose loader never set <code>_isShared</code>, so a shared staff
+    user would have got the full editing UI — and its every action-item edit is a whole-summary overwrite the
+    new rule would <em>accept</em>. "The detail view stays read-only for shared users" was false the moment
+    the rule went live. (2) Pinning <code>sharedWith</code> on update alone left <em>create</em> open: a staff
+    user could create a meeting already shared, or delete-and-recreate. Also: <code>in</code> matches a map's
+    keys, so a map-shaped <code>sharedWith</code> would have granted the branch (now requires a list); the
+    emulator test tested a hand-copied <code>setTaskDone</code>, not the shipped code; "no other field in the
+    same request" was wrong (<code>affectedKeys()</code> is semantic); a missing <code>business</code> was
+    editable client-side but denied by the rule. Round 2 found that the tick's normalize-on-write silently
+    <em>deleted</em> malformed entries — pre-existing, but under Phase 3 a shared user's tick would do it to
+    the owner's data (now preserved in place); the plain-text export was still unguarded (also caught by my
+    own browser spot check); the inert "shell" groups still carried owner controls that threw; and the
+    no-summary early-return path showed shared viewers Re-summarize/Delete. Round 3 found the tick still
+    re-normalized <em>every</em> item on write (stripping extra fields, flattening malformed objects) and
+    resolved duplicate item text to the first match even when it was already done — the tick now clones and
+    changes the one ticked item and touches nothing else, preferring a match whose state actually changes;
+    the rollup no longer throws on a non-string assignee or text; and the <code>_isShared</code> flag no longer
+    overrides a manager's editing rights (a manager opening a meeting shared <em>with</em> them now gets the
+    editor, as the rules and Meeting History already allowed). The creator-branch pin was also made
+    absent-tolerant (no <code>sharedWith</code> key ≡ <code>[]</code>) after a reviewer noted the
+    production-default document shape had no test. Round 4 found the stricter item normalizer had made
+    the index page's post-processing view throw on an object without a string text (now guarded like the
+    detail view), and that the tick's "no-op" fallback still rewrote the first match (now returns the input
+    untouched). Duplicate identity stays assignee + text, by design: two items with identical text and state
+    are interchangeable to the person clicking, and a durable per-item id is the schema change this plan
+    already rules out. A final round confirmed every fix closed and left four small items, all taken.
+    <strong>Deliberately NOT taken:</strong> adding an <code>is list</code> check on <code>sharedWith</code> to
+    the Phase 1 <em>read</em> rule to match the new update branch. A map-shaped <code>sharedWith</code> can only
+    be written by a manager, who can grant read through the UI anyway, so there is no privilege gain; and the
+    read rule is what every staff <em>list query</em> must be provable against — the suite has no query tests
+    for it, and a provability failure there would blank Maryssa's whole shared list. Not worth it for a
+    consistency nit on an otherwise-ready deploy.
+    Logged, not fixed, pre-existing: "mark all reviewed" batches shared meetings a staff user cannot update,
+    so the atomic batch fails for their own meetings too.
+  </div>
+</div>
+<div class="resolved">
   <strong>Sep 11, 2026 — this is now the ONLY phase left, and it has a concrete driver.</strong>
   Christie is giving Maryssa (People &amp; Operations Coordinator, Clay Hub) Recap access as a
   <em>staff</em> user, and hit the limit this phase exists to remove.
@@ -891,6 +975,15 @@ today.</p>
     because Christie has now articulated a reason to care about it specifically. Closing it properly
     needs a Cloud Function, which this project has no infrastructure for. Worth re-confirming with her
     when Phase 3 is built, rather than assuming the earlier acceptance still covers it.
+    <p><strong>Re-confirmed and decided, Sep 11, 2026.</strong> Christie chose the <em>narrowed</em> rule:
+    inside <code>summary</code>, a shared user may change <code>beforeNextMeeting</code> only — the decisions
+    log, key discussion and insights stay closed at zero cost. The <em>contents</em> of
+    <code>beforeNextMeeting</code> remain unconstrained (rules cannot diff inside an array of maps) and that
+    residual is now accepted deliberately, not inherited. Pinning group count or assignee names was
+    considered and rejected: the tick normalizes items on write, so shape checks would deny legitimate ticks
+    on exactly the messy documents the tests protect. Why the residual is tolerable: any meeting she can
+    reach was shared by Christie or a manager, and a manager can already assign Christie an item through
+    the UI on any non-personal meeting, so the SDK route adds no reach a trusted person lacks today.</p>
   </div>
   <p><strong>Scope note — what she needs may be smaller than this phase.</strong> Phase 3 as written is
   two things: (a) the rules change letting a shared user toggle <code>done</code>, and (b) the app's first
@@ -1108,7 +1201,7 @@ today.</p>
     assignment is worth it once the view has changed how the work actually feels.
   </div>
   <div class="depends">
-    <strong>Pre-existing bug found while scoping this, logged not fixed:</strong> the existing
+    <strong>FIXED Sep 14, 2026 — see the Decisions Log entry of that date (section merge, write queue, canonical objects).</strong> Original note — pre-existing bug found while scoping this, logged not fixed: the existing
     drag-and-drop reassignment (and every <code>saveDetail()</code> caller) overwrites the whole
     <code>summary</code> object from an in-memory copy that is never refreshed. Two tabs open on the same
     meeting will silently lose one of the two edits. This is the same read-modify-write hazard the Phase 2
@@ -1389,9 +1482,10 @@ its status box. It needs a rules change, so the standing "approved to change fir
   described wanting when she scrapped threads: every open item assigned to her, across every meeting, in
   one view.</s> <strong>Done and live Sep 5</strong> — see Phase 4's status box, including the seven
   problems its implementation review found.</li>
-  <li><strong>Phase 3 (live check-off) is the one with real unknowns left</strong> — a rules change behind
-  the "approved to change firebase" gate, and the app's first <code>onSnapshot</code>. See the multi-user
-  section: no part of this app currently assumes another person can change a document under you.</li>
+  <li><s><strong>Phase 3 (live check-off) is the one with real unknowns left</strong> — a rules change behind
+  the "approved to change firebase" gate, and the app's first <code>onSnapshot</code>.</s>
+  <strong>Half (a) LIVE Sep 14, and verified for real Sep 15: Maryssa ticked her first task from Open
+  Tasks and it landed.</strong> Half (b) stays unbuilt until it is missed.</li>
   <li><strong>Housekeeping, small:</strong> archive Julia's seven mailboxes (Settings, admin only — a
   toggle per series, reversible); decide whether to strip the email-keyed Julia personalization layer; and
   the Settings series over-fetch.</li>
@@ -1549,6 +1643,41 @@ next time; it is cheaper than any number of review rounds.</p>
     hardcoding that count) was corrected to note the real, checked-at-review-time count of 90, framed as "do
     not hardcode this" rather than replaced with a new hardcoded number.</li>
   </ul>
+  <li><strong>Sep 14, 2026 — detail-view concurrent-edit safety built (the "pre-existing blind overwrite"
+  logged above), nine review rounds.</strong> Christie's question after Phase 3 went live — "if we are all
+  ticking at the same time, that's okay?" — was yes for Open Tasks and no for the meeting itself, whose every
+  edit wrote the whole summary from the copy loaded at open. Shipped: the detail view's checkbox routes
+  through the Open Tasks one-item transaction; other edits write only the summary <em>sections</em> the page
+  changed, with <code>done</code> flags set elsewhere carried through a local rewrite of the action-item
+  section (so a review-pass drag or rename no longer undoes Anika's ticks); one write queue per meeting id;
+  the saved baseline advances only on success, so a failed edit is kept and retried; restore and
+  re-summarize lock the meeting until they commit; and one canonical object per meeting id, because two
+  rounds proved that copying summaries between the list's object and a deep-linked object could not be
+  made safe. What the rounds kept finding was ordering: out-of-order transaction commits, a late tick
+  reverting the wrong duplicate, a held query result rolling a clean object back, reads racing writes.
+  Accepted limits (duplicate identity by text and occurrence; a renamed item can't receive a flag set
+  elsewhere; a failed tick can be carried by a section rewrite queued behind it) are in
+  <code>recap/CLAUDE.md</code>. Tests 79 → 108, with two-tab emulator scenarios.</li>
+  <li><strong>Sep 11, 2026 — Phase 3 half (a) built, reviewed four rounds, awaiting the rules deploy.</strong>
+  Driver: Maryssa joining as staff. Christie asked first whether shipping (a) alone — the rules branch plus
+  the client change, no <code>onSnapshot</code> — was the right first step; answer: yes, and (b) should not
+  ride along, since it changes nothing about what she can do and would be the app's first live listener.
+  Two decisions made deliberately rather than inherited: the shared-write rule is <em>narrowed</em> to
+  <code>summary.beforeNextMeeting</code> (Christie's choice from three options laid out with the actual
+  residual exposure), and the Sep 5 <code>sharedWith</code> pin for staff creators was folded into the same
+  deploy after verifying no staff-reachable write touches the field. Built test-first per
+  <code>/development-workflow</code>: the four rules tests that should fail against production rules did,
+  and nothing else moved; then three mutation runs proved the new tests bite. Independent implementation
+  review (Claude + Codex, in parallel) ran four rounds — the findings and fixes are in Phase 3's status
+  box; the two HIGHs (an unflagged deep-link path into the editable detail view, and the create route
+  around the pin) were both things the design review could not have seen and the tests did not cover,
+  which is the argument for reviewing the implementation separately from the plan. The deploy order was
+  reversed as a result: client first, rules second, Maryssa's access last. A browser spot check against
+  the local server, with deliberately malformed action-item data, caught one thing the second round's
+  reviewer also flagged (the plain-text export) and confirmed the inert-shell rendering and the read-only
+  classification on all three detail-view paths. Still owed: Christie's "approved to change firebase",
+  then <code>firebase deploy --only firestore:rules</code> from <code>studio-hub</code>, then granting
+  Maryssa access, then watching her first real tick land.</li>
   <strong>Empirical verification, not just prose:</strong> rather than keep reasoning about Firestore's list-
   query semantics in the abstract, started the real Firestore emulator (<code>firebase emulators:start --only
   firestore</code> from <code>studio-hub/</code>) and ran a standalone, throwaway 8-scenario test script
