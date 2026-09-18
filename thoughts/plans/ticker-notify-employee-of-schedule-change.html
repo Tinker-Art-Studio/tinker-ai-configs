@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Notify an employee of a schedule change</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .sev { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .sev-med { background: #fff3cd; color: #7a5500; } .ok { background: #d4edda; color: #155724; }
+  ul.checklist li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Plan: Notify an employee of a schedule change</h1>
+<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Registered:</strong> Sep 17 2026 &middot; <strong>execution-ready:</strong> true &middot; <strong>Status: BUILT + DEPLOYED Sep 18 2026</strong> (<code>499d8ea</code> + <code>d6c16cb</code>, 681 tests, sw.js v18; a real send verified through the deployed endpoint) &middot; <strong>v3</strong> after two two-model design reviews and two implementation reviews (all findings folded in; see the Decisions log). Open follow-ups: the editor routes overrides by the mode it opened in, not per date; the five email endpoints are unauthenticated.</p>
+
+<div class="status">
+  <strong>Goal:</strong> when a manager changes someone's schedule for specific dates — through the AI Schedule
+  Changes tool or the schedule editor — they can tick "Notify employee of this change" (on by default), type
+  a short reason, and the employee gets ONE email listing what changed on which dates, including removals,
+  with the reason. The manager is told whether it went out.
+  <br><br>
+  <strong>Christie's decisions (Sep 17):</strong> checkbox defaults to CHECKED; removals (a date set to day off)
+  are included and email too.
+</div>
+
+<h2>Research (read-only)</h2>
+<ul>
+  <li><strong>What exists:</strong> <code>send-oneoff-shift-confirmation-email</code> (Resend, one date per email,
+    "Shift Confirmed" template in <code>_lib/oneoff-reminder.js</code>) fires only when a schedule-editor save
+    adds an override whose note contains "Extra Shift" (<code>sendOneOffReminderConfirmations</code>,
+    app.js ~8670). Recipient resolution: <code>resolveReminderRecipient(uid, allUsers, employeeRoster)</code>
+    (schedule-helpers.js). Outcome toasts: <code>toastEmailOutcome(outcome, label)</code>. Shift lookup for any
+    date: <code>getShiftForDate(schedule, dateStr, dayKey)</code> (app.js ~3839).</li>
+  <li><strong>AI path:</strong> <code>renderAiEditResults</code> renders one card per employee;
+    <code>handleAiSaveEdits</code> merges each employee's overrides into the base schedule (or an active
+    <code>futureSchedule</code>) and saves with <code>saveSchedule(uid, { ...existing, overrides: merged })</code>
+    — the whole-document spread + whole map from the in-memory list, the same write shape closed elsewhere on
+    Sep 16 (note-leak fix). No email is sent from this path today.</li>
+  <li><strong>Editor path:</strong> <code>handleSaveSchedule</code> saves the whole edited document (recurring
+    + overrides + bounds, via <code>omitEmptyMaps</code>), then the Extra-Shift confirmation. A frozen pre-edit
+    snapshot <code>scheduleEditOriginalOverrides</code> already exists for diffing.</li>
+  <li><strong>Firestore:</strong> no new collection, no new field, no rules change. The only writes are the
+    schedule saves that already happen. The email endpoint is a new Netlify function; like the four existing
+    email functions it is unauthenticated (wishlist item — this plan does not widen the class, it adds one
+    more of the same shape, and should be included when that item is done).</li>
+  <li><strong>Tests:</strong> Netlify libs are unit-tested (<code>_lib/*.test.js</code>, enumerated in
+    package.json); app.js wiring is source-pinned in <code>schedule-editor-wiring.test.js</code>; pure helpers
+    go in <code>schedule-helpers.js</code> + <code>schedule-helpers.test.js</code>.</li>
+</ul>
+
+<h2>Phases</h2>
+
+<div class="phase">
+  <h3>Phase 1 — The change list and the email, as pure functions</h3>
+  <p><strong>Acceptance (user outcome):</strong> given a schedule before and after a save and the dates that
+    were touched, the app can say exactly what changed for a person, in words they'd understand, and render it
+    as one email.</p>
+  <ul>
+    <li><strong>ONE resolver.</strong> <code>getShiftForDate(schedule, dateStr, dayKey)</code> MOVES from app.js
+      into schedule-helpers.js (classic scripts share globals; every app.js caller is unchanged) and gets direct
+      tests for the cases the review named: a date inside an active <code>futureSchedule</code> window resolves
+      ONLY inside the future object (future override → future recurring → null, never the base); a base override
+      applies regardless of base <code>validFrom/validUntil</code> while base recurring is bounded by them; a
+      stored <code>null</code> is a day off, not fall-through; a window with a missing bound is open on that side.</li>
+    <li><code>diffScheduleDates(before, after, dates)</code> in schedule-helpers.js — for each touched date,
+      <code>{ date, before, after }</code> via that resolver on the two full documents. Shifts are NORMALISED before
+      comparison (studio defaults to 'tinker'; absent note ≡ ''), so a re-save of the same shift is dropped; a
+      note-only change COUNTS and the row shows the note. Dates whose before and after are the same are dropped;
+      output sorted by date, deduplicated.</li>
+    <li><code>applyScheduleEdits(doc, edits, today)</code> in schedule-helpers.js — validates each edit (date key
+      <code>YYYY-MM-DD</code>; a value is <code>null</code> or has both <code>start</code> and <code>end</code> as
+      HH:MM, studio ∈ {tinker, clayhub}; anything else is REJECTED with a reason), routes EACH DATE to the map the
+      resolver reads for that date (inside the future window → <code>futureSchedule.overrides</code>, else base
+      <code>overrides</code>) — the current AI save routes the whole batch by whether the future is active TODAY,
+      a latent bug the review found — and returns <code>{ after, fields, rejected }</code> where <code>fields</code>
+      is a list of <code>[pathSegments, value]</code> leaf updates (e.g. <code>[['overrides','2026-09-29'], {…}]</code>).
+      Empty <code>fields</code> → nothing to write.</li>
+    <li><code>_lib/schedule-change.js</code>: <code>buildScheduleChangeEmail({ personName, adminName, changes, note })</code>
+      → <code>{ subject, html, text }</code>. One row per date: "Tue Sep 29 — now 5:50 PM–9:00 PM at Tinker
+      (was 4:00 PM–9:00 PM)"; a removal: "now: day off (was 9:00 AM–3:00 PM at Clay Hub)"; an addition: "now
+      … (you weren't scheduled)"; a shift note is shown on its row. The note, if any, under "Note from
+      {adminName}". Everything escaped. The shared <code>sendEmail</code> gains an optional <code>text</code>
+      (additive).</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> Grey works Tue 4–9 at Tinker and the save sets Tue Sep 29 to 5:50–9<br>
+    <strong>When</strong> the diff runs for [2026-09-29]<br>
+    <strong>Then</strong> one change: before 16:00–21:00 tinker, after 17:50–21:00 tinker</div>
+  <div class="bdd"><strong>Given</strong> Kathy works Mon 9–3 and the save sets Mon Sep 21 to day off (null)<br>
+    <strong>When</strong> the diff runs<br>
+    <strong>Then</strong> one change with <code>after: null</code>; the email says "day off (was 9:00 AM–3:00 PM at Clay Hub)"</div>
+  <div class="bdd"><strong>Given</strong> a touched date whose value is identical before and after (a re-save)<br>
+    <strong>When</strong> the diff runs<br>
+    <strong>Then</strong> it is dropped — no email row, and an all-dropped list means no email at all</div>
+  <div class="bdd"><strong>Given</strong> a note containing <code>&lt;script&gt;</code><br>
+    <strong>When</strong> the email is built<br>
+    <strong>Then</strong> it is escaped in the HTML and verbatim in the text part</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — The email endpoint</h3>
+  <p><strong>Acceptance:</strong> a POST with the person's email, the changes and the note sends one email via
+    the shared Resend helper and answers <code>{ sent, reason }</code> the way the other email functions do.</p>
+  <ul>
+    <li><code>netlify/functions/send-schedule-change-email.js</code>: validates the body (changes: a non-empty
+      array of the Phase 1 shape, capped at 120 rows (the client truncates beyond that and passes `omitted`); note capped at 1000 chars; names capped) — a body outside
+      those bounds is 400; <code>no personEmail</code> → <code>{ sent: false, reason: 'no-recipients' }</code> with 200
+      (the reason string <code>toastEmailOutcome</code> already understands — the client resolves the recipient
+      and should never POST without one, so this is defensive); Resend failure →
+      <code>{ sent: false, reason: 'send-failed' }</code>. No Firestore access.</li>
+    <li><strong>Authentication:</strong> this endpoint is unauthenticated like the four existing email functions.
+      Verifying a Firebase ID token server-side needs firebase-admin in the function (public-key verification
+      needs no service account; a ROLE check would need Firestore, which is the blocked item). That is the
+      wishlist's "unauthenticated email endpoints" work and is the NEXT queue item after this plan — it must
+      cover all five functions in one change. Until then the caps above bound abuse.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> a valid body <strong>When</strong> POSTed <strong>Then</strong> one email, <code>{ sent: true }</code></div>
+  <div class="bdd"><strong>Given</strong> an empty <code>changes</code> array <strong>When</strong> POSTed <strong>Then</strong> 400, nothing sent — the client should never have called</div>
+  <div class="bdd"><strong>Given</strong> Resend rejects <strong>When</strong> POSTed <strong>Then</strong> <code>{ sent: false, reason: 'send-failed' }</code>, logged; the schedule save (already done client-side) is unaffected</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — AI Schedule Changes: checkbox, note, touched-only save, email, outcome</h3>
+  <p><strong>Acceptance:</strong> on the AI results screen the manager sees "Notify employee(s) of these changes
+    by email" (checked) and a "Reason / note" box; Apply saves the edits and, per employee, sends one email
+    listing their changed dates; a toast per employee says sent / no email on file / did not send.</p>
+  <ul>
+    <li><strong>3a — the write (emulator-tested):</strong> a new data-layer function
+      <code>applyScheduleEditsTransaction(uid, edits)</code> does the read, the per-date routing
+      (<code>applyScheduleEdits</code>) and the write in ONE transaction (implementation review: a plain
+      read-then-update let another manager remove the future schedule in between, after which the leaf update
+      recreated a bare <code>futureSchedule.overrides</code> that masked the base schedule), the write being
+      ONE <code>update()</code> with FieldPath leaves
+      (<code>overrides.&lt;date&gt;</code> / <code>futureSchedule.overrides.&lt;date&gt;</code>, plus updatedAt/By) —
+      leaf replacement, so no stale key can leak and no map is ever written (the empty-map hazard cannot arise);
+      the repo's own "updateDoc for a partial edit" rule. Emulator test proves unrelated dates, base/future
+      siblings and bounds survive, and that a date inside an upcoming future window lands in the future map.
+      <code>handleAiSaveEdits</code>: group the model's edits by resolved uid (it can name one person twice);
+      per employee read FRESH via <code>loadScheduleResult</code> — <code>ok:false</code> → skipped "could not
+      read" (never the in-memory copy), <code>schedule:null</code> → skipped as today; <code>applyScheduleEdits</code>;
+      rejected edits are named in the status; write. Today's date is Denver-local, not UTC.
+      Added to the "guard is wired into production" describe block of empty-map-guard.emulator.test.js.</li>
+    <li><strong>3b — the feature:</strong> markup in index.html above the Apply button: checkbox (checked)
+      labelled "Notify employee(s) of these changes by email" and a note field labelled "Note to include (sent
+      to everyone listed above)". After a successful write, if ticked and <code>diffScheduleDates</code> is
+      non-empty: resolve the recipient; POST; collect the outcome. Recipient lookup FAILURE (the users read
+      failed — a Result-shaped read replaces the <code>[]</code> fallback for this purpose) is its own outcome,
+      "could not look up their email", distinct from "no email on file". The status line names everyone:
+      "Applied: A, B. Emailed: A. NOT emailed: B (no email on file)." — ONE toast at most (toasts replace each
+      other, so per-employee toasts would hide failures). Past dates are included (the manager chose to notify;
+      untick to suppress).</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> the box is ticked and Grey's Tue Sep 29 is changed <strong>When</strong> Apply <strong>Then</strong> Grey's schedule is saved, Grey gets one email, toast "Email sent to Grey Grimm"</div>
+  <div class="bdd"><strong>Given</strong> the box is unticked <strong>When</strong> Apply <strong>Then</strong> saved, no email, no email toast</div>
+  <div class="bdd"><strong>Given</strong> the employee is an unclaimed roster entry (no auth uid, no email) <strong>When</strong> Apply with the box ticked <strong>Then</strong> saved; toast "No email address on file for X — they were NOT emailed"</div>
+  <div class="bdd"><strong>Given</strong> the schedule save FAILS for one employee <strong>When</strong> Apply <strong>Then</strong> that employee is counted skipped and gets no email; the others proceed</div>
+  <div class="bdd"><strong>Given</strong> the edit re-states what is already on the schedule (no real change) <strong>When</strong> Apply with the box ticked <strong>Then</strong> saved (idempotent), no email, status says "no changes to notify about"</div>
+  <div class="bdd"><strong>Given</strong> Grey has a future schedule for Oct 1–Dec 20 and today is Sep 17 <strong>When</strong> the AI edit is for Oct 3 <strong>Then</strong> it is written to <code>futureSchedule.overrides.2026-10-03</code> (the map the app reads for that date), and the diff's "was" is the FUTURE recurring shift</div>
+  <div class="bdd"><strong>Given</strong> one batch has a date inside the future window and one outside <strong>When</strong> Apply <strong>Then</strong> each lands in its own map in one atomic update</div>
+  <div class="bdd"><strong>Given</strong> the model returns the same employee twice <strong>When</strong> Apply <strong>Then</strong> one write and one email for them</div>
+  <div class="bdd"><strong>Given</strong> the model returns a value with no <code>end</code>, or a key that is not a date <strong>When</strong> Apply <strong>Then</strong> that date is rejected and named; nothing malformed is written</div>
+  <div class="bdd"><strong>Given</strong> the users read failed this session <strong>When</strong> Apply with the box ticked <strong>Then</strong> saved; status says "could not look up X's email — they were NOT emailed" (not "no email on file")</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Schedule editor: the same checkbox and note on Save</h3>
+  <p><strong>Acceptance:</strong> when a manager saves a schedule after adding, editing or removing dated
+    overrides, the same checkbox (checked) and note sit next to Save; the employee gets one email for the dates
+    that actually changed versus when the editor was opened.</p>
+  <ul>
+    <li>The editor edits EITHER the base maps or, when a future schedule is active today, the future's maps
+      (<code>openScheduleEditor</code> swaps them in; the save's future branch writes them back). A frozen full
+      pre-edit document snapshot (<code>scheduleEditOriginalDoc</code>) is taken at open; after a successful save
+      the "after" document is the snapshot with the saved maps swapped into the same place the save wrote them.
+      Diff = <code>diffScheduleDates(originalDoc, afterDoc, touchedDates)</code> where touched = keys in the union
+      of the original and saved override maps whose values differ. Changes to recurring weekly hours are NOT
+      emailed by this feature (the label says "date changes"); a removed override whose date falls back to a
+      changed recurring shift shows the NEW recurring as "now" — correct, and stated here.</li>
+    <li><strong>Replaces the Extra-Shift confirmation on editor saves.</strong> With the box checked by default,
+      the old one-date "Shift Confirmed" email AND the new consolidated one would both go out on every Extra
+      Shift; and unticking the box would still send the old one. So on editor saves the consolidated email is
+      the ONLY schedule-change email; an Extra Shift date is a row like any other, with its note. Unticked →
+      no email of either kind. <code>sendOneOffReminderConfirmations</code> is no longer called from the editor
+      (retained, unreferenced-by-app, for the plan history — or deleted; decide at implementation).</li>
+    <li>The move gesture (Nov 11 → Nov 12) yields two rows: removed, added.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> the editor is opened, one override is added and one existing one removed, box ticked <strong>When</strong> Save <strong>Then</strong> one email with two rows (added; removed → back to recurring or "not scheduled")</div>
+  <div class="bdd"><strong>Given</strong> only recurring hours were changed <strong>When</strong> Save with the box ticked <strong>Then</strong> no email, toast "No date changes to notify about"</div>
+  <div class="bdd"><strong>Given</strong> the save fails <strong>When</strong> Save <strong>Then</strong> no email (the existing "Failed to save" alert)</div>
+  <div class="bdd"><strong>Given</strong> the editor opened in FUTURE mode (an active future schedule) and a future override is changed <strong>When</strong> Save with the box ticked <strong>Then</strong> one email whose "was" comes from the future schedule</div>
+  <div class="bdd"><strong>Given</strong> an "Extra Shift" override is added with the box ticked <strong>When</strong> Save <strong>Then</strong> exactly ONE email (the consolidated one, with the note on the row); unticked → none</div>
+  <div class="bdd"><strong>Given</strong> the employee has no email on file / the send fails <strong>When</strong> Save with the box ticked <strong>Then</strong> saved; the toast says which</div>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul class="checklist">
+  <li><strong>Rules updated?</strong> Not needed — no new collection or field; the schedule saves are the existing
+    ones under the existing <code>timeclock_schedules</code> manager rule.</li>
+  <li><strong>Snapshot before bulk ops?</strong> N/A.</li>
+  <li><strong>updateDoc not setDoc?</strong> YES for the AI path now: <code>updateScheduleDates</code> is an
+    <code>update()</code> with FieldPath leaves — the repo's rule, literally. The editor path is unchanged.</li>
+  <li><strong>Empty fields stripped?</strong> No map is written by the AI path at all (leaf updates); an edit
+    with no valid dates is skipped before the write. Pinned by test.</li>
+  <li><strong>Emulator test?</strong> Phase 3a has a real one (the leaf update against a document with unrelated
+    dates, base/future siblings and bounds; a date inside an upcoming future window lands in the future map),
+    plus the "wired into production" pin. The resolver, diff, apply and the email lib are unit-tested.</li>
+  <li><strong>Console spot-check?</strong> After Phase 3 deploys: apply one AI edit to a real schedule, confirm
+    only that date changed on the document and the email arrived.</li>
+</ul>
+
+<h2>Completeness check</h2>
+<p>Every phase is independently shippable. Interrupted after Phase 1 or 2: nothing user-visible changes.
+  Interrupted after Phase 3: the AI tool notifies; the editor does not yet (it still sends the Extra-Shift
+  confirmation as before). No data migration, so nothing is left half-done on any document.</p>
+
+<h2>Resume instructions</h2>
+<p>Read this file; check <code>git log</code> in <code>~/tinker-timeclock</code> for "notify" commits; run
+  <code>npm test</code>; continue at the first phase without a commit. Deploy needs Christie's "okay to deploy"
+  and a sw.js bump (any app.js change).</p>
+
+<h2>Decisions log</h2>
+<ul>
+  <li><strong>Sep 17:</strong> checkbox defaults to checked; removals email too (Christie).</li>
+  <li><strong>Sep 17:</strong> one note per batch on the AI screen, not per employee — the narrative is one
+    request; per-employee notes can be added later if asked.</li>
+  <li><strong>Sep 17:</strong> one email per employee per save, listing every changed date — not one per
+    date like the Extra-Shift confirmation.</li>
+  <li><strong>Sep 17:</strong> the AI path's save becomes touched-only (a sibling of the Sep 16 note-leak fix)
+    rather than being left as a whole-document spread while adding a feature on top of it.</li>
+  <li><strong>Sep 17 (implementation review, both models):</strong> the AI save is one TRANSACTION (read →
+    route → leaf update on the version read); "nothing changed" is its own outcome, not an email failure; the
+    editor's change email describes the PERSISTED document (re-read after the save), falling back to the
+    synthetic one; the endpoint bounds every field (null body, real dates, HH:MM, studio/note/email lengths);
+    the dead Extra-Shift endpoint, template, test and client functions were DELETED (an unauthenticated
+    sender nothing calls); grid days keep stored fields the grid does not render. Follow-up queued: the
+    EDITOR still routes every override to the map it opened in (base or future) rather than per date — a
+    pre-existing gap the new diff now makes visible as "no date changes to notify about" when an override
+    lands where the app never reads it.</li>
+  <li><strong>Sep 18 (implementation review, pass 2 — applied in the amended phases 2–4 commit):</strong>
+    (1) <code>HM_RE</code> in <code>_lib/schedule-change.js</code> is a real clock time (hours 0–23, minutes
+    00–59) — the earlier shape-only pattern let "99:99" through and <code>formatTime</code> rendered it as
+    "3:99 PM"; anything that is not a real time is shown as stored. (2) The endpoint's shift sides
+    (<code>before</code>/<code>after</code>) are TYPE-checked only and their string fields are CLIPPED to the caps by a new
+    <code>boundChanges()</code>, not rejected — those fields carry the employee's stored document, and a legacy
+    value the app never validated (an odd time string, a missing end, a long note) was turning a change that
+    did happen into "email did not send". The manager's own fields (note, names, email), the count and the
+    dates stay reject-on-invalid. (3) <strong>Reverses the pass-1 decision above:</strong> the editor's change
+    email now diffs against the SYNTHETIC after-document (what this save did to the open-time snapshot), not
+    the persisted re-read — a re-read can carry another manager's concurrent change on a touched date, and
+    "&lt;manager&gt; changed your schedule" would attribute it to the wrong person. Only the bounds
+    (<code>validFrom</code>/<code>validUntil</code>; the future's in future mode; none when the future was wiped)
+    are taken from the persisted read, since a bound the provenance rule left in force is the one thing the
+    synthetic document cannot know. 681 tests.</li>
+  <li><strong>Sep 17 (design review, both models — v2):</strong> (1) one resolver: <code>getShiftForDate</code> moves
+    to schedule-helpers.js and the diff uses it — the plan's own rule got future windows and bounds wrong;
+    (2) the AI save routes EACH DATE by that date's future-window membership — the existing code routed the whole
+    batch by whether the future is active TODAY, a latent bug that would have made a correct diff report "no
+    change" for an edit the app cannot see; (3) the editor DOES edit future overrides, so Phase 4 diffs both
+    modes; (4) the consolidated email REPLACES the Extra-Shift confirmation on editor saves, and the checkbox
+    governs all of it (unticked = no schedule-change email of any kind) — this narrows the Sep 4 "Extra Shift"
+    behaviour: the automatic confirmation now depends on the default-checked box; (5) the AI write is an atomic
+    FieldPath <code>update()</code> per employee, not a merge payload; (6) model output is validated before any
+    write; (7) "could not look up email" is distinguished from "no email on file"; (8) one status line names
+    everyone, at most one toast; (9) the note is labelled as going to everyone listed; (10) past dates are
+    included; (11) the endpoint stays unauthenticated with payload caps — authenticating all five email
+    functions is the next queue item.</li>
+</ul>
+</body>
+</html>
