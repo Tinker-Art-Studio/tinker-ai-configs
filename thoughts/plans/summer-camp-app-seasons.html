@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Summer Camp App Seasons — start Summer 2027, carry forward select camps</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #eff6ff; border-left: 4px solid #2563eb; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #dcfce7; color: #166534; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Summer Camp App Seasons — start Summer 2027, carry forward select camps</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> In the Summer Camp App, Christie can start a new summer the way she starts a semester in the Classbook — create "Summer 2027" with its own dates and week structure, carry forward the camps she chooses from 2026 (now, or one at a time later), plan 2027 while 2026 stays intact as history, and publish 2027 camps to the Classbook when ready.<br>
+  <strong>App:</strong> summer-camp-app (Summer Camp 2026) — <code>js/app.js</code>, <code>js/config.js</code>, <code>index.html</code>. <strong>Consumer:</strong> tinker-spring-curriculum (The Classbook) via <code>classbook-camp-seasons.html</code>.<br>
+  <strong>Context:</strong> Created Sep 20, 2026. Christie: "I build all backend summer info in [the Summer Camp App], and then publish it to classbook … I would need to be able to set a new summer in the Summer Camp app, similar to how I do in the classbook with new semesters. But I'd want to be able to copy select Summer Camps into the next year, and/or toggle them into the upcoming year at a later date too." This plan therefore <strong>owns the season</strong> — its creation, the shared-collection backfill, and carry-forward. The Classbook plan becomes the consumer side and depends on this one.<br>
+  <strong>Risk:</strong> MEDIUM-HIGH — 17 collections become season-aware; a backfill of every existing doc; carry-forward copies documents between seasons (the classic place for duplicates or a copy that silently overwrites). Every data-write phase gets the full data-safety process (red test on real Firestore, dual implementation review, Console spot-check).<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Scoping: research done, decisions open (D1–D7).</strong>
+</div>
+
+<h2 id="context">Context — what the app is today</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Single-season by construction.</strong> <code>js/config.js</code> <code>APP_CONFIG</code>: <code>appName: 'Summer Camp 2026'</code>, <code>startDate: '2026-05-26'</code>, <code>endDate: '2026-08-11'</code>, <code>numWeeks: 11</code>, and a hard-coded <code>weekStructure</code> (days off, notes, date ranges per week) with 17 consumers in <code>app.js</code>. Date pickers in <code>index.html</code> are bounded to 2026.</li>
+    <li><strong>Camps come from Google Sheets.</strong> <code>APP_CONFIG.sheetGIDs</code> (campTopics, campSessions, masterCurriculum, projectDetails, materialsByTopic, needToOrder, prepHelpQueue, teacherHelpQueue) feed imports into Firestore; camp docs are then edited in-app (<code>saveCampOverride()</code> etc.). A "new summer" therefore means: a 2027 sheet (or a season-tagged import) plus in-app editing — <em>not</em> a blank "create camp" form today (D2).</li>
+    <li><strong>17 <code>summerCamps_*</code> collections, all with Firestore rules already:</strong> curriculum, schedule, lessonData (shared with the Classbook), projectDetails, materialsHub, needToOrder, stockItems, prepHelpQueue, weeklyPrep, campComplete, openStudio, kidNotes, notesNextYear, daysOff, team, projectLibrary, settings. <strong>None carries a season/year field</strong> (verified on real docs Sep 20: curriculum 48 docs, schedule 229 docs — no year anywhere) — except Kid Notes and Notes-for-Next-Year, which already have a 2025/2026/All year toggle in the UI (<code>index.html:603-606</code>), so a per-year concept exists in two places and can be generalized rather than invented.</li>
+    <li><strong>Publish to Classbook</strong> sets <code>publishedToClassbook: true</code> (+ <code>publishedToClassbookAt</code>) on camp/project docs (<code>app.js:~12065-12141</code>); the Classbook reads every camp doc and shows the published ones. Without a season, a published 2027 camp would appear inside the Classbook's Summer 2026.</li>
+    <li><strong>What "copy a camp" has to carry:</strong> the camp's curriculum doc (campTopic, teacher, blocks with Monday–Friday project titles, age range, bins, notes, preset projects), its project details (per project), its materials (materialsHub entries keyed campTopic|||project). <strong>What it must not carry:</strong> schedule/sessions and enrollment (2027 has its own schedule), campComplete flags, kid notes, prep-help queue items, needToOrder — and, by default, teachers' 2026 lesson plans (D3b).</li>
+  </ul>
+</div>
+
+<h2 id="decisions">Decisions Christie needs to make (D1–D7)</h2>
+<div class="phase">
+  <div class="decision"><strong>D1 — Season lives as a <code>season</code> field on every doc</strong> (recommended; mirrors the Classbook plan's D1 option a). Values <code>'2026'</code>, <code>'2027'</code>… Existing docs backfilled to <code>'2026'</code> once. No new collections → <strong>no Firestore rules change</strong>. Alternatives (per-season collections; archive-and-reuse) are rejected for the reasons in <code>classbook-camp-seasons.html</code> D1. <em>Confirm.</em></div>
+  <div class="decision"><strong>D2 — How is a season created and populated?</strong> Proposed: a <strong>Seasons</strong> panel in Settings: create "Summer 2027" (name, start/end dates, week structure — the same shape as today's hard-coded <code>weekStructure</code>, editable), stored in <code>summerCamps_settings</code> (one doc per season) with a <code>currentSeason</code> pointer. Populating it: (a) carry forward select 2026 camps (D3), and/or (b) import from a 2027 Google Sheet — the import stamps <code>season</code> from the season you're viewing. <em>Do you still want sheet import as a way to bring in new camps, or should 2027 be "carry forward + edit in app" only?</em></div>
+  <div class="decision"><strong>D3 — Carry-forward semantics.</strong> Proposed: <strong>copy, never move.</strong> "Carry forward to 2027" creates a 2027 copy of the camp's curriculum doc + project details + materials; 2026's docs are untouched. Reset on copy: <code>publishedToClassbook</code> (false), <code>publishedAt/By</code>, <code>curriculumStatus</code>, <code>completeOverride</code>, <code>needsAttention</code>; keep: everything curricular. Idempotent: carrying the same camp forward twice is a no-op with a "already in 2027" message (each copy records <code>carriedForwardFrom: &lt;2026 doc id&gt;</code>). Offered in two places: a multi-select "carry forward" step when creating the season, and a per-camp button/toggle in the 2026 view later. <em>Christie's "toggle them into the upcoming year" — is a toggle that performs the copy (and shows "in 2027 ✓") what you mean, or do you want a camp to literally belong to two seasons at once?</em></div>
+  <div class="decision"><strong>D3b — Teachers' 2026 lesson plans on carry-forward?</strong> (a) Don't copy — teachers start 2027 plans fresh (recommended default: plans are per-teacher, teachers change, and Classbook's per-season lesson keys keep 2026 plans readable as reference); (b) offer a checkbox "include last year's plans as drafts" that copies <code>summerCamps_lessonData</code> docs for that camp into 2027 keys. (b) is easy to add later; deciding (a) for v1 keeps Phase 3 smaller.</div>
+  <div class="decision"><strong>D4 — What does "current season" control, and how do you look at 2026 afterwards?</strong> Proposed: <code>currentSeason</code> decides what the app opens to and what new writes are stamped with; a season switcher (like the Kid Notes year toggle, but app-wide) lets admins view/edit any season. Past seasons stay fully editable (no "archive lock") unless you want one — <em>should 2026 become read-only at some point?</em></div>
+  <div class="decision"><strong>D5 — Which collections are per-season vs shared across years?</strong> Proposed per-season: curriculum, schedule, lessonData, projectDetails, materialsHub, needToOrder, prepHelpQueue, weeklyPrep, campComplete, openStudio, kidNotes (already has year), notesNextYear (already has year), daysOff. Proposed <strong>shared</strong> (no season): <code>team</code>, <code>projectLibrary</code> (that's its point — cross-year reuse), <code>stockItems</code> (studio inventory), <code>settings</code> (holds the seasons themselves). <em>Confirm, especially stockItems and team.</em></div>
+  <div class="decision"><strong>D6 — Week structure per season.</strong> Today's <code>weekStructure</code> (11 weeks, Memorial Day short week, the Jun 29–Jul 3 break) moves from <code>config.js</code> into the season doc, edited in the Seasons panel. 2027's calendar is entered when the season is created (dates can be edited later). <em>Any other per-season constants you know of — e.g. camp time slots, studios?</em></div>
+  <div class="decision"><strong>D7 — Classbook handoff.</strong> Publishing a 2027 camp to the Classbook stamps <code>season: '2027'</code> (it already carries the field from D1); the Classbook's own seasons plan (Phase 3) filters by it. Nothing else changes in the handoff. Sequencing: this plan's Phases 1–2 must land before the Classbook can show 2027 camps; the Classbook's Phase 1 (explicit semester types) can proceed independently.</div>
+</div>
+
+<h2 id="phases">Phases (draft shape — detailed design waits on D1–D7)</h2>
+
+<div class="phase">
+  <h3>Phase 1 — Seasons exist; 2026 is stamped; the app still behaves exactly as today</h3>
+  <p><strong>Acceptance:</strong> a Seasons panel shows "Summer 2026" (dates and week structure migrated from <code>config.js</code> into <code>summerCamps_settings</code>) as the current season; every existing doc in the per-season collections carries <code>season: '2026'</code>; every read and write in the app is season-scoped to the current season — and because the only season is 2026, <strong>nothing visible changes</strong>. Full existing e2e suite green; before/after screenshot pass of the main tabs; the Classbook is unaffected (it doesn't filter yet and sees the same docs).</p>
+  <div class="bdd">Given: the backfill has run
+When: a read-only scan groups every per-season doc by season
+Then: 100% carry season '2026', doc counts per collection are unchanged, and no doc's lastUpdated/updatedAt moved (the backfill sets only the season field via updateDoc)
+
+Given: Christie edits a camp, adds a kid note, and marks a camp complete after Phase 1
+When: those writes land
+Then: each new/updated doc carries season '2026' — the app never writes an unstamped doc again
+
+Given: the backfill is interrupted part-way
+When: it is re-run
+Then: only unstamped docs are touched; the end state equals an uninterrupted run</div>
+  <div class="danger">🛑 <strong>Data-write phase (backfill, ~13 collections).</strong> <code>backup.js --force</code> plus a dated JSON export of every affected collection first; <code>updateDoc({season:'2026'})</code> per doc in batches under 500 ops; idempotent and resumable with a progress file; the backup tripwire must stay quiet; the Sep 20 forensic-scan technique (cluster by <code>lastUpdated</code> second) verifies nothing else moved. This is the ONE backfill for both apps — the Classbook plan's former Phase 2 is folded in here, since this app is the writer of record.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — Create Summer 2027; switch between seasons</h3>
+  <p><strong>Acceptance:</strong> Christie creates "Summer 2027" with its dates and week structure; the app-wide season switcher lets her view 2026 or 2027; 2027 starts empty (no camps, no schedule); <code>currentSeason</code> can be pointed at 2027 when she's ready; every tab renders correctly for an empty season (no crashes on "no camps found" — today <code>loadSummerCampData</code>-style code throws on an empty collection); a 2027 sheet import (if D2 keeps import) stamps <code>season: '2027'</code>.</p>
+  <div class="bdd">Given: Summer 2027 exists and is empty, and the switcher is on 2027
+When: Christie opens Curriculum, Schedule, Materials Hub, Kid Notes
+Then: each shows a clear empty state for 2027; switching to 2026 shows everything exactly as before
+
+Given: two admins, one viewing 2026 and one viewing 2027
+When: each saves a camp edit
+Then: each write carries ITS OWN viewer's season — the season comes from the document being edited, never from a global "current season" a different tab might have changed</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — Carry forward select camps (at creation, and later one at a time)</h3>
+  <p><strong>Acceptance:</strong> when creating 2027 (or any time after, from the 2026 view), Christie can pick camps to carry forward; each gets a 2027 copy of its curriculum doc, project details and materials with the D3 fields reset; 2026's docs are byte-identical before and after; carrying the same camp forward twice does nothing and says so; a carried-forward camp shows where it came from; per-camp "Carry forward to 2027 ✓" state is visible in the 2026 list.</p>
+  <div class="bdd">Given: "Fired Up!" exists in 2026 with 5 projects and materials
+When: Christie carries it forward to 2027
+Then: 2027 has a "Fired Up!" camp doc, 5 project detail docs and its materials, all season '2027', publishedToClassbook false, carriedForwardFrom set; the 2026 docs are unchanged (forced server read, field-by-field)
+
+Given: "Fired Up!" was already carried forward
+When: she clicks Carry forward again (or selects it in a bulk carry-forward)
+Then: no new docs are created; the UI says it's already in 2027
+
+Given: the copy fails after the camp doc landed but before its project details did
+When: the failure surfaces
+Then: the admin sees exactly what landed, and re-running the carry-forward completes the missing pieces without duplicating the ones that exist (idempotent by carriedForwardFrom + project name)</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Publish a 2027 camp to the Classbook</h3>
+  <p><strong>Acceptance:</strong> publishing works per season; a published 2027 camp appears in the Classbook's Summer 2027 (once the Classbook seasons plan's Phase 3 is live) and never in Summer 2026; the publish-state indicators in this app are per season.</p>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<div class="phase">
+  <table>
+    <tr><th>Gate</th><th>This plan</th></tr>
+    <tr><td>New collections → rules; Fable 5.1 review; "approved to change firebase"</td><td><strong>None expected</strong> — <code>season</code> is a field; all 17 collections already have rule blocks. If a per-season settings doc needs a different shape than the existing <code>summerCamps_settings</code> rule allows, that is a rules edit and the full gate applies.</td></tr>
+    <tr><td><code>updateDoc</code>/per-field, never whole-object <code>setDoc</code> for partial edits</td><td>Backfill: <code>updateDoc({season})</code>. Carry-forward: <code>set()</code> of NEW documents only (never over an existing one — existence checked, forced server read).</td></tr>
+    <tr><td>Snapshot before bulk ops</td><td>Phase 1 backfill and Phase 3 carry-forward both preceded by <code>backup.js --force</code> + dated JSON export.</td></tr>
+    <tr><td>Strip empty/undefined fields; await writes</td><td>Carry-forward copies go through a JSON round-trip and the app's existing strip helpers; batches awaited.</td></tr>
+    <tr><td>Red test on real Firestore per data-write phase; dual implementation review; Console spot-check</td><td>Phases 1, 2, 3, 4. This app has an e2e folder — confirm coverage and use TEST_-scoped campTopics.</td></tr>
+  </table>
+</div>
+
+<h2 id="completeness">Completeness check — what if this is interrupted?</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Mid-Phase 1 backfill:</strong> unstamped docs are treated as 2026 by both apps; re-run to finish. Safe indefinitely.</li>
+    <li><strong>After Phase 1:</strong> the app is identical to today with a season field everywhere. Safe indefinitely.</li>
+    <li><strong>After Phase 2, before 3:</strong> 2027 exists but is empty; Christie can start typing camps in by hand (or import) — usable.</li>
+    <li><strong>Mid-Phase 3 (partial copy):</strong> designed to be resumable per camp; nothing in 2026 is ever modified by carry-forward, so the worst case is an incomplete 2027 camp that a re-run completes.</li>
+  </ul>
+</div>
+
+<h2 id="decisions-log">Decisions Log</h2>
+<ul>
+  <li><strong>Sep 20, 2026 (created):</strong> Christie clarified that summer is built in the Summer Camp App and published to the Classbook, so season creation belongs here; she wants to carry forward select camps at creation and/or toggle them in later. Read-only research: single hard-coded season in <code>config.js</code> (17 <code>weekStructure</code> consumers), 17 collections all with rules, no season field anywhere, camps sheet-imported, Kid Notes/Notes-for-Next-Year already have a year toggle, <code>projectLibrary</code> exists for cross-year reuse. Recommended: <code>season</code> field (no rules change), copy-never-move carry-forward with idempotency via <code>carriedForwardFrom</code>, plans not copied by default (D3b). The Classbook seasons plan's backfill phase is folded into this plan's Phase 1.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<div class="phase">
+  <p><strong>Status:</strong> scoping. Nothing built. <strong>First step in any new session:</strong> read D1–D7 and check the plan reviewer for Christie's answers. Then design Phase 1 in full: the settings/season doc shape, the exact list of per-season collections (D5), the backfill script (idempotent, resumable, snapshot-first), and the read/write scoping sites in <code>app.js</code> (start from the 17 <code>weekStructure</code>/<code>APP_CONFIG</code> consumers and every <code>collection(COLLECTIONS.*)</code> call). Run <code>/second-model-review</code> on the plan document before marking Phase 1 execution-ready. Do not touch product code before that.</p>
+  <p><strong>Standing rules that apply:</strong> red test on real Firestore first; commit per phase; per-phase Codex + Claude implementation review of the actual diff; Console/read-only spot-check; Netlify deploy only on Christie's explicit "okay to deploy" (this app deploys from <code>/Users/christiehubley/summer-camp-app/</code>); any rules change needs "approved to change firebase" plus a Fable 5.1 second review of the rules diff.</p>
+</div>
+
+</body>
+</html>
