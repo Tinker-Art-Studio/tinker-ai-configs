@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Classbook Camp Seasons — Summer 2027 and every summer after</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #eff6ff; border-left: 4px solid #2563eb; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #dcfce7; color: #166534; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Classbook Camp Seasons — Summer 2027 and every summer after</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Christie can start planning Summer 2027 in the Classbook now — creating the season, slotting camps and assigning teachers while it stays invisible to teachers — and publish it when ready, without disturbing Summer 2026's plans, photos and history, and without this being a one-off again in 2028.<br>
+  <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>js/app.js</code>, <code>js/firebase-data.js</code>, <code>index.html</code>. <strong>Companion app affected:</strong> summer-camp-app (Summer Camp 2026) — it writes the shared <code>summerCamps_*</code> collections this plan must make season-aware.<br>
+  <strong>Context:</strong> Created Sep 20, 2026 from Christie's request ("I need to START building Spring 2027 AND Summer 2027 — not available to teachers yet"). Spring 2027 needs no code: <em>+ New Semester → Copy from Fall 2026 → unpublished → Settings → Publish later</em> already works (and today's Phase 11 fixes hardened exactly that path). Summer 2027 does not work today — see Context. Sibling plan: <code>classbook-school-day-off-camps.html</code> (SDOCs), which builds on this plan's "a camp-style semester that isn't summer-2026" groundwork.<br>
+  <strong>Risk:</strong> MEDIUM-HIGH — touches the shared summer collections both apps read and write, a backfill of ~3,500 existing summer docs, and the season boundary is exactly where a stale-cache or mis-keyed write could put 2027 content on top of 2026's. Every data-write phase gets the full data-safety process (red test on real Firestore, dual implementation review, Console spot-check).<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Scoping: research done, decisions open.</strong> Phases are drafted below so the shape is visible, but D1 (where the season lives) changes Phase 1's design materially — no phase is designed in detail until Christie decides D1–D3.
+</div>
+
+<h2 id="context">Context — why "just make a Summer 2027 semester" doesn't work today</h2>
+<div class="phase">
+  <p><strong>Summer is not a semester in the code; it is one hard-wired key.</strong> Research on Sep 20, 2026 (read-only) found:</p>
+  <ul>
+    <li><code>semesterType: 'summer-camp'</code> is assigned in exactly two places — <code>loadConfig()</code>'s auto-migration that creates <code>summer-2026</code> if missing (<code>firebase-data.js:59-71</code>) and <code>getDefaultConfig()</code> (<code>:99-108</code>). <strong>The + New Semester modal cannot create a camp-type semester</strong> — <code>createNewSemester()</code> never sets <code>semesterType</code>, so anything Christie creates there is a weekly-classes semester with a roster and a week grid.</li>
+    <li><strong>11 hard-coded <code>'summer-2026'</code> references</strong> decide behavior: <code>loadLessonData()</code> and the live listener load ALL summer camp data into <code>currentLessonData['summer-2026']</code> (<code>firebase-data.js:336, :554</code>); <code>renderAdminGrid()</code> routes <code>semKey === 'summer-2026'</code> to <code>renderSummerCA()</code> (<code>app.js:4177</code>); the summer content-count reads <code>currentLessonData['summer-2026']</code> (<code>app.js:3732</code>); plus the config sites above. Everything else already keys off <code>semesterType === 'summer-camp'</code> (12 sites) — good news, the pattern half-exists.</li>
+    <li><strong>The summer collections have no season on them.</strong> <code>summerCamps_curriculum</code> (48 docs: <code>campTopic, teacher, blocks, publishedToClassbook, …</code>) and <code>summerCamps_schedule</code> (229 docs: <code>campTopic, week, timeSlot, teacher, maxCapacity, enrollment, …</code>) carry no year/season field; <code>loadSummerCampData()</code> does <code>.get()</code> on the whole collection with no filter. <code>summerCamps_lessonData</code> docs are keyed <code>teacher|||campTopic|||blockName|||projectTitle</code> — <strong>a 2027 camp with the same name and project as a 2026 one would collide on the same document.</strong></li>
+    <li><strong>The Summer Camp App is itself single-season</strong> — titled "Summer Camp 2026", <code>js/config.js</code> hard-codes <code>startDate: '2026-05-26', endDate: '2026-08-11'</code>, date pickers are bounded to 2026, and it is the writer of record for camps, schedule, materials and project details. Classbook only <em>reads</em> those (plus writes teacher plans to <code>summerCamps_lessonData</code>). So the season has to be born in the Summer Camp App's data, or Classbook has nothing to filter on.</li>
+    <li><strong><code>saveLessonData()</code> / <code>saveSingleLesson()</code> route to the summer collections by key prefix</strong> (<code>semesterKey.startsWith('summer-')</code>), not by <code>semesterType</code>. The backtracking-audit plan named this as residual R5-3 and pointed at its companion's Phase 18 (block ambiguous keys at creation). <strong>This plan closes it structurally</strong> — once semesters carry an explicit type, routing must follow the type, and the prefix check goes away.</li>
+  </ul>
+  <div class="note">⚠️ <strong>What a teacher would see if Christie created "Summer 2027" today with + New Semester:</strong> nothing wrong at first — an unpublished weekly-classes semester with 16 weeks and a roster. But it would be the wrong shape entirely (weeks and classes, not camps and blocks), and nothing in the Summer Camp App would feed it. Don't do this as a workaround; it would also need deleting, and <code>deleteSemester()</code>'s lesson-data cleanup is warn-only.</div>
+</div>
+
+<h2 id="decisions">Decisions Christie needs to make before design (D1–D4)</h2>
+<div class="phase">
+  <div class="decision"><strong>D1 — Where does the season live in the data?</strong> This decides most of Phase 1 and all of Phase 2. Three real options:
+    <table>
+      <tr><th style="width:22%">Option</th><th>What it means</th><th>For / against</th></tr>
+      <tr><td><strong>(a) A <code>season</code> field on every shared summer doc</strong> — <em>recommended</em></td><td>Add <code>season: '2026'</code> / <code>'2027'</code> to <code>summerCamps_curriculum</code>, <code>_schedule</code>, <code>_materialsHub</code>, <code>_projectDetails</code>, <code>_lessonData</code> (+ <code>_campComplete</code>, <code>_prepHelpQueue</code>, <code>_weeklyPrep</code>). Both apps filter by it. Backfill 2026 docs once. Each Classbook camp semester carries <code>season</code> and loads only its own docs. Lesson keys get a season prefix (<code>2027|||teacher|||camp|||block|||project</code>) so same-named camps in different years can't collide.</td><td>+ Keeps 2026 fully viewable in Classbook as history. + No new collections → <strong>no rules change</strong> (existing rules are per collection, not per doc). + One code path for every future year. − Requires the Summer Camp App to write the field and to know its "current season" (see D2). − A backfill of ~3,500 docs (snapshot first; unstamped docs default to '2026' during transition so nothing breaks mid-way).</td></tr>
+      <tr><td><strong>(b) Per-season collections</strong> (<code>summerCamps2027_curriculum</code>, …)</td><td>New collections per year; loaders take the collection prefix from the semester.</td><td>+ 2026 untouched, no backfill. − <strong>Every new year needs new Firestore rules</strong> (8 collections × N years → rules deploy every summer, Fable review gate every time). − Cross-year features (reuse last year's camp plan) become joins across collections. − The Summer Camp App needs the same prefixing. Not recommended.</td></tr>
+      <tr><td><strong>(c) Archive 2026, reuse the collections</strong></td><td>Export 2026 to JSON (and/or copy to an archive collection), clear the live collections, plan 2027 in the same place.</td><td>+ Least code. − 2026 plans/photos disappear from the Classbook (teachers and Christie lose "what did we do last year" in-app). − A clear-out is the single most dangerous operation this project has ever avoided doing. − Repeats every year. Not recommended.</td></tr>
+    </table>
+  </div>
+  <div class="decision"><strong>D2 — Does the Summer Camp App become season-aware in the same effort?</strong> It is the writer of record. Minimum viable: it gets a <code>currentSeason</code> setting (in its config doc) that it stamps on every new camp/schedule/materials/projectDetails write and filters its own reads by, plus its hard-coded 2026 dates become per-season settings. That is a small, contained change in <code>summer-camp-app</code> — but it is a second app, so it gets its own plan doc and its own review, sequenced <em>before</em> Classbook's Phase 3 (Classbook can't show 2027 camps until something writes them). <em>Christie: is a Summer Camp App seasons plan acceptable, or do you expect to start 2027 camp planning inside the Classbook only (in which case the Classbook needs its own camp-creation UI — a much bigger build)?</em></div>
+  <div class="decision"><strong>D3 — How is a camp semester created?</strong> Proposed: the + New Semester modal gets a <strong>Type</strong> choice — <em>Weekly classes</em> (today's behavior) or <em>Camp season</em>. A camp season asks for name, season year, start/end dates; no roster, no weeks; key <code>summer-2027</code>; <code>semesterType: 'summer-camp'</code>; <code>published: false</code>. Also proposed: the type is stored explicitly on every semester from now on (weekly ones get <code>semesterType: 'weekly'</code> on save), so no code ever has to infer type from a key again.</div>
+  <div class="decision"><strong>D4 — What should Christie be able to do on an unpublished Summer 2027 in the Classbook?</strong> Baseline (this plan): see the season in the admin selector, see camps the Summer Camp App has published for that season, assign/see teachers, open the summer admin grid, Materials Hub and progress dashboard scoped to 2027. Out of baseline unless asked: creating camps or schedule inside the Classbook (that stays the Summer Camp App's job under D2).</div>
+</div>
+
+<h2 id="phases">Phases (draft shape — detailed design waits on D1–D4)</h2>
+
+<div class="phase">
+  <h3>Phase 1 — Semesters carry an explicit type; a camp season can be created; nothing is hard-wired to <code>summer-2026</code></h3>
+  <p><strong>Acceptance (user outcomes):</strong></p>
+  <ul>
+    <li>Christie can create "Summer 2027" from + New Semester as a <em>Camp season</em>; it appears in the admin selector, unpublished; teachers don't see it.</li>
+    <li>Summer 2026 behaves exactly as today — same grid, same plans, same photos, same Materials Hub — proven by the full existing suite plus a before/after screenshot pass of the summer admin grid.</li>
+    <li>No behavior anywhere depends on the literal key <code>summer-2026</code>; every "is this summer?" question is answered by <code>semesterType</code>, including <code>saveLessonData()</code>/<code>saveSingleLesson()</code> routing (closes R5-3 from the backtracking-audit plan).</li>
+    <li>Two camp seasons can coexist in the selector without either one's lessons leaking into the other's view (Phase 3 makes the data actually separate; Phase 1 makes the code able to hold two).</li>
+  </ul>
+  <div class="bdd">Given: Christie opens + New Semester and picks Type = Camp season, name "Summer 2027", season 2027
+When: she clicks Create
+Then: a semester keyed summer-2027 exists with semesterType 'summer-camp', season '2027', published false; no roster/week slots are generated; the admin selector shows it; the teacher view does not
+
+Given: a teacher signs in while Summer 2027 exists unpublished
+When: their semester list renders
+Then: it contains Fall 2026 (and Summer 2026 if still published) only — exactly as before this plan
+
+Given: the code path that used to check semKey === 'summer-2026'
+When: the selected semester is summer-2027 (type summer-camp)
+Then: it takes the summer branch — and for a weekly semester whose key happens to start with "summer-" (e.g. summer-enrichment-2027), it takes the weekly branch (R5-3 closed by construction)
+
+Given: Summer 2026 with its ~273 content-bearing plans and photos
+When: Phase 1 is deployed and an admin opens the Summer 2026 grid
+Then: every plan, photo and status renders identically to the pre-deploy snapshot; the full suite is green; no summerCamps_* doc has a new lastUpdated stamp</div>
+  <div class="danger">🛑 <strong>Data-write phase?</strong> Mostly not — but the "store <code>semesterType</code> explicitly on every semester" migration touches <code>curriculum/appData</code> (a whole-document <code>set()</code> in <code>saveConfig()</code>, Manager+ only). That write is the one already flagged as the highest-consequence shared-document race in <code>classbook-shared-document-concurrency-plan.html</code> instance 2. Do it as a single, deliberate, Console-verified migration step with a JSON snapshot of appData first — not as a side effect of Christie's next Settings save.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — Backfill: every existing summer doc is stamped <code>season: '2026'</code> (D1 option a)</h3>
+  <p><strong>Acceptance:</strong> every doc in the eight <code>summerCamps_*</code> collections carries <code>season: '2026'</code>; nothing else about any doc changed; both apps behave identically before and after; an unstamped doc (a straggler, or a Summer Camp App write from before D2 lands) is still treated as 2026 by both apps until D2 is live.</p>
+  <div class="bdd">Given: a JSON snapshot of all eight collections exists (backup.js --force, plus a targeted export of the eight collections to a dated file)
+When: the backfill runs (updateDoc with {season:'2026'} per doc — never setDoc — batched under 500 ops, idempotent, resumable)
+Then: a read-only scan shows season === '2026' on 100% of docs, total doc counts unchanged, and a field-by-field diff against the snapshot shows season as the ONLY changed field
+
+Given: the backfill is interrupted after 40% of docs
+When: it is re-run
+Then: it stamps only the remaining 60%, never rewrites an already-stamped doc, and the end state is identical to an uninterrupted run</div>
+  <div class="note">⚠️ <strong>Idempotency + resumability are the acceptance criteria here, not speed.</strong> ~3,500 docs across 8 collections ≈ 8 batches. The tripwire in <code>backup.js</code> (document-count drop) must stay quiet; the read-only forensic scan pattern from Sep 20 (cluster docs by <code>lastUpdated</code> second) is the verification tool — the backfill must NOT touch <code>lastUpdated</code>/<code>lastUpdatedBy</code>, so the scan should show no new cluster.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — Each camp semester loads only its own season's data; lesson keys are season-scoped</h3>
+  <p><strong>Acceptance:</strong> selecting Summer 2027 shows only 2027 camps/plans; selecting Summer 2026 shows only 2026's; a 2027 camp named identically to a 2026 camp with the same project title gets its own plan document (no collision); teacher plan saves for 2027 land in 2027-scoped docs; Materials Hub, progress dashboard, prep help queue and camp-complete flags are all scoped to the selected season.</p>
+  <div class="bdd">Given: Summer 2026 has "Fired Up!" / Block 1 / "Pinch Pots" planned by Julia, and Summer 2027 also has a published "Fired Up!" with a "Pinch Pots" project for Julia
+When: Julia opens Summer 2027's Pinch Pots plan
+Then: it is empty (her own new plan for 2027), and saving it does not change the 2026 plan; both are readable from their own season
+
+Given: a teacher is viewing Summer 2027 (published) and saves a plan
+When: the write lands
+Then: it goes to a document whose key begins with the 2027 season scope; the 2026 document with the same camp/block/project is byte-identical before and after (forced server read)
+
+Given: the live lessonData listener fires while Summer 2027 is selected
+When: it refreshes currentLessonData
+Then: summer-2026 and summer-2027 are refreshed into their OWN keys — never one overwriting the other's map</div>
+  <div class="danger">🛑 <strong>Highest-risk phase.</strong> The season boundary is where a stale cache or a wrong key would write 2027 content on top of 2026's (or vice-versa). Every summer writer — <code>saveSingleLesson()</code>'s summer branch, <code>saveSummerCampLessonData()</code>, <code>uploadSummerCampPhoto()</code>'s Storage path (<code>summerCamps/{lessonKey}/…</code> — a season-scoped key also separates the photos), camp-complete, prep-help — gets a red test that seeds BOTH seasons and proves the other season is untouched. This is the same "canary" discipline the backtracking audit used; reuse its helpers.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Publishing a season, and living with two seasons</h3>
+  <p><strong>Acceptance:</strong> the Publish toggle works per camp semester exactly as for weekly ones; Christie can unpublish Summer 2026 after the season (teachers stop seeing it; admins still can); the Content Count by Teacher panel (already on the wishlist for roster scoping) counts per season; deleting a camp semester is either blocked while it has plans, or clearly snapshots first — <em>never</em> the current warn-only cleanup.</p>
+  <div class="bdd">Given: Summer 2027 is complete and Christie flips Publish
+When: teachers reload
+Then: Summer 2027 appears in their selector; their assigned camps and plans are editable; Summer 2026 remains exactly as it was
+
+Given: Christie unpublishes Summer 2026 in September 2027
+When: a teacher who taught in 2026 signs in
+Then: Summer 2026 is gone from their list, but nothing was deleted — an admin can still open it, and re-publishing restores teacher access</div>
+</div>
+
+<h2 id="companion">Companion work (separate plan docs)</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Summer Camp App seasons</strong> (D2) — a small plan in <code>summer-camp-app</code>: a <code>currentSeason</code> setting, per-season dates, stamp <code>season</code> on every write, filter every read; the "Notes for Next Year" year toggle already hints at the shape. Must land before this plan's Phase 3 can show 2027 camps.</li>
+    <li><strong>School Day Off Camps</strong> — <code>classbook-school-day-off-camps.html</code>. Depends on Phase 1 here (explicit semester types; nothing hard-wired to one key) and reuses Phase 3's season-scoped lesson-key discipline.</li>
+  </ul>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<div class="phase">
+  <table>
+    <tr><th>Gate</th><th>This plan</th></tr>
+    <tr><td>New collections → new rules (same commit), Fable 5.1 second review on the rules diff, "approved to change firebase"</td><td><strong>Option (a): none needed</strong> — <code>season</code> is a field on existing collections whose rules are per-collection. Option (b) would need 8 new rule blocks per year — a reason not to choose it.</td></tr>
+    <tr><td>Partial updates use <code>updateDoc</code> / per-field paths, never whole-object <code>setDoc</code></td><td>Backfill is <code>updateDoc({season})</code> per doc. The appData type-migration is the one whole-doc <code>set()</code> — deliberate, snapshotted, Console-verified, single step.</td></tr>
+    <tr><td>Snapshot before any bulk op</td><td>Phase 2: <code>backup.js --force</code> + a dated JSON export of the eight collections before the first batch; keep until Summer 2027 is published.</td></tr>
+    <tr><td>Strip empty/undefined fields</td><td>No new lesson-shaped writes in this plan; existing writers already strip.</td></tr>
+    <tr><td>Await every write; no fire-and-forget</td><td>Backfill batches awaited sequentially; progress file written between batches (resumable).</td></tr>
+    <tr><td>Red test on real Firestore per data-write phase; dual implementation review; Console/read-only spot-check</td><td>Phases 1 (migration step), 2, 3, 4 (delete path). The Sep 20 forensic-scan script is the spot-check tool for "nothing else changed".</td></tr>
+  </table>
+</div>
+
+<h2 id="completeness">Completeness check — what if this is interrupted?</h2>
+<div class="phase">
+  <ul>
+    <li><strong>After Phase 1 only:</strong> Summer 2027 can exist but shows 2026's data (loaders not yet season-filtered) — acceptable only if Summer 2027 stays <em>unpublished</em>; Phase 1's acceptance therefore includes "a camp semester without a season filter is admin-only until Phase 3". Weekly semesters are unaffected.</li>
+    <li><strong>Mid-Phase 2:</strong> some docs stamped, some not — both apps treat unstamped as 2026, so nothing breaks; re-run to finish.</li>
+    <li><strong>After Phase 2, before Phase 3:</strong> everything works as today; the field is inert.</li>
+    <li><strong>Mid-Phase 3:</strong> the dangerous window — one writer season-scoped, another not. Phase 3 is therefore designed as one deploy (all summer writers together), with the full two-season canary suite green before it, and Summer 2027 still unpublished.</li>
+  </ul>
+</div>
+
+<h2 id="decisions-log">Decisions Log</h2>
+<ul>
+  <li><strong>Sep 20, 2026 (created):</strong> Christie asked how to start Spring 2027 and Summer 2027 without teachers seeing them. Read-only research (this session) established: Spring 2027 needs no code (publish flag + New Semester + Copy-from); Summer 2027 is blocked by a hard-wired single season across both apps (details in Context). Drafted as a scoping plan with D1–D4 open. Recommended D1 = option (a) <code>season</code> field, because it needs no rules changes, keeps 2026 viewable, and generalizes to every future year. Sibling SDOC plan created the same day; sequencing proposed as Seasons Phase 1 → SDOCs, with the Summer Camp App seasons plan landing before Seasons Phase 3.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<div class="phase">
+  <p><strong>Status:</strong> scoping. Nothing built. <strong>First step in any new session:</strong> read D1–D4 in this doc and check the plan reviewer (<code>plan-review index</code>) for Christie's answers/comments. If D1 is decided, design Phase 1 in full (real line numbers for all 11 <code>summer-2026</code> sites and the <code>startsWith('summer-')</code> routing sites; the New Semester modal's type field; the appData migration step), then run <code>/second-model-review</code> on the plan document before marking Phase 1 execution-ready. Do not touch product code before that.</p>
+  <p><strong>Standing rules that apply:</strong> red test on real Firestore first; commit per phase; per-phase Codex + Claude implementation review of the actual diff; Console/read-only spot-check; Netlify deploy only on Christie's explicit "okay to deploy"; any <code>firestore.rules</code> change needs "approved to change firebase" plus a Fable 5.1 second review of the rules diff (Christie's Sep 20 request). The e2e suite signs in once per run (<code>09655e9</code>) — full runs are cheap; run them.</p>
+</div>
+
+</body>
+</html>

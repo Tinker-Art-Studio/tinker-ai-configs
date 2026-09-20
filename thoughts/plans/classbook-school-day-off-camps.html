@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Classbook School Day Off Camps (SDOCs) — 2026-27 school year</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #eff6ff; border-left: 4px solid #2563eb; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #dcfce7; color: #166534; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Classbook School Day Off Camps (SDOCs) — 2026-27 school year</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Christie can plan the whole 2026-27 school year of School Day Off Camps in the Classbook — every day-off date, what camp runs that day, and which teacher runs it — and assigned teachers can build their plans for those days the same way they build summer camp plans, with the year invisible to teachers until she publishes it.<br>
+  <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>js/app.js</code>, <code>js/firebase-data.js</code>, <code>index.html</code>; <strong>plus</strong> <code>/Users/christiehubley/studio-hub/firestore.rules</code> (new collections — see Safety).<br>
+  <strong>Context:</strong> Created Sep 20, 2026 from Christie's request: "a way to include School Day Off Camps in the classbook — both planning curriculum and assigning teachers so they can build their plans." Confirmed the same day: SDOCs are a <em>new structure</em> (not a variant of weekly classes or summer camps); one container for the whole school year (August–May as the model, September–April in practice — "leave it as the school year"). Sibling plan: <code>classbook-camp-seasons.html</code> — its Phase 1 (explicit semester types; nothing hard-wired to <code>summer-2026</code>) is the groundwork this plan builds on.<br>
+  <strong>Risk:</strong> MEDIUM — new collections and new UI, but no existing data is migrated or rewritten; the main risk is design churn (getting the unit of planning wrong) and the rules change. All teacher-plan writes reuse the hardened lesson-save path, so the data-safety guarantees carry over rather than being re-invented.<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Scoping: model proposed, decisions open (D1–D6).</strong>
+</div>
+
+<h2 id="context">Context — what exists to build on, and what doesn't</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Semesters</strong> live in <code>curriculum/appData.semesters[key]</code> with <code>name, startDate, numWeeks, breakWeeks, closureDates, published, classRoster, teacherNames</code> (+ <code>semesterType</code> for summer). Teachers see only <code>published !== false</code> (<code>app.js:58-61, :662-668</code>); admins see all. Publish is a per-semester toggle in the selector. <strong>This container/publish/gating machinery is exactly what an SDOC school year needs</strong> — the proposal is to make an SDOC year a third semester type rather than a parallel system.</li>
+    <li><strong>Summer camp plans</strong> are the closest existing shape to an SDOC plan: one plan per (teacher × camp × block × project) in <code>summerCamps_lessonData</code>, with intro pitch, four process steps, closure, materials list, day-of materials, photo, Q&amp;A thread, plan-complete flag — edited in the summer modal, saved through <code>saveSingleLesson()</code>'s summer branch (targeted write, empty-field stripping, explicit clears, forced read-back verification, load guard). <strong>SDOC plans should be the same document shape and go through the same save path</strong> — every data-safety fix of the last four months then applies for free.</li>
+    <li><strong>What doesn't exist:</strong> any notion of a date-based unit (a day, not a week or a camp-week), any way to attach a camp to a date, any teacher assignment that isn't "roster row → teacher" or "camp doc → teacher string", and any collection for it. <code>closureDates</code> on a semester is the opposite concept (studio closed) and shouldn't be reused.</li>
+    <li><strong>Where SDOC dates come from:</strong> school-district calendars (Christie enters them). Whether a date has one camp or several (AM/PM, age groups, two studios) is D2 — the Summer Camp App's schedule has <code>timeSlot</code> and <code>studio</code>, which suggests the answer may be "several".</li>
+  </ul>
+</div>
+
+<h2 id="model">Proposed model (for discussion — D1–D6 refine it)</h2>
+<div class="phase">
+  <table>
+    <tr><th style="width:24%">Thing</th><th>Proposal</th></tr>
+    <tr><td><strong>School year</strong></td><td>A semester in <code>appData.semesters</code>: key <code>sdoc-2026-27</code>, <code>semesterType: 'day-off-camps'</code>, <code>name: 'School Day Off Camps 2026-27'</code>, <code>startDate: 2026-08-01</code>, <code>endDate: 2027-05-31</code>, <code>published: false</code>, <code>teacherNames: [...]</code> (the pool of teachers assignable this year). No <code>numWeeks</code>, no <code>classRoster</code>. Appears in the same selector; same Publish toggle; same teacher gating. Created from + New Semester with Type = <em>School Day Off Camps</em> (the Type field comes from the Seasons plan's Phase 1).</td></tr>
+    <tr><td><strong>Day-off date</strong></td><td>One document per date in a new collection <code>dayOffCamps_dates</code>: <code>{ yearKey: 'sdoc-2026-27', date: '2026-10-12', label: 'Indigenous Peoples Day', district: 'BVSD' (optional), sessions: [...] , notes }</code>. Admin adds/edits/removes dates in a simple list view (the "grid" for this semester type is a chronological list, not a week grid).</td></tr>
+    <tr><td><strong>Session</strong> (within a date)</td><td><code>{ id, timeSlot: 'Full day 9-3' | 'AM' | 'PM', studio: 'Main' | 'Coal Creek', ageRange, campTitle: 'Clay Creatures', teachers: ['Mariah'], capacity }</code>. D2 decides whether most dates have exactly one session (then the UI hides the session layer until needed).</td></tr>
+    <tr><td><strong>Teacher plan</strong></td><td>One document per (teacher × date × session) in a new collection <code>dayOffCamps_lessonData</code>, keyed <code>sdoc-2026-27|||2026-10-12|||&lt;sessionId&gt;|||Mariah</code>, <strong>same field shape as a summer lesson</strong>. Saved through <code>saveSingleLesson()</code> with a new routing branch for <code>semesterType === 'day-off-camps'</code> (routing by type — never by key prefix). Photos at <code>dayOffCamps/{key}/demo-{unique}.jpg</code> (unique-per-upload paths, per the backtracking audit's Phase 5).</td></tr>
+    <tr><td><strong>Teacher view</strong></td><td>When the year is published, an assigned teacher sees "School Day Off Camps 2026-27" in their selector; inside, a chronological list of <em>their</em> dates with status (not started / in progress / complete) and the same plan editor they use for summer. Unassigned teachers see the semester but an empty list (or don't see it — D4).</td></tr>
+    <tr><td><strong>Admin view</strong></td><td>The date list with every session, its teacher(s), plan status, Plan Complete flag, Q&amp;A indicator; click-through to read/edit any plan (admin edit path = <code>saveAdminEdit()</code>'s guarantees); Materials Hub / prep integration later (D5).</td></tr>
+  </table>
+</div>
+
+<h2 id="decisions">Decisions Christie needs to make (D1–D6)</h2>
+<div class="phase">
+  <div class="decision"><strong>D1 — Is "a third semester type" the right container?</strong> Recommended yes: reuses the selector, publish toggle, teacher gating, and the mental model ("switch to the SDOC year like switching to Summer"). Alternative: a separate top-level tab/section — more UI to build, no reuse, and teachers learn a second navigation. <em>Any reason SDOCs should NOT sit in the semester selector?</em></div>
+  <div class="decision"><strong>D2 — What is one "unit" of an SDOC day?</strong> Is a day-off date usually <strong>one camp with one or two teachers</strong>, or <strong>several camps</strong> (AM/PM, age bands, Main vs Coal Creek)? This decides whether the session layer is visible or hidden in v1. Also: does a teacher plan <em>one project</em> for the day, or a sequence of projects (like a summer camp's Monday–Friday blocks compressed into a day: e.g. morning project / afternoon project)? Recommended v1: one plan per session, with the plan's four process steps covering the day's arc; multi-project days come later if needed.</div>
+  <div class="decision"><strong>D3 — Where do the dates come from, and which calendars?</strong> Manual entry by Christie (recommended v1: a date picker + label + optional district tag) vs. importing a district calendar file. Which districts matter (BVSD? SVVSD? Jeffco?) — only for the label/tag, no logic depends on it.</div>
+  <div class="decision"><strong>D4 — What do teachers see?</strong> (a) Only teachers assigned to at least one date see the SDOC year at all; (b) every teacher sees the year but only their own dates inside; (c) every teacher sees every date read-only (so they can see who's teaching what) and edits their own. Recommended: (b) for v1 — simplest gating that still keeps other teachers' plans out of the way; (c) is a small follow-up if you want visibility.</div>
+  <div class="decision"><strong>D5 — Prep and materials integration in v1?</strong> Summer plans feed the Materials Hub and prep dashboard. For SDOCs the equivalent is "what does the prep team need ready for Oct 12?" Recommended: <em>out</em> of v1 — the plan's day-of materials field captures it; a "next SDOC" card on the prep dashboard is a natural Phase 4 once the model is real.</div>
+  <div class="decision"><strong>D6 — Enrollment / kids?</strong> Roster Manager and the Summer Camp App carry enrollment and Kid Notes for summer. Does an SDOC session need capacity/enrollment in the Classbook, or is that tracked elsewhere (Sawyer? Roster Manager)? Recommended v1: an optional <code>capacity</code> number on the session for planning, nothing more — no roster, no kid data in the Classbook.</div>
+</div>
+
+<h2 id="phases">Phases (draft shape — detailed design waits on D1–D6 and on Seasons Phase 1)</h2>
+
+<div class="phase">
+  <h3>Phase 1 — Create the school year and manage its dates and teacher assignments (admin only, unpublished)</h3>
+  <p><strong>Acceptance:</strong> Christie creates "School Day Off Camps 2026-27" from + New Semester; it is unpublished and invisible to teachers; she can add each day-off date with a label, add one or more sessions per date (camp title, time slot, studio, teacher(s), optional capacity), edit and remove them; the list is chronological; deleting a date that has any teacher plan is blocked with a clear message (plans are never silently orphaned — the lesson from R4-11).</p>
+  <div class="bdd">Given: Christie creates the SDOC year and adds Oct 12 "Indigenous Peoples Day" with one session "Clay Creatures — Mariah"
+When: she reloads
+Then: the date and session are there (real Firestore, forced read); teachers signing in see no SDOC year at all
+
+Given: two admins add different dates to the same year within a minute
+When: both saves land
+Then: both dates exist — per-date documents mean no last-write-wins on a shared array (the shared-document concurrency plan's whole lesson)
+
+Given: a date has a teacher plan with content and Christie tries to remove that date
+When: she confirms
+Then: the removal is refused with a message naming the plan; nothing is deleted</div>
+  <div class="danger">🛑 <strong>Data-write phase with NEW collections</strong> (<code>dayOffCamps_dates</code>, and <code>dayOffCamps_lessonData</code> in Phase 2): rule blocks added to <code>/Users/christiehubley/studio-hub/firestore.rules</code> <em>in the same commit</em>, <code>npm test</code> in studio-hub green, <strong>Fable 5.1 second-model review of the rules diff</strong> (Christie's standing request), then "approved to change firebase" before <code>firebase deploy --only firestore:rules</code>. Access: classbook-admin read/write; classbook (teacher) read on dates, read/write on their own plans only — mirror the existing <code>summerCamps_lessonData</code> rule shape.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — Teachers plan their days</h3>
+  <p><strong>Acceptance:</strong> once the year is published, an assigned teacher sees their dates and opens the familiar plan editor for each; saves are targeted single-document writes with the same guards as summer (load guard, empty-field stripping, explicit clears, read-back verification, photo upload to a unique path with delete-after-save); another teacher's plan on the same date is untouched by any save; Plan Complete and Q&amp;A work as they do for summer.</p>
+  <div class="bdd">Given: Mariah and Lisa are both assigned to Oct 12 (two sessions) and both have plans
+When: Mariah saves hers
+Then: Lisa's document is byte-identical before and after (forced server read) — the canary pattern
+
+Given: Mariah's plan save fails after a new photo uploaded
+When: the failure surfaces
+Then: her old photo still exists in Storage and Firestore still points at it; the new upload is an orphan at its own unique path (backtracking audit Phase 5 semantics), and she sees a clear error
+
+Given: the SDOC year is unpublished
+When: an assigned teacher signs in
+Then: no SDOC year, dates or plans are visible or reachable</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — Admin overview and editing</h3>
+  <p><strong>Acceptance:</strong> the admin's date list shows each session's teacher(s), plan status and Plan Complete; Christie can open any plan and edit it through the admin path with its guarantees; a Q&amp;A/help question on an SDOC plan appears in the same help queue admins already watch.</p>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Prep integration (only if D5 says yes)</h3>
+  <p><strong>Acceptance:</strong> the prep dashboard shows the next upcoming SDOC date with its day-of materials; the Materials Hub can list SDOC materials by date. No new write paths — reads only over Phase 2's data.</p>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<div class="phase">
+  <table>
+    <tr><th>Gate</th><th>This plan</th></tr>
+    <tr><td>New collections → rules in the same commit; <code>npm test</code>; Fable 5.1 review of the rules diff; "approved to change firebase"; <code>--only firestore:rules</code></td><td><strong>Yes — two new collections.</strong> Rules are the first thing Phase 1 designs (before UI), modeled on <code>summerCamps_lessonData</code>'s existing block.</td></tr>
+    <tr><td>Partial updates via <code>updateDoc</code>/per-field paths</td><td>Dates/sessions: per-date documents, field-path updates; plans: <code>saveSingleLesson()</code>'s existing targeted write.</td></tr>
+    <tr><td>Snapshot before bulk ops</td><td>No bulk ops in this plan; no existing data migrated.</td></tr>
+    <tr><td>Strip empty/undefined fields; await writes; no fire-and-forget</td><td>Inherited from the reused save path; new date/session writes follow the same helpers.</td></tr>
+    <tr><td>Red test on real Firestore per data-write phase; dual implementation review; Console spot-check</td><td>Phases 1, 2, 3. TEST_-scoped year key (<code>sdoc-TEST_DATA_SAFETY</code>) so the suite never touches a real year.</td></tr>
+  </table>
+</div>
+
+<h2 id="completeness">Completeness check — what if this is interrupted?</h2>
+<div class="phase">
+  <ul>
+    <li><strong>After Phase 1:</strong> Christie has a private, fully usable planning list for the year; nothing is visible to teachers; nothing else in the app changed. This is a perfectly good stopping point for weeks if needed.</li>
+    <li><strong>After Phase 2:</strong> teachers can plan; admins read via Phase 1's list but edit only through the teacher path until Phase 3 — acceptable.</li>
+    <li><strong>Rules deployed before UI, or UI before rules:</strong> rules must land first (or same deploy) — without them every write is a silent permission error that looks like "data disappeared" (the May 2026 lesson). Phase 1's order is therefore: rules commit + deploy → then the UI deploy.</li>
+  </ul>
+</div>
+
+<h2 id="decisions-log">Decisions Log</h2>
+<ul>
+  <li><strong>Sep 20, 2026 (created):</strong> From Christie's request and clarifications (new structure; whole 2026-27 school year as the container; publish flag already handles teacher visibility). Proposed modeling the year as a third <code>semesterType</code> to reuse selector/publish/gating, per-date documents (not a shared array) to avoid the concurrency class the companion plans fight, and summer-shaped plan documents saved through the hardened <code>saveSingleLesson()</code> path. Sequenced after <code>classbook-camp-seasons.html</code> Phase 1 (explicit semester types). D1–D6 open for Christie.</li>
+</ul>
+
+<h2 id="resume">Resume Instructions</h2>
+<div class="phase">
+  <p><strong>Status:</strong> scoping. Nothing built. <strong>First step in any new session:</strong> read D1–D6 and check the plan reviewer for Christie's answers. Then confirm whether Seasons Phase 1 has landed (this plan's + New Semester "Type" field and type-based routing come from there; if Seasons is deferred, this plan must carry that groundwork itself — note it in the Decisions Log). Then design Phase 1 in full — <em>rules first</em> (two collection blocks in <code>firestore.rules</code>, tests in studio-hub), then the date/session data shape, then UI — and run <code>/second-model-review</code> on the plan document before marking Phase 1 execution-ready. Do not touch product code before that.</p>
+  <p><strong>Standing rules that apply:</strong> red test on real Firestore first; commit per phase; per-phase Codex + Claude implementation review of the actual diff; Console/read-only spot-check; Netlify deploy only on Christie's explicit "okay to deploy"; rules changes need "approved to change firebase" plus a Fable 5.1 second review of the rules diff.</p>
+</div>
+
+</body>
+</html>
