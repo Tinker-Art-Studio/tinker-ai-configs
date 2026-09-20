@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: 48-hour shift reminders — a per-shift flag and a daily job</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  pre { background: #f4f4f4; padding: 10px 12px; border-radius: 6px; font-size: 13px; overflow-x: auto; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .warn { background: #fff8e6; border-left: 4px solid #d69e2e; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .sev { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+  .sev-med { background: #fff3cd; color: #7a5500; } .ok { background: #d4edda; color: #155724; }
+  ul.checklist li { margin: 4px 0; }
+  table { border-collapse: collapse; font-size: 14px; margin: 8px 0; } td, th { border: 1px solid #ddd; padding: 4px 8px; text-align: left; vertical-align: top; }
+</style>
+</head>
+<body>
+<h1>Plan: 48-hour shift reminders — a per-shift flag and a daily job</h1>
+<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) + rules in <code>~/studio-hub/firestore.rules</code> &middot; <strong>Drafted:</strong> Sep 20 2026 &middot; <strong>execution-ready:</strong> false &middot; <strong>v2</strong> after a two-model design review (Claude + Codex, Sep 20; every finding folded in — see the Decisions log). Awaiting Christie's read and one decision (recipient resolution, below).</p>
+
+<div class="status">
+  <strong>Goal:</strong> a manager can mark any dated shift "remind", and the person working it gets one email in the
+  morning (Denver) two days before — or one day before, if it was flagged late — without anyone remembering to send
+  it. Nothing is ever inferred from note text: a reminder goes out because a human ticked a box, and every tick is
+  reviewable in one place.
+</div>
+
+<div class="status">
+  <strong>Christie's decisions (Sep 20):</strong> Option A — a dedicated "reminder bot" Firebase Auth user read
+  through the security rules from a Netlify Scheduled Function (no service account, no key). The reminder is an
+  explicit per-shift checkbox, <em>not</em> a keyword. Batch entry (AI tool, imports) defaults the flag
+  <strong>OFF</strong>; time-off sub-coverage shifts default <strong>ON</strong>. Send from 9:00 AM Denver, two
+  calendar days before the shift. A Reminders view lets her tick/untick any upcoming shift, with "tick all" /
+  "clear all" scoped to the active filter. The old "Extra Shift" keyword code was deleted the same day
+  (<code>b44e281</code>, not yet deployed).
+</div>
+
+<div class="warn">
+  <strong>One decision for Christie (v2):</strong> both reviewers flagged that the plan's bot would read the roster
+  document (<code>timeclock_settings/employees</code>), which holds every staff member's <strong>plaintext kiosk
+  PIN</strong>, and would list every <code>users</code> document (push-notification keys, roles, emails). v2 avoids
+  both: each flag writer also stamps <code>remindUid</code> — the auth uid to email, which the manager's browser
+  already knows — and the bot only ever <code>get</code>s that one users document. The cost is one extra stored
+  field. The alternative is to accept the kiosk-level exposure and let the bot read the roster. v2 assumes the
+  least-privilege design; say so if you would rather keep it simpler.
+</div>
+
+<h2>Why this shape</h2>
+<ul>
+  <li><strong>Why not a keyword:</strong> the one-off-shift-reminders plan tried camp/SDOC/FAN, then "Extra Shift"
+    alone, and Christie's reaction to a term's worth of data was "I do not like the idea of email blasting 73
+    times." A rule inferred from wording decides for her. A flag she ticks does not.</li>
+  <li><strong>Why the flag lives on the shift, not in a UI:</strong> overrides get written by four tools today
+    (editor, AI tool, CSV importers, time-off sub coverage) and a fifth is coming (the future schedule builder).
+    If the reminder is a stored field, every tool is just a way of setting it, at whatever grain fits that tool —
+    and the future builder does not need to exist before the reminder works.</li>
+  <li><strong>Why a Reminders view:</strong> bulk paths do not have to get the flag right at entry time. It is
+    also the only way to flag this fall's ~55 SDOCs that are already in the schedule, and it doubles as the
+    preview of what the job will send and the record of what it did.</li>
+  <li><strong>Why Option A over a Cloud Function:</strong> a Firebase Cloud Function needs Blaze billing and a new
+    deploy surface, and reads with the admin SDK (bypassing rules). A bot user reads through the rules, which is
+    exactly what the standing credential rule asks for, costs nothing, and matches the kiosk precedent already in
+    <code>firestore.rules</code> (<code>isKiosk()</code>, pinned by uid).</li>
+  <li><strong>Why the reminder follows the resolver:</strong> the job resolves each date with
+    <code>getShiftForDate()</code> — the ONE resolver the app and the change email use — so a flagged override
+    the app would never show is never reminded either. This is not theoretical: sub coverage is always written to
+    the <em>base</em> overrides map (app.js ~7353), so a sub on a temporary schedule is exactly this case, and the
+    Reminders view says "hidden" rather than offering a toggle that cannot fire.</li>
+  <li><strong>Why claim-before-send:</strong> the only real duplicate exposure is same-day — a manual "Run now", a
+    run cut off at Netlify's 30-second scheduled-function limit and re-run, two overlapping ticks. A log written
+    <em>after</em> the send cannot stop that; a claim written atomically <em>before</em> it can. A crash between
+    claim and send costs at most one late reminder; a crash between send and mark is covered by Resend's
+    idempotency key. Never a blast.</li>
+  <li><strong>Why an hourly tick from 9 AM, not one tick at 9:</strong> with claim-based dedupe the extra ticks are
+    free, and they are the recovery mechanism — a tick lost to a deploy or a timeout is picked up by the next one.
+    A one-shot "hour == 9" job that misses its tick sends nothing that day, and by design nothing tomorrow either.</li>
+</ul>
+
+<h2>Research (read-only, Sep 20; corrected in v2)</h2>
+<ul>
+  <li><strong>Where overrides are written:</strong> editor <code>handleAddOverride()</code> (app.js ~3184) builds the
+    object from form fields (<code>start, end, studio, note, _type</code>) — a stored field the form does not know
+    is dropped on edit; <code>editOverride()</code> pre-fills from the stored object; the save goes through
+    <code>buildOverridesWrite(current, original, DELETE)</code> (schedule-helpers.js ~657), which writes each
+    value as-is and special-cases a CLEARED <code>note</code> with a delete sentinel because
+    <code>set(..., {merge:true})</code> leaves absent keys untouched. The AI tool: <code>handleAiSaveEdits()</code>
+    (app.js ~5240) → <code>applyScheduleEditsTransaction(uid, edits)</code> (firebase-data.js ~248, a transaction
+    whose own comment records why: a plain read-then-leaf-update once recreated a bounds-less
+    <code>futureSchedule</code> after another manager removed it) → <code>applyScheduleEdits()</code>
+    (schedule-helpers.js ~354), which REPLACES each dated leaf with <code>{ start, end, studio, note? }</code>. Sub
+    coverage: <code>buildSubScheduleOverride()</code> (schedule-helpers.js ~222), written to base
+    <code>overrides</code>, later reversed by <code>removeTimeOffOverrides()</code> (timeoff-schedule.js ~159)
+    which skips any date that no longer holds what the request wrote — the compare is <code>sameOverride()</code>
+    (~259), shared with the partial-day path.</li>
+  <li><strong>The two importers differ:</strong> <code>schedule-import.html</code> (Summer) writes
+    <code>set({ futureSchedule }, { merge: true })</code> — recursive merge, so unchanged dates keep their fields.
+    The in-app Future Schedule CSV writer (app.js ~5778) writes <code>set({ futureSchedule: { recurring,
+    overrides: {}, validFrom, validUntil } }, { mergeFields: ['futureSchedule'] })</code> — which REPLACES the
+    whole block, wiping every existing future override (a pre-existing hazard this plan now makes worse, since it
+    would also wipe flags). Phase 3 fixes it.</li>
+  <li><strong>How a date resolves:</strong> <code>getShiftForDate(schedule, dateStr, dayKey)</code> — inside an
+    active future window ONLY the future maps are consulted; otherwise a base override applies regardless of base
+    bounds. An override returns the stored object as-is, so extra fields flow through it; recurring days return a
+    spread copy of the weekday and never carry them.</li>
+  <li><strong>Identity:</strong> a schedule document's id is an auth uid OR a roster <code>emp_</code> id
+    (<code>resolveScheduleTarget</code>, ~593); the email for an <code>emp_</code>-keyed document of a claimed person
+    is under the roster entry's <code>claimedBy</code> (<code>resolveReminderRecipient</code>, ~611). The roster
+    (<code>timeclock_settings/employees</code>) holds plaintext kiosk PINs (<code>setStaffPin</code>, app.js
+    ~5806); <code>users</code> documents hold push-subscription keys (push-notifications.js ~93).
+    <code>partitionSchedulesByRosterActive()</code> (~15) is how the app skips archived people.</li>
+  <li><strong>Rules today:</strong> <code>timeclock_schedules</code> read/write <code>isManagerOrAbove()</code>,
+    read for <code>hasAppAccess('timeclock')</code> and <code>isKiosk()</code>, each as its own
+    <code>allow</code>; <code>users</code> self-create requires <code>appAccess</code> absent or empty
+    (rules ~106–110); <code>isKiosk()</code> = uid pin OR <code>token.email == 'kiosk@…'</code>. No
+    <code>timeclock_reminder_log</code> exists. <code>rules.test.js</code> in studio-hub has fixed uids per role.</li>
+  <li><strong>Auth guard:</strong> <code>requireAuth()</code> (auth-guard.js ~52–90) does NOT refuse an account
+    with no users doc — it tries to CREATE one with <code>appAccess: ['timeclock']</code>; the self-create rule
+    refuses that (appAccess non-empty), the guard catches, builds an in-memory staff identity and shows the app
+    (with no data, since the bot has no access rules). Phase 2 adds an explicit refusal.</li>
+  <li><strong>Netlify functions:</strong> CommonJS, <code>_lib/</code> shared code, Resend via
+    <code>_lib/email.js</code> (SDK 6.26 supports <code>idempotencyKey</code>). Scheduled functions have a 30-second
+    limit and run only on the published deploy; the Netlify UI has a "Run now" button. No
+    <code>@netlify/functions</code> or client <code>firebase</code> package yet (both needed).
+    <code>js/firebase-config.js</code> is a browser global, not a module — the function needs its own copy of the
+    public web config. <code>schedule-helpers.js</code> is dual-loadable, so the job can require it.</li>
+  <li><strong>Existing tests:</strong> 666 in Ticker, rules suite in studio-hub. Gaps: no override-write path is
+    tested for a boolean child key; no test exercises the bot's reads under the real rules; no scheduled function
+    has been tested here. <code>buildSubScheduleOverride</code>'s output shape is pinned by
+    <code>schedule-helpers.test.js</code>, <code>timeoff-schedule.test.js</code> and the sub-confirm emulator suite —
+    Phase 1 budgets for updating them.</li>
+</ul>
+
+<h2>Data model</h2>
+<pre>timeclock_schedules/{docId}.overrides['2026-10-12']        = { start, end, studio, note?, remind: true, remindUid: '&lt;auth uid&gt;' }
+timeclock_schedules/{docId}.futureSchedule.overrides['…']  = same shape — the flag lives wherever the override lives
+
+timeclock_reminder_log/{docId}_{date}   (NEW collection; one document per person-date; the dedupe and the audit trail)
+  = { uid: docId, date, to, shift: { start, end, studio, note }, claimedAt, sentAt: null | ts, attempts: n, lastAttemptAt?, error? }</pre>
+<ul>
+  <li><code>remind</code> is written as <code>true</code> when ticked and DELETED (sentinel) when unticked — never
+    <code>false</code>. <code>remindUid</code> is written alongside it (the auth uid the email belongs to: the roster
+    entry's <code>claimedBy</code> if the document is <code>emp_</code>-keyed, else the document id; for sub coverage,
+    <code>subUid</code>) and deleted with it. A person with no linked account gets <code>remind: true</code> and no
+    <code>remindUid</code>; the view shows "no linked account — no email will be sent".</li>
+  <li>A day-off override (<code>null</code>) cannot carry the flag; the checkbox is hidden for type "Day Off".</li>
+  <li>The log key is the <strong>schedule document id</strong> (which can be an <code>emp_</code> id), so the view
+    and the job agree. Created by the bot as a CLAIM before sending; updated by the bot only to mark the outcome;
+    read by managers; never deleted.</li>
+</ul>
+
+<h2>Phases</h2>
+
+<div class="phase">
+  <h3>Phase 0 — Prerequisites only Christie can do <span class="sev sev-med">no code</span></h3>
+  <ol>
+    <li>In the Firebase console (Authentication → Users) create an email/password user
+      <code>reminders@tinkerartstudio.com</code> with a long random password. Copy its <strong>uid</strong> into
+      this plan's Decisions log — Phase 2 pins the rules to it.</li>
+    <li>In Netlify (tinker-timeclock → Environment variables) add <code>REMINDER_BOT_EMAIL</code>,
+      <code>REMINDER_BOT_PASSWORD</code>, and <code>REMINDER_PREVIEW_SECRET</code> (any long random string; gates
+      the dry-run endpoint in Phase 5). Claude never sees or types these.</li>
+    <li>No <code>users/{uid}</code> document is created for the bot. Phase 2 makes sure none ever can be.</li>
+  </ol>
+  <p>Phases 1, 3 and 4 do not depend on this. Phase 2's deploy and Phase 5 do.</p>
+</div>
+
+<div class="phase">
+  <h3>Phase 1 — The flag, as data and pure functions <span class="sev sev-med">data-write change → emulator test first</span></h3>
+  <p><strong>Outcome:</strong> an override can carry <code>remind</code>/<code>remindUid</code>; ticking and unticking
+    both persist; nothing that writes, rebuilds or reverses overrides drops, misreads, or trips over it.</p>
+  <ul>
+    <li><code>buildOverridesWrite</code>: the cleared-<code>note</code> sentinel rule generalises to a list of
+      <em>clearable child keys</em> <code>['note', 'remind', 'remindUid']</code>. Failing-first emulator test: tick →
+      stored <code>true</code>; untick → keys gone (today the untick would be a silent no-op).</li>
+    <li><code>applyScheduleEdits(doc, edits, { remind, remindUidFor })</code>, threaded through
+      <code>applyScheduleEditsTransaction(uid, edits, opts)</code> and <code>handleAiSaveEdits</code>. Mode
+      semantics: box ticked → every non-null value carries <code>remind: true</code> + <code>remindUid</code>;
+      box unticked (default) → <strong>preserve</strong> an existing flag on that date
+      (<code>remind = opts.remind || (existing is a map && existing.remind === true)</code>, likewise
+      <code>remindUid</code>) so a time change from the AI tool never silently unflags a shift. Clearing is only ever
+      the editor's checkbox or the Reminders view. The model's output never sets either key (stripped like
+      <code>_type</code>).</li>
+    <li><code>buildSubScheduleOverride</code> emits <code>remind: true, remindUid: subUid</code> (subs default on).
+      <code>sameOverride()</code> in timeoff-schedule.js — the ONE compare behind <code>stillHoldsWhatWeWrote</code>,
+      used by the sub path AND the partial-day path — ignores <code>remind</code>/<code>remindUid</code>, so a
+      manager's toggle is not a hand edit and Undo still removes the coverage shift / restores the partial day.
+      <code>withStaleKeysDeleted</code> treats both keys as generated-looking for legacy records. Existing tests
+      that pin the sub-override shape are updated in this phase.</li>
+    <li>New pure <code>selectRemindersDue(schedules, dates)</code> → <code>[{ docId, date, shift, remindUid }]</code>
+      for each date in the window: resolve with <code>getShiftForDate</code>; include iff the resolved shift is an
+      object with <code>remind === true</code>. Recurring days never qualify; a flagged override the resolver does
+      not read never qualifies. Within a run, dedupe by recipient email + date (a person with both an
+      <code>emp_</code> document and a uid document — the <code>reverseUnderEitherId</code> case — gets one email).</li>
+    <li>New pure <code>denverNow(nowUtcMs)</code> → <code>{ date, hour }</code> via
+      <code>Intl.DateTimeFormat('en-US', { timeZone: 'America/Denver', hourCycle: 'h23' }).formatToParts</code>
+      (never <code>hour12: false</code>, which yields "24" at midnight on some ICU builds);
+      <code>reminderWindow(denverDate)</code> → <code>[today+1, today+2]</code>; <code>isSendTime</code> →
+      <code>hour &gt;= 9</code>. Tested across fall-back (Nov 1 2026), spring-forward (Mar 8 2026), month-end and
+      year-end.</li>
+    <li><code>handleSaveSchedule</code>'s destructive-save confirm counts <code>note</code> sentinels; a
+      <code>remind</code> sentinel is deliberately NOT counted as destructive — the comment says so.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> Grey's Oct 17 override stored with <code>remind: true</code> <strong>When</strong> the editor saves it unticked <strong>Then</strong> the stored object has neither <code>remind</code> nor <code>remindUid</code> (not <code>false</code>, not still <code>true</code>)</div>
+  <div class="bdd"><strong>Given</strong> an AI batch with the reminder box ticked and two dates, one a day off <strong>When</strong> applied <strong>Then</strong> the shift carries <code>remind: true</code> + <code>remindUid</code>, the day off is <code>null</code></div>
+  <div class="bdd"><strong>Given</strong> a flagged Oct 17 <strong>When</strong> the AI tool changes its time with the box unticked (default) <strong>Then</strong> it is still flagged</div>
+  <div class="bdd"><strong>Given</strong> a sub's coverage shift written with <code>remind: true</code> and later unflagged by a manager <strong>When</strong> the time-off request is undone <strong>Then</strong> the coverage shift is still removed</div>
+  <div class="bdd"><strong>Given</strong> a partial-day reduced shift that a manager then flagged <strong>When</strong> the request is withdrawn <strong>Then</strong> the original hours are restored (the flag was not a hand edit)</div>
+  <div class="bdd"><strong>Given</strong> the employee's original shift already had <code>remind: true</code> <strong>When</strong> time off is applied and then reversed <strong>Then</strong> the flag is back on the restored shift</div>
+  <div class="bdd"><strong>Given</strong> Kayleigh has a flagged base override on Oct 12 and an active future window covering Oct 12 <strong>When</strong> <code>selectRemindersDue</code> runs <strong>Then</strong> she is NOT selected</div>
+  <div class="bdd"><strong>Given</strong> an <code>emp_</code>-keyed document and a uid-keyed document that resolve to the same email <strong>Then</strong> one entry, keyed by the document the resolver read</div>
+  <div class="bdd"><strong>Given</strong> 2026-11-01 07:30 UTC (Denver: Nov 1, 01:30, DST ending in half an hour) <strong>When</strong> <code>denverNow</code> runs <strong>Then</strong> date 2026-11-01, hour 1; window [Nov 2, Nov 3]</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — Rules: the bot and the log <span class="sev sev-med">rules change → studio-hub tests, approval phrase</span></h3>
+  <p><strong>Outcome:</strong> the bot can read exactly what the job needs and write exactly the log; nobody else can
+    write the log; the bot can do nothing else, anywhere; the bot can never become a user.</p>
+  <pre>function isReminderBot() {
+  return isAuthenticated() && request.auth.uid == '&lt;uid from Phase 0&gt;';
+}
+// Each grant is its OWN allow line (the file's convention) — never OR'd with a getUserData()-dependent helper,
+// which errors for an account with no users doc.
+match /timeclock_schedules/{uid}   { allow read: if isReminderBot(); }                 // list + get; never write
+match /users/{userId}              { allow get:  if isReminderBot(); }                 // GET only — no list
+                                   { allow create: if … existing conditions … && !isReminderBot(); }  // never a users doc
+match /timeclock_reminder_log/{logId} {
+  allow read:   if isManagerOrAbove();
+  allow read:   if isReminderBot();
+  allow create: if isReminderBot()
+    && request.resource.data.keys().hasOnly(['uid', 'date', 'to', 'shift', 'claimedAt', 'sentAt', 'attempts'])
+    && request.resource.data.uid is string && request.resource.data.uid.size() &lt;= 64
+    && request.resource.data.date is string && request.resource.data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+    && logId == request.resource.data.uid + '_' + request.resource.data.date
+    && request.resource.data.to is string && request.resource.data.to.size() &lt;= 254
+    && request.resource.data.shift is map && request.resource.data.shift.keys().hasOnly(['start', 'end', 'studio', 'note'])
+    && request.resource.data.claimedAt == request.time
+    && request.resource.data.sentAt == null
+    && request.resource.data.attempts == 0
+    && exists(/databases/$(database)/documents/timeclock_schedules/$(request.resource.data.uid));
+  allow update: if isReminderBot()
+    && resource.data.sentAt == null                                        // only an unresolved claim
+    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sentAt', 'attempts', 'lastAttemptAt', 'error'])
+    && request.resource.data.attempts &lt;= 3;
+  // no delete, from anyone
+}</pre>
+  <ul>
+    <li>Pin by <strong>uid</strong> only (the kiosk rule's email clause is not copied: an email/password account's
+      address is not verified, and nothing here needs the clause).</li>
+    <li>The bot does NOT read <code>timeclock_settings</code> at all (no roster, no PINs) and cannot list
+      <code>users</code>. What it can reach if its password leaks: every schedule, the users documents of people it
+      is about to email (email, name, role, push keys), and log documents. Rotating the password ends it.</li>
+    <li>Ticker's auth guard additionally refuses the bot uid outright (sign out + "this account cannot use the
+      app") — belt and braces on top of the create rule.</li>
+    <li>Tests in <code>rules.test.js</code> as the bot uid, using the job's exact query shapes: <code>getDocs(collection('timeclock_schedules'))</code>,
+      <code>getDoc(users/x)</code> allowed and <code>getDocs(users)</code> denied; bot cannot write a schedule, a
+      user, or its own users doc; bot denied on <code>timeclock_settings/employees</code> and every other timeclock
+      collection (<code>entries, hfwa, timeoff, overrides, streaks, settings</code>); log: create with the right id
+      and shape allowed, wrong id / extra key / non-server timestamp / missing shift / nonexistent schedule uid
+      denied; update of <code>sentAt</code> on an unresolved claim allowed, on a resolved one denied, touching
+      <code>to</code> denied, delete denied; manager reads the log; staff-with-access cannot read/create/update it;
+      kiosk denied on it; anonymous denied everywhere.</li>
+    <li>Deploy: <code>cd ~/studio-hub && npm test</code> (count grows), commit, then
+      <code>firebase deploy --only firestore:rules</code> — only after Christie says the approval phrase in the
+      session that deploys, and only after Phase 0 supplied the uid.</li>
+    <li>Same phase (different repo): Ticker's <code>CLAUDE.md</code> / <code>AGENTS.md</code> collection lists gain
+      <code>timeclock_reminder_log</code>.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> the bot uid <strong>When</strong> it lists <code>timeclock_schedules</code> <strong>Then</strong> allowed; <strong>When</strong> it updates one <strong>Then</strong> denied; <strong>When</strong> it lists <code>users</code> <strong>Then</strong> denied; <strong>When</strong> it gets one user <strong>Then</strong> allowed</div>
+  <div class="bdd"><strong>Given</strong> the bot <strong>When</strong> it creates <code>…/grey_2026-10-17</code> with uid "grey", date "2026-10-17", <code>sentAt: null</code>, server <code>claimedAt</code> <strong>Then</strong> allowed; with id "grey_2026-10-18", or an extra key, or <code>sentAt</code> set <strong>Then</strong> denied</div>
+  <div class="bdd"><strong>Given</strong> a claim with <code>sentAt: null</code> <strong>When</strong> the bot updates <code>sentAt</code> <strong>Then</strong> allowed; a second update after that <strong>Then</strong> denied</div>
+  <div class="bdd"><strong>Given</strong> the bot signs into the browser app <strong>When</strong> the guard tries to create its users doc <strong>Then</strong> denied by the rule, and the guard signs it out</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — Setting the flag where shifts are entered <span class="sev sev-med">UI + the writes from Phase 1</span></h3>
+  <p><strong>Outcome:</strong> every place a dated shift is entered can set the flag, at the grain that fits it, no
+    existing path silently drops it, and every place a shift is shown says whether it carries one.</p>
+  <ul>
+    <li><strong>Schedule editor, Add Override form:</strong> a checkbox "Email a reminder 2 days before" under the
+      Details field, hidden for type Day Off, default unticked, reset by <code>clearOverrideForm()</code>, pre-filled
+      from the stored value by <code>editOverride()</code>. <code>handleAddOverride()</code> writes
+      <code>remind: true</code> + <code>remindUid</code> (resolved from <code>employeeRoster</code>/<code>allUsers</code>
+      the way <code>resolveReminderRecipient</code> does, but yielding the uid) or omits both. The overrides list shows a
+      🔔 on flagged rows, "(no linked account)" when there is no uid to email.</li>
+    <li><strong>AI Schedule Changes:</strong> a second checkbox beside "Notify employee(s)": "Also email each person a
+      reminder 2 days before these dates" — <strong>unticked by default</strong>, reset per batch like the note.
+      Passed through to <code>applyScheduleEdits</code> as the mode from Phase 1. The status line says "Reminders set
+      for N dates" when ticked.</li>
+    <li><strong>Sub coverage:</strong> the write is Phase 1's. The sub's confirmation email says "You'll get a
+      reminder the morning before" ONLY when the coverage date is ≥ Denver-today + 1 (subs are routinely confirmed
+      a day or two out; the sentence must not promise what the job cannot do).</li>
+    <li><strong>In-app Future Schedule CSV writer</strong> (app.js ~5778): stops writing <code>overrides: {}</code>
+      under <code>mergeFields</code>. It writes <code>recurring</code> through <code>buildRecurringWrite</code>
+      (sentinels for weekdays being removed), the bounds, and never touches <code>overrides</code> — so existing
+      future overrides and their flags survive a re-import. Before writing, it names how many existing future
+      overrides each person has and confirms. (The Summer importer already merges recursively; a date re-imported as
+      <code>null</code> loses its flag, which is correct — it is a day off now.)</li>
+    <li><strong>Where shifts are shown:</strong> 🔔 on flagged dates in My Schedule (week and month), Who's Working
+      (week/month cards and the shift-detail popup via <code>buildShiftDetail</code>), title "Reminder email the
+      morning before". Read-only there.</li>
+    <li>The change email (Sep 18) is unaffected: <code>normaliseShift</code> compares start/end/studio/note only, so
+      flipping the flag alone is not a "change" and emails nobody.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> the editor is open on Grey <strong>When</strong> a One-Off Shift for Oct 17 is added with the box ticked and saved <strong>Then</strong> <code>overrides['2026-10-17']</code> has <code>remind: true</code> and Grey's uid in <code>remindUid</code>; the row shows 🔔</div>
+  <div class="bdd"><strong>Given</strong> that override is edited (time changed) with the box left as pre-filled <strong>When</strong> saved <strong>Then</strong> the flag survives</div>
+  <div class="bdd"><strong>Given</strong> the AI tool's reminder box is unticked (default) <strong>When</strong> Apply on a new date <strong>Then</strong> no <code>remind</code> key is written</div>
+  <div class="bdd"><strong>Given</strong> a person with 3 flagged future overrides <strong>When</strong> the CSV writer re-imports their weekdays <strong>Then</strong> the 3 overrides and their flags are still there</div>
+  <div class="bdd"><strong>Given</strong> a flagged shift <strong>When</strong> only the flag is removed and the notify box is ticked <strong>Then</strong> no change email ("no date changes to notify about")</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — The Reminders view <span class="sev sev-med">manager UI; transactional writes</span></h3>
+  <p><strong>Outcome:</strong> one table of every upcoming dated shift across all staff, where a manager can see and
+    change which ones will send, and see what already did.</p>
+  <ul>
+    <li>Lives in the Schedule Builder tab as a collapsible section "Reminders" (same pattern as AI Schedule
+      Changes). Rows: every override key with date ≥ Denver-today − 7 from both <code>overrides</code> and
+      <code>futureSchedule.overrides</code> of every schedule, excluding day-offs. The 7 days of history are the
+      audit trail. Columns: Remind (checkbox), Person, Date, Shift, Note, Status.</li>
+    <li>Filters: person (dropdown), date range (default next 30 days), note text (substring). "Remind all shown" and
+      "Clear all shown" act only on the filtered rows and confirm with the count.</li>
+    <li>Status, computed by the SAME rule the job uses (<code>reminderWindow</code>): <em>hidden</em> (the resolver
+      would not read this override for its date — no checkbox, tooltip explains) &middot; <em>no linked account</em>
+      (flagged, no <code>remindUid</code>) &middot; <em>archived</em> (roster inactive — flagged but the job skips;
+      "Clear all shown" is the fix) &middot; <em>sends &lt;date&gt; from 9 AM</em> &middot; <em>too late — no
+      reminder</em> (flagged on the day) &middot; <em>claimed, sending…</em> / <em>sent ✓ &lt;when&gt;</em> /
+      <em>failed ✗ &lt;error&gt;</em> from the log &middot; <em>sent — shift changed since</em> when the log's
+      <code>shift</code> snapshot differs from the current one &middot; <em>—</em> (not flagged).</li>
+    <li><strong>Writes are transactions, one per schedule document</strong>, modelled on
+      <code>applyScheduleEditsTransaction</code>: read the document → route each toggled date with
+      <code>isInFutureWindow</code> on the document AS READ → require the value at that path to be a non-null map with
+      <code>start</code> and <code>end</code> → <code>tx.update</code> the leaves (<code>remind</code>/<code>remindUid</code>
+      set or <code>FieldValue.delete()</code>), stamping <code>updatedAt/updatedBy</code>. Any date that fails the guard
+      (removed, made a day off, future block gone, moved maps) is SKIPPED and reported ("this shift changed — reload"),
+      never recreated. Bulk = the same transaction with all that document's toggled dates; the result names the
+      stale rows and commits the valid ones. A failed transaction reverts the checkboxes and toasts.</li>
+    <li>The retro pass for this fall's SDOCs is Christie using this view — not a migration, no script.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> Kayleigh has 8 SDOC overrides this fall, none flagged <strong>When</strong> the manager filters to Kayleigh and clicks Remind all shown <strong>Then</strong> one transaction writes 8 flags; the rows show "sends …"</div>
+  <div class="bdd"><strong>Given</strong> the view was opened, then another manager removed Oct 17 in the editor <strong>When</strong> Oct 17 is ticked here <strong>Then</strong> nothing is written for it, the row says the shift changed, and no <code>{ remind: true }</code> phantom exists</div>
+  <div class="bdd"><strong>Given</strong> the view shows a future-block date, then the future block was deleted <strong>When</strong> that date is ticked <strong>Then</strong> no bare <code>futureSchedule</code> is created (emulator-verified)</div>
+  <div class="bdd"><strong>Given</strong> a date became a Day Off after the view loaded <strong>When</strong> ticked <strong>Then</strong> skipped, not turned into a shift</div>
+  <div class="bdd"><strong>Given</strong> a flagged shift whose reminder was sent yesterday <strong>When</strong> unticked <strong>Then</strong> the flag is deleted, the status still shows "sent ✓", no error</div>
+  <div class="bdd"><strong>Given</strong> a bulk toggle where 2 of 8 rows are stale <strong>Then</strong> 6 commit, 2 are named, the view reloads</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 5 — The daily job <span class="sev sev-med">Netlify Scheduled Function; new deps; log writes</span></h3>
+  <p><strong>Outcome:</strong> from 9:00 AM Denver every day, everyone with a flagged shift one or two days out gets one
+    email, once, and the log says so — and a missed tick, a timeout, a manual "Run now" or a crash mid-run can
+    only delay a reminder, never duplicate it.</p>
+  <ul>
+    <li><code>netlify/functions/send-shift-reminders.js</code>, exported via <code>schedule('0 * * * *', handler)</code>
+      from <code>@netlify/functions</code>. Hourly; the handler exits at once unless Denver hour ≥ 9. Every tick from
+      9 AM sends whatever is due and unclaimed — the ticks are the retry.</li>
+    <li>Auth + reads with the client SDK, <strong><code>firebase/firestore/lite</code></strong> (REST; the full SDK
+      holds a WebChannel open and keeps the Lambda alive to the 30 s limit) + <code>firebase/auth</code>
+      <code>signInWithEmailAndPassword(REMINDER_BOT_EMAIL, REMINDER_BOT_PASSWORD)</code>; <code>deleteApp()</code>
+      in <code>finally</code>. The function carries its own copy of the public web config. Missing env → "not
+      configured", exit, nothing sent.</li>
+    <li>Core in <code>_lib/shift-reminder.js</code>, pure and injected:
+      <code>runShiftReminders({ now, loadSchedules, getUser, claim, markSent, markFailed, send, deadlineMs })</code> →
+      <code>{ window, sent: [], skipped: [{ docId, date, reason }], aborted?: reason }</code>. Every adapter returns
+      <code>{ ok, … }</code>; <strong>any <code>ok:false</code> on a read aborts the whole run with
+      <code>read-failed</code></strong> — a denied read must never look like "0 due" (the <code>loadConfig()</code>
+      fallback pattern CLAUDE.md warns about). Per person: <code>get users/{remindUid || docId}</code> → email
+      (skip <code>no-email</code>; skip <code>archived</code> if <code>users.active === false</code>).</li>
+    <li><strong>Claim → send → mark.</strong> In a transaction: get the log doc; if it exists and
+      <code>sentAt</code> is set → skip <code>already-sent</code>; if it exists unresolved with
+      <code>attempts ≥ 3</code> or <code>claimedAt</code> newer than 10 min → skip <code>claimed</code>; else create
+      (or bump <code>attempts</code>/<code>lastAttemptAt</code> on) the claim. Then send through
+      <code>_lib/email.js</code> with <code>idempotencyKey: 'ticker-shift-reminder/{docId}/{date}'</code> (Resend
+      dedupes for 24 h — covers a crash between send and mark). Then <code>markSent</code>; on send failure
+      <code>markFailed(error)</code>. Bounded concurrency (4 at a time); stop starting new sends once
+      <code>deadlineMs</code> (~20 s) has elapsed — the rest are next tick's.</li>
+    <li>Email (<code>_lib/shift-reminder.js</code>, escaped, text + html, same shape as the change email): subject
+      "Reminder: your shift on Sat, Oct 17"; body "Hi Grey — a reminder that you're scheduled Sat, Oct 17, 10:00 AM –
+      2:00 PM at Tinker Art Studio (Extra Shift — covering the private event). Sent by Tinker Ticker."</li>
+    <li>Dry run: <code>preview-shift-reminders.js</code>, HTTP. <strong>Fails closed</strong>: 401 unless
+      <code>REMINDER_PREVIEW_SECRET</code> is set and non-empty AND the <code>x-preview-secret</code> header matches
+      under <code>crypto.timingSafeEqual</code>; validates <code>?date=</code> with the existing real-date helper. Runs
+      the same core with <code>claim/markSent/markFailed/send</code> stubbed → returns who WOULD be emailed (name +
+      date + shift only, no addresses) and, distinctly, any <code>read-failed</code>. Read-only.</li>
+    <li>Function bundling: <code>require('../../js/schedule-helpers.js')</code> for the resolver;
+      <code>[functions] included_files</code> in <code>netlify.toml</code> if the bundler needs it. Verified with
+      <code>netlify build</code> locally before deploy.</li>
+    <li>Tests: <code>_lib/shift-reminder.test.js</code> (pure: window, selection, claim/skip logic, concurrency
+      cap, deadline, email content, every failure reason); an emulator test that runs the core against
+      <code>firebase-admin</code>-seeded documents with the real <code>getShiftForDate</code>, including two concurrent
+      runs → one send, and a run killed after send → next tick marks without re-sending; a wiring test that the
+      scheduled export exists, the preview checks the secret before any Firestore call, and a missing secret is a
+      401 not a pass.</li>
+    <li>First production run: deploy → preview with the secret for a date that has one flagged test shift
+      (Christie's own) → "Run now" in the Netlify UI (any time after 9 AM Denver) → confirm the email arrived, the
+      log doc shows <code>sentAt</code>, the Reminders view shows "sent ✓", the function log shows one send. Then
+      flag the real fall dates via Phase 4.</li>
+  </ul>
+  <div class="bdd"><strong>Given</strong> Grey's Oct 17 shift is flagged and no log doc exists <strong>When</strong> the 9 AM Denver tick runs on Oct 15 <strong>Then</strong> a claim is created, Grey gets one email, the claim is marked sent</div>
+  <div class="bdd"><strong>Given</strong> the same state at the 10 AM tick <strong>Then</strong> skipped <code>already-sent</code>; no email</div>
+  <div class="bdd"><strong>Given</strong> two invocations start together <strong>Then</strong> exactly one claim succeeds and one email is sent</div>
+  <div class="bdd"><strong>Given</strong> a run is killed after Resend accepted but before the mark <strong>When</strong> the next tick runs (≥10 min later) <strong>Then</strong> it re-sends with the same idempotency key (Resend dedupes) and marks sent</div>
+  <div class="bdd"><strong>Given</strong> Resend fails for one person <strong>Then</strong> <code>failed ✗</code> with the error on the log, retried at the next ticks up to 3 attempts, then left failed and visible in the view; everyone else proceeds</div>
+  <div class="bdd"><strong>Given</strong> a shift flagged at 3 PM the day before <strong>Then</strong> the 4 PM tick sends it (1 day before); flagged on the day <strong>Then</strong> never sent, the view said "too late"</div>
+  <div class="bdd"><strong>Given</strong> the 9 AM tick was lost to a deploy <strong>Then</strong> the 10 AM tick sends everything due</div>
+  <div class="bdd"><strong>Given</strong> the schedules read is denied (rules regression / wrong uid) <strong>Then</strong> the run aborts <code>read-failed</code>, sends nothing, writes nothing, and the function log is an ERROR — not "0 due"</div>
+  <div class="bdd"><strong>Given</strong> an unclaimed roster person (no <code>remindUid</code>) <strong>Then</strong> skipped <code>no-email</code>, named in the function log; the view already said so</div>
+  <div class="bdd"><strong>Given</strong> the preview is called without the secret, or the secret is not configured <strong>Then</strong> 401 before any Firestore read</div>
+  <div class="bdd"><strong>Given</strong> <code>REMINDER_BOT_PASSWORD</code> is missing <strong>Then</strong> "not configured", exit; nothing sent, nothing written</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 6 — Close out <span class="sev ok">docs</span></h3>
+  <ul>
+    <li>One-off-shift-reminders plan: closing Decisions-log entry — Phase 3 superseded by this plan; Phase 2's
+      confirmation superseded by the Sep 18 change email; keyword code deleted <code>b44e281</code>.</li>
+    <li>Memory: the Ticker email-trigger map gains #12 (the reminder job) and the bot's existence; the wishlist item
+      "the five email functions are unauthenticated" notes that the reminder job is NOT one of them (no HTTP surface;
+      the preview is secret-gated and read-only).</li>
+    <li>sw.js bump on the deploy that carries app.js changes.</li>
+  </ul>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul class="checklist">
+  <li><strong>New collection → rule in the same phase:</strong> <code>timeclock_reminder_log</code>, Phase 2
+    (rules live in studio-hub; Ticker's docs updated in the same phase).</li>
+  <li><strong>Partial updates:</strong> every flag write is a transactional leaf update with a same-shape guard, or a
+    merge write carrying key/sentinel — never a whole-object <code>set()</code>, never an unguarded leaf that could
+    create a phantom shift or a bare <code>futureSchedule</code>. The log is create + bounded update, never delete.</li>
+  <li><strong>Empty fields stripped:</strong> <code>remind</code> is <code>true</code> or absent; <code>remindUid</code>
+    is a uid or absent; never <code>false</code>/<code>null</code>/<code>""</code>.</li>
+  <li><strong>Awaited writes:</strong> every toggle and every log write; failures surface (toast / function log ERROR).</li>
+  <li><strong>No bulk delete/import:</strong> the retro flagging is human toggles through the view. The job never writes
+    to a schedule document. The in-app CSV writer STOPS wiping future overrides (Phase 3).</li>
+  <li><strong>Emulator tests before code:</strong> Phase 1's untick-is-a-delete; Phase 4's stale-row guards; Phase 5's
+    core against seeded documents with the real resolver, including concurrency.</li>
+  <li><strong>A denied read is an error, never empty data:</strong> Phase 5 adapters return <code>{ ok }</code> and abort.</li>
+  <li><strong>Credentials:</strong> the bot's password lives only in Netlify env; Claude never reads or types it. No
+    service account, no CLI token, no raw REST. Blast radius if leaked: read every schedule, get the users documents of
+    people being emailed (email, name, role, push keys), create/mark log documents. NOT the roster, NOT PINs. Rotate
+    the password to end it.</li>
+  <li><strong>Spot-check per data-write phase:</strong> one real document in the Firebase console after Phases 3, 4
+    and 5.</li>
+</ul>
+
+<h2>Completeness check — what if this stops part-way?</h2>
+<ul>
+  <li><strong>After Phase 1:</strong> the flag can be stored but nothing sets or reads it. Harmless.</li>
+  <li><strong>After Phase 2:</strong> a bot with read access and an empty collection. Harmless; the bot has no way to
+    run.</li>
+  <li><strong>After Phase 3 or 4:</strong> managers can flag shifts and see bells; no reminder ever sends. The checkbox
+    label promises "2 days before", so this state must not be deployed without Phase 5. Decision: Phases 3–5 deploy
+    together.</li>
+  <li><strong>After Phase 5:</strong> complete.</li>
+</ul>
+
+<h2>Resume instructions</h2>
+<p>Read this file; <code>git log</code> in <code>~/tinker-timeclock</code> and <code>~/studio-hub</code> for
+  "reminder" commits; <code>npm test</code> in both; check the Decisions log for the bot uid (Phase 0). Continue at
+  the first phase without a commit. Phase 2's deploy needs the approval phrase; Phases 3–5 deploy together and need
+  "okay to deploy" and a sw.js bump. After each data-write phase, run the two-model IMPLEMENTATION review on that
+  phase's diff (per <code>/second-model-review</code>) before starting the next.</p>
+
+<h2>Open questions — answered in v2</h2>
+<ul>
+  <li><em>Hourly cron or a fixed hour?</em> Hourly, gate ≥ 9 AM Denver. With claim-based dedupe the extra ticks cost
+    nothing and are the recovery from a lost tick.</li>
+  <li><em>Re-send if the time changes after the reminder?</em> No. The log keeps a <code>shift</code> snapshot, so the
+    view says "sent — shift changed since"; the Sep 18 change email is the notification for the change itself.</li>
+  <li><em>Past dates in the view?</em> Yes, 7 days — the only audit trail a manager will have.</li>
+  <li><em>Surface "hidden"?</em> Yes. Sub coverage is always written to base overrides, so a sub on a temporary
+    schedule is a realistic hidden case, and subs default on.</li>
+</ul>
+
+<h2>Decisions log</h2>
+<ul>
+  <li><strong>Sep 20:</strong> Option A (bot user + Netlify Scheduled Function through the rules) over a Cloud
+    Function or relaxing the org policy (Christie).</li>
+  <li><strong>Sep 20:</strong> explicit per-shift checkbox; no keyword inference of any kind (Christie: "I didn't
+    think we do keywords anymore"). Keyword code deleted the same day, <code>b44e281</code>.</li>
+  <li><strong>Sep 20:</strong> batch default OFF in the AI tool and imports; sub-coverage shifts default ON; 9:00 AM
+    Denver two calendar days before (Christie).</li>
+  <li><strong>Sep 20:</strong> "tick all" exists and is scoped to the Reminders view's active filter, plus the
+    per-batch checkbox at entry time (Christie asked; confirmed).</li>
+  <li><strong>Sep 20:</strong> the flag is written as <code>true</code>-or-deleted, never <code>false</code>, so the
+    untick goes through the same sentinel path a cleared note already uses (research finding).</li>
+  <li><strong>Sep 20:</strong> the reminder follows <code>getShiftForDate</code> — a flagged override the app would
+    not show is not reminded, and the view says "hidden".</li>
+  <li><strong>Sep 20 (design review, both models — v2).</strong> Both found the same two blockers and largely the
+    same should-fixes; all folded in:
+    (1) Phase 4 toggles were bare leaf <code>update()</code>s — a stale row could recreate a phantom
+    <code>{ remind: true }</code> "shift" or a bounds-less <code>futureSchedule</code> (the hazard
+    <code>applyScheduleEditsTransaction</code> already documents) → transactions with a same-shape guard, stale rows
+    skipped and named.
+    (2) Log-after-send could not stop a same-day duplicate (manual "Run now", a 30 s timeout re-run, overlapping
+    ticks), and "a second email tomorrow" was wrong — tomorrow looks at a different date → claim-before-send in a
+    transaction + Resend idempotency key + bounded retries; bot may update only an unresolved claim.
+    (3) <code>hour == 9</code> made a lost tick unrecoverable → hourly ticks gated at ≥ 9, window [today+1,
+    today+2]; the sub-confirmation sentence is conditional; the view has "too late".
+    (4) A denied bot read would have looked like "0 due" → adapters return <code>{ ok }</code>, abort on failure;
+    rules tests run the bot's exact query shapes.
+    (5) Rule shape: separate <code>allow</code> lines (no <code>||</code> with <code>getUserData()</code> helpers),
+    tightened create (<code>hasOnly</code>, types, date regex, server timestamp, schedule must exist), negative tests
+    on every other collection, kiosk denied on the log.
+    (6) Least privilege: the bot would have read the roster (plaintext PINs) and listed <code>users</code> (push keys)
+    → <code>remindUid</code> stamped by the flag writers, bot does <code>get</code> only, no
+    <code>timeclock_settings</code> access at all. Flagged for Christie as the one v2 decision.
+    (7) The AI path's leaf replacement would unflag a shift on any time change with the box unticked → preserve
+    mode; the reversal compare that must ignore the flag is <code>sameOverride()</code>, which the partial-day path
+    also uses.
+    (8) Log key is the schedule DOCUMENT id (can be <code>emp_</code>); dedupe by recipient within a run; archived
+    people skipped/shown.
+    (9) Mechanics: <code>firestore/lite</code>, fail-closed preview secret with a timing-safe compare, own web-config
+    copy, <code>hourCycle: 'h23'</code> + <code>formatToParts</code>, spring-forward test, "Run now" for the first
+    real send.
+    (10) Corrected statements: the auth guard CREATES a users doc rather than refusing (the self-create rule is what
+    refuses; Phase 2 adds an explicit refusal); the Summer importer merges (flags survive) but the in-app CSV writer
+    replaces the whole future block under <code>mergeFields</code> and wipes every future override — Phase 3 fixes
+    that pre-existing hazard; "same commit" → "same phase" across two repos; sub-override shape tests budgeted;
+    the destructive-save confirm's comment.
+    (11) Open questions answered as above.</li>
+</ul>
+</body>
+</html>
