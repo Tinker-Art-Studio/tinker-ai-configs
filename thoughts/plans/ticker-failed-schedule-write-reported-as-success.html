@@ -36,9 +36,9 @@
 <h1 id="plan-title">Plan: Ticker — A Failed Schedule Write Is Reported As Success</h1>
 
 <div class="status" style="background:#fdecea;border-left-color:#d9534f;">
-  Status: <strong>Phase 0 DONE and LIVE (Sep 11). Phases 1–5 need v3 of their specifics before execution;
-  they now have a callable, failure-injectable target and four <code>test.failing</code> defect tests
-  waiting to be promoted.</strong> Written Sep 9, 2026.
+  Status: <strong>Phases 0, 1 and 2 DONE and LIVE (Sep 11). Phases 3–5 remain; Phase 3 is next and has the
+  last red <code>test.failing</code> waiting for it, plus the manager-side "complete withdrawal" action
+  from Christie's decision.</strong> Written Sep 9, 2026.
   <br><br>
   <strong>This is a LIVE bug.</strong> Found Sep 9 2026 by both reviewers during the time-off fix, and
   deliberately not bundled into that change: it is broad, affects many paths, and needs its own scoped
@@ -756,7 +756,7 @@
 </div>
 
 <div class="phase">
-  <h3>Phase 1 — Add result-reporting helpers WITHOUT changing any existing return contract</h3>
+  <h3>Phase 1 — Add result-reporting helpers WITHOUT changing any existing return contract <span class="sev ok">DONE with Phase 2 — 9e7aa49, Sep 11</span></h3>
   <p>
     <strong>Acceptance criteria (user outcome):</strong> nothing changes for anyone. This phase only adds
     the ability to tell "worked", "failed" and "nothing to do" apart.
@@ -808,7 +808,28 @@
 </div>
 
 <div class="phase">
-  <h3>Phase 2 — An approval is only recorded if BOTH writes actually landed</h3>
+  <h3>Phase 2 — An approval is only recorded if BOTH writes actually landed <span class="sev ok">DONE — 9e7aa49, Sep 11</span></h3>
+  <div class="status" style="background:#e7f7ed;border-left-color:#17603a;">
+    <strong>Executed Sep 11 as one commit with Phase 1, implementation-reviewed (Claude + Codex).</strong>
+    Post-Phase-0 the two collapsed naturally: apply now reads via <code>loadScheduleResult</code> and
+    returns <code>{ ok, applied, reason }</code>; approve gets a sixth exit, <code>schedule-failed</code>,
+    returned BEFORE the request write. Three <code>test.failing</code> defect tests flipped red on the fix
+    and were promoted. The "second write failed" half was already handled by the re-entry guard's rollback
+    (<code>4280b75</code>). Tests 471 → 475. sw v11. <strong>DEPLOYED and pushed Sep 11</strong>, production verified.
+    <br><br>
+    <strong>Open decision from review — the seed migration.</strong> It creates the request as approved
+    BEFORE the schedule write; a failure there leaves an approved request the rerun skips as a duplicate.
+    Already run, every entry now short-circuits at the duplicate guard, so dead in practice — but still
+    callable and payroll-adjacent. Claude: fix counters and note it (done). Codex: retire or restructure
+    before deploying. <em>Christie decides: retire the button, or restructure to create-as-submitted →
+    apply → promote.</em>
+    <br><br>
+    <strong>Pre-existing, found by Codex, added to scope:</strong> <code>saveSchedule</code>'s
+    <code>set(merge:true)</code> would RECREATE a schedule deleted between the read and the write rather
+    than fail, so "write verified" does not cover concurrent deletion. An update-only adapter for override
+    edits (<code>update({ overrides })</code>, which fails on a missing doc) would close it — but confirm-sub
+    relies on set's creating behaviour, so it must be a separate adapter, not a change to saveSchedule.
+  </div>
   <p>
     <strong>Acceptance criteria (user outcome):</strong> if either write fails while Christie approves
     time off, she is told the approval did not go through, the request keeps its previous status, and the
@@ -855,7 +876,76 @@
 </div>
 
 <div class="phase">
-  <h3>Phase 3 — A failed reversal never destroys the record of what to restore</h3>
+  <h3>Phase 3 — A failed reversal never destroys the record of what to restore <span class="sev ok">3a LIVE — 667dbb2, Sep 14</span> <span class="sev ok">3b LIVE — 0454314, Sep 14</span></h3>
+  <div class="status" style="background:#e7f7ed;border-left-color:#17603a;">
+    <strong>3a deployed and pushed Sep 14 as <code>667dbb2</code>. 540 tests. FOUR review passes</strong>;
+    every pass found something real in the previous fix (blind retry → unrecoverable missing-doc →
+    unconditional parking → alias-wins discarding a failure → stale roster / both-docs-live / status-only
+    guards). The fourth pass's fixes — reverseUnderEitherId always tries both documents, the roster is
+    reloaded per reversal, a <code>migratedFrom</code> query guards dismiss, and every clearing write is
+    guarded on the exact record + marker via a new <code>expect</code> param on
+    <code>updateTimeOffRequestIfStatus</code> — are behaviourally tested but had no independent pass;
+    Christie chose to deploy and let 3b's review cover Phase 3 whole. The last KNOWN DEFECT test is
+    promoted; all four are. Production verified (sw v12, all ten markers present).
+    <br><br>
+    <strong>Residuals, named by review, NOT fixed in 3a:</strong>
+    <ul>
+      <li>Confirmed-sub reversals still clear their records blind — the same shape nested in
+        <code>proposedSubs</code>. <strong>Phase 4.</strong></li>
+      <li><s><code>applyTimeOffOverrides</code> still writes the whole overrides map — the apply-direction
+        read→write race.</s> <strong>Closed Sep 16 (<code>ff8267e</code>, with the partial-day note-leak
+        fix; LIVE Sep 17):</strong> apply and confirm-sub both send touched-only payloads; <code>withStaleKeysDeleted</code>
+        deletes, per date, the keys a stored map has and the new value lacks, so a restore is exact and a
+        partial written over a richer shift no longer differs from <code>wrote</code>. Legacy records delete
+        only generated-looking keys. The Sep 10 KNOWN DEFECT test is promoted.</li>
+      <li>Compare-before-reverse is read-compare-write on the touched dates; value equality cannot detect
+        null→null replacement by an overlapping request. <strong>The transaction/ownership question.</strong></li>
+      <li>Un-approve and withdraw never consult the roster alias — only Retry does (it now lives in the
+        module as <code>reverseUnderEitherId</code>, so wiring them is small).</li>
+      <li>The retry's clearing writes are guarded on the exact record; un-approve / withdraw / edit-reopen
+        still use the plain <code>updateTimeOffRequest</code> — same one-round-trip window, lower stakes.</li>
+      <li>A second dismiss overwrites <code>dismissedOverrides</code>; parking cannot refuse when a
+        different recovery record already exists (two simultaneous triple-failures — vanishingly rare).</li>
+      <li>Offline: <code>loadScheduleResult</code> does not check <code>fromCache</code>; a stale cache
+        makes compare-before-reverse skip everything and report success. The plan's offline phase.</li>
+    </ul>
+    <strong>3b (staff withdrawal → manager completes)</strong> now needs only the surfacing: Needs Action
+    + dashboard include <code>reversalPending</code>; <code>autoCompletePassedTimeOff</code> excludes it;
+    the schedule-view cross-reference (:3627) includes it; the under_review email could pass the flag.
+  </div>
+  <div class="status" style="background:#fff7e6;border-left-color:#b45309;">
+    <strong>3b deployed and pushed Sep 14 as <code>0454314</code>. 581 tests. Production verified (sw v13 active after one reload, all new markers present, no console errors). SEVEN review
+    passes</strong> (p3b through p3b-7, both models each time); the last two closed on the logic with only a
+    comment-wording nit. Local browser load verified clean (all new globals defined, sw v13 shell lists
+    timeoff-schedule.js). What 3b ships: the marker is <em>seen</em> (Needs Action, dashboard, schedule
+    cross-reference, badge with honest wording, status email lead); Retry finishes confirmed subs'
+    coverage shifts on denied/withdrawn requests (ONLY those — Option A keeps subs on under_review); a
+    missing sub schedule gets an audited, confirm-gated dismiss that moves the record to the sub entry;
+    <code>reverseUnderMigratedIds</code> tries every migrated copy and reports all failures; migration
+    ancestry is durable (<code>migratedFromChain</code>, stamped by migrateSchedule and reassignSchedule,
+    queried with <code>array-contains</code> — A→B→C was previously unfindable from A because each move
+    deletes its source); every dialog (the requester's and the coverage one) is followed by a fresh read +
+    revalidation before any write; sub un-confirms are guarded <em>inside</em> the transaction on the exact
+    record, the entry's subUid, the request still denied/withdrawn, and the marker still set
+    (<code>confirmTimeOffSub(…, expectApplied, expectRequest)</code>); the approve-time overlap guard reads
+    the flagged set and the roster fresh; the requester is pushed "Schedule updated" whenever their own
+    record was reversed.
+    <br><br>
+    <strong>Residuals named by the 3b reviews, NOT fixed:</strong>
+    <ul>
+      <li>The sub's schedule write in Retry/dismiss precedes the guarded request transaction and is itself
+        unguarded on status — inherent to the two-document shape; both reviewers rated it outcome-equivalent
+        (the next Retry finds nothing of ours). Same shape as the requester's path.</li>
+      <li><code>expectApplied</code> ABA: a byte-identical re-confirm under the SAME uid between read and
+        transaction passes the guard. A per-confirmation token would close it; the end state on a
+        denied/withdrawn request (shift reversed, sub un-confirmed) is the intended one anyway.</li>
+      <li><code>handleSubConfirmToggle</code> has no status check in the function — a stale tab can
+        re-confirm on a denied request (button gated, function not). Pre-existing.</li>
+      <li><code>reverseConfirmedSubScheduleWrites</code> / <code>unconfirmTimeOffSub</code> still skip a
+        no-subUid record and then wipe it — <strong>Phase 4</strong> territory.</li>
+      <li>Cosmetic: a "request changed" during the coverage dialog alerts twice (dismiss, then revalidate).</li>
+    </ul>
+  </div>
   <p>
     <strong>Acceptance criteria (user outcome):</strong> if removing overrides fails, Christie is told,
     and the <code>appliedOverrides</code> record survives so the reversal can be retried. No state is
@@ -916,7 +1006,38 @@
 </div>
 
 <div class="phase">
-  <h3>Phase 4 — Sub-coverage reversals collect failures instead of aborting</h3>
+  <h3>Phase 4 — Sub-coverage reversals collect failures instead of aborting <span class="sev ok">LIVE — ad21658, Sep 16</span></h3>
+  <div class="status" style="background:#fff7e6;border-left-color:#b45309;">
+    <strong>Phase 4 deployed and pushed Sep 16 as <code>ad21658</code> (after the pay-period lock, by decision). 609 tests. Production verified (sw v14 active, all new markers present, no console errors). FOUR review
+    passes (both models); the last closed the logic.</strong> Much of the original scope was absorbed by
+    3a/3b (deny/withdraw already collect failures and keep records); what Phase 4 actually ships:
+    <ul>
+      <li><strong>Manual Undo</strong> checks its reversal (fresh roster → both ids → migrated net); a failed
+        one keeps the confirmation + record; missing under every id → the audited dismiss; the clear is
+        guarded in-transaction on record + subUid + confirmed. Staff hand off to a manager (comment via
+        arrayUnion + coordinator email + push) instead of a permissions wall.</li>
+      <li><strong>Confirm-sub</strong>: the write is guarded (still un-confirmed, no record, toggle-able
+        status); a refused write re-reads the entry and rolls back PER DATE (<code>partitionRollback</code>)
+        so another admin's identical shift is restored exactly or left alone, never deleted; a failed re-read
+        rolls back nothing and says so; the rollback is checked, never claimed unverified.</li>
+      <li><strong>Edit form</strong> (both paths): landed sub reversals un-confirmed transactionally; a fresh
+        read then decides which subs are confirmed (<code>carryConfirmedSubs</code> carries what the document
+        now says, strips a stale pre-edit link); the save is guarded on status (approved may auto-complete),
+        the fresh subs and the requester's record; Save is given back on every early return; per-reason
+        wording; the owner gets the hand-off wording on a permissions failure.</li>
+      <li><code>reverseConfirmedSubScheduleWrites</code>: a record with no subUid is a failure that keeps the
+        record. <code>handleSubConfirmToggle</code> refuses statuses the button is not offered on.
+        <code>sameStructure</code> (key-order independent) backs every transaction guard.</li>
+    </ul>
+    <strong>Residuals named by review, NOT fixed:</strong> the edit form's read→save window is closed by the
+    guard but its pre-edit <code>get()</code> throwing strands the Save button (pre-existing); a
+    <code>confirmTimeOffSub</code> that THROWS after an unknown commit state still rolls back whole
+    (pre-existing); a stale form left ticking a record-less sub un-confirmed elsewhere is indistinguishable
+    from a new tick (harmless); the carry's strip is silent; <code>completed → approved</code> (Undo Complete)
+    during an edit is refused though the edit would still hold (conservative); the hand-off comment says
+    "use Undo" while a later withdraw makes it "Retry" (still recoverable); a stale re-confirm identical to
+    ours remains the ABA residual.
+  </div>
   <p>
     <strong>Acceptance criteria (user outcome):</strong> if one sub's coverage shift cannot be removed,
     every other sub's still is, Christie is told exactly which person failed, and only that person's
@@ -956,7 +1077,25 @@
 </div>
 
 <div class="phase">
-  <h3>Phase 5 — The unawaited-write family <span class="sev sev-low">separable</span></h3>
+  <h3>Phase 5 — The unawaited-write family <span class="sev sev-low">separable</span> <span class="sev ok">LIVE — e2da4d7, Sep 16</span></h3>
+  <div class="status" style="background:#fff7e6;border-left-color:#b45309;">
+    <strong>Phase 5 deployed and pushed Sep 16 as <code>e2da4d7</code>. 628 tests. Production verified (sw v15 active, all four AsyncFunction, no console errors). <em>This completes the plan: every phase is live.</em> THREE
+    review passes (both models); the third, on the final delta, closed with a comment nit.</strong> The four functions await and return false from
+    the catch; the one unawaited caller (<code>adminEditSaveEntry</code>) awaits, with an in-flight guard; the
+    kiosk streak-enrichment writes are deliberately detached (review: the confirmation screen sat behind them
+    and an awaited write never resolves offline); <code>removeEmployee</code> reads the entry before the splice
+    (the claimedBy lookup was dead — a claimed employee's real schedule was never deleted), checks the roster
+    save, stops on a second click, and names a surviving schedule; streak card + celebration only after the
+    save. <code>firebase-data.failure.test.js</code> runs the REAL data layer in a vm sandbox against a fake
+    Firestore whose writes reject — the plan's "no unhandled rejection" BDD, executable; against the old code
+    it crashes Node. Local browser load verified (all four are AsyncFunction, sw v15).
+    <br><br><strong>Residuals:</strong> the kiosk can still wait offline on the punch write and streak write
+    that precede the detached enrichment (pre-existing); <code>removeEmployee</code> saves the whole in-memory
+    roster with <code>set()</code> (two Remove clicks within one round-trip, first failing, second succeeding,
+    could put the first person back in memory only); the admin time-edit row's Save has no disabled state —
+    a second click is dropped silently; <code>removeEmployee</code>'s orchestration is regex-pinned, not
+    executed (app.js is not loadable under Node).
+  </div>
   <p>
     <strong>Acceptance criteria (user outcome):</strong> deleting a schedule that fails to delete reports
     a failure instead of appearing to work.
@@ -1102,6 +1241,11 @@
   <li><strong>Sep 9, 2026 — Phase 0 added.</strong> Verified that <code>firebase.json</code> loads no
     rules file and the existing emulator tests use the Admin SDK, so no failure path is testable today.
     v1 assumed this coverage existed.</li>
+  <li><strong>Sep 11, 2026 — Phases 1–2 EXECUTED as one commit (<code>9e7aa49</code>) and reviewed.</strong>
+    The three Phase 1/2 <code>test.failing</code> defect tests flipped red on the fix — the promotion
+    mechanism working for real, first time. Seed-migration retire-vs-restructure is an open decision.
+    One transient test failure on the first full run after the change, not reproduced across three
+    subsequent runs, detail not captured — likely an emulator startup race; investigate if it recurs.</li>
   <li><strong>Sep 11, 2026 — Phase 0 EXECUTED and implementation-reviewed (<code>6c31154</code>).</strong>
     Both moves verified byte-identical against HEAD. The approve rewrite is pinned by an exit-table test
     (order of data-layer calls per code) plus wiring assertions on the switch. Nine wiring assertions
