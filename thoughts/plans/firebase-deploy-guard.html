@@ -20,213 +20,303 @@
 </head>
 <body>
 <h1>Plan: Firebase deploy guard — approve a diff, not an act</h1>
-<p><strong>Repos:</strong> <code>~/studio-hub</code> (the ONE rules file, tests, the guard script) &middot; <code>~/.claude/settings.json</code>
-  (the cross-session hook) &middot; <code>~/.claude/CLAUDE.md</code> (the gate's wording) &middot; <strong>Drafted:</strong> Sep 21 2026
-  &middot; <strong>execution-ready:</strong> false &middot; <strong>v1</strong>, awaiting two-model design review &middot; Under the Firebase
-  Backend Resilience Plan.</p>
+<p><strong>Repos:</strong> <code>~/studio-hub</code> (the ONE rules file, tests, the guard, the predeploy backstop) &middot;
+  <code>~/.claude/settings.json</code> (true user-scope hooks + auto-mode rules) &middot; <code>~/.claude/CLAUDE.md</code> and the
+  studio-hub docs (the gate's wording) &middot; <strong>Drafted:</strong> Sep 21 2026 &middot; <strong>execution-ready:</strong> false
+  &middot; <strong>v2</strong> after a two-model design review (Claude + Codex, Sep 21; every finding folded in — see the Decisions log)
+  &middot; Under the Firebase Backend Resilience Plan.</p>
 
 <div class="status">
-  <strong>Goal:</strong> a Firestore rules deploy can only ship a commit Christie named, from a clean tree, after the tests, and
-  every session — in any repo, whether or not it read CLAUDE.md — is held to that mechanically. "What is live?" is answered
-  by git in one command, never by signing into the console.
+  <strong>Goal:</strong> a Firestore rules deploy can only ship the exact commit Christie named — read from git, never from the
+  shared working tree — after the tests, and every Claude session on this machine, in any repo, is held to that mechanically.
+  Every deploy leaves an immutable receipt that says what shipped; rollback is "pick the previous receipt".
 </div>
 
 <div class="warn">
-  <strong>The incident this closes (Sep 21 2026):</strong> the approval gate is a sentence in CLAUDE.md that each Claude session
-  applies to itself, and it gates <em>running the deploy command</em>. But the command ships <em>the whole file on disk</em>, and
-  the file is one shared working tree that every session edits in place. A session with approval for ITS change deployed the
-  file while ANOTHER session's unreviewed rules sat in the same tree. It missed by minutes — the live ruleset was verified
-  byte-for-byte against the earlier commit — but nothing prevented it. Every session followed the rules and the outcome was
-  still wrong: the gate is per-session and per-command when the risk is per-content.
+  <strong>Two incidents this closes (both Sep 21 2026):</strong>
+  <ol>
+    <li>The approval gate is a sentence in CLAUDE.md that each session applies to itself, and it gates <em>running the
+      command</em>. The command ships <em>the whole file on disk</em>, and the file is one shared working tree every session edits
+      in place. A session with approval for ITS change deployed the file while ANOTHER session's unreviewed rules sat in the same
+      tree. It missed by minutes (the live ruleset was verified byte-for-byte against the earlier commit). Every session followed
+      the rules and the outcome was still wrong: the gate is per-session and per-command when the risk is per-content.</li>
+    <li>A deploy-guard hook and all the auto-mode rules for Firebase were installed on Aug 15 in
+      <code>~/.claude/settings.local.json</code> — believed machine-wide, but that file is the <em>project-local</em> settings of a
+      project rooted at <code>~</code>, loaded only by sessions launched from the home directory. Proof: this session's cwd is
+      <code>tinker-timeclock</code>, that hook denies any deploy whose cwd is not studio-hub, and the Phase 2 rules deploy ran. Every
+      session launched in Classbook, Payroll, Training Hub… has had no hook and none of those auto-mode rules.</li>
+  </ol>
 </div>
 
 <h2>Why this shape</h2>
 <ul>
-  <li><strong>Approve a sha, not an act.</strong> The phrase becomes "approved to change firebase <code>&lt;sha&gt;</code>". The
-    guard refuses unless HEAD is that sha. Christie is approving a specific diff she can read, and a session cannot deploy
-    anything else, including someone else's edits that happen to be in the tree.</li>
-  <li><strong>Clean tree, or nothing.</strong> Uncommitted changes to tracked files mean the deployed bytes would not match any
-    commit. Refused.</li>
-  <li><strong>A moving <code>rules-live</code> tag + an immutable dated tag per deploy.</strong> Moved only by the guard after a
-    successful release, pushed to origin. <code>git diff rules-live -- firestore.rules</code> is "what would this deploy
-    change"; the dated tags are the rollback ladder. Today the rollback runbook guesses the known-good commit from
-    <code>git log</code>; it stops guessing.</li>
-  <li><strong>A user-scope Claude Code hook, not a project one.</strong> Sessions deploy rules from cwds in other repos
-    (Classbook, Payroll, Training Hub…) with <code>cd ~/studio-hub && firebase deploy …</code>. A hook in
-    <code>~/.claude/settings.json</code> sees every Bash call in every session; a project hook would only see sessions
-    started inside studio-hub. The hook denies any <code>firebase deploy</code> that is not the guard script, with a message
-    that says what to run instead.</li>
-  <li><strong>The guard is a plain shell script with its own tests.</strong> No new dependency. It is exercised against a
-    throwaway git repo with a fake <code>firebase</code> on PATH, so every refusal is a test, not a hope.</li>
-  <li><strong>Not solved here, named honestly:</strong> the hook governs Claude sessions only — Christie typing
-    <code>firebase deploy</code> in a terminal is her call. Two sessions editing the shared file can still clobber each
-    other's <em>uncommitted</em> edits; the guard makes that unshippable, not impossible. Branch-per-change is recommended in
-    CLAUDE.md, not enforced. <code>netlify deploy</code> (costs credits; "ask first") has the same shape and is a follow-up.</li>
+  <li><strong>Approve a sha, not an act.</strong> The phrase becomes "approved to change firebase <code>&lt;full sha&gt;</code>".
+    <code>--status</code> prints the exact sentence to say, so it is copy-paste, not typing. The guard deploys that commit and
+    nothing else.</li>
+  <li><strong>Deploy from git, never from the shared tree.</strong> The guard exports the approved commit into a temporary
+    worktree and runs the tests AND <code>firebase deploy</code> from there. What another session does to
+    <code>~/studio-hub/firestore.rules</code> during those 30 seconds cannot reach production. This closes incident 1 outright;
+    a clean-tree check only narrowed it (design review, both models).</li>
+  <li><strong>The sha must be on <code>origin/main</code></strong> (an ancestor of it, after a fetch). Any pushed branch was too
+    weak — a <code>wip/</code> branch would pass. "Ancestor of" rather than "equal to" so a rollback to an earlier receipt's commit
+    is itself a guarded deploy.</li>
+  <li><strong>Immutable receipts, no moving tag.</strong> Each successful deploy creates one annotated tag
+    <code>deployed/tinker-hq-apps/firestore-rules/&lt;UTC yyyymmddTHHMMSSZ&gt;-&lt;sha7&gt;</code> whose message records the full commit,
+    the target file's sha256 and the timestamp; pushed as one explicit refspec, never <code>--tags</code>, never forced. "Latest
+    receipt" is the newest tag. A moving <code>live/*</code> tag needed force-pushes and could lie (both reviewers); receipts cannot
+    be rewritten. They are <em>receipts of guarded deploys</em>, not proof of production — a deploy from a terminal leaves none,
+    which is the honest limit of git-based truth; the predeploy backstop below is what makes that terminal deploy hard.</li>
+  <li><strong>A CLI-level backstop in <code>firebase.json</code>.</strong> firebase-tools runs <code>predeploy</code> hooks for every
+    target (verified in <code>lib/deploy/index.js</code>: <code>lifecycleHooks(target, "predeploy")</code> before
+    <code>prepare</code>; a non-zero exit is <code>predeploys_error</code> and nothing is uploaded). A tiny predeploy script refuses
+    unless <code>TINKER_DEPLOY_SHA</code> is set and the file about to ship is byte-identical to
+    <code>git show $TINKER_DEPLOY_SHA:&lt;file&gt;</code>. Only the guard sets that variable. This catches <code>npx
+    firebase-tools</code>, absolute paths, wrapper scripts, npm scripts, aliases, and Christie's own terminal — everything a
+    text-matching hook cannot. The human escape hatch is setting the variable by hand, on purpose.</li>
+  <li><strong>The Claude hook is an accidental-invocation guard, not a security boundary.</strong> A regex over the Bash
+    command string cannot enforce anything against indirection; it exists to stop the ordinary <code>cd ~/studio-hub &&
+    firebase deploy …</code> a session reaches for by habit, with a message that names the guard. It lives in
+    <code>~/.claude/settings.json</code> — true user scope — and is the ONLY hook file (incident 2 is closed by moving, not
+    copying).</li>
+  <li><strong>Not solved here, named honestly:</strong> two sessions can still clobber each other's <em>uncommitted</em> edits in
+    the shared file — now unshippable, still annoying; branch-per-change is recommended in CLAUDE.md, not enforced. A hook
+    <em>timeout</em> is fail-open in Claude Code; the hook does no I/O beyond reading stdin so it cannot time out in practice.
+    The guard cannot tell whether a clean commit contains someone else's hunks — it prints the full diff and CLAUDE.md tells
+    the session to paste it verbatim and stop if it contains hunks it did not write; the review is the control. Netlify stays
+    out (different shape: a cost decision, no content invariant; the existing auto-mode line covers it).</li>
 </ul>
 
-<h2>Research (read-only, Sep 21)</h2>
+<h2>Research (read-only, Sep 21; corrected in v2)</h2>
 <ul>
-  <li><strong>How deploys happen today:</strong> every session runs <code>cd /Users/christiehubley/studio-hub && firebase deploy
-    --only firestore:rules</code> via the Bash tool (transcripts confirm the compound form); <code>--only storage</code> and
-    <code>--only firestore:indexes</code> are the other two approved forms. <code>firebase.json</code> names
-    <code>firestore.rules</code>, <code>firestore.indexes.json</code>, <code>storage.rules</code>. <code>.firebaserc</code> →
-    <code>tinker-hq-apps</code>. <code>npm test</code> runs the rules suite on the emulator (199 tests).</li>
-  <li><strong>Hubley Hub</strong> is a separate project (<code>~/hubley-hub</code>, <code>.firebaserc</code> →
-    <code>hubley-hub</code>, its own rules). The guard must not assume studio-hub: it reads the project from the cwd's
-    <code>.firebaserc</code> and tags per project.</li>
-  <li><strong>Global settings:</strong> <code>~/.claude/settings.json</code> has NO hooks today (<code>hooks: null</code>) and no
-    permission rules — nothing to merge around; still read-before-write.</li>
-  <li><strong>Hook mechanics (update-config skill):</strong> <code>PreToolUse</code> with <code>matcher: "Bash"</code>; the hook
-    reads <code>{ tool_input: { command } }</code> on stdin; it denies by printing
-    <code>{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "…" } }</code>.
-    The hook sees Claude's Bash tool calls, not subprocesses — so the guard script's own inner <code>firebase deploy</code>
-    is not intercepted. The settings watcher only picks up hooks from directories that had a settings file at session start;
-    <code>~/.claude/settings.json</code> exists, so the user-scope hook loads in new sessions (existing ones need
-    <code>/hooks</code> or a restart).</li>
+  <li><strong>Deploys today:</strong> every session runs <code>cd /Users/christiehubley/studio-hub && firebase deploy --only
+    firestore:rules</code> via the Bash tool; <code>--only storage</code> and <code>--only firestore:indexes</code> are the other two
+    approved forms. <code>firebase.json</code> maps <code>firestore.rules</code>, <code>firestore.indexes.json</code>,
+    <code>storage.rules</code>; <code>.firebaserc</code> → <code>tinker-hq-apps</code>. <code>npm test</code> is
+    <code>firebase emulators:exec … jest rules.test.js …</code> and reads <code>firestore.rules</code> from cwd
+    (<code>rules.test.js:65</code>) — so it tests whatever tree it runs in, which is what the worktree design needs.</li>
+  <li><strong>firebase-tools 15.22.3:</strong> <code>deploy/index.js</code> pushes a predeploy lifecycle hook per target name
+    (<code>firestore</code>, <code>storage</code>) regardless of <code>--dry-run</code>; <code>lifecycleHooks.js</code> rejects on a
+    non-zero exit; <code>predeploys_error</code> happens before <code>prepare</code>/<code>deploy</code>. So a failing predeploy
+    under <code>--dry-run</code> is a safe live test. <code>firebase use</code> can store an active project per directory that
+    overrides <code>.firebaserc</code>; the guard passes <code>--project tinker-hq-apps</code> explicitly.</li>
+  <li><strong>Hook mechanics:</strong> only exit code 2 or an explicit deny JSON blocks; exit 1/127 and timeouts are
+    <em>non-blocking</em> ("fail closed" in v1 was false). Hooks see the Bash tool's command string, not subprocesses (the guard's
+    inner deploy needs no exemption). stdin carries <code>cwd</code>, <code>tool_input.command</code>, <code>session_id</code>,
+    <code>transcript_path</code>. <code>/usr/bin/jq</code> exists. Hook edits in settings files are hot-reloaded by the watcher.</li>
+  <li><strong>Settings on disk:</strong> <code>~/.claude/settings.json</code> has no hooks and no permissions;
+    <code>~/.claude/settings.local.json</code> (24 KB, Sep 9) has the Aug 15 <code>PreToolUse</code> cwd-guard, a <code>Stop</code>
+    hook (<code>save-skills.sh</code>), the whole <code>autoMode</code> block (soft_deny / hard_deny / environment strings that name
+    the three <code>--only</code> forms and the old phrase), and a <code>permissions</code> block. The old guard is
+    <code>~/tinker-ai-configs/scripts/firebase-deploy-guard.sh</code> (git-tracked): it denies a deploy whose cwd is not studio-hub
+    or that <code>cd</code>s elsewhere — a "right directory" check; content was never checked.</li>
+  <li><strong>Docs that tell sessions to run the raw command:</strong> <code>~/.claude/CLAUDE.md</code> (FIREBASE RULES table),
+    <code>studio-hub/CLAUDE.md:30</code>, <code>studio-hub/AGENTS.md:8</code>, <code>studio-hub/DEPLOY-SAFETY-CHECKLIST.md</code>
+    ("Scoped deploy commands" table), <code>studio-hub/FIREBASE-SETUP.md:33</code>, <code>studio-hub/RULES-ROLLBACK.md</code>
+    (step 3 runs the raw command; "Tagging before a deploy" section), the <code>autoMode</code> strings, the
+    <code>firebase-backend-resilience-plan</code> and <code>firebase-auto-mode-permissions-hardening</code> memories, and the
+    stamped CLAUDE.md/AGENTS.md in the other ~20 repos (Phase 3 greps for them).</li>
   <li><strong>Existing state:</strong> one manual tag <code>rules-2026-08-12</code>; no <code>scripts/</code>; live ruleset ==
-    <code>1da12e3</code> (verified on the console Sep 21). <code>RULES-ROLLBACK.md</code> steps 2–3 find the known-good commit by
-    reading <code>git log -- firestore.rules</code>.</li>
+    <code>1da12e3dbb3c4aeeb85e3f9f7d9f51e31604b0b6</code> (console-verified Sep 21 ~22:05 UTC); three <code>firebase</code> binaries
+    on PATH (nvm).</li>
 </ul>
 
 <h2>Design</h2>
-<h3>The guard: <code>studio-hub/scripts/deploy-rules.sh</code></h3>
-<pre>scripts/deploy-rules.sh --approved &lt;sha&gt; [--target firestore:rules|storage|firestore:indexes] [--dir &lt;firebase project dir&gt;]
-scripts/deploy-rules.sh --status                      # what is live vs HEAD, per target; exits 0
-scripts/deploy-rules.sh --diff [--target …]           # git diff &lt;live-tag&gt;..HEAD -- &lt;the target's file&gt;
+<h3>The guard: <code>~/studio-hub/scripts/deploy-rules.sh</code> (bash, <code>set -euo pipefail</code>, cwd-independent)</h3>
+<pre>scripts/deploy-rules.sh --approved &lt;full sha&gt; [--target firestore:rules|storage|firestore:indexes]
+scripts/deploy-rules.sh --status [--target …]     # latest receipt vs origin/main; prints the exact phrase to say for HEAD
+scripts/deploy-rules.sh --diff   [--target …]     # FULL diff, latest receipt → origin/main, target file only (paste this verbatim when asking)
 
-Refuses (non-zero, one plain sentence each) when:
-  1. --approved is missing, or is not a prefix of `git rev-parse HEAD` (short shas accepted, ≥ 7 chars)
-  2. the tree has modified/staged TRACKED files (`git status --porcelain --untracked-files=no` non-empty)
-  3. HEAD is not on origin (`git branch -r --contains HEAD` empty) — the deployed commit must be shared
-  4. the target's file does not exist, or .firebaserc has no default project
-  5. `npm test` fails (only when package.json has a test script; studio-hub does)
-Then, in order: prints the project, the target, the live tag → HEAD diff stat (or "first guarded deploy, no tag yet"),
-runs `firebase deploy --only &lt;target&gt;` from --dir, and ONLY on exit 0:
-  git tag -f  live/&lt;project&gt;/&lt;target&gt;                       HEAD      # moving
-  git tag     deployed/&lt;project&gt;/&lt;target&gt;/&lt;UTC yyyymmddTHHMMZ&gt; HEAD    # immutable
-  git push origin --tags --force-with-lease=…   (tags only; never a branch; the moving tag is the only one ever rewritten)
-Tag names use slashes so they group in `git tag -l 'live/*'`. Target "firestore:rules" → "firestore-rules" in the name.</pre>
-<p>Tests: <code>scripts/deploy-rules.test.sh</code> builds a temp bare "origin" + clone, puts a fake <code>firebase</code> on
-  PATH (records its argv, exit code controllable), and asserts each refusal, the happy path's tag moves + push, and that a
-  failed <code>firebase deploy</code> moves no tag. Run by <code>npm run test:guard</code>; added to <code>npm test</code>.</p>
+v1 is pinned: repo /Users/christiehubley/studio-hub, project tinker-hq-apps, the three targets and their files. Nothing else.
 
-<h3>The hook: <code>~/.claude/hooks/firebase-deploy-guard.sh</code>, wired in <code>~/.claude/settings.json</code></h3>
-<pre>{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command",
-      "command": "~/.claude/hooks/firebase-deploy-guard.sh", "timeout": 5 } ] } ] } }
+Order of operations (every refusal is one plain sentence and a distinct exit code):
+  0. Lock: mkdir "$repo/.git/tinker-deploy.lock" — refuse if it exists (another guard, or an emulator run, is in flight). Removed on EXIT.
+  1. Reconcile: any local receipt tag missing on origin is pushed now; if that push fails, refuse ("DEPLOYED EARLIER; receipt not
+     published; fix the push before another deploy").
+  2. --approved must be a full 40-hex sha (lower-cased) that `git rev-parse --verify --quiet "$sha^{commit}"` resolves.
+  3. `git fetch origin main` (refuse if it fails — tags could not be pushed either); `git merge-base --is-ancestor "$sha" origin/main`
+     — refuse otherwise ("land it on main first").
+  4. Dirty shared tree is a WARNING naming the files, not a refusal — the tree is not what ships, and a refusal invites a session to
+     commit someone else's edits to get a clean tree (design review).
+  5. `git worktree add --detach "$tmp" "$sha"`; `ln -s "$repo/node_modules" "$tmp/node_modules"`; removed on EXIT.
+  6. Print: project, target, the receipt this replaces (or "no receipt yet"), and the FULL diff receipt→sha for the target file.
+  7. In $tmp: `npm test` — for firestore:rules only (storage/indexes have no suite; --status says so rather than implying).
+  8. In $tmp: TINKER_DEPLOY_SHA="$sha" firebase deploy --only "$target" --project tinker-hq-apps --non-interactive
+  9. Only on exit 0: sha256 of the deployed file; `git tag -a "deployed/tinker-hq-apps/&lt;target-slug&gt;/&lt;UTC&gt;-&lt;sha7&gt;" "$sha"
+     -m "project=tinker-hq-apps target=… commit=&lt;sha&gt; file=&lt;path&gt; sha256=&lt;hash&gt; at=&lt;UTC&gt; by=deploy-rules.sh"`;
+     `git push origin "refs/tags/&lt;that tag&gt;"`. Push failure → exit with a DISTINCT code and message
+     ("DEPLOY SUCCEEDED; RECEIPT NOT PUBLISHED — run: git push origin refs/tags/…"); step 1 retries it next time.
+Never `--tags`, never a branch push, never force.</pre>
 
-The script: reads stdin JSON, extracts .tool_input.command; if it does not match /(^|[;&|(]\s*|\s)firebase\s+deploy\b/
-exit 0 silently (every other Bash call is untouched, ~2 ms). If it matches AND the command invokes
-scripts/deploy-rules.sh (the guard) → exit 0. Otherwise print the deny JSON with the reason:
-  "firebase deploy is gated. Run: cd ~/studio-hub && scripts/deploy-rules.sh --approved &lt;sha Christie named&gt;
-   [--target …]. Christie's phrase is 'approved to change firebase &lt;sha&gt;'. See CLAUDE.md → FIREBASE RULES."
-Pipe-tested with synthesized stdin per the update-config skill, then proved live with a harmless `firebase deploy --help`.</pre>
+<h3>The backstop: <code>firebase.json</code> predeploy + <code>scripts/predeploy-check.sh</code></h3>
+<pre>"firestore": { "rules": "firestore.rules", "indexes": "firestore.indexes.json", "predeploy": ["bash scripts/predeploy-check.sh firestore"] },
+"storage":   { "rules": "storage.rules",                                         "predeploy": ["bash scripts/predeploy-check.sh storage"] }
+
+predeploy-check.sh &lt;target&gt;: refuse (exit 1, one sentence naming the guard) unless TINKER_DEPLOY_SHA is a full sha AND, for each
+file the target deploys, `git -C &lt;repo&gt; show "$TINKER_DEPLOY_SHA:&lt;file&gt;"` is byte-identical to the file in cwd. Runs in ~50 ms.
+Human escape hatch: `TINKER_DEPLOY_SHA=&lt;sha&gt; firebase deploy …` by hand, knowingly — and even then only that commit's bytes ship.</pre>
+
+<h3>The hook: <code>~/tinker-ai-configs/scripts/firebase-deploy-hook.sh</code>, wired in <code>~/.claude/settings.json</code></h3>
+<pre>{ "hooks": { "PreToolUse": [ { "matcher": "Bash", "hooks": [ { "type": "command", "timeout": 5,
+      "command": "bash /Users/christiehubley/tinker-ai-configs/scripts/firebase-deploy-hook.sh || exit 2" } ] } ] } }
+
+The script: `cmd=$(/usr/bin/jq -r '.tool_input.command // empty')`; if it does not match
+   grep -qE '(^|[^[:alnum:]_.-])(firebase|firebase-tools)([^;&|]*[[:space:]])?deploy([[:space:]]|$)'
+exit 0 silently (matches: bare, `cd … && firebase deploy`, `/opt/homebrew/bin/firebase deploy`, `./node_modules/.bin/firebase deploy`,
+`npx firebase-tools deploy`, `firebase --project x deploy`, `$(…)`, heredocs, `bash -c '…'`; accepted false positives: echo/grep/comments —
+the deny text says "if you only meant to read text, use Read/Grep"). Otherwise print the deny JSON and exit 0:
+  "firebase deploy is gated. Run the guard from any cwd: /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --approved &lt;full sha&gt;
+   [--target …]. Christie's phrase is 'approved to change firebase &lt;full sha&gt;'; --status prints it. See ~/.claude/CLAUDE.md → FIREBASE RULES."
+No exception for "invokes the guard" — the guard's inner deploy is a subprocess the hook never sees, and an exception was a bypass
+(`deploy-rules.sh --status; firebase deploy …`). `|| exit 2`: a missing or crashing script BLOCKS EVERY BASH CALL with the bash error on
+stderr — loud, fixed in a minute, and the honest price of fail-closed (a hook that exits 1 or 127 is silently ignored by Claude Code).
+Timeout stays fail-open by platform design; the script does no I/O beyond stdin.</pre>
+
+<h3>Settings migration (incident 2)</h3>
+<ul>
+  <li><code>hooks.PreToolUse</code> (the new hook), <code>hooks.Stop</code> (<code>save-skills.sh</code> — moves as-is; it will now run
+    in every session, which was its intent; <em>Christie confirms</em>), and the whole <code>autoMode</code> block move from
+    <code>~/.claude/settings.local.json</code> to <code>~/.claude/settings.json</code>. The three <code>autoMode</code> strings that
+    name the raw <code>--only</code> forms are rewritten to name the guard as the ONLY approved form (the current
+    <code>hard_deny</code> text could make the classifier block the guard itself). <code>permissions</code> stays where it is unless
+    it turns out to be the same mistake (Phase 2 reads it and says).</li>
+  <li><code>firebase-deploy-guard.sh</code> (the cwd check) is retired: its concern is inherent in the guard. Kept in git history.</li>
+  <li>One gate, one file. The <code>firebase-auto-mode-permissions-hardening</code> memory is corrected.</li>
+</ul>
 
 <h3>The words</h3>
 <ul>
-  <li><code>~/.claude/CLAUDE.md</code> → FIREBASE RULES: the three <code>--only</code> forms are replaced by the guard; the phrase
-    is "approved to change firebase <code>&lt;sha&gt;</code>"; "what's live" is <code>scripts/deploy-rules.sh --status</code>;
-    rules edits go on a branch and land on <code>main</code> before approval (recommended, not enforced).</li>
-  <li><code>studio-hub/RULES-ROLLBACK.md</code>: step 2 becomes <code>git tag -l 'deployed/tinker-hq-apps/firestore-rules/*'</code>;
-    rollback = <code>git revert</code> (or checkout the previous dated tag's file onto a commit), then the guard with the phrase.</li>
-  <li>Memory: the resilience-plan entry gains this step; the incident is recorded.</li>
+  <li><code>~/.claude/CLAUDE.md</code> → FIREBASE RULES: the approved-forms table becomes the guard; the phrase is "approved to
+    change firebase <code>&lt;full sha&gt;</code>"; "what's live" is <code>--status</code>; the approval request pastes
+    <code>--diff</code> verbatim and says "if the diff contains hunks you did not write, stop and say so before asking"; rules
+    edits go on a branch and land on <code>main</code> before approval (recommended).</li>
+  <li>studio-hub: <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>DEPLOY-SAFETY-CHECKLIST.md</code>, <code>FIREBASE-SETUP.md</code>,
+    <code>RULES-ROLLBACK.md</code> (below). Other repos' stamped CLAUDE.md/AGENTS.md: a grep sweep, one commit each where needed.</li>
+  <li><code>RULES-ROLLBACK.md</code>: (1) <code>git tag -l 'deployed/tinker-hq-apps/firestore-rules/*' --sort=-refname</code> — the
+    newest is what shipped last; (2) pick the previous receipt, inspect its diff; (3) restore ONLY the target file from that
+    receipt's commit onto a new commit on <code>main</code> (never <code>git revert</code> a mixed commit); (4) push, ask with the
+    full sha, run the guard. Plus: what to do when a deploy succeeded but the receipt was not published (step 1 of the guard
+    reconciles; the tag is local truth on this one-clone machine). The old "Tagging before a deploy" section is deleted.</li>
 </ul>
 
 <h2>Phases</h2>
 
 <div class="phase">
-  <h3>Phase 1 — The guard script and its tests <span class="sev sev-med">studio-hub; no deploy; no settings change</span></h3>
-  <p><strong>Outcome:</strong> <code>scripts/deploy-rules.sh</code> refuses every unsafe deploy and performs a safe one exactly as
-    specified, proven against a throwaway repo and a fake <code>firebase</code>. The live commit is tagged.</p>
+  <h3>Phase 1 — Guard, backstop, tests, first receipt <span class="sev sev-med">studio-hub; no production change</span></h3>
   <ul>
-    <li>Write the script (bash, <code>set -euo pipefail</code>, no dependencies beyond git/npm/firebase/jq-free).</li>
-    <li>Write the tests; run them; every refusal is a test.</li>
-    <li>Seed the tags for reality: <code>live/tinker-hq-apps/firestore-rules</code> and
-      <code>deployed/tinker-hq-apps/firestore-rules/20260921T2205Z</code> on <code>1da12e3</code> (verified live today), pushed.
-      No tag for storage/indexes until their first guarded deploy (the script says "no tag yet" for those).</li>
-    <li><code>package.json</code>: <code>deploy:rules</code> → the script; <code>test:guard</code>; <code>test</code> runs both.</li>
+    <li><code>scripts/deploy-rules.sh</code> and <code>scripts/predeploy-check.sh</code> as designed.</li>
+    <li><code>scripts/deploy-rules.test.sh</code>: a temp bare origin + clone with a fake <code>firebase</code> on PATH (records argv and
+      env, exit code controllable) and a fake <code>npm</code>; every refusal is a test; the happy path asserts the fake firebase ran
+      IN THE WORKTREE with <code>TINKER_DEPLOY_SHA</code> set, the receipt tag exists on both clone and origin with the right
+      annotation; a failed deploy leaves no tag; a failed tag push leaves a local tag and the distinct exit code, and the next run
+      reconciles it; mutating the shared checkout after preflight changes nothing the fake firebase received; the lock refuses a
+      second run. <code>predeploy-check.sh</code>: identical file passes, one changed byte refuses, unset variable refuses.</li>
+    <li><code>firebase.json</code> gains the two predeploy entries. Live safe test: <code>firebase deploy --only firestore:rules
+      --dry-run</code> WITHOUT the variable → aborts at <code>predeploys_error</code> before contacting Firebase (this is a
+      <code>firebase deploy</code> invocation and the hook does not exist yet — Christie says the phrase first, as today's rule
+      requires, even though nothing can ship).</li>
+    <li>Seed the first receipt for reality: <code>deployed/tinker-hq-apps/firestore-rules/20260921T220500Z-1da12e3</code> on
+      <code>1da12e3…</code>, annotated "seeded; console-verified byte-for-byte 2026-09-21", pushed. No receipts for storage/indexes
+      until their first guarded deploy.</li>
+    <li><code>package.json</code>: <code>deploy:rules</code>, <code>test:guard</code>; <code>test</code> runs the rules suite and the
+      guard suite.</li>
   </ul>
-  <div class="bdd"><strong>Given</strong> HEAD is <code>abc1234</code> and the tree is clean <strong>When</strong> <code>--approved abc1234</code> <strong>Then</strong> tests run, the diff stat prints, the fake firebase is called with <code>deploy --only firestore:rules</code>, both tags point at HEAD, tags are pushed</div>
-  <div class="bdd"><strong>Given</strong> <code>--approved</code> names any other sha <strong>Then</strong> refused before tests run; nothing called; no tag moves</div>
-  <div class="bdd"><strong>Given</strong> <code>firestore.rules</code> has an uncommitted edit <strong>Then</strong> refused with the file named; an UNTRACKED file elsewhere does not refuse</div>
-  <div class="bdd"><strong>Given</strong> HEAD is not on origin <strong>Then</strong> refused ("push first")</div>
-  <div class="bdd"><strong>Given</strong> the tests fail <strong>Then</strong> refused; firebase never called</div>
-  <div class="bdd"><strong>Given</strong> the fake firebase exits 1 <strong>Then</strong> the script exits non-zero and NO tag moves</div>
-  <div class="bdd"><strong>Given</strong> <code>--status</code> in a repo with the live tag two commits behind <strong>Then</strong> it prints both shas and the two commit subjects touching the rules file, exit 0</div>
-  <div class="bdd"><strong>Given</strong> <code>--dir ~/hubley-hub</code> <strong>Then</strong> the project is <code>hubley-hub</code> and the tags are namespaced to it</div>
+  <div class="bdd"><strong>Given</strong> sha X is on origin/main and named in full <strong>When</strong> <code>--approved X</code> <strong>Then</strong> the lock is taken, the full diff prints, tests run in the worktree, the fake firebase runs in the worktree with <code>TINKER_DEPLOY_SHA=X</code> and <code>--project tinker-hq-apps</code>, one annotated receipt tag exists locally and on origin, the worktree and lock are gone</div>
+  <div class="bdd"><strong>Given</strong> another process edits <code>firestore.rules</code> in the shared tree between preflight and deploy <strong>Then</strong> the fake firebase received X's bytes, not the edit</div>
+  <div class="bdd"><strong>Given</strong> a 7-char prefix, or a sha on a pushed branch that is not an ancestor of origin/main <strong>Then</strong> refused before anything runs</div>
+  <div class="bdd"><strong>Given</strong> the shared tree is dirty <strong>Then</strong> a warning names the files; the deploy proceeds from git</div>
+  <div class="bdd"><strong>Given</strong> the fake firebase exits 1 <strong>Then</strong> no tag, distinct exit code</div>
+  <div class="bdd"><strong>Given</strong> the tag push fails <strong>Then</strong> the local tag exists, the exit is the DISTINCT "receipt not published" code; the next invocation pushes it first, or refuses if that fails again</div>
+  <div class="bdd"><strong>Given</strong> two guards start together <strong>Then</strong> the second refuses on the lock</div>
+  <div class="bdd"><strong>Given</strong> <code>--status</code> <strong>Then</strong> it prints the latest receipt, origin/main, the commits touching the file between them, and the exact phrase for origin/main's sha</div>
+  <div class="bdd"><strong>Given</strong> <code>predeploy-check.sh firestore</code> runs with the variable unset, or with the file differing by one byte from the commit <strong>Then</strong> exit 1 naming the guard; identical → exit 0</div>
+  <div class="bdd"><strong>Given</strong> the live <code>--dry-run</code> without the variable <strong>Then</strong> firebase-tools stops at <code>predeploys_error</code> and no request reaches the project</div>
 </div>
 
 <div class="phase">
-  <h3>Phase 2 — The cross-session hook <span class="sev sev-med">changes ~/.claude/settings.json; Christie's go first</span></h3>
-  <p><strong>Outcome:</strong> in every Claude session on this machine, a bare <code>firebase deploy</code> is denied with a message
-    that names the guard; the guard itself passes; every other Bash command is untouched.</p>
+  <h3>Phase 2 — The hook and the settings migration <span class="sev sev-med">edits ~/.claude/settings.json + settings.local.json; Christie's go first</span></h3>
   <ul>
-    <li>Write <code>~/.claude/hooks/firebase-deploy-guard.sh</code> (bash; parses the JSON with a small <code>node -e</code> or
-      <code>python3</code> one-liner so there is no jq dependency; ~2 ms on non-matching commands).</li>
-    <li>Pipe-test: (a) <code>{"tool_input":{"command":"ls"}}</code> → exit 0, no output; (b)
-      <code>cd ~/studio-hub && firebase deploy --only firestore:rules</code> → deny JSON; (c) bare <code>firebase deploy</code> →
-      deny; (d) <code>firebase emulators:exec …</code> → exit 0; (e) <code>scripts/deploy-rules.sh --approved x</code> → exit 0;
-      (f) <code>echo "firebase deploy"</code> → deny (accepted false positive; the message explains).</li>
-    <li>Read <code>~/.claude/settings.json</code>, merge the hook in (nothing to preserve today, but merge anyway), validate with
-      <code>jq -e</code>, prove it fires in THIS session with <code>firebase deploy --help</code> (expect the deny), then confirm a
-      harmless <code>true</code> still runs.</li>
-    <li>Sessions already open need <code>/hooks</code> or a restart to load it — say so.</li>
+    <li>Write <code>scripts/firebase-deploy-hook.sh</code> (tinker-ai-configs, git-tracked) and its pipe tests: (a) <code>ls</code> →
+      exit 0 silent; (b) <code>cd ~/studio-hub && firebase deploy --only firestore:rules</code> → deny; (c) bare; (d)
+      <code>firebase emulators:exec …</code> → allow; (e) <code>/opt/homebrew/bin/firebase deploy</code>, <code>npx firebase-tools
+      deploy</code>, <code>firebase --project x deploy</code>, <code>node_modules/.bin/firebase deploy</code> → deny; (f)
+      <code>scripts/deploy-rules.sh --approved …</code> → allow (no literal "deploy" after "firebase"); (g)
+      <code>deploy-rules.sh --status; firebase deploy …</code> → deny; (h) <code>echo "firebase deploy"</code> → deny (accepted).</li>
+    <li>Read both settings files; move <code>hooks</code> + <code>autoMode</code> to <code>~/.claude/settings.json</code> (merge; validate
+      with <code>jq -e</code>); rewrite the three auto-mode strings; remove them from <code>settings.local.json</code>; report what
+      <code>permissions</code> holds and whether it should move too.</li>
+    <li>Prove the hook fires in THIS session: <code>firebase deploy --help</code> → denied; <code>true</code> → runs. Prove fail-closed:
+      rename the script, run <code>true</code> → blocked with the bash error; restore.</li>
   </ul>
-  <div class="bdd"><strong>Given</strong> the hook is installed <strong>When</strong> any session runs <code>cd ~/studio-hub && firebase deploy --only firestore:rules</code> <strong>Then</strong> the call is denied before it runs, with the guard command in the reason</div>
-  <div class="bdd"><strong>Given</strong> the hook is installed <strong>When</strong> a session runs the guard with a wrong sha <strong>Then</strong> the hook allows it and the GUARD refuses (two independent layers)</div>
-  <div class="bdd"><strong>Given</strong> the hook script is missing or crashes <strong>Then</strong> the hook's non-zero exit blocks the Bash call (fail closed for deploys) — verified by temporarily renaming the script</div>
+  <div class="bdd"><strong>Given</strong> the hook is installed <strong>When</strong> any session, any cwd, runs the raw deploy <strong>Then</strong> denied with the guard command in the reason</div>
+  <div class="bdd"><strong>Given</strong> the hook is installed <strong>When</strong> a session runs the guard with a wrong sha <strong>Then</strong> the hook allows it and the GUARD refuses (two independent layers), and a third (predeploy) sits under both</div>
+  <div class="bdd"><strong>Given</strong> the hook script is missing <strong>Then</strong> every Bash call is blocked, loudly — not silently allowed</div>
+  <div class="bdd"><strong>Given</strong> a session launched in Classbook <strong>Then</strong> the auto-mode rules that used to live in settings.local.json now apply to it</div>
 </div>
 
 <div class="phase">
-  <h3>Phase 3 — The words, and the first real guarded deploy <span class="sev ok">docs; one dry run</span></h3>
+  <h3>Phase 3 — The words <span class="sev ok">docs + memory; grep sweep</span></h3>
   <ul>
-    <li>CLAUDE.md (global) FIREBASE RULES section rewritten as above; the approved-forms table becomes the guard.</li>
-    <li>RULES-ROLLBACK.md steps 2–3 use the tags.</li>
-    <li>Memory: resilience-plan entry + the Sep 21 incident.</li>
-    <li>Dry run against reality: <code>scripts/deploy-rules.sh --status</code> (live == HEAD == <code>1da12e3</code>), then
-      <code>--approved 1da12e3</code> with NO diff — a no-op deploy of the identical file — is NOT run (a deploy with no change
-      is noise); instead the next real rules change (the reminders plan's Phase 5 has none; the next one that comes) is the
-      first guarded deploy, and this plan's Decisions log records it.</li>
+    <li>All documents listed under Research → "Docs that tell sessions to run the raw command", plus a grep across
+      <code>~/*/CLAUDE.md</code> and <code>~/*/AGENTS.md</code> for <code>firebase deploy</code>. No numeric test counts anywhere.</li>
+    <li>Memory: resilience-plan entry (this step, both incidents); the auto-mode-hardening memory corrected.</li>
+    <li>The first REAL guarded deploy is the next rules change that comes (none is pending); this plan's Decisions log records it.
+      No no-op deploy of an identical file.</li>
   </ul>
 </div>
 
 <h2>Firebase safety checklist</h2>
 <ul class="checklist">
-  <li>No Firestore data or rules change in this plan. The seeded tags point at the commit already verified live.</li>
-  <li>The guard never runs bare <code>firebase deploy</code>; always <code>--only &lt;one target&gt;</code>.</li>
-  <li>Never reads <code>~/.config/configstore/firebase-tools.json</code>; the CLI's own login is what <code>firebase deploy</code>
-    already uses, unchanged.</li>
-  <li>Tag pushes are tags only, never a branch; the moving tag is the only ref ever force-updated.</li>
-  <li>The hook fails closed: a broken hook blocks deploys, never allows them.</li>
+  <li>No Firestore data change. The only production interaction in this plan is a <code>--dry-run</code> that aborts at predeploy.</li>
+  <li>The guard never runs bare <code>firebase deploy</code>; always <code>--only &lt;one target&gt; --project tinker-hq-apps</code>.</li>
+  <li>Never reads <code>~/.config/configstore/firebase-tools.json</code>; the CLI's own login is unchanged.</li>
+  <li>Tag pushes are one explicit refspec, never a branch, never force, never <code>--tags</code>.</li>
+  <li>Three independent layers: hook (habit), guard (content + receipt), predeploy (bytes). Each is tested alone.</li>
 </ul>
 
 <h2>Completeness check</h2>
 <ul>
-  <li><strong>After Phase 1:</strong> the guard exists and works, but nothing forces its use — the old command still runs. Better than today (the tag answers "what's live"), not yet safe.</li>
-  <li><strong>After Phase 2:</strong> safe in every Claude session. CLAUDE.md still describes the old command until Phase 3 — the deny message bridges the gap.</li>
-  <li><strong>After Phase 3:</strong> complete.</li>
+  <li><strong>After Phase 1:</strong> the raw command still runs from a Claude session — but the predeploy refuses it, so nothing
+    unguarded can ship. Receipts exist. Already safer than today.</li>
+  <li><strong>After Phase 2:</strong> the raw command is denied before it runs, in every session; auto-mode rules apply everywhere.</li>
+  <li><strong>After Phase 3:</strong> the docs stop arguing with the hook.</li>
 </ul>
 
 <h2>Resume instructions</h2>
-<p>Read this file; <code>ls ~/studio-hub/scripts</code>, <code>git tag -l 'live/*'</code>, <code>jq .hooks ~/.claude/settings.json</code>
-  tell you which phase is done. Phase 2 needs Christie's explicit go (it edits her Claude config). No deploy happens in this plan.</p>
+<p>Read this file; <code>ls ~/studio-hub/scripts</code>, <code>git -C ~/studio-hub tag -l 'deployed/*'</code>, <code>grep predeploy
+  ~/studio-hub/firebase.json</code>, <code>jq .hooks ~/.claude/settings.json</code> tell you which phase is done. Phase 1's
+  <code>--dry-run</code> and Phase 2 need Christie's explicit go. No real deploy happens in this plan.</p>
 
-<h2>Open questions for review</h2>
+<h2>Open questions — answered in v2</h2>
 <ul>
-  <li>Should the guard also require the approving sha to be on <code>main</code> specifically, not just on origin?</li>
-  <li>Hook false positives: any Bash command whose TEXT contains <code>firebase deploy</code> is denied (an <code>echo</code>, a
-    <code>grep</code>). Acceptable, or should the regex require it at a command position only?</li>
-  <li>Should <code>--status</code> also fetch the live ruleset's hash from the Rules API to prove the tag is honest? It needs an
-    OAuth token — which is the credential rule's line — so v1 trusts the tag. Alternative: the guard hashes the file it deployed
-    and stores the hash in the dated tag's message, so a later console check has something to compare against.</li>
-  <li>Same guard for <code>netlify deploy</code> now, or as its own follow-up?</li>
+  <li><em>On main, or any origin branch?</em> Ancestor of <code>origin/main</code> after a fetch. Hotfixes land on main first.</li>
+  <li><em>Hook false positives?</em> Accepted; the deny text says how to read text instead. The hook is not the boundary — the
+    predeploy is.</li>
+  <li><em>Prove the tag honest via the Rules API?</em> No token needed: the receipt records the deployed file's sha256; a console
+    check can compare against that.</li>
+  <li><em>Netlify?</em> Out. Different shape.</li>
 </ul>
 
 <h2>Decisions log</h2>
 <ul>
-  <li><strong>Sep 21:</strong> plan drafted after the near-miss; Christie asked for the guard and agreed to build it before the
-    next rules deploy (Phase 2 of the reminders plan was deployed the old way, verified byte-for-byte, as the last one).</li>
-  <li><strong>Sep 21:</strong> user-scope hook, not project-scope — sessions deploy from other repos' cwds.</li>
-  <li><strong>Sep 21:</strong> approve a sha, not an act; clean tree; HEAD on origin; tests; tags moved only after exit 0.</li>
+  <li><strong>Sep 21:</strong> plan drafted after the near-miss; Christie asked for the guard before the next rules deploy (the
+    reminders plan's Phase 2 was deployed the old way, verified byte-for-byte, as the last one).</li>
+  <li><strong>Sep 21 (design review, both models — v2).</strong> Blockers, all folded in: (1) a clean-tree check + tests + deploy
+    from the shared tree is a TOCTOU — another session can edit the file during the tests → deploy from a temporary worktree of the
+    approved commit; the dirty-tree check becomes a warning (a refusal invites committing someone else's edits). (2) "Fails closed"
+    was false — Claude Code ignores exit 1/127 and timeouts → <code>|| exit 2</code> in the hook command (a missing script blocks
+    every Bash call, loudly; the honest price); timeout stays fail-open and the script does no I/O. (3) "Allow if it invokes the
+    guard" was a bypass → deleted; the guard needs no exemption. (4) A regex is not a security boundary → said so; basename-aware
+    matching; the real boundary is the <code>firebase.json</code> predeploy that compares the shipping bytes to
+    <code>git show $TINKER_DEPLOY_SHA:file</code> (Claude's suggestion; verified against firebase-tools 15.22.3 source).
+    Should-fixes: sha must be an ancestor of <code>origin/main</code> after a fetch (not any pushed branch; ancestor, not equal, so a
+    rollback is a guarded deploy); full 40-char sha (<code>--status</code> prints the sentence); a lock; receipt tags only — no moving
+    tag, no <code>--tags</code>, no force, seconds + sha7 in the name, sha256 in the annotation; "DEPLOY SUCCEEDED; RECEIPT NOT
+    PUBLISHED" is a distinct exit that the next run reconciles; <code>--project</code> explicit (<code>firebase use</code> can override
+    <code>.firebaserc</code>); the full diff is printed and CLAUDE.md tells the session to paste it and stop on foreign hunks; the
+    rollback runbook restores ONE file from a receipt, never reverts a mixed commit; v1 pinned to studio-hub / tinker-hq-apps /
+    three targets (no <code>--dir</code>); Netlify out; the docs sweep covers every file that names the raw command.
+    <strong>Incident 2 found by the review:</strong> the Aug 15 hook + auto-mode rules live in <code>~/.claude/settings.local.json</code>,
+    which is not user scope — confirmed by this session's own deploy — so Phase 2 migrates them to <code>settings.json</code>.</li>
 </ul>
 </body>
 </html>
