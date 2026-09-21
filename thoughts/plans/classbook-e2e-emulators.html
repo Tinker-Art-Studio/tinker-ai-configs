@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Classbook — e2e suite runs only against Firebase emulators</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Classbook — e2e suite runs only against Firebase emulators</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Running the Classbook Playwright suite never signs into, reads from, or writes to the production Firebase project (<code>tinker-hq-apps</code>) — it runs against local Auth + Firestore + Storage emulators seeded with a small, personal-data-free fixture set, and refuses to start in any other configuration.<br>
+  <strong>App:</strong> tinker-spring-curriculum (The Classbook) — <code>e2e/</code>, <code>playwright.config.js</code>, <code>js/firebase-config.js</code>, <code>js/firebase-data.js</code><br>
+  <strong>Branch:</strong> <code>claude/funny-nash-6aab81</code> (worktree)<br>
+  <strong>Incident:</strong> 2026-09-21 — the Firebase console showed ~19M billable reads in 24 h in bursts matching Playwright runs. Every test loads the real app, which reads <code>summerCamps_lessonData</code> (3,150 docs, subscribed twice), <code>summerCamps_materialsHub</code> (1,143), <code>summerCamps_projectDetails</code> (440) and more on every page load — 5–8k reads per page, 2M+ per full run. <code>writeTestDoc()</code> also lands TEST-prefixed docs in the production <code>summerCamps_lessonData</code> collection, and the Sep 21 backup still holds leaked <code>TEST_DATA_SAFETY_*</code> keys in <code>curriculum/lessonData</code> and 977 test entries in <code>curriculum/changeLog</code>.<br>
+  <strong>Risk:</strong> Low to production — nothing is deployed and the rules file is untouched. The one product-code change (<code>js/firebase-config.js</code> emulator hook) is inert unless a flag that only the test server injects is present. Medium to the suite: 161 tests must stay green on fixture data instead of production data.<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — pending browser review (executing under the user's explicit instruction; no production data or rules are touched by any phase)
+</div>
+
+<h2 id="research">Research findings (Phase 1 of the planning workflow — read-only)</h2>
+<div class="phase">
+  <ul>
+    <li><strong>How the app initialises Firebase:</strong> compat SDK 10.8.0 from gstatic (<code>index.html:472-475</code>). <code>initFirebaseApp()</code> in <code>js/firebase-config.js</code> is the shared init; <code>requireAuth()</code> (auth-guard.js) calls it first on every load. One second init path exists: <code>getFirebaseStorage()</code> in <code>js/firebase-data.js:964</code> calls <code>firebase.initializeApp(FIREBASE_CONFIG)</code> directly.</li>
+    <li><strong>How the tests reach Firebase today:</strong> <code>e2e/helpers/firestore.js</code> signs in with <code>signInWithEmailAndPassword</code> (TEST_EMAIL/TEST_PASSWORD from <code>.env.test</code>) against the real project through the client SDK; <code>e2e/helpers/login.js</code> does the same in the browser; <code>e2e/global-setup.js</code> saves that production session as Playwright storage state. No <code>connectFirestoreEmulator</code> / <code>FIRESTORE_EMULATOR_HOST</code> anywhere.</li>
+    <li><strong>Spec shape:</strong> one spec, <code>e2e/data-safety.spec.js</code> (161 tests, 32 describes). Every test creates its page with <code>browser.newPage()</code> and every test goes through <code>login(page)</code> (directly or via a helper) — <code>login()</code> is therefore a per-test choke point. Tests self-seed TEST-prefixed data and clean up; the only pre-existing data they depend on is the <code>summerCamps_curriculum/TEST_DATA_SAFETY_curriculum</code> camp doc (spec header), the test user's <code>users</code> doc, and the existence of the shared <code>curriculum/lessonData</code> and <code>curriculum/cutProjects</code> docs (helpers use <code>updateDoc</code>, which fails on a missing doc). Five <code>page.route('**/firebasestorage.googleapis.com/**')</code> patterns intercept Storage traffic.</li>
+    <li><strong>Boot requirements for the app under test:</strong> <code>loadSummerCampData()</code> throws if <code>summerCamps_curriculum</code> is empty → <code>lessonDataLoadedSuccessfully=false</code> → saves blocked. So the fixture must contain at least one camp. The CA grid renders a placeholder when a semester has no lessons, which satisfies the tests' <code>ca-grid-wrapper</code> readiness check.</li>
+    <li><strong>Emulator facts (verified by trial run):</strong> <code>firebase emulators:exec --config /Users/christiehubley/studio-hub/firebase.json</code> starts Firestore + Storage but <em>not</em> Auth ("make sure you have run firebase init" — there is no <code>emulators</code> block in studio-hub's firebase.json). A generated emulator-only <code>firebase.json</code> whose <code>firestore.rules</code>/<code>storage.rules</code> point at the studio-hub files by absolute path starts all three, loads the ONE rules file as-is, and exports <code>FIRESTORE_EMULATOR_HOST</code>, <code>FIREBASE_AUTH_EMULATOR_HOST</code>, <code>FIREBASE_STORAGE_EMULATOR_HOST</code> to the exec'd script. A <code>demo-</code> project ID needs no CLI login and the CLI itself states "attempts to access non-emulated services for this project will fail". Java 25 is installed; ports are free; no ADC credentials file exists on this machine.</li>
+    <li><strong>Rules involved (read only, not changed):</strong> <code>users</code>, <code>curriculum</code>, <code>summerCamps_*</code>, <code>backupStatus</code> — the seeded test user mirrors the production e2e account's profile — <code>role: 'staff'</code> with <code>appAccess: ['classbook','curriculum-admin']</code> (corrected in Phase 4, see Decisions) — so rules behave the same way.</li>
+    <li><strong>Existing tests:</strong> the suite itself (161 e2e tests). No unit tests for the helpers. Rules tests live in studio-hub and are unaffected.</li>
+  </ul>
+</div>
+
+<h2 id="design">Design</h2>
+<div class="phase">
+  <table>
+    <tr><th>Piece</th><th>Decision</th><th>Why</th></tr>
+    <tr><td>Project ID</td><td><code>demo-tinker-classbook</code> everywhere in test mode (browser + Node + emulator)</td><td>Firebase guarantees <code>demo-*</code> projects have no backend — even a mis-wired client cannot reach <code>tinker-hq-apps</code>. No CLI login needed.</td></tr>
+    <tr><td>Emulator ports</td><td>Dedicated: Firestore 8180, Auth 9190, Storage 9290, hub 4480, logging 4580, Firestore websocket 9250; UI disabled</td><td>Never collides with studio-hub's own rules tests (Firestore 8080) or a dev server.</td></tr>
+    <tr><td>Rules</td><td>Generated <code>e2e/.emulators/firebase.json</code> references <code>/Users/christiehubley/studio-hub/firestore.rules</code> and <code>storage.rules</code> by absolute path (dir overridable via <code>TINKER_STUDIO_HUB_DIR</code>)</td><td>Rules stay in ONE file, loaded as-is; studio-hub repo is not modified.</td></tr>
+    <tr><td>How the browser app learns about emulators</td><td>A tiny Node static server (<code>e2e/emulators/test-server.js</code>) serves the repo and injects <code>&lt;script&gt;window.__USE_EMULATORS__ = {...}&lt;/script&gt;</code> into every HTML response, built from the emulator env vars. <code>initFirebaseApp()</code> honours the flag.</td><td>Works for every page load regardless of how the context was created (<code>browser.newPage()</code>, reloads) — a query param could be dropped; <code>addInitScript</code> can't be attached to contexts the spec creates itself.</td></tr>
+    <tr><td>How Node helpers learn about emulators</td><td><code>FIRESTORE_EMULATOR_HOST</code>, <code>FIREBASE_AUTH_EMULATOR_HOST</code>, <code>FIREBASE_STORAGE_EMULATOR_HOST</code> — set by <code>emulators:exec</code>; required, never defaulted</td><td>Requirement (e): refuse to start when unset.</td></tr>
+    <tr><td>Test account</td><td>Created in the Auth emulator by the seed with fixed, non-secret credentials (<code>e2e-admin@classbook.test</code>); <code>.env.test</code> no longer used</td><td>Removes the production sign-in path entirely — the harness can no longer carry a real password.</td></tr>
+    <tr><td>Entry point</td><td><code>npm test</code> → <code>node e2e/emulators/run.js</code> → <code>firebase emulators:exec … "node inner.js"</code> → seed → <code>playwright test</code>. <code>--attach</code> mode reuses already-running emulators (two-terminal flow) after verifying they answer.</td><td>One command, deterministic fresh emulator state per run; same convention as studio-hub's <code>npm test</code>.</td></tr>
+    <tr><td>Fail-closed guards</td><td>(1) helpers throw without emulator env; (2) test server refuses to start without it; (3) global setup verifies emulators answer and the served page carries the flag before signing in; (4) <code>login()</code> asserts on every page that <code>firebase.app().options.projectId</code> is the demo project and aborts any request to Firebase production hosts; (5) Playwright <code>reuseExistingServer: false</code> on a dedicated port so a stray dev server can never be picked up.</td><td>Requirement (e) — impossible to hit production by accident.</td></tr>
+  </table>
+</div>
+
+<h2 id="phase1">Phase 1 — App: emulator mode behind a flag nothing in production sets</h2>
+<div class="phase" id="phase-1">
+  <h3>What it does</h3>
+  <p><code>js/firebase-config.js</code>: when <code>window.__USE_EMULATORS__</code> is present, <code>initFirebaseApp()</code> initialises with a demo-project config and calls <code>firebase.auth().useEmulator()</code>, <code>firebase.firestore().useEmulator()</code>, <code>firebase.storage().useEmulator()</code> before any other Firebase call. <code>js/firebase-data.js</code>'s <code>getFirebaseStorage()</code> routes through <code>initFirebaseApp()</code> instead of its own <code>initializeApp</code>, so there is exactly one init path.</p>
+  <h3>Acceptance</h3>
+  <ul>
+    <li>With no flag, the app behaves byte-for-byte as before (same config object, same calls).</li>
+    <li>With the flag, no request leaves the browser for <code>*.googleapis.com</code> Firebase endpoints.</li>
+  </ul>
+  <div class="bdd">Given: index.html served by Netlify or a plain local server (no injected flag)
+When: the app boots
+Then: initFirebaseApp() uses FIREBASE_CONFIG unchanged and never calls useEmulator()
+
+Given: the test server injected window.__USE_EMULATORS__ before js/firebase-config.js
+When: requireAuth() → initFirebaseApp() runs
+Then: the app is initialised as demo-tinker-classbook and Auth/Firestore/Storage all point at 127.0.0.1 emulator ports
+
+Given: the flag is present but the storage compat SDK is not loaded (e.g. user-admin.html)
+When: initFirebaseApp() runs
+Then: Auth and Firestore are connected to the emulator and the missing Storage SDK is skipped without throwing</div>
+</div>
+
+<h2 id="phase2">Phase 2 — Harness: runner, seed, fixtures, test server</h2>
+<div class="phase" id="phase-2">
+  <h3>What it does</h3>
+  <ul>
+    <li><code>e2e/emulators/config.js</code> — single source for project ID, ports, test account, studio-hub dir resolution, and a <code>requireEmulatorEnv()</code> guard.</li>
+    <li><code>e2e/emulators/run.js</code> — writes the emulator-only <code>firebase.json</code> into gitignored <code>e2e/.emulators/</code>, checks the rules files exist, spawns <code>firebase emulators:exec --project demo-tinker-classbook --only auth,firestore,storage</code>; <code>--attach</code> reuses running emulators (clears + re-seeds them) after verifying they answer.</li>
+    <li><code>e2e/emulators/inner.js</code> — runs inside exec: seed, then <code>playwright test</code> with pass-through args.</li>
+    <li><code>e2e/emulators/seed.js</code> — firebase-admin against the emulators only (refuses without emulator env / non-demo project): creates the test account, writes fixtures from <code>e2e/fixtures/seed/*.json</code>.</li>
+    <li><code>e2e/fixtures/seed/*.json</code> — one file per collection: <code>users</code>, <code>curriculum</code> (appData, lessonData, cutProjects, changeLog, prepData, futureProjects, diagnosticDismissals), <code>summerCamps_curriculum</code> (the TEST camp exactly as production has it + one synthetic "Fixture" camp), <code>summerCamps_schedule</code>, <code>summerCamps_materialsHub</code>, <code>summerCamps_projectDetails</code>, <code>summerCamps_lessonData</code>, <code>summerCamps_campComplete</code>, <code>summerCamps_prepHelpQueue</code>, <code>backupStatus</code>. Shapes follow the Sep 21 backup; all names, emails, uids and free text are synthetic.</li>
+    <li><code>e2e/emulators/test-server.js</code> — static server with HTML flag injection; refuses to start without emulator env.</li>
+  </ul>
+  <div class="safe">Firebase safety: the seed writes only to a <code>demo-</code> project through the emulator hosts; it never initialises firebase-admin without those env vars, never reads ADC or the CLI credential file, and the bucket/project names cannot resolve to production.</div>
+  <div class="bdd">Given: FIRESTORE_EMULATOR_HOST is unset
+When: node e2e/emulators/seed.js (or test-server.js) is run directly
+Then: it exits non-zero with a message naming the missing variables and pointing at `npm test` — nothing is initialised
+
+Given: the emulators are running with the studio-hub rules loaded
+When: the seed runs
+Then: the Auth emulator has the e2e-admin account, users/&lt;uid&gt; has role admin + classbook access, and every fixture collection is present
+
+Given: the studio-hub rules file is missing at the resolved path
+When: npm test starts
+Then: the runner refuses before starting any emulator and prints the path it looked at</div>
+</div>
+
+<h2 id="phase3">Phase 3 — Helpers and Playwright config: emulator-only, production path deleted</h2>
+<div class="phase" id="phase-3">
+  <h3>What it does</h3>
+  <ul>
+    <li><code>e2e/helpers/firestore.js</code>: drop the production web config and TEST_EMAIL/TEST_PASSWORD; build the client SDK app from the demo config, call <code>connectAuthEmulator</code>/<code>connectFirestoreEmulator</code>/<code>connectStorageEmulator</code> from the required env vars, sign in as the seeded account. Export <code>STORAGE_API_GLOB</code> for the spec's Storage interception.</li>
+    <li><code>e2e/helpers/login.js</code>: fixed seeded credentials; before <code>goto('/')</code> abort any request to Firebase production hosts; after load assert the page is in emulator mode against the demo project — throw otherwise.</li>
+    <li><code>e2e/global-setup.js</code>: preflight (env present, emulators answer, served page carries the flag) then the existing one-sign-in-per-run flow.</li>
+    <li><code>playwright.config.js</code>: no dotenv; <code>webServer</code> = test server on a dedicated port with <code>reuseExistingServer: false</code>.</li>
+    <li><code>e2e/data-safety.spec.js</code>: the five Storage route patterns use <code>STORAGE_API_GLOB</code>; header comment updated. No test logic changes.</li>
+    <li>Delete <code>.env.test.example</code>; remove <code>dotenv</code> usage.</li>
+  </ul>
+  <div class="bdd">Given: someone runs `npx playwright test` directly (no emulators, no env)
+When: Playwright starts the web server
+Then: the test server refuses to start, the run fails before a single test executes, and the message says to use `npm test`
+
+Given: a dev server is already listening on the test port
+When: npm test starts
+Then: Playwright reports the port is in use and stops — the stray server is never reused
+
+Given: the served page somehow lacks window.__USE_EMULATORS__ (hypothetical regression)
+When: login(page) loads '/'
+Then: login() throws "not in emulator mode" before any test action, and the production hosts were already blocked at the network layer</div>
+</div>
+
+<h2 id="phase4">Phase 4 — Full suite green on the emulators; docs</h2>
+<div class="phase" id="phase-4">
+  <p>Run <code>npm test</code>; fix fixture gaps (never test logic, unless a test encoded a production-only assumption — log each in the Decisions log). Update <code>CLAUDE.md</code>, <code>AGENTS.md</code> (Test requirements + Credential handling: the stop-gap note becomes "fixed"), add <code>e2e/README.md</code> with the one-command and two-terminal flows.</p>
+  <div class="bdd">Given: a clean checkout with Java + firebase-tools installed and studio-hub present
+When: npm test
+Then: all 161 tests pass, zero requests reached production, and the Firebase console shows no read burst for the run window</div>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<div class="phase">
+  <table>
+    <tr><th>Check</th><th>Answer</th></tr>
+    <tr><td>Rules updated?</td><td>No rules change. No new production collection. The emulator loads <code>/Users/christiehubley/studio-hub/firestore.rules</code> unchanged.</td></tr>
+    <tr><td>Snapshot before bulk ops?</td><td>N/A — the only bulk write is the seed into an empty, throwaway emulator.</td></tr>
+    <tr><td><code>updateDoc</code> not <code>setDoc</code>?</td><td>Helper semantics unchanged (they already use field-path updates on shared docs). Seed uses full <code>set</code> on purpose — empty emulator, complete fixture docs.</td></tr>
+    <tr><td>Empty fields stripped?</td><td>Fixture JSON contains no <code>undefined</code>; empty strings appear only where the app itself writes them (lesson content fields).</td></tr>
+    <tr><td>Deploys?</td><td>None. No <code>firebase deploy</code>, no <code>netlify deploy</code>.</td></tr>
+    <tr><td>Credential files?</td><td>Never read. firebase-admin is only initialised with emulator hosts set; no ADC file exists on this machine and none is referenced.</td></tr>
+  </table>
+</div>
+
+<h2 id="completeness">Completeness check — interrupted mid-way</h2>
+<div class="phase">
+  <ul>
+    <li>After Phase 1 only: production app unchanged (flag never set); the old suite still runs against production exactly as before — no worse than today.</li>
+    <li>After Phase 2 only: new files unused by the suite; harmless.</li>
+    <li>After Phase 3 only: the suite can no longer reach production but may have fixture-gap failures. That is the intended fail direction.</li>
+    <li>Each phase is its own commit on <code>claude/funny-nash-6aab81</code>; nothing is deployed at any point.</li>
+  </ul>
+</div>
+
+<h2 id="resume">Resume instructions</h2>
+<div class="phase">
+  <ol>
+    <li><code>cd /Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/funny-nash-6aab81 && git log --oneline -8</code> — the last "e2e emulators phase N" commit tells you where to pick up.</li>
+    <li>Re-read this plan's phase for N+1 and the Decisions log below.</li>
+    <li><code>npm test</code> runs everything (Java + <code>firebase</code> CLI required). <code>npm test -- --grep "Test 1"</code> passes args to Playwright.</li>
+    <li>Emulator logs: <code>e2e/.emulators/*.log</code>. Playwright report: <code>playwright-report/</code>.</li>
+  </ol>
+</div>
+
+<h2 id="decisions">Decisions log (append-only)</h2>
+<div class="phase" id="decisions-log">
+  <ul>
+    <li><strong>2026-09-21</strong> — Generate an emulator-only <code>firebase.json</code> in the Classbook repo (gitignored, absolute rule paths) rather than adding an <code>emulators</code> block to studio-hub's <code>firebase.json</code>: keeps this change inside one repo and leaves the Firebase project root untouched. Revisit if a second app needs the same harness (then a shared block in studio-hub is the better home).</li>
+    <li><strong>2026-09-21</strong> — Inject the flag server-side (test server) instead of <code>addInitScript</code>: the spec creates 161 contexts via <code>browser.newPage()</code>, which the config's <code>use</code> cannot attach init scripts to; the server path covers every load unconditionally.</li>
+    <li><strong>2026-09-21</strong> — Fixed emulator credentials replace <code>.env.test</code>: with no env-supplied password there is nothing in the harness that could ever be a production secret.</li>
+    <li><strong>2026-09-21</strong> — Dedicated ports (8180/9190/9290) instead of Firebase defaults so this suite and studio-hub's rules tests can run at the same time.</li>
+    <li><strong>2026-09-21 (Phase 4)</strong> — The seeded account mirrors the REAL production e2e account's profile — <code>role: 'staff'</code>, <code>appAccess: ['classbook','curriculum-admin']</code>, <code>studios: ['tinker']</code> — not an admin as first drafted. The spec's <code>backupStatus</code> smoke test encodes exactly that ("real profile of a non-manager curriculum admin") and expects the manager-only permission note; an admin fixture made it fail. A separate <code>e2e-manager-uid</code> fixture user (role manager) is seeded for future manager-path tests.</li>
+    <li><strong>2026-09-21 (Phase 4)</strong> — One assertion in the spec encoded a production-only fact: <code>expect(u1url).toMatch(/^https:\/\//)</code> (the Storage emulator hands out <code>http://127.0.0.1</code> download URLs). Replaced with <code>/^https?:\/\//</code> plus a check that the URL's object path is the path that was uploaded — stricter about what matters, indifferent to the host.</li>
+    <li><strong>2026-09-21 (Phase 4 done)</strong> — All four phases executed and committed on <code>claude/funny-nash-6aab81</code> (73c4f44, 21fe8d2, 9d0faec, 318d841). Three full runs: 158/161 → 160/161 → <strong>161/161</strong> (3.8 min each), zero attempted production requests (the <code>login()</code> network guard logged nothing). The two-terminal flow (<code>npm run emulators</code> + <code>npm run test:attach</code>) verified, re-seed idempotent. Nothing deployed. <code>execution-ready</code> stays false until Christie's browser review — the plan was executed under her explicit instruction because no phase touches production data or rules.</li>
+    <li><strong>2026-09-21</strong> — Note for the studio-hub deploy-guard work in progress (another session, uncommitted <code>scripts/deploy-rules.sh</code> etc.): the generated <code>e2e/.emulators/firebase.json</code> names the rules files by absolute path so the emulators can load them. It is gitignored, regenerated per run, and only ever passed to <code>emulators:exec</code>/<code>emulators:start</code> — but a <code>firebase deploy --config</code> pointed at it would be the "deliberate bypass" that predeploy-check's comment already acknowledges. Not a new hole (any hand-written firebase.json is the same), just a known one to keep in view.</li>
+    <li><strong>2026-09-21</strong> — Out of scope, to report to Christie: production <code>curriculum/lessonData</code> holds leaked <code>TEST_DATA_SAFETY_semester</code>, <code>TEST_DATA_SAFETY_other</code> and <code>test-data-safety-r4-11-d2c60840</code> keys, and <code>curriculum/changeLog.TEST_DATA_SAFETY_semester</code> holds 977 entries. Cleaning them is a production write and needs its own approval.</li>
+  </ul>
+</div>
+
+</body>
+</html>
