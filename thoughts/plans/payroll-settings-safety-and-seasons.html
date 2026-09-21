@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Payroll Tool — Settings safety net, editable percentages, per-period seasons</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  h4 { font-size: .92rem; margin: 1rem 0 .3rem; color: #374151; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .decision { background: #eff6ff; border-left: 4px solid #2563eb; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #dcfce7; color: #166534; }
+  ul { padding-left: 1.3rem; } li { margin: .2rem 0; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Payroll Tool — Settings safety net, editable percentages, per-period seasons</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> The General Manager can maintain the Payroll Tool's Settings herself — employees, rates, split percentages, QB classes and account mappings, for both school year and summer — without needing Christie, and without any single click being able to wipe or silently corrupt the shared configuration.<br>
+  <strong>App:</strong> payroll-tool (Tinker's Payroll) — <code>index.html</code> (single ~5,300-line page), <code>js/auth-guard.js</code>, <code>js/firebase-config.js</code>. Firestore: one doc <code>payroll/appData</code> (<code>settings</code> + <code>session</code>), manager+ only, hard-locked (no <code>appAccess</code> path).<br>
+  <strong>Context:</strong> Created Sep 21, 2026 from the GM's message: she ran payroll with manually corrected percentages/classes because Settings were stale, and asked (1) for a Summer Camp vs. School Year version of settings, (2) whether "AI input" is the easiest way to set up a new semester, and (3) whether it's safe for her to be in Settings at all. Research (read-only, Sep 21) found: a School Year/Summer toggle already exists but only for split rules; salaried percentages are display-only; the Accounts tab silently loses every edit; cloud-save failures are hidden behind a green "Saved!" toast; and there is no history, undo, export, or backup of settings.<br>
+  <strong>Risk:</strong> MEDIUM — financial configuration, one shared document, no tests in this repo today. Every phase touches the Firestore <code>settings</code> map; Phase 1 adds a new subcollection (rules change, full gate). No bulk delete/migration anywhere in this plan. No change to locked timeclock totals or the Tinker Ticker contract.<br>
+  <span class="status-tag not-ready">execution-ready: false</span> — <strong>Plan drafted Sep 21, 2026. D1–D7 all resolved by Christie the same day. Next: second-model plan review → mark Phase 1 execution-ready.</strong>
+</div>
+
+<h2 id="context">Context — what the app is today (verified in code Sep 21, 2026)</h2>
+<div class="phase">
+  <ul>
+    <li><strong>One shared config, saved on every change.</strong> <code>saveConfig()</code> (<code>index.html:1616</code>) is wired to ~40 <code>onchange</code>/<code>oninput</code> handlers plus the "Save Changes" buttons. Each call writes localStorage then <code>db.doc('payroll/appData').set({settings}, {merge:true})</code>. On load, Firestore wins over localStorage (<code>loadConfigFromFirestore</code>, <code>:1577</code>). So any manager's edit is immediately everyone's edit; there is no draft or personal sandbox.</li>
+    <li><strong>Cloud save failures are invisible.</strong> <code>saveSettingsToFirestore</code> (<code>:1670</code>) is fire-and-forget with <code>console.warn</code> only; <code>showSaveConfirmation()</code> shows "✔ Settings saved!" regardless. A failed write leaves localStorage and Firestore diverged with no signal.</li>
+    <li><strong>No history, undo, export, or import.</strong> "Reset Rules" and "Remove employee" have a <code>confirm()</code>; "Remove" on a QB class (<code>renderClassList</code>, <code>:4640</code>) has none and does not check whether employees still reference the class.</li>
+    <li><strong>"Seed to Firestore" (Data tab, <code>:1759</code>)</strong> overwrites the cloud doc — <em>settings and the in-progress pay-period session</em> — with whatever is in the current browser's localStorage. Visible to every manager.</li>
+    <li><strong>Accounts tab edits are lost (bug).</strong> <code>renderAccountMapping</code> (<code>:4389</code>) writes <code>CONFIG.classAccountMap</code> and calls <code>saveConfig()</code>, but <code>saveConfig</code>'s <code>fullConfig</code> (<code>:1632-1646</code>) omits <code>classAccountMap</code> and neither loader restores it. Every account-mapping change evaporates on reload, and a class added via "+ Add Class" can never be given an account. Likely a direct cause of "classes are not accurate".</li>
+    <li><strong>Season toggle exists — for split rules only.</strong> <code>CONFIG.splitSeason</code> ('schoolYear' | 'summer'), buttons on the Split Percentages tab (<code>:783-788</code>), per-employee <code>splitRules</code> vs. <code>summerSplitRules</code> with "Copy from School Year" / "Build from Scratch" (<code>seedSummerRules</code>, <code>initSplitRules</code>). <code>getActiveSplitRules(emp)</code> (<code>:4866</code>) falls back to school-year rules when no summer rules exist. The toggle is a <em>global, shared</em> setting read at Pull Hours time (<code>processHours</code>, <code>:2632</code>) — nothing ties it to the pay period's dates. It also gates the Camp Pay step (<code>updateCampPayNavVisibility</code>, <code>:1801</code>).</li>
+    <li><strong>What the toggle does <em>not</em> switch:</strong> <code>rates</code> (per-class pay rates), <code>salaryAllocations</code> (Christie 40/60, Anika 90/10), <code>scheduleNotes</code>, <code>campTeacher</code>/<code>campRate</code>.</li>
+    <li><strong>Salaried percentages are display-only.</strong> The "Salaried — Percentage" card (<code>:4938-4952</code>) renders <code>salaryAllocations</code> as text; the employee modal (<code>editEmployee</code>, <code>:4503</code>) has no field for them. Editable only in code.</li>
+    <li><strong><code>directMappingOverrides</code> is dormant.</strong> The Tinker Ticker pull sets <code>jobHours: {}</code> and forces Total Hours Mode (<code>:2363</code>); the override lookup (<code>:2808</code>, <code>:2856</code>) only runs over job columns, which no longer exist. Legacy from the detailed-timesheet .xlsx flow. Not made editable by this plan.</li>
+    <li><strong>Settings changes do not retroactively alter an in-progress period.</strong> Review/Summary read <code>APP_STATE.reviewData</code> computed at Pull Hours time; new settings apply on the next pull. (Good — the GM cannot break the period she is mid-way through by editing Settings.)</li>
+    <li><strong>No AI anywhere.</strong> <code>@anthropic-ai/sdk</code> sits unused in <code>package.json</code>; there are no Netlify functions and no references in <code>index.html</code>.</li>
+    <li><strong>Tests:</strong> none in this repo. Firestore rules tests live in <code>/Users/christiehubley/studio-hub/rules.test.js</code> (a "Finance — payroll + bookkeeping" block covers <code>payroll/{docId}</code>). Rule for a subcollection does <em>not</em> exist — <code>match /payroll/{docId}</code> does not cascade.</li>
+    <li><strong>Roles:</strong> <code>isManagerOrAbove()</code> = role in ['admin','manager']; <code>isAdmin()</code> = 'admin'. <code>authCurrentUser.role</code> is available in the page after <code>requireAuth()</code>.</li>
+  </ul>
+</div>
+
+<h2 id="decisions">Decisions (D1–D7) — all RESOLVED Sep 21, 2026</h2>
+<div class="phase">
+  <div class="decision"><strong>D1 — RESOLVED Sep 21, 2026 (Christie: "yes, v1 for the D1 answer").</strong> Season becomes a property of the pay period, not only a global toggle — "Start New Pay Period" gains a Season field (School Year / Summer), auto-suggested from the start date against a configurable summer window (D3) and editable before starting. <code>APP_STATE.payPeriod.season</code> is what Pull Hours and Camp Pay use. The Split Percentages toggle stays, but its meaning narrows to "which season's rules am I <em>viewing/editing</em>" — so the GM editing summer rules in September can no longer change how a school-year period is pulled. Restored sessions without a <code>season</code> fall back to <code>CONFIG.splitSeason</code> (today's behaviour). <em>Alternative rejected:</em> keep the global toggle and just show a "you're in the wrong season" banner — still lets an edit-session flip production behaviour.
+  <br><br><strong>D1b — a period that spans both seasons (Christie, Sep 21: "what if the pay period covers 2 different seasons?").</strong> With semi-monthly periods and summer ≈ May 26 – Aug 11, two periods a year straddle (May 16–31, Aug 1–15). <em>Proposed v1:</em> one season per period, suggested by whichever season covers more <em>weekdays</em>; when the period straddles, Pull Hours shows a banner naming the split ("School Year May 16–25 · Summer May 26–31 — using School Year") and lists the employees whose summer rules or summer salary allocations differ from school-year, so their Review cards get a manual look (the Review page already supports moving hours between classes). <em>v2 (not in this plan unless chosen):</em> split the period at the boundary, allocate each sub-range with its own season's rules from actual Ticker hours per date, sum — more accurate, but overtime/regular and day-count logic must run per sub-range and it needs its own tests. Recommendation: v1 now; revisit v2 after one summer. <strong>RESOLVED Sep 21, 2026 — Christie: v1.</strong></div>
+  <div class="decision"><strong>D2 — RESOLVED Sep 21, 2026 (Christie: "yes I think so").</strong> Which config becomes seasonal — only <em>allocation</em> config — <code>splitRules</code> (already) and <code>salaryAllocations</code> (new <code>summerSalaryAllocations</code>, falls back to school-year when absent, same pattern as split rules). <code>rates</code> stay year-round: they are a lookup table (<code>getEmpRate</code>, <code>:4683</code>), so a summer-only class rate (e.g. Kaitlyn → Tinker Camp:Summer Camp) can simply be added permanently and is harmless in school year because no hours are allocated to it. <code>directMappingOverrides</code> is dormant and is left alone. <em>If a rate genuinely differs by season for the same class</em>, that's a later addition (seasonal rate rows) — not assumed here.</div>
+  <div class="decision"><strong>D3 — RESOLVED Sep 21, 2026 (Christie: "yes").</strong> Summer window default — <code>CONFIG.summerWindow = { start: '05-25', end: '08-15' }</code> (month-day), editable on the Split Percentages tab next to the season toggle. A pay period whose <em>start date</em> falls inside the window suggests Summer. Based on Summer Camp 2026 running May 26 – Aug 11. Christie to confirm or adjust.</div>
+  <div class="decision"><strong>D4 — RESOLVED Sep 21, 2026 (Christie: remove it entirely).</strong> "Seed to Firestore" — the button, its Data-tab card text, and <code>seedToFirestore()</code> — is deleted in Phase 1. With append-only history plus Export/Import there is no remaining job for a raw localStorage→cloud overwrite, and it was the one control that could wipe both settings and the in-progress pay-period session in a single click. <em>Original proposal (superseded):</em> hide it for non-admin.</div>
+  <div class="decision"><strong>D5 — RESOLVED Sep 21, 2026 (Christie: "your plan is fine").</strong> History is append-only — rule: managers can <code>read</code> and <code>create</code> in <code>payroll/appData/settingsHistory</code>; nobody can update or delete (not even admin, from the app). Volume is low (one entry per editing burst) and a settings snapshot is ~30–40 KB, so no pruning in v1. If pruning is ever wanted it is a deliberate rules change later.</div>
+  <div class="decision"><strong>D7 — RESOLVED Sep 21, 2026.</strong> <strong>Archive / restore employees (Christie, Sep 21: "my employee list is looking very cluttered … a few might come back next summer, so might be worth having a way to restore like I do in Manage Team").</strong> Proposed, mirroring Studio Hub's Manage Team (<code>archived</code>, <code>archivedAt</code>, <code>archivedBy</code>, "Show archived (N)", Restore): <strong>Archive</strong> replaces Remove as the per-row action on Settings → Employees — a flag flip that keeps rates, split rules, summer rules and notes; the table shows active people with a "Show archived (N)" toggle and greyed rows with <strong>Restore</strong>; archived people are hidden from Split Percentages, Camp Pay and the tips dropdowns; <strong>Pull Hours</strong> warns "<em>X</em> is archived — Restore in Settings to process their hours" when an archived person has hours (the came-back-for-summer case) instead of silently matching or skipping; <strong>Remove permanently</strong> exists only on already-archived employees, behind a confirm. Ties into the Ticker roster check: a payroll employee not active in Ticker gets an <strong>Archive</strong> button in that list (the declutter tool); an archived payroll employee who is active in Ticker gets <strong>Restore</strong> instead of Add (no duplicates). <strong>Plus bulk archive:</strong> "Archive everyone not active in Tinker Ticker" with a preview list and confirm — safe because archive is non-destructive and history-logged. No new collection, no rules change. Goes into Phase 2 with the roster check. <strong>RESOLVED Sep 21, 2026 — Christie: yes to archive/restore, yes to the bulk option.</strong></div>
+  <div class="decision"><strong>D6 — RESOLVED Sep 21, 2026 (Christie, plan comment 1: AI/spreadsheet-driven editor not needed now — "we usually only change/add one person at a time, or in January most people get a pay raise, but it's pretty quick to go through all at once." Asked instead: can a new employee added in Tinker Ticker also be added here?).</strong> Yes, and it is small: the Payroll Tool already reads Ticker's roster doc <code>timeclock_settings/employees</code> on every Pull Hours and already warns "<em>X</em> not found in employee configuration" (<code>index.html:2129</code>). A Ticker roster entry carries only <code>{ id, name, claimedBy, active, pin }</code> — no position, rates or classes — so the sync creates a <em>stub</em> payroll employee (name, hourly, no rates) flagged "needs rates" until someone fills in pay. Two entry points sharing one helper, both <strong>pull-based from the payroll side</strong> (manager-only app reading Ticker; Ticker never writes into the hard-locked payroll doc): a "Check Tinker Ticker roster" button on Settings → Employees, and an "Add to Settings" button on the Pull Hours warning. Added to Phase 2. Scope otherwise: Phases 1–5 (after D7 added archive/restore and phases were renumbered); Phase 6 stays a sketch; seasonal rate rows and dormant <code>directMappingOverrides</code> cleanup remain out.</div>
+</div>
+
+<h2 id="phases">Phases</h2>
+
+<div class="phase">
+  <h3>Phase 1 — Settings safety net (do before the next payroll round)</h3>
+  <span class="status-tag not-ready">execution-ready: false</span>
+  <p><strong>Outcome:</strong> Nothing the GM can do in Settings is unrecoverable, nothing fails silently, and the Accounts tab actually saves.</p>
+
+  <h4>Acceptance criteria (user outcomes)</h4>
+  <ol>
+    <li><strong>Accounts tab persists.</strong> Change a QB class's payroll account, reload on another device → the change is there. A class added via "+ Add Class" can be given an account and it sticks. Classes with no saved mapping keep their code default.</li>
+    <li><strong>Every edit is recorded.</strong> Data tab shows a "Settings history" list: when, who (email), and a one-line summary ("Kaitlyn: split rules changed", "QB classes: +1 (Tinker Camp:Teen Camp)", "Accounts: 2 mappings changed"). Rapid edits within a few seconds collapse into one entry.</li>
+    <li><strong>The pre-session state is always restorable.</strong> The first edit of a session first records a "baseline" entry of the settings as they were when the app loaded (skipped if the newest history entry already matches).</li>
+    <li><strong>One-click restore.</strong> Any entry has "Restore" → confirm (shows the summary of what will change vs. current) → settings revert and the restore itself appears as a new entry. Nothing is deleted from history.</li>
+    <li><strong>Export / Import.</strong> "Export settings" downloads <code>payroll-settings-YYYY-MM-DD.json</code>. "Import settings" opens a file picker, shows a preview (employee count, class count, split-rule count, and a change summary vs. current), then applies on confirm. A malformed file is rejected with a specific message and nothing changes.</li>
+    <li><strong>Cloud-save failures are loud.</strong> If the Firestore write fails, the green toast does not appear; instead a sticky red banner says "Saved in this browser only — cloud save failed. [Retry]". Retry re-saves; success clears the banner. The toast reads "Saving…" until the write resolves.</li>
+    <li><strong>Seed is gone (D4).</strong> The Data tab no longer offers "Seed to Firestore"; <code>seedToFirestore()</code> is removed from the code. The Data tab holds Settings history, Export and Import only.</li>
+    <li><strong>Class removal is safe.</strong> Removing a QB class still referenced by any employee (rates, split allocations, remainder, salary allocations, camp class) is blocked with a message naming the employees. Removing an unreferenced class asks for confirmation.</li>
+  </ol>
+
+  <h4>BDD scenarios</h4>
+  <div class="bdd">Happy path — history + restore
+Given the GM opens Settings and changes Kaitlyn's Saturday Birthday hours from 8 to 6
+When 4 seconds pass with no further edits
+Then settingsHistory has a new "baseline" entry (pre-session state) followed by an "edit" entry "Kaitlyn: split rules changed", both with savedBy = her email
+And clicking Restore on the baseline entry (and confirming) sets Saturday back to 8 on every device after reload
+And a further "restore" entry appears in the history
+
+Happy path — Accounts tab
+Given the GM sets "Tinker Camp:Summer Camp" → 6624 on the Accounts tab
+When Christie reloads the app on her laptop
+Then the Accounts tab shows 6624 for that class and Summary/Excel export uses 6624
+
+Edge — rapid edits collapse
+Given the GM types a 12-character accountant name (12 oninput saves)
+When she stops typing
+Then exactly one history entry is written for that burst
+
+Edge — import preview
+Given a JSON export from last month is imported
+When the preview shows "Employees: 20 → 19 (−Cate), split rules changed: Kaitlyn, Allie"
+And the GM cancels
+Then nothing changes and no history entry is written
+
+Failure — cloud save fails
+Given Firestore rejects the write (offline, or rules regression)
+When the GM edits a rate
+Then no green "Settings saved!" toast appears; the red sticky banner appears; localStorage still has the edit
+And clicking Retry after connectivity returns succeeds and clears the banner
+
+Failure — malformed import
+Given a file that is not JSON, or JSON without an employees array
+When imported
+Then a message names the problem ("Not a settings export: missing employees") and CONFIG is untouched
+
+Failure — class in use
+Given "Tinker Party:Birthday" is referenced by Kaitlyn, Allie, Mackenzie, Cate
+When the GM clicks Remove on it
+Then removal is blocked with those four names listed</div>
+
+  <h4>Implementation notes</h4>
+  <ul>
+    <li><strong>Accounts persistence:</strong> add <code>classAccountMap</code> to <code>fullConfig</code> in <code>saveConfig</code>; in both loaders merge <code>CONFIG.classAccountMap = { ...getDefaultConfig().classAccountMap, ...saved.classAccountMap }</code> (saved wins per key; strip empty-string values before writing per the invariant — an explicit "(none)" choice is stored as absence, not '').</li>
+    <li><strong>History subcollection:</strong> <code>payroll/appData/settingsHistory/{autoId}</code> = <code>{ settings, hash, savedAt: serverTimestamp, savedBy, kind: 'baseline'|'edit'|'restore'|'import', summary, configVersion }</code>. Written with <code>collection(...).add()</code>. Trailing debounce 4 s; flush attempt on <code>visibilitychange → hidden</code>. The main <code>settings</code> write is <em>not</em> debounced — only the history snapshot is.</li>
+    <li><strong>Baseline:</strong> at load, fetch the newest history entry (orderBy savedAt desc, limit 1) and keep <code>loadedSettingsJson</code>. On the first <code>saveConfig</code> of the session, if <code>hash(loadedSettingsJson) !== newest.hash</code>, write a baseline entry first, then schedule the edit entry.</li>
+    <li><strong>Pure helpers → new file <code>js/settings-helpers.js</code></strong> (plain script defining globals, with a <code>module.exports</code> guard so <code>node --test</code> can import it): <code>settingsHash(obj)</code>, <code>summarizeSettingsChange(prev, next)</code>, <code>validateSettingsImport(obj)</code>, <code>classReferences(config, className)</code>, <code>mergeClassAccountMap(defaults, saved)</code>.</li>
+    <li><strong>Seed removal:</strong> delete the button, the Data-tab copy that describes it, and <code>seedToFirestore()</code> (<code>:1759</code>). <code>authCurrentUser</code> stays available for history <code>savedBy</code>.</li>
+    <li><strong>Save-failure surfacing:</strong> <code>saveSettingsToFirestore</code> returns the promise; <code>saveConfig</code> awaits it for the toast/banner only (callers stay sync-safe). Banner element with Retry → <code>saveConfig()</code>.</li>
+    <li><strong>Firestore rules (studio-hub, same commit as the history write):</strong>
+      <div class="bdd">match /payroll/{docId}/settingsHistory/{histId} {
+  allow read, create: if isManagerOrAbove();
+  // append-only: no update, no delete (D5)
+}</div>
+      Rules tests to add to <code>rules.test.js</code> "Finance" block <em>before</em> the rule (red first): manager can create + read history; admin can; staff with <code>appAccess: ['payroll']</code> cannot read or create; unauthenticated cannot; manager cannot update or delete an existing entry.</li>
+    <li><strong>Unit tests (new, this repo):</strong> <code>settings-helpers.test.js</code> via <code>node --test</code> covering summary strings, import validation (valid / not-JSON-shape / missing employees / employee missing id), class-reference detection across every reference site, and account-map merge. Add <code>"test": "node --test"</code> to <code>package.json</code>.</li>
+  </ul>
+  <div class="safe"><strong>Firebase gates for this phase:</strong> new subcollection → rule + tests in <code>/Users/christiehubley/studio-hub/firestore.rules</code> in the same commit; deploy only after <code>npm test</code> is green in studio-hub, after commit, and only after Christie says "approved to change firebase". History writes are creates (no partial update). The settings write keeps <code>set(..., {merge:true})</code> with a full <code>fullConfig</code> object as today (intentional full replace of the map; compliant with the invariant). Spot-check one history doc in the Console after the first real edit.</div>
+  <div class="note"><strong>Independent implementation review</strong> of the Phase 1 diff (per <code>/second-model-review</code>) before Phase 2 starts — this phase writes Firestore.</div>
+</div>
+
+<div class="phase">
+  <h3>Phase 2 — Employee roster: archive / restore, and stay in step with Tinker Ticker</h3>
+  <span class="status-tag not-ready">execution-ready: false</span>
+  <p><strong>Outcome:</strong> The Employees list shows only current staff; former staff are archived (not deleted) and come back with one click, pay setup intact; and when someone new is added in Tinker Ticker, adding them to payroll is one click, not a re-typing job.</p>
+
+  <h4>Acceptance criteria (user outcomes)</h4>
+  <ol>
+    <li><strong>Archive (D7).</strong> Each employee row has Archive (replacing Remove). Archiving keeps everything about the employee and records "Employees: archived Cate Keifer" in history. The table shows active employees; "Show archived (N)" reveals archived rows, greyed, each with Restore.</li>
+    <li><strong>Restore.</strong> One click; the employee reappears with all rates, split rules, summer rules and notes exactly as before; history records it.</li>
+    <li><strong>Hidden where it matters.</strong> Archived employees do not appear on Split Percentages cards, in Camp Pay, in the birthday/private-event tip staff dropdowns, or in the Ticker roster check's "not in Ticker" list.</li>
+    <li><strong>Pull Hours is explicit.</strong> If an archived employee has hours in the period, Pull Hours shows a warning "<em>X</em> is archived — Restore in Settings to process their hours" with a Restore button; their hours are not allocated until restored. Nothing is silently matched or dropped.</li>
+    <li><strong>Remove permanently</strong> is available only on archived employees, behind a confirm naming the employee; it is recorded in history (and therefore recoverable via Restore-from-history).</li>
+    <li><strong>Ticker roster check (D6).</strong> Settings → Employees has "Check Tinker Ticker roster": it lists (a) active Ticker employees with no payroll match — each with Add (or <strong>Restore</strong> if an archived payroll employee matches by name); (b) active payroll employees with no active Ticker entry — each with <strong>Archive</strong>. Name matching is the same rule Pull Hours uses.</li>
+    <li><strong>Add from Pull Hours.</strong> The existing "<em>X</em> not found in employee configuration" warning gains an "Add to Settings" button; Add creates a payroll employee (first/last name from the Ticker name, hourly, no rates) and opens the edit modal so rates can be entered immediately.</li>
+    <li>Employees added this way show a "needs rates" badge in the Employees table and on their split card until at least one rate &gt; 0 exists; Pull Hours raises a review alert for them.</li>
+    <li><strong>Bulk archive.</strong> The roster check offers "Archive all <em>N</em> not active in Tinker Ticker": it shows the exact list first, archives on confirm, and writes one history entry naming everyone archived. Restore-from-history reverses the whole batch; individual Restore reverses one person.</li>
+    <li>Nothing is ever created, archived or removed automatically — every action is an explicit click, each recorded in Settings history.</li>
+  </ol>
+
+  <h4>BDD scenarios</h4>
+  <div class="bdd">Happy — declutter
+Given 8 payroll employees are no longer active in Tinker Ticker
+When the GM runs "Check Tinker Ticker roster" and clicks Archive on each
+Then the Employees table shows only current staff, "Show archived (8)" appears, and history has 8 "archived" entries
+
+Happy — back for summer
+Given Cate Keifer is archived and clocks hours in Jun 16–30
+When the GM pulls hours
+Then Cate appears as "archived — Restore to process", her hours are excluded from Review until Restore is clicked, and after Restore + re-pull she is Matched with her old Birthday rate intact
+
+Happy — new hire in Ticker
+Given "Jane Doe" was added to Tinker Ticker's roster last week and is not in payroll settings
+When the GM clicks "Check Tinker Ticker roster"
+Then Jane Doe is listed under "In Tinker Ticker, not in payroll" with an Add button
+And clicking Add creates Jane (hourly, no rates), opens her edit modal, and writes a history entry
+
+Edge — archived person is active in Ticker
+Given Cate Keifer is archived in payroll but active in Ticker
+When the roster check runs
+Then Cate is offered Restore, not Add — no duplicate employee can be created from this panel
+
+Edge — name variants
+Given payroll has "Lexa Hurt" and Ticker has "Alexa Hurt"
+When the roster check runs
+Then Lexa is treated as matched (findConfigEmployee's existing alias rule), not offered as a new add
+
+Edge — archived employee referenced by a QB class
+Given "Tinker Party:Birthday" is used only by archived employees
+When the GM tries to remove that class
+Then removal is still blocked (archived employees' config counts as a reference) with the names shown as "(archived)"
+
+Happy — bulk archive
+Given 8 payroll employees are not active in Ticker
+When the GM clicks "Archive all 8 not active in Tinker Ticker" and confirms the listed names
+Then all 8 are archived, one history entry lists them, and "Show archived (8)" appears
+
+Edge — bulk archive excludes salaried/owner mismatches
+Given Christie (Owner, salaried) has no Ticker roster entry
+When the bulk list is previewed
+Then salaried employees are shown separately as "not in Ticker (salaried — left alone)" and are not included in the batch
+
+Failure — Ticker roster unreadable
+Given the roster read fails (offline or rules regression)
+When the GM clicks the check
+Then a message says the roster could not be read and nothing in payroll settings changes
+
+Failure — remove without archive
+Given an active employee
+Then no "Remove permanently" control exists for them; only Archive</div>
+
+  <h4>Implementation notes</h4>
+  <ul>
+    <li><strong>Archive fields</strong> on the employee object: <code>archived: true</code>, <code>archivedAt</code> (ISO), <code>archivedBy</code> (email). Restore deletes all three (strip-empty invariant — no <code>archived: false</code> left behind). Helper <code>activeEmployees()</code> = <code>CONFIG.employees.filter(e => !e.archived)</code>, used by <code>renderEmployeeTable</code> (with toggle), <code>renderSplitCards</code>, Camp Pay teacher lists (<code>:3883</code>, <code>:3896</code>, <code>:4010</code>), <code>getBdayStaffDropdown</code>/private-event staff dropdowns, and the roster diff. <code>findConfigEmployee</code> gains a <code>{ includeArchived }</code> option; Pull Hours calls it with archived included and branches on <code>emp.archived</code> for the warning.</li>
+    <li><strong>Bulk archive:</strong> <code>bulkArchive(ids)</code> sets the three archive fields on each, then a single <code>saveConfig()</code> → one history entry with summary "Employees: archived 8 (names…)". Salaried employees are excluded from the batch (they may legitimately have no Ticker entry) and listed separately in the preview.</li>
+    <li><strong>Class-removal guard (Phase 1)</strong> already scans all employees including archived — keep it that way (a QB class referenced by an archived employee is still needed for Restore).</li>
+    <li><strong>Roster check:</strong> reuse the roster read from <code>pullFromTimeclock</code> (extract <code>loadTickerRoster()</code>: <code>db.collection('timeclock_settings').doc('employees').get()</code> → <code>roster</code> array). Pure helper <code>diffRosterAgainstConfig(roster, employees, findConfigEmployee)</code> in <code>settings-helpers.js</code> (unit-tested: unmatched-in-Ticker, inactive-in-Ticker, archived-match → restore, alias match, blank names skipped, <code>emp_</code> temp IDs with a <code>claimedBy</code> collapse to the claimed user). Name split: first token = first name, rest = last name — same as the pull. <code>addEmployeeFromTicker(name)</code> reuses <code>addEmployee()</code>'s id allocation and opens <code>editEmployee</code>.</li>
+    <li><strong>Read-only with respect to Ticker:</strong> the check reads <code>timeclock_settings</code> only; it never writes to any <code>timeclock_*</code> collection (repo invariant).</li>
+    <li>No new collection, no rules change. Same-doc settings write as Phase 1.</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h3>Phase 3 — Salaried percentages editable in the UI</h3>
+  <span class="status-tag not-ready">execution-ready: false</span>
+  <p><strong>Outcome:</strong> The GM can change Christie's and Anika's Tinker/Clay Hub percentages (and add or remove a class) on the Split Percentages tab, with the total policed.</p>
+  <h4>Acceptance criteria</h4>
+  <ol>
+    <li>The "Salaried — Percentage" card has an editable % per class, "+ Add class" (QB class dropdown), and remove per row — same look as the hourly percentage-split rows.</li>
+    <li>A running total is shown; anything other than 100% is flagged in red on the card <em>and</em> surfaces as a review alert on Pull Hours ("Anika: salary allocations total 95%").</li>
+    <li>Changes are recorded in history with the summary "Anika: salary allocations changed".</li>
+    <li>A salaried employee with no allocations yet gets a "Set up percentages" button that creates a single 100% row for the employee's first rate class.</li>
+  </ol>
+  <h4>BDD scenarios</h4>
+  <div class="bdd">Happy — change split
+Given Anika is 90% Tinker Overhead / 10% Clay Hub Overhead
+When the GM sets Clay Hub Overhead to 20 and Tinker Overhead to 80
+Then the card total shows 100% (green) and the next Pull Hours allocates salary 80/20
+
+Edge — total ≠ 100
+Given the GM removes the Clay Hub row from Christie (leaving 40%)
+Then the card shows "Total 40% — must be 100%" in red, the value is still saved (history entry written), and Pull Hours shows a review alert for Christie until fixed
+
+Failure — no rate class to seed from
+Given a new salaried employee with no rates
+When "Set up percentages" is clicked
+Then the app asks to add a rate/class first rather than creating an empty allocation</div>
+  <h4>Implementation notes</h4>
+  <ul>
+    <li>Reuse the <code>onchange="CONFIG.employees.find(...).salaryAllocations[i].pct = …; saveConfig(); renderSplitCards();"</code> pattern already used for hourly pct splits (<code>:5133</code>).</li>
+    <li>Validation helper <code>salaryAllocationsTotal(emp)</code> in <code>settings-helpers.js</code> (unit-tested), used by the card and by <code>processHours</code> to push the review alert (<code>reviewAlerts</code> array already exists, <code>:2823</code>).</li>
+    <li>No new collection, no rules change. Same-doc settings write as Phase 1.</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h3>Phase 4 — Season is part of the pay period; summer covers salaried percentages too</h3>
+  <span class="status-tag not-ready">execution-ready: false</span>
+  <p><strong>Outcome:</strong> Starting a pay period picks its season automatically from the dates (overridable), every screen shows which season is in effect, and both split rules and salaried percentages switch with it — editing summer settings in September cannot change a school-year run.</p>
+  <h4>Acceptance criteria</h4>
+  <ol>
+    <li>"Start New Pay Period" shows a Season selector pre-filled from the start date and the summer window (D3); the GM can override before starting. The period label in the sidebar shows the season badge.</li>
+    <li>Pull Hours, Review, and Camp Pay use <code>APP_STATE.payPeriod.season</code>. Camp Pay appears only for summer periods with camp teachers. A restored pre-Phase-3 session without a season keeps today's behaviour (global toggle).</li>
+    <li>The Split Percentages toggle is relabelled "Editing: School Year / Summer" with a hint "The season used for payroll is set when you start a pay period." Flipping it never changes an in-progress period.</li>
+    <li>Salaried employees get a Summer variant of their percentages (Copy from School Year / Build from Scratch), falling back to school-year values when no summer variant exists — same rule as split rules.</li>
+    <li>The summer window (start/end month-day) is editable on the Split Percentages tab; invalid values (end before start) are rejected inline.</li>
+    <li>If the chosen season disagrees with the date suggestion (e.g. a June period started as School Year), Pull Hours shows a dismissible amber banner naming both.</li>
+    <li><strong>Straddling periods (D1b, v1).</strong> When the period spans both seasons, the suggestion is the season with more weekdays, and Pull Hours shows a banner naming the split and the season in use, plus the list of employees whose summer rules or summer salary allocations differ from school-year ("Check on Review: Kaitlyn, Allie, Mariah").</li>
+  </ol>
+  <h4>BDD scenarios</h4>
+  <div class="bdd">Happy — summer period
+Given the summer window is 05-25 → 08-15
+When the GM starts a pay period Jun 16 – Jun 30
+Then Season pre-fills "Summer"; Pull Hours uses each employee's summerSplitRules (or school-year fallback) and summerSalaryAllocations (or fallback); Camp Pay is visible
+
+Happy — editing does not leak
+Given a school-year period Sep 1 – Sep 15 is in progress
+When the GM switches the Settings toggle to Summer and edits Kaitlyn's summer rules
+Then re-pulling hours for Sep 1 – 15 still uses school-year rules
+
+Edge — override
+Given a period Aug 16 – Aug 31 (outside window) but camps ran through Aug 20
+When the GM changes Season to Summer before starting
+Then Pull Hours uses summer config and shows the amber "differs from date suggestion" banner
+
+Edge — restored old session
+Given a session saved before Phase 3 (no payPeriod.season)
+When the app loads
+Then behaviour equals today's: CONFIG.splitSeason decides, and the period label shows that season with "(from settings toggle)"
+
+Edge — straddling period
+Given the summer window is 05-25 → 08-15 and the period is May 16 – May 31
+When the GM starts the period
+Then Season pre-fills School Year (10 weekdays vs 5) and Pull Hours shows "School Year May 16–25 · Summer May 26–31 — using School Year" with the names of employees whose summer config differs
+
+Failure — bad window
+Given the GM sets summer end to 03-01 with start 05-25
+Then the field shows "End must be after start" and the previous window stays saved</div>
+  <h4>Implementation notes</h4>
+  <ul>
+    <li><code>getActiveSplitRules(emp, season)</code> and new <code>getActiveSalaryAllocations(emp, season)</code>; <code>season</code> defaults to <code>currentPeriodSeason()</code> = <code>APP_STATE.payPeriod.season || CONFIG.splitSeason</code>. Settings rendering passes <code>CONFIG.splitSeason</code> explicitly.</li>
+    <li><code>suggestSeason(startISO, endISO, summerWindow)</code> pure helper returning <code>{ season, straddles, split: { schoolYear: [a,b], summer: [c,d] } | null }</code> by weekday count (unit-tested: fully inside, fully outside, straddle at each end, tie → summer, year boundaries, missing window → schoolYear).</li>
+    <li><code>employeesWithSeasonDifferences()</code> pure helper: employees where <code>summerSplitRules</code> or <code>summerSalaryAllocations</code> exist and differ from the school-year values (deep-compare).</li>
+    <li><code>startPayPeriod</code> stores <code>season</code>; <code>saveAppState</code>/<code>loadAppState</code> already persist <code>payPeriod</code> wholesale, so no extra session plumbing.</li>
+    <li>New settings keys: <code>summerWindow</code>, per-employee <code>summerSalaryAllocations</code>. Both go through <code>fullConfig</code>/loaders (Phase 1 pattern) and the history summary.</li>
+    <li>No new collection, no rules change.</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h3>Phase 5 — "What's safe to touch" guidance, in-app and for the GM</h3>
+  <span class="status-tag not-ready">execution-ready: false</span>
+  <p><strong>Outcome:</strong> The GM can open Settings and know, without asking, what each tab does, what is safe, and how to undo.</p>
+  <h4>Acceptance criteria</h4>
+  <ol>
+    <li>Settings page header replaces "Changes are saved automatically to your browser" (now inaccurate) with a short, accurate line: changes save to the shared cloud config immediately, every change is in Settings history, and Restore undoes any of them.</li>
+    <li>Each tab has a one-line hint (e.g. Split Percentages: "Hours per day are caps; actual hours come from the timeclock. Remainder gets everything else.").</li>
+    <li>A one-page note for the GM (plain Markdown, committed in the repo as <code>SETTINGS-GUIDE.md</code>): the five routine tasks (new hire via the Ticker check, archiving someone who left, rate change, new semester schedule, summer setup), how to undo, and the one thing to leave to Christie (importing a full settings file).</li>
+  </ol>
+  <p>No data changes; no tests beyond a read-through. Written after Phases 1–4 so it describes the shipped UI.</p>
+</div>
+
+<div class="phase">
+  <h3>Phase 6 (sketch only — not in scope; decide after a term of real use)</h3>
+  <p>"New semester" import: the GM fills a simple per-employee schedule sheet (day → class → hours), the app proposes split rules, shows a diff against current, and applies on confirm. Could be deterministic (preferred for payroll) or Claude-assisted via a Netlify function for free-text schedules. Only worth building if the Phase 2–4 editor still feels heavy after one semester.</p>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<div class="phase">
+  <table>
+    <tr><th>Check</th><th>Status / how</th></tr>
+    <tr><td>New collection needs a rule</td><td>Phase 1 only: <code>payroll/appData/settingsHistory</code> → rule in <code>/Users/christiehubley/studio-hub/firestore.rules</code>, same commit as the app change. Phases 2–5: no new collections.</td></tr>
+    <tr><td>Rules tests red → green</td><td>Add history cases to <code>rules.test.js</code> first; run <code>cd /Users/christiehubley/studio-hub && npm test</code>; all must pass (count grows — don't hardcode).</td></tr>
+    <tr><td>Deploy command</td><td><code>cd /Users/christiehubley/studio-hub && firebase deploy --only firestore:rules</code> — never bare deploy; only after commit + green tests + Christie's literal "approved to change firebase".</td></tr>
+    <tr><td>updateDoc vs setDoc</td><td>Settings: existing <code>set({settings}, {merge:true})</code> with the full map retained (intentional full replace of the map). History: <code>add()</code> creates only.</td></tr>
+    <tr><td>Strip undefined / empty strings</td><td><code>fullConfig</code> and history payloads pass through a <code>stripEmpty()</code> helper before write (new in Phase 1; unit-tested). Note: existing code stores '' for blank integration fields — the helper leaves top-level integration strings as-is to avoid changing loader semantics, and strips inside <code>classAccountMap</code> and employee objects.</td></tr>
+    <tr><td>await critical writes</td><td>Settings and history writes are awaited for status reporting; UI handlers remain synchronous callers.</td></tr>
+    <tr><td>Snapshot before bulk ops</td><td>No bulk delete/import of Firestore docs in this plan. Settings Import is a single-doc replace — and Phase 1 writes a history entry <em>before</em> applying it.</td></tr>
+    <tr><td>Console spot-check</td><td>After Phase 1's first real edit: open <code>payroll/appData/settingsHistory</code>, confirm one entry with savedBy/summary; open <code>payroll/appData</code>, confirm <code>settings.classAccountMap</code> present.</td></tr>
+    <tr><td>Downstream (Tinker Ticker / locked totals)</td><td>Untouched. Phase 2's roster check <em>reads</em> <code>timeclock_settings/employees</code> (already read by Pull Hours today); nothing in this plan writes to any <code>timeclock_*</code> collection.</td></tr>
+  </table>
+</div>
+
+<h2 id="completeness">Completeness check — what if this is interrupted?</h2>
+<div class="phase">
+  <ul>
+    <li><strong>Mid-Phase 1, before rules deploy:</strong> history writes fail with permission-denied. The app must treat a history failure as non-fatal (settings still save; a small grey "history not recorded" note, not the red banner). Rules must be deployed before the Phase 1 commit is deployed to Netlify. Order: rules commit + deploy → app commit → Netlify (ask first).</li>
+    <li><strong>Phase 1 shipped, Phases 2–4 not:</strong> fully usable on its own; the GM has undo/export and a working Accounts tab. Nothing half-built is visible.</li>
+    <li><strong>Phase 2 half-done:</strong> an employee with <code>archived: true</code> is simply hidden by <code>activeEmployees()</code>; if the Pull Hours warning is not yet wired, the pre-existing "not found in employee configuration" warning still fires (because <code>findConfigEmployee</code> excludes archived by default) — nothing is silently processed. Ship Phase 2 whole regardless.</li>
+    <li><strong>Phase 4 half-done:</strong> the <code>payPeriod.season</code> fallback to <code>CONFIG.splitSeason</code> means an old session or a missing field never changes behaviour. Ship Phase 4 only as a whole.</li>
+    <li><strong>Any phase:</strong> settings history (Phase 1) makes every subsequent phase's effect on config revertible from inside the app.</li>
+  </ul>
+</div>
+
+<h2 id="decisions-log">Decisions Log (append-only)</h2>
+<div class="phase">
+  <ul>
+    <li><strong>2026-09-21</strong> — Plan created after read-only research. Proposed D1–D6 defaults; awaiting Christie.</li>
+    <li><strong>2026-09-21</strong> — Found Accounts-tab persistence bug and dormant <code>directMappingOverrides</code> during research; the former is folded into Phase 1 (fix), the latter is explicitly out of scope (no editor built).</li>
+    <li><strong>2026-09-21</strong> — Christie (plan review): D4 → remove "Seed to Firestore" entirely rather than gate it. D6 → no AI/spreadsheet editor for now; add a Tinker Ticker roster check + one-click add (Phase 2). Plan updated accordingly.</li>
+    <li><strong>2026-09-21</strong> — Christie confirmed D2 and D3. Asked about periods spanning two seasons → D1b added (v1 majority-weekday + banner + affected-employee list; v2 split-at-boundary deferred). Asked for archive/restore of employees like Manage Team → D7 added; Phase 2 becomes "Employee roster" (archive/restore + Ticker check), salaried percentages move to Phase 3, seasons to Phase 4, guide to Phase 5, sketch to Phase 6.</li>
+    <li><strong>2026-09-21</strong> — Christie closed the rest: D1/D1b → v1 (season per period; majority-weekday for straddling periods, banner + affected-employee list); D5 → append-only history as proposed; D7 → archive/restore as proposed, <em>including</em> the bulk "Archive everyone not active in Tinker Ticker" option (now a firm Phase 2 acceptance item, salaried employees excluded from the batch). All decisions resolved; plan goes to second-model review.</li>
+    <li><strong>2026-09-21</strong> — Chose additive seasonal keys (<code>summerSalaryAllocations</code>, mirroring <code>summerSplitRules</code>) over restructuring config into a <code>seasons</code> map: no migration of the live doc, fallback semantics already proven.</li>
+  </ul>
+  <span class="status-tag not-ready">execution-ready: false</span> for all phases until the browser review and/or second-model review passes.
+</div>
+
+<h2 id="resume">Resume Instructions</h2>
+<div class="phase">
+  <ol>
+    <li>Open this file; check the Decisions Log for the last completed phase and any deviations.</li>
+    <li>Confirm D1–D7 are resolved (each box says RESOLVED with a date) before executing Phase 1; if not, ask Christie.</li>
+    <li>Run <code>plan-review index</code> and open the plan URL; check for unresolved reviewer comments (<code>plan-review queue</code>).</li>
+    <li>Execute one phase at a time from <code>/Users/christiehubley/payroll-tool</code>. Phase 1 order: (a) rules tests red → rule → green in studio-hub → commit; (b) "approved to change firebase" → <code>firebase deploy --only firestore:rules</code>; (c) app changes + unit tests → commit; (d) second-model implementation review of the diff; (e) Console spot-check; (f) ask before <code>netlify deploy --prod</code>.</li>
+    <li>Do not mark a phase <code>execution-ready: true</code> without a passing review; do not start Phase N+1 before Phase N's implementation review.</li>
+  </ol>
+</div>
+
+</body>
+</html>

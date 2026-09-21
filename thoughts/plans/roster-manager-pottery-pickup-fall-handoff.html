@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Roster Manager — Pottery Pickup Fall Fixes + Handoff Role</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  h4 { font-size: .95rem; margin: 1rem 0 .25rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .85rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .86rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .6rem; font-size: .86rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .sev-high { color: #b91c1c; font-weight: 700; }
+  .sev-med { color: #b45309; font-weight: 700; }
+  .sev-low { color: #4b5563; font-weight: 700; }
+  .live { background: #fee2e2; color: #991b1b; font-size: .7rem; font-weight: 700; padding: 0 .35rem; border-radius: 3px; }
+  ul { padding-left: 1.25rem; }
+  li { margin: .2rem 0; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Roster Manager — Pottery Pickup Fall Fixes + Handoff Role</h1>
+
+<div class="meta" id="plan-meta">
+  <strong>Goal:</strong> Make the Pottery Pickup tab reliable for fall (SDOC, semester, workshop rosters) — returning pottery students show up in their new session — and let Christie hand the pottery <em>notification + tracking sequence</em> to a dedicated person who signs in and sees <em>only</em> the Pottery tab, while the EA keeps managing rosters (uploading, printing) and feeds the tracker with one click of Scan.<br>
+  <strong>Apps:</strong> roster-manager — <code>~/roster-manager/js/app.js</code> (Pottery section 7871–8960, scan 8839), <code>js/firebase-data.js</code>, <code>js/config.js</code>, <code>index.html</code>; studio-hub — <code>~/studio-hub/firestore.rules</code>, <code>rules.test.js</code>, <code>js/app.js</code> (<code>MANAGER_ONLY_APPS</code> line 719, <code>canAccessApp</code> line 544)<br>
+  <strong>Reported symptom:</strong> Former EA reported that a student who had been in a pottery class before does not appear in the tracker after uploading the new session's roster. Root cause confirmed (B1) — plus 20 further findings from a full read and two independent reviews.<br>
+  <strong>Firestore docs involved:</strong> <code>rosterManager/pottery</code> (entries, one map field per student, keyed by string), <code>rosterManager/potteryTemplates</code>. Both covered today by the <code>rosterManager/{docId}</code> wildcard (manager+ or <code>roster-manager</code> access). No rule changes until Phase 4.<br>
+  <strong>Risk:</strong> Medium. Phase 1 changes key generation (additive, no migration) and fixes two write functions that are <em>silently wrong today</em> for keys containing a period. Phase 3 rewrites bulk-write paths to a transaction. Phase 4 adds a Firestore rule + a new app-access key across two repos.<br>
+  <strong>Tests:</strong> roster-manager has <em>no</em> test harness. studio-hub has 138 rules tests — <em>none</em> for <code>rosterManager/*</code>. Both gaps are closed here.<br>
+  <strong>Review status:</strong> Round 1 done 2026-09-16 (Claude Opus + Codex, independently; 66 findings, 6 blockers — all dispositioned below). <span class="status-tag not-ready">execution-ready: false</span> — pending Christie's read-through of the revised plan.
+</div>
+
+<h2 id="findings">Findings</h2>
+<div class="phase">
+<p><span class="live">LIVE</span> = wrong behaviour that can happen today, independent of this plan.</p>
+<table>
+<thead><tr><th>#</th><th>Sev</th><th>Where</th><th>What's wrong</th><th>User-visible effect</th><th>Phase</th></tr></thead>
+<tbody>
+<tr><td>B1</td><td class="sev-high">HIGH <span class="live">LIVE</span></td><td><code>potteryCSVKey()</code> app.js:7922; import app.js:8605</td><td>Dedup key is <code>csv::&lt;camp&gt;::&lt;student&gt;</code> — <strong>no session</strong>. Sawyer <code>Internal ID</code> is the student's permanent ID; the name|phone fallback slug is equally session-less.</td><td><strong>The reported bug.</strong> A returning student in a same-named class is silently skipped ("Skipped N already in tracker"). If the old entry was Picked Up, they never appear under the new session.</td><td>1</td></tr>
+<tr><td>B2</td><td class="sev-high">HIGH <span class="live">LIVE</span></td><td>Workshop scan app.js:8919; ids app.js:4739, :282</td><td>Key is <code>workshop::workshop::ws-N</code>; workshop student ids restart at <code>ws-0</code> every upload.</td><td>A later pottery workshop's first N rows collide with an earlier one's and are skipped.</td><td>1</td></tr>
+<tr><td>B3</td><td class="sev-high">HIGH</td><td>Camp scan app.js:8898; <code>nextRosterId</code> app.js:69, :162–165; <code>backfillContact</code> :8849</td><td>Key is <code>camp::roster-N::roster-N-idx</code>. Roster IDs restart at 1 after the working state is cleared <em>and the page is reloaded</em> (or on another browser). <code>backfillContact()</code> then treats the colliding key as the same student. Today the stamp-over can't fire because it requires an incoming <code>parentEmail</code> and Camp rosters never have one (B4) — <strong>it becomes live the moment B4 ships</strong>.</td><td>A later SDOC collides with an earlier one; with B4 fixed, the new student's parent name/phone/email gets written onto the old student's entry.</td><td>1 (must ship before/with 2)</td></tr>
+<tr><td>B7</td><td class="sev-med">MED <span class="live">LIVE</span></td><td><code>parsePotteryRosterCSV()</code> app.js:7883, :7917</td><td>Accepts only the <em>legacy</em> Registration Report (prefix rows) or the Roster export (<code>Internal ID</code>+<code>Student Name</code>). The <em>current</em> Registration Report (headers on row 1, <code>Attendee</code>) yields 0 rows. Both branches hard-code <code>'Fired Up! AM'</code> as the camp default.</td><td>"No students found in this CSV" for the one export that has parent emails. Fall classes silently mislabelled "Fired Up! AM".</td><td>1</td></tr>
+<tr><td>B13</td><td class="sev-high">HIGH <span class="live">LIVE</span></td><td><code>patchPotteryField</code> firebase-data.js:132; <code>deletePotteryEntryFromFirestore</code> :145; manual key app.js:9056; summer keys app.js:5116, :5181</td><td>Both functions build the field path as a <em>dotted string</em> (<code>key + '.' + field</code>). The JS SDK splits string paths on <code>.</code> and throws on <code>~ * / [ ]</code>. Manual and summer keys embed the raw student name with only whitespace replaced.</td><td>"A.J. Smith" or "Mary St. Clair": every per-field edit writes to a nonexistent nested path, delete "succeeds" (<code>true</code>, no toast) and <strong>the entry reappears on reload</strong>. A name with <code>/</code> throws. <code>set()</code> keys are literal, which is why bulk paths mask this.</td><td>1</td></tr>
+<tr><td>B14</td><td class="sev-med">MED <span class="live">LIVE</span></td><td>Scan backfill save app.js:8939</td><td>Any scan that backfills contact info calls <code>savePottery(state.potteryPickup)</code> — the whole in-memory map.</td><td>Same stale-tab overwrite as B9, but triggered by the EA's normal scan.</td><td>1</td></tr>
+<tr><td>B18</td><td class="sev-med">MED</td><td><code>savePottery()</code> app.js:8813</td><td>Awaits internally but returns nothing; import (:8622), scan confirm (:8531), rename, bulk, checkboxes, manual add (:9061) never learn whether the write succeeded.</td><td>Callers can't block/undo on failure; only the toast fires.</td><td>1</td></tr>
+<tr><td>B19</td><td class="sev-low">LOW</td><td><code>backfillContact</code> app.js:8856</td><td>Precedence bug: <code>entry.session === entry.session.match(/^Summer/) ? … : null</code> compares a string to an array — the <code>^Summer</code> branch is dead.</td><td>Harmless; don't carry it into the rewrite.</td><td>1</td></tr>
+<tr><td>B4</td><td class="sev-med">MED</td><td><code>parseSawyerCSV()</code> app.js:240–253; <code>CONFIG.columnMapping</code> config.js:56–67</td><td>Camp + Workshop parser never reads a Parent Email column.</td><td>SDOC/workshop pottery students scanned in have blank email → "Copy Emails" finds nothing.</td><td>2</td></tr>
+<tr><td>B5</td><td class="sev-med">MED</td><td><code>scanForPotteryStudents()</code> app.js:8865–8935</td><td>Summer, Camp, Workshop branches only — no Semester, though semester students carry email (app.js:580).</td><td>Fall semester Clay Hub classes invisible to Scan.</td><td>2</td></tr>
+<tr><td>B6</td><td class="sev-med">MED</td><td><code>isPotteryActivity()</code> app.js:7930</td><td>Three literal phrases; never looks at venue.</td><td>Any other pottery class name is skipped with no feedback.</td><td>2</td></tr>
+<tr><td>B8</td><td class="sev-low">LOW</td><td>app.js:8896, :8926, :8603, :8098, :8227</td><td>Camp session = <code>eventName || 'Camp Event'</code>; CSV import defaults to "Unknown Session"; sessions sorted alphabetically (comment says chronologically).</td><td>Two SDOCs with no event name merge; fall sessions land in a jumbled order.</td><td>2</td></tr>
+<tr><td>B15</td><td class="sev-med">MED <span class="live">LIVE</span></td><td>Scan loops app.js:8871, :8897, :8918 vs displays :1493, :4513</td><td>Scan never filters <code>withdrawn</code> students; every roster view does.</td><td>Students who cancelled get added to the tracker and emailed.</td><td>2</td></tr>
+<tr><td>B16</td><td class="sev-low">LOW <span class="live">LIVE</span></td><td>app.js:8644, :8669, :8800</td><td>Session/camp labels interpolated into <code>querySelector</code> attribute selectors without <code>CSS.escape</code>; :8800 passes them through <code>escapeHtml</code> instead.</td><td>A label containing <code>&amp;</code>, quotes or brackets ("Wheel &amp; Handbuilding") breaks bulk buttons or header-date restore. Semester class names make this likely.</td><td>2</td></tr>
+<tr><td>B9</td><td class="sev-med">MED <span class="live">LIVE</span></td><td>Bulk apply :8660, bulk clear :8497, rename :8417, scan confirm :8533, CSV import :8622 → firebase-data.js:109</td><td>All push the entire map via <code>set(all, {merge:true})</code>; each included entry replaces its server copy.</td><td>With two people on the tab, a bulk action from a stale tab overwrites the other person's edits and resurrects entries they deleted.</td><td>3</td></tr>
+<tr><td>B10</td><td class="sev-low">LOW <span class="live">LIVE</span></td><td>app.js:8735, :8752</td><td><code>toISOString().split('T')[0]</code> is the UTC date.</td><td>After ~5–6 pm Mountain, "picked up today" records tomorrow.</td><td>3</td></tr>
+<tr><td>B17</td><td class="sev-med">MED <span class="live">LIVE</span></td><td>Templates app.js:8461; firebase-data.js:170</td><td>Each debounced keystroke <code>set()</code>s the whole templates doc; errors only <code>console.error</code>.</td><td>Two people editing different templates: last writer wins, silently.</td><td>3</td></tr>
+<tr><td>B20</td><td class="sev-low">LOW</td><td><code>rosterManager/pottery</code> data model</td><td>One document holds every entry ever, no purge. ~300–400 B/entry → roughly 3,000 entries before the 1 MiB cap.</td><td>Years of runway; note it and leave an archive path for a later plan.</td><td>3 (note only)</td></tr>
+<tr><td>B11</td><td class="sev-low">LOW</td><td><code>loadPotteryFromFirestore()</code> firebase-data.js:155–163; init app.js:8997–9008</td><td>"Doc missing" and "read threw" both return <code>null</code>.</td><td>A pottery-only user hitting a rules gap sees the red "could not load" panel — looks like data loss; so would a genuinely empty tracker.</td><td>4</td></tr>
+<tr><td>B12</td><td class="sev-med">MED</td><td>studio-hub <code>rules.test.js</code></td><td>Zero tests for <code>rosterManager/*</code>.</td><td>Any rules change here ships unverified.</td><td>4</td></tr>
+<tr><td>B21</td><td class="sev-med">MED</td><td>studio-hub <code>canAccessApp()</code> js/app.js:544–562</td><td>Tile shows only if <code>app.roles</code> matches or <code>appAccess</code> includes the app's own id. <code>pottery-pickup</code> alone hides the Roster Manager tile.</td><td>The pottery person has no way to open the app from Tinker HQ (same situation the CC director is in today).</td><td>4</td></tr>
+</tbody>
+</table>
+<div class="note"><strong>Load-bearing for the handoff:</strong> Scan reads rosters loaded in <em>that browser's</em> localStorage working state. A pottery-only person on their own machine has nothing to scan — the EA scans, the pottery person works the tracker. Upload CSV and + Add Student stay as their fallbacks.</div>
+</div>
+
+<h2 id="handoff-workflow">Handoff workflow — who does what</h2>
+<div class="phase">
+<table>
+<tr><th></th><th>New EA (<code>roster-manager</code> access — full app)</th><th>Pottery person (<code>pottery-pickup</code> access — Pottery tab only)</th></tr>
+<tr><td>Sawyer exports</td><td>Downloads rosters as today. For SDOC use the <strong>Registration Report</strong> (has Parent Email; the Roster export doesn't).</td><td>Never touches Sawyer.</td></tr>
+<tr><td>Loading rosters</td><td>Uploads into Camp / Semester / Workshop / Summer mode as part of normal roster work.</td><td>—</td></tr>
+<tr><td>Feeding the tracker</td><td>Clicks <strong>Scan for Pottery Students</strong> → reviews the "Found N" panel → Add. (Phase 2 adds a nudge toast right after any upload containing pottery students.)</td><td>Sees new students on next load. Fallbacks: Upload Roster CSV, + Add Student.</td></tr>
+<tr><td>Notification sequence</td><td>Can, but doesn't have to.</td><td>Sets Notif 1/2/3 dates (bulk or per student), copies BCC emails, edits templates, sends the emails/texts.</td></tr>
+<tr><td>Pickup / recycle / notes</td><td>Can, but doesn't have to.</td><td>Ticks Picked Up, Alt. pickup arranged, Recycled; writes notes; removes mistaken entries.</td></tr>
+<tr><td>Opening the app</td><td>Tinker HQ tile as today.</td><td>Tinker HQ tile (Phase 4 makes it visible for <code>pottery-pickup</code>) or the direct URL <code>https://tinker-roster-manager.netlify.app</code>.</td></tr>
+<tr><td>Timing per mode</td><td colspan="2">SDOC + workshop: scan any time after upload; notify once the work is fired. <strong>Semester:</strong> pottery goes home throughout and parents are only contacted at semester end → one session per semester per class (session label = semester name), EA scans near semester end, bulk Notif 1 pre-filled from <code>semesterEndDate</code>.</td></tr>
+</table>
+</div>
+
+<h2 id="design">Design decisions</h2>
+<div class="phase">
+<h4>D1 — Entry identity: unique content-derived keys + value-based dedup, no migration (revised after review)</h4>
+<p><strong>Key shapes</strong> (old keys untouched; old entries keep working):</p>
+<table>
+<tr><th>Source</th><th>Today</th><th>After Phase 1</th></tr>
+<tr><td>CSV upload</td><td><code>csv::&lt;camp&gt;::&lt;student&gt;</code></td><td><code>csv::&lt;sessionId&gt;::&lt;campSlug&gt;::&lt;studentSlug&gt;</code></td></tr>
+<tr><td>Camp/SDOC scan</td><td><code>camp::roster-N::roster-N-idx</code></td><td><code>camp::&lt;sessionId&gt;::&lt;campSlug&gt;::&lt;studentSlug&gt;</code></td></tr>
+<tr><td>Workshop scan</td><td><code>workshop::workshop::ws-N</code></td><td><code>workshop::&lt;sessionId&gt;::&lt;studentSlug&gt;</code></td></tr>
+<tr><td>Semester scan (Phase 2)</td><td>—</td><td><code>semester::&lt;sessionId&gt;::&lt;classSlug&gt;::&lt;studentSlug&gt;</code></td></tr>
+<tr><td>Summer scan</td><td><code>summer::&lt;weekId&gt;::&lt;studentId&gt;</code></td><td>unchanged</td></tr>
+<tr><td>Manual add</td><td><code>manual::&lt;ts&gt;::&lt;raw-name&gt;</code></td><td><code>manual::&lt;ts&gt;::&lt;studentSlug&gt;</code> (slug strips punctuation — see B13)</td></tr>
+</table>
+<ul>
+  <li><strong>Slugs strip everything but <code>[a-z0-9]</code> to <code>-</code>.</strong> No period, slash, tilde, asterisk or bracket can ever reach a key again. Keys built today may still contain them → B13 fix uses <code>FieldPath</code> objects for all patch/delete writes.</li>
+  <li><strong><code>studentSlug</code></strong> = Sawyer Internal ID when present, else normalized name + (email or phone).</li>
+  <li><strong>Immutable session identity.</strong> Every new entry stores <code>sessionId</code> (slug of the label at creation — never changes), <code>session</code> (display label — ✏️ rename edits only this), <code>sessionDate</code> (ISO; from <code>weekStartDate</code> / <code>semesterEndDate</code> / event-date prompt / import date), <code>source</code>, and <code>internalId</code> when known. Legacy entries lack these; helpers fall back to the label.</li>
+  <li><strong>Dedup classification</strong> (pure function, tested) for each candidate against all existing entries:
+    <ol>
+      <li><em>Identity match</em>: if both sides have an Internal ID → IDs equal; else normalized name equal AND (email or phone equal when both sides have one; name alone when either side lacks contact info).</li>
+      <li><em>Session match</em>: existing <code>sessionId</code> equals candidate's, OR existing display label (normalized through <code>formatPotterySessionLabel</code> + slug) equals candidate's label slug. Handles "renamed then re-uploaded with either label".</li>
+      <li>Identity + camp + session all match → <strong>already in this session</strong> → skip, and route through the name-guarded backfill (so legacy-key entries can pick up emails once B4 ships).</li>
+      <li>Identity + camp match, session differs → <strong>returning</strong> → add.</li>
+      <li>No identity match → <strong>new</strong> → add.</li>
+      <li>Derived key already exists in the map: if that entry's normalized name matches → treat as (3), never suffix, never overwrite. If the name differs (true slug collision) → append <code>~2</code>, <code>~3</code>… and warn in console.</li>
+    </ol>
+  </li>
+  <li><strong>Backfill guard:</strong> <code>backfillContact()</code> only writes when the existing entry's normalized name matches the incoming student's, and writes each changed field as its own <code>FieldPath</code> patch — never the whole map.</li>
+  <li><strong>Session labels are required and assisted.</strong> Import and manual add refuse an empty session. Both the session and camp inputs get a <code>&lt;datalist&gt;</code> of existing labels. The pending panel shows <strong>"N new · M returning · K already in this session"</strong> <em>before</em> the Import button is pressed.</li>
+  <li><strong>Sanitizer</strong> (one function, tested): drop <code>undefined</code> and <code>''</code>; keep <code>null</code> (it means "explicitly cleared" and is what <code>update()</code> needs to clear a date).</li>
+  <li><strong>Pure module:</strong> <code>js/pottery-identity.js</code> — dual export (browser global + <code>module.exports</code> when <code>module</code> exists) so <code>node --test</code> can load it.</li>
+</ul>
+
+<h4>D2 — Pottery-only role mirrors the Coal Creek director pattern (revised after review)</h4>
+<ul>
+  <li>New app-access key <code>pottery-pickup</code>. <code>isPotteryOnly = hasAccess('pottery-pickup') && !hasAccess('roster-manager') && role ∉ {admin, manager}</code>. Precedence: <code>roster-manager</code> (full app) &gt; <code>coal-creek-signin</code> (existing CC lockdown) &gt; <code>pottery-pickup</code>.</li>
+  <li>Pottery-only session: mode toggle, other tabs, Export/Print dropdowns, Settings link hidden; Scan button hidden; Help visible; templates visible and editable.</li>
+  <li>Init for pottery-only: skip <code>loadDataFromFirestore()</code> and <code>restoreWorkingState()</code>; the <code>_potteryFromCache</code> toast must still fire (do not copy the CC early-return that skips it).</li>
+  <li>Rules — two additive matches (no <code>delete</code>; entry removal is an <code>update()</code>):
+    <div class="bdd">match /rosterManager/pottery {
+  allow read, create, update: if hasAppAccess('pottery-pickup') && belongsToStudio('tinker');
+}
+match /rosterManager/potteryTemplates {
+  allow read, create, update: if hasAppAccess('pottery-pickup') && belongsToStudio('tinker');
+}</div>
+  </li>
+  <li>Studio Hub: add <code>{ id: 'pottery-pickup', name: 'Pottery Pickup (Roster Manager tab only)' }</code> to <code>MANAGER_ONLY_APPS</code>, <em>and</em> make the Roster Manager tile visible to that key — registry entry gains <code>altAccess: ['pottery-pickup']</code>, <code>canAccessApp()</code> treats any <code>altAccess</code> key as an override. (Extending the same to <code>coal-creek-signin</code> is a one-line follow-up if Christie wants the CC director to have a tile too — not in this plan.)</li>
+  <li><strong>Security promise is scoped to cloud data.</strong> Firestore rules stop the pottery person reading rosters from the server. Same-origin <code>localStorage</code> from a previous full-access session on a <em>shared</em> device is not protected by rules; pottery-only init doesn't read it, but it isn't wiped either. Onboarding note: use their own login on their own device.</li>
+</ul>
+
+<h4>D3 — Pottery detection: Clay Hub venue first, keywords as fallback</h4>
+<p>Christie confirmed everything at Clay Hub is pottery. <code>isPotteryActivity()</code> returns true when the roster's venue is <code>clayhub</code> (Camp), the class location resolves to Clay Hub (Semester), the summer camp's venue is Clay Hub, <em>or</em> the activity name matches <code>CONFIG.potteryKeywords</code> (defaults: fired up, teen pottery, teen ceramics, pottery, ceramic, wheel, clay — covers workshops, which have no venue field). Keywords editable in Settings.</p>
+
+<h4>D4 — Two-person write safety (Phase 3)</h4>
+<ul>
+  <li><strong>Inserts stay <code>set(newEntriesOnly, {merge:true})</code></strong> — field-level for new keys and create-safe when the doc doesn't exist. <code>update()</code> on a missing document throws.</li>
+  <li><strong>Mutations of existing entries</strong> (single field, bulk apply/clear, rename, checkboxes, notes) go through one helper: <code>runTransaction</code> → read <code>rosterManager/pottery</code> → drop patches whose entry key is no longer present → <code>update()</code> with <code>FieldPath</code> objects → on success replace <code>state.potteryPickup</code> with the fresh server map + applied patches, so a stale tab converges instead of drifting. No chunking: the 500 limit is for field <em>transforms</em>, not update-mask fields; one update is atomic.</li>
+  <li><strong>Templates:</strong> per-key <code>update()</code> via the same helper on <code>potteryTemplates</code>, create-safe fallback to <code>set(merge)</code> if the doc is missing; failures surface as the red toast.</li>
+  <li><strong>Local dates:</strong> a <code>todayLocalISO()</code> helper replaces <code>toISOString().split('T')[0]</code>.</li>
+</ul>
+</div>
+
+<h2 id="phases">Phases (numbered in execution order)</h2>
+<div class="note"><strong>Deploy cadence (3 Netlify builds):</strong> Phases 1+2 → one roster-manager build. Phases 3+4 → one roster-manager build + one studio-hub build. Rules deploy (free) sits between, gated on "approved to change firebase". Phase 3 lands <em>before</em> the second editor is onboarded so the overwrite window is closed before it can open.</div>
+
+<!-- ───────────────────────── PHASE 1 ───────────────────────── -->
+<div class="phase" id="phase-1">
+<h3>Phase 1 — Identity + write-path correctness (B1, B2, B3, B7, B13, B14, B18, B19) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Files:</strong> new <code>js/pottery-identity.js</code>; <code>js/app.js</code> 7883–7935, 8125–8145, 8545–8625, 8839–8960, 9056–9062; <code>js/firebase-data.js</code> 129–150; <code>index.html</code> script tag + datalists; new <code>test/pottery-identity.test.js</code>; <code>package.json</code> (<code>"test": "node --test test/"</code>). No rules change.</p>
+<h4>Acceptance criteria</h4>
+<ul>
+  <li>Uploading a fall roster CSV for "Fired Up! AM" adds a student who was also in "Fired Up! AM" this summer — as a new row under the fall session; the summer row is untouched.</li>
+  <li>Uploading the same CSV twice for the same session adds nobody the second time; the pending panel already said "0 new · 0 returning · N already in this session" before Import was pressed.</li>
+  <li>Renaming a session and then re-uploading with <em>either</em> the old or the new label adds nobody.</li>
+  <li>Two different students who share a name in the same class both get rows (when the export carries Internal IDs).</li>
+  <li>The current-format Registration Report imports with emails; the Roster export still imports (phone only, ⚠️ note). Hint text names the Registration Report. Camp name defaults to blank and is required; session is required; both offer existing labels.</li>
+  <li>A second pottery workshop scans in.</li>
+  <li>Scanning never changes contact info on an entry whose student name doesn't match; backfills write only the changed fields.</li>
+  <li>Editing or deleting an entry for "A.J. Smith" (an existing key containing a period) works and stays gone after reload.</li>
+  <li>Import, scan-confirm and manual add report failure if the write didn't land (no "silent success").</li>
+  <li>Every pre-existing entry (old keys, scan entries lacking <code>recycled</code>/<code>notes</code>/<code>altPickup</code>, manual entries lacking contact fields) renders and patches exactly as before.</li>
+</ul>
+<h4>BDD</h4>
+<div class="bdd">Happy — returning student via CSV
+Given: csv::fired-up-am::12345 exists (Jane Doe, session "June 16–20, 2026", pickedUp: true)
+When:  fall Roster export (Jane Doe, Internal ID 12345) uploaded; camp "Fired Up! AM"; session "Fall 2026 Session 1"
+Then:  new entry csv::fall-2026-session-1::fired-up-am::12345, pickedUp:false, sessionId "fall-2026-session-1", sessionDate = today
+And:   summer entry unchanged; panel showed "0 new · 1 returning · 0 already" before Import
+
+Edge — same CSV twice → 0 added, panel "0 · 0 · 1 already in this session"
+
+Edge — rename then re-upload with ORIGINAL label
+Given: fall entry above; user renames session to "Fall Session 1 (Sep)"
+When:  same CSV uploaded, session typed "Fall 2026 Session 1"
+Then:  sessionId matches → 0 added (was a double-add in v1 of this plan)
+
+Edge — rename then re-upload with NEW label
+When:  same CSV uploaded, session typed "Fall Session 1 (Sep)"
+Then:  display-label match → 0 added
+
+Edge — two different students, same name, both with IDs
+Given: Roster export has "Liam Smith" ID 111 and "Liam Smith" ID 222
+Then:  2 entries; keys differ by studentSlug; neither is "already"
+
+Edge — same student via two export types
+Given: entry exists from a Roster export (studentSlug = ID 12345, name Jane Doe, phone 303-555-1234)
+When:  Registration Report (no ID; Jane Doe, phone 303-555-1234) uploaded, same camp + session
+Then:  identity matches on name+phone → 0 added (catches a key-only dedup)
+
+Edge — blank session → Import button disabled with inline message; nothing written
+
+Edge — second workshop
+Given: "Pottery Workshop A" scanned earlier; Workshop mode holds "Pottery Workshop B"
+Then:  B's students offered under session "Pottery Workshop B"; keys workshop::pottery-workshop-b::…
+
+Edge — legacy entries every source (fixture: old csv::, camp::roster-1::, workshop::workshop::ws-0, summer::…, manual:: keys)
+When:  a scan/upload presents the same students under the same session label
+Then:  each classified "already in this session" via value match; legacy entries backfilled by FieldPath patch; no duplicates created
+
+Failure — key collision, different name
+Given: entry camp::x::y::z exists for "Ava Smith"
+When:  candidate derives the same key but is "Ben Jones"
+Then:  Ava untouched; Ben stored under camp::x::y::z~2; console.warn
+
+Failure — dotted key patch (B13)
+Given: existing key manual::1690000000000::a.j.-smith
+When:  Picked Up ticked, then entry deleted, then page reloaded
+Then:  Firestore shows pickedUp:true on that exact top-level key, then the key is gone, then it does not reappear
+
+Failure — write fails on import
+When:  savePottery returns false
+Then:  red toast; local cache holds the rows; import panel stays open for retry (not cleared)</div>
+<h4>Tests</h4>
+<ul>
+  <li><code>npm test</code> → <code>node --test</code>: key shapes for all sources; slug strips <code>. / ~ * [ ]</code>; studentSlug precedence; classification matrix (already / returning / new; ID-vs-ID, name+contact, name-only); session match by <code>sessionId</code> and by normalized label; collision same-name vs different-name; backfill guard; sanitizer exact output; Registration Report vs Roster export detection; legacy fixture for every key format.</li>
+  <li>Manual in the running app: the B13 scenario with a real "A.J." entry; a real summer student re-uploaded for fall.</li>
+</ul>
+<div class="safe"><strong>Firebase safety:</strong> inserts via <code>set(newEntriesOnly, {merge:true})</code>; backfills and the B13 fix via <code>update()</code> with <code>new firebase.firestore.FieldPath(key, field)</code>. No rule change. <strong>Before ship:</strong> snapshot <code>rosterManager/pottery</code> to <code>~/tinker-ai-configs/backups/pottery-&lt;date&gt;.json</code> from the signed-in app (never the CLI token). <strong>After deploy:</strong> one real entry in the Console byte-identical to the snapshot; one "A.J."-style entry patched correctly. Second-model implementation review of the diff before Phase 2 starts (this phase touches the write functions).</div>
+</div>
+
+<!-- ───────────────────────── PHASE 2 ───────────────────────── -->
+<div class="phase" id="phase-2">
+<h3>Phase 2 — Scan covers fall rosters (B4, B5, B6, B8, B15, B16) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Files:</strong> <code>js/config.js</code> (columnMapping.parentEmail, potteryKeywords), <code>js/app.js</code> (parseSawyerCSV 228–300, scan 8839–8960, isPotteryActivity 7930, render sort 8227, selectors 8644/8669/8800, Settings ~3843–4090, upload handlers for the nudge), <code>js/pottery-identity.js</code>, tests.</p>
+<div class="danger"><strong>Hard dependency:</strong> this phase must not ship without Phase 1. Adding email to the Camp parser (B4) is exactly what arms the B3 stamp-over; Phase 1's key fix + backfill guard is what disarms it. Same commit series, same build.</div>
+<h4>Acceptance criteria</h4>
+<ul>
+  <li>Scanning with an SDOC Clay Hub roster or a pottery workshop loaded adds those students <em>with parent email</em> when the CSV had the column; blank (not "undefined") when it didn't.</li>
+  <li>Scanning with a fall semester loaded offers students from every Clay Hub class: session = semester name, camp = class name + day/time, <code>sessionDate</code> = semester end date.</li>
+  <li>A class at Clay Hub, or named anything in the Settings-editable keyword list, is recognized.</li>
+  <li>Students marked withdrawn are never offered.</li>
+  <li>Sessions and the week filter order by <code>sessionDate</code> (newest first), undated legacy labels last.</li>
+  <li>An SDOC scan with no event name asks for a session label and date before "Add" enables.</li>
+  <li>Right after the EA uploads any roster containing pottery students: toast "🏺 N pottery students detected — open the Pottery tab to add them". Nothing written.</li>
+  <li>For a semester scan, each class's bulk Notif 1 box is pre-filled with the semester end date (next business day); nothing written until "Set All".</li>
+  <li>A camp or session label containing <code>&amp;</code>, quotes or brackets doesn't break bulk buttons or header-date restore.</li>
+</ul>
+<h4>BDD</h4>
+<div class="bdd">Happy — SDOC with email
+Given: Camp mode roster "Clay Hub AM" (venue clayhub) from a Registration Report; eventName "SDOC Oct 10 2026"
+When:  Scan
+Then:  candidates for every non-withdrawn student; session "SDOC Oct 10 2026"; parentEmail populated; keys camp::sdoc-oct-10-2026::clay-hub-am::&lt;slug&gt;
+
+Happy — semester
+Given: Fall 2026 with "Clay Hub: Youth Wheel — Tue 4:00pm" and "Tinker: Drawing — Wed 4:00pm"; semesterEndDate 2026-12-12
+When:  Scan
+Then:  only the Clay Hub class offered; session "Fall 2026"; sessionDate 2026-12-12; Notif 1 bulk box shows 2026-12-14 (Mon)
+
+Edge — semester scan run twice → 0 new (value match on sessionId)
+
+Edge — withdrawn
+Given: roster has a student with withdrawn:true
+Then:  not offered; not counted in the nudge toast
+
+Edge — Roster export (no email column) → parentEmail '' ; Copy Emails reports none; no "undefined" anywhere
+
+Edge — keyword edit
+Given: Settings keywords = ['fired up','handbuilding']
+When:  workshop "Handbuilding Basics" scanned
+Then:  recognized
+
+Edge — label with &amp;
+Given: semester class "Wheel &amp; Handbuilding — Thu 5pm" scanned in
+When:  a bulk Notif 1 date is typed, the tab re-renders, and "Set All" is clicked
+Then:  date survives the re-render and applies to that class only
+
+Failure — missing event name
+Given: Camp mode, eventName blank
+Then:  confirm panel demands a label + date; nothing written until entered</div>
+<div class="safe"><strong>Firebase safety:</strong> no rules change; writes remain new-entries-only via merge + FieldPath backfills. Semester scan is read-only over <code>state.semesterClasses</code>.</div>
+</div>
+
+<!-- ───────────────────────── PHASE 3 ───────────────────────── -->
+<div class="phase" id="phase-3">
+<h3>Phase 3 — Safe for two people at once (B9, B10, B17, B20) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Files:</strong> <code>js/firebase-data.js</code> (new <code>mutatePotteryEntries(patches)</code> transaction helper, templates per-key update), <code>js/app.js</code> bulk apply 8636, bulk clear 8492, rename 8399, checkboxes 8724–8760, notes 8772, updatePotteryField 8828, template save 8455, <code>todayLocalISO()</code>.</p>
+<h4>Acceptance criteria</h4>
+<ul>
+  <li>Two people with the tab open: A "Set All" Notif 1 for a camp while B ticks a pickup — after both reload, both changes are present.</li>
+  <li>A deletes a student; B (stale tab) then "Set All" — the student does not come back, and B's tab now shows the student gone.</li>
+  <li>Ticking Picked Up at 7 pm Mountain records today's local date.</li>
+  <li>Two people editing different templates keep both edits; a failed template save shows the red toast.</li>
+  <li>Inserts still work on a fresh (missing) <code>rosterManager/pottery</code> document.</li>
+</ul>
+<h4>BDD</h4>
+<div class="bdd">Happy — concurrent bulk + single edit
+Given: tabs A and B loaded at time T
+When:  B ticks pickup on Jane (transaction patch jane.pickedUp) ; then A "Set All" Notif 1 (transaction, N patches)
+Then:  server has jane.pickedUp=true AND every notif1=date; A's local map now also shows Jane picked up
+
+Edge — stale tab + deleted entry
+Given: B deleted key K; A's in-memory map still has K
+When:  A runs "Set All"
+Then:  transaction read shows K absent → K's patch dropped → K NOT recreated → A's map replaced with fresh read → K gone in A's UI
+
+Edge — missing document (fresh install / emulator)
+When:  first ever CSV import
+Then:  set(merge) creates the doc; a following "Set All" transaction succeeds
+
+Edge — dotted legacy key in a bulk apply → patched via FieldPath on the exact top-level key
+
+Failure — transaction fails (offline)
+Then:  red toast; local cache unchanged from server view (no optimistic ghost); no partial success</div>
+<div class="safe"><strong>Firebase safety:</strong> all mutations are <code>update()</code> inside <code>runTransaction</code> with <code>FieldPath</code> objects; inserts stay <code>set(merge)</code>. Rules already allow read+update for every current user; Phase 4's new matches grant the same to the pottery person. Snapshot before ship; spot-check one doc after; <strong>second-model implementation review of the diff is required</strong> (highest-risk write-path change in the plan).</div>
+<div class="note"><strong>B20 note:</strong> one document, no purge, ~3,000 entries of headroom. Not addressed here; a later plan can archive picked-up entries older than N months to <code>rosterManager/potteryArchive-&lt;year&gt;</code> (would need its own rule).</div>
+</div>
+
+<!-- ───────────────────────── PHASE 4 ───────────────────────── -->
+<div class="phase" id="phase-4">
+<h3>Phase 4 — Pottery-only login for the handoff (D2, B11, B12, B21) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Files:</strong> roster-manager <code>js/app.js</code> (init 8982–9087, setMode/updateTabVisibility 4093–4130, Pottery top bar 8102–8123), <code>js/firebase-data.js</code> (load result shape), <code>css/styles.css</code> if needed; studio-hub <code>firestore.rules</code>, <code>rules.test.js</code>, <code>js/app.js</code> (:719 registry, :544 <code>canAccessApp</code>).</p>
+<h4>Acceptance criteria</h4>
+<ul>
+  <li>Manage Team shows "Pottery Pickup (Roster Manager tab only)"; checking it and saving grants the role. The Tinker studio box must also be ticked (rules require it) — the gate below checks this.</li>
+  <li>The Roster Manager tile appears on that person's Tinker HQ home; clicking it lands on the Pottery tab. No mode pills, other tabs, Export/Print, or Settings. Help works.</li>
+  <li>They can upload a CSV, add a student, tick pickup/recycled/alt-pickup, set dates (single and bulk), edit templates, copy emails, delete an entry — all persist and survive a reload on another device.</li>
+  <li>They cannot read or change any other Roster Manager document — proven by rules tests.</li>
+  <li>The new EA with <code>roster-manager</code> sees the app exactly as today.</li>
+  <li>Empty tracker → friendly empty state; a real permission failure → red panel with "contact your administrator"; the "loaded from local cache" toast still fires for pottery-only users.</li>
+</ul>
+<h4>BDD</h4>
+<div class="bdd">Happy — pottery-only sign-in
+Given: users/{uid} appAccess ['pottery-pickup'], role staff, studios ['tinker','clayhub'], active true
+Then:  Pottery tab only; mode bar/dropdowns/Settings/Scan hidden; templates visible
+
+Happy — full-access unaffected (appAccess ['roster-manager']) → isPotteryOnly false; app unchanged
+Edge — both keys → full app
+Edge — pottery-pickup + coal-creek-signin → CC lockdown wins (existing behaviour), pottery tab not shown (documented; not expected in practice)
+Edge — empty tracker (doc missing, reads succeed) → empty-state card
+Failure — rules gap (matches missing) → red panel; no writes attempted
+Failure — studios lacks 'tinker' → red panel (rules deny) — the onboarding gate catches this before it happens
+
+Rules tests (emulator, @firebase/rules-unit-testing)
+- pottery-pickup staff CAN get rosterManager/pottery
+- pottery-pickup staff CAN setDoc(pottery, {…}, {merge:true}) when the doc is MISSING (create)
+- pottery-pickup staff CAN updateDoc(pottery, {[FieldPath(k,'pickedUp')]: true}) when the doc exists
+- pottery-pickup staff CAN updateDoc(pottery, {[k]: deleteField()}) (entry removal)
+- pottery-pickup staff CANNOT deleteDoc(pottery)
+- same four for potteryTemplates (get, create via set, update, no deleteDoc)
+- pottery-pickup staff CANNOT get rosterManager/appData
+- pottery-pickup staff CANNOT get or set rosterManager/signIn
+- staff with NO access CANNOT get rosterManager/pottery
+- roster-manager staff CAN still get + update rosterManager/pottery (regression)
+- manager CAN get rosterManager/pottery with no appAccess (regression)
+- pottery-pickup staff with studios ['clayhub'] only CANNOT get rosterManager/pottery
+- archived (active:false) pottery-pickup staff CANNOT get rosterManager/pottery</div>
+<h4>Execution gates (in order)</h4>
+<ol>
+  <li><strong>Audit:</strong> in the Firebase Console, confirm no existing <code>users/*</code> doc already contains the string <code>pottery-pickup</code> in <code>appAccess</code> (it was inert until now; a stray copy would gain access on deploy).</li>
+  <li>Write the failing rules tests → confirm they fail → add the two matches → <code>npm test</code> green (138 + new).</li>
+  <li>Commit rules + tests in studio-hub.</li>
+  <li>Wait for Christie's literal phrase <strong>"approved to change firebase"</strong>, then <code>cd ~/studio-hub && firebase deploy --only firestore:rules</code>. Never bare <code>firebase deploy</code>.</li>
+  <li>Roster-manager code (with Phase 3) and Studio Hub registry/tile change: commit each repo separately.</li>
+  <li>Ask "okay to deploy?" separately for roster-manager and studio-hub Netlify deploys.</li>
+  <li>Grant the role in Manage Team: tick <em>Pottery Pickup</em> <strong>and</strong> confirm <em>Tinker</em> is ticked under studios. Have the person sign in on their own device. Spot-check that one edit they make appears on <code>rosterManager/pottery</code> in the Console.</li>
+</ol>
+<div class="danger">Rules affect every Tinker HQ app at once. The change is strictly additive (two new <code>match</code> blocks for a new key; Firestore ORs overlapping matches) — it cannot narrow anyone's existing access. Rollback runbook: <code>~/studio-hub/RULES-ROLLBACK.md</code>.</div>
+</div>
+
+<h2 id="open-questions">Questions — answered 2026-09-16 (see Decisions log)</h2>
+<div class="phase">
+<ol>
+  <li><strong>Q1 — SDOC export:</strong> either is available → standardize on the Registration Report.</li>
+  <li><strong>Q2 — Everything at Clay Hub is pottery?</strong> Yes → venue-first detection.</li>
+  <li><strong>Q3 — Will the pottery person use Scan?</strong> No — resolved by the handoff model; Scan hidden for them.</li>
+  <li><strong>Q4 — Semester timing:</strong> contact only at semester end → one session per semester per class.</li>
+  <li><strong>Q5 — Role name:</strong> "Pottery Pickup (Roster Manager tab only)".</li>
+  <li><strong>Q6 — Deploy cadence:</strong> accepted; now 3 builds after the review reorder.</li>
+</ol>
+</div>
+
+<h2 id="review-round-1">Review round 1 — dispositions (Claude Opus + Codex, 2026-09-16)</h2>
+<div class="phase">
+<table>
+<tr><th>Reviewer finding</th><th>Disposition</th></tr>
+<tr><td>Both: dotted-string field paths break <code>update()</code>/delete for keys containing <code>.</code> — live today for manual + summer keys</td><td><strong>Accepted, BLOCKER → B13.</strong> FieldPath objects in Phase 1; slugs strip punctuation going forward; BDD + manual test added.</td></tr>
+<tr><td>Both: D1 rename + re-upload/re-scan double-adds or (worse) overwrites tracked values; value-dedup by name collapses two same-named students</td><td><strong>Accepted, BLOCKER → D1 rewritten.</strong> Immutable <code>sessionId</code> + label match; ID-vs-ID identity when both have IDs; key collision with same name = "already", never suffix/overwrite; required + assisted session labels; live counts before Import.</td></tr>
+<tr><td>Both: Phase 4 (old numbering) stale-delete <code>update('K.f')</code> recreates K as a partial map — "acceptable" was wrong</td><td><strong>Accepted, BLOCKER → D4.</strong> <code>runTransaction</code>: read, drop patches for absent keys, update, replace local map.</td></tr>
+<tr><td>Both: don't convert inserts to <code>update()</code> (throws on missing doc); 500-field limit is for transforms; chunking makes bulk ops non-atomic</td><td><strong>Accepted → D4.</strong> Inserts stay set-merge; no chunking; B20 documents the real ceiling (1 MiB doc).</td></tr>
+<tr><td>Both: scan backfill save at :8939 pushes the whole map — missing from B9 and from "write only new entries"</td><td><strong>Accepted → B14</strong>, fixed in Phase 1 via FieldPath patches.</td></tr>
+<tr><td>Codex: ship the concurrency fix before onboarding a second editor (1→3→4→2 or atomic)</td><td><strong>Accepted → phases renumbered</strong> 1 identity · 2 fall scan · 3 two-person safety · 4 role; 3+4 in one build. Claude's "1→3→2→4 is fine" noted; Codex's ordering is safer at no extra cost.</td></tr>
+<tr><td>Both: B3's contact-corruption is latent until B4 ships; "Clear" alone doesn't reset ids (needs reload)</td><td><strong>Accepted → B3 reworded</strong>; Phase 2 carries an explicit hard dependency on Phase 1.</td></tr>
+<tr><td>Codex: scan includes withdrawn students</td><td><strong>Accepted → B15</strong>, Phase 2.</td></tr>
+<tr><td>Both: labels in CSS selectors without <code>CSS.escape</code></td><td><strong>Accepted → B16</strong>, Phase 2 (semester class names make it likely).</td></tr>
+<tr><td>Both: templates whole-doc <code>set()</code>, errors swallowed</td><td><strong>Accepted → B17</strong>, Phase 3.</td></tr>
+<tr><td>Codex: <code>savePottery</code> returns nothing; call sites can't detect failure; "resolves false" in a BDD was wrong</td><td><strong>Accepted → B18</strong>, Phase 1; BDD corrected.</td></tr>
+<tr><td>Claude: <code>backfillContact</code> precedence bug (dead <code>^Summer</code> branch)</td><td><strong>Accepted → B19</strong>; not carried into the rewrite.</td></tr>
+<tr><td>Claude: Hub tile hidden for pottery-only (<code>canAccessApp</code>)</td><td><strong>Accepted → B21</strong>; <code>altAccess</code> on the registry entry, Phase 4.</td></tr>
+<tr><td>Claude: Manage Team must tick Tinker studio; archived-user rules test; create-on-missing + <code>deleteField()</code> tests; shaped like real SDK calls</td><td><strong>Accepted → Phase 4</strong> gates + test list.</td></tr>
+<tr><td>Claude: <code>_potteryFromCache</code> toast skipped by the CC early-return pattern; precedence with <code>coal-creek-signin</code></td><td><strong>Accepted → D2.</strong></td></tr>
+<tr><td>Claude: store <code>sessionDate</code>, don't infer order from labels</td><td><strong>Accepted → D1/Phase 2.</strong></td></tr>
+<tr><td>Codex: localStorage on a shared device isn't covered by rules</td><td><strong>Accepted → D2</strong> promise scoped to cloud data; onboarding note.</td></tr>
+<tr><td>Codex: audit existing user docs for a stray <code>pottery-pickup</code> string</td><td><strong>Accepted → Phase 4 gate 1.</strong></td></tr>
+<tr><td>Both: interruption analysis too optimistic ("mid Phase 4 strictly safer" false with dotted keys)</td><td><strong>Accepted → Completeness section rewritten.</strong></td></tr>
+<tr><td>Codex: '' vs null policy contradiction</td><td><strong>Accepted → D1 sanitizer</strong>: drop undefined and ''; keep null.</td></tr>
+<tr><td>Claude: dual export for <code>pottery-identity.js</code>; CLI deploy will upload <code>test/</code> + <code>package.json</code></td><td><strong>Accepted</strong> (dual export in D1). Uploading test files is harmless; noted.</td></tr>
+<tr><td>Both: B10 line numbers (8735/8752, not 8724/8740); B2 "every student" only if ≤ earlier count; B8 workshop-name-as-session is judgment not bug</td><td><strong>Accepted, wording fixed.</strong></td></tr>
+<tr><td>Both: D2's two rule matches are sufficient, minimal, and widen nothing (every Firestore call from the Pottery tab traced)</td><td><strong>Confirmed-OK</strong> — no change.</td></tr>
+</table>
+</div>
+
+<h2 id="firebase-checklist">Firebase safety checklist</h2>
+<div class="phase">
+<table>
+<tr><th>Check</th><th>P1 identity</th><th>P2 fall scan</th><th>P3 two-person</th><th>P4 role</th></tr>
+<tr><td>Rules updated in <code>~/studio-hub/firestore.rules</code> only</td><td>n/a</td><td>n/a</td><td>n/a</td><td>✅ two additive matches</td></tr>
+<tr><td>Rules tests first, <code>npm test</code> green before deploy</td><td>n/a</td><td>n/a</td><td>n/a</td><td>✅ 15 new tests</td></tr>
+<tr><td>"approved to change firebase" heard before <code>--only firestore:rules</code></td><td>n/a</td><td>n/a</td><td>n/a</td><td>✅ required</td></tr>
+<tr><td>Snapshot <code>rosterManager/pottery</code> to JSON before ship (via signed-in app, never CLI token)</td><td>✅</td><td>—</td><td>✅</td><td>—</td></tr>
+<tr><td>Inserts <code>set(merge)</code> new keys only; mutations <code>update()</code> + FieldPath (P3: in transaction); never bare <code>set()</code></td><td>✅</td><td>✅</td><td>✅</td><td>—</td></tr>
+<tr><td>Sanitizer: drop <code>undefined</code>/<code>''</code>, keep <code>null</code>; tested</td><td>✅</td><td>✅</td><td>✅</td><td>—</td></tr>
+<tr><td>Critical writes awaited and failure surfaced to the caller</td><td>✅ (B18)</td><td>✅</td><td>✅</td><td>—</td></tr>
+<tr><td>Spot-check one real doc in Console after deploy</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>Second-model implementation review of the diff</td><td>✅ required (write fns)</td><td>recommended</td><td>✅ required</td><td>✅ required (rules)</td></tr>
+<tr><td>Netlify deploy only after "okay to deploy?"</td><td colspan="2">✅ one build (P1+P2)</td><td colspan="2">✅ two builds (P3+P4 roster-manager; P4 studio-hub)</td></tr>
+</table>
+</div>
+
+<h2 id="completeness">Completeness check — what if this is interrupted?</h2>
+<div class="phase">
+<ul>
+  <li><strong>Phase 1 must land as one commit series with the FieldPath fix first.</strong> Order inside the phase: (a) FieldPath in patch/delete; (b) <code>pottery-identity.js</code> + tests; (c) key generation <em>and</em> dedup classification switched together — never one without the other, or a partially wired phase can duplicate rows; (d) CSV format + UI. Stopping after (a) or (b) is safe. Stopping between key-gen and dedup is not — do not commit that state.</li>
+  <li><strong>Phase 2 without Phase 1:</strong> unsafe (arms B3). Enforced by shipping in the same build and by the dependency note.</li>
+  <li><strong>Mid Phase 3:</strong> a call site converted to the transaction helper is safer than before; one still on <code>set(all)</code> is no worse than today. Safe at any commit <em>because</em> Phase 1 already replaced string paths with FieldPath — without Phase 1, converting a site to <code>update()</code> would be <em>less</em> safe for dotted keys.</li>
+  <li><strong>Rules deployed, app not (Phase 4):</strong> harmless — nobody holds <code>pottery-pickup</code> yet. Do not grant the role until the roster-manager deploy is live.</li>
+  <li><strong>App deployed, rules not (Phase 4):</strong> a pottery-only user sees the red panel and cannot write (<code>_potteryLoadFailed</code> guard). Deploy rules. Do not grant the role first.</li>
+  <li><strong>Studio Hub not deployed:</strong> grant via Console (<code>appAccess</code> array) and use the direct URL as a stopgap.</li>
+</ul>
+</div>
+
+<h2 id="resume">Resume instructions (new session)</h2>
+<div class="phase">
+<ol>
+  <li>Read the Decisions log first — it says which phase is in progress and what was decided mid-flight.</li>
+  <li><code>cd ~/roster-manager && git log --oneline -10 && git status</code> — commits are <code>phase N: …</code>; anything uncommitted is the in-progress step. Check the Phase 1 ordering rule above before committing.</li>
+  <li><code>cd ~/roster-manager && npm test</code> (after Phase 1 exists).</li>
+  <li>For Phase 4: <code>cd ~/studio-hub && git status && npm test</code>; check the Firebase Console → Rules tab timestamp to know whether rules are deployed. Never assume.</li>
+  <li>Local server: <code>cd ~/roster-manager && npx http-server . -p 8092 -c-1</code> → http://localhost:8092 (Christie signs in; Claude never enters credentials).</li>
+  <li>Reviews from round 1 are in this session's scratchpad only; their substance is in the dispositions table above.</li>
+  <li>Memory: <code>~/.claude/projects/-Users-christiehubley/memory/roster-manager.md</code> — update the Pottery section at wrap-up.</li>
+  <li><code>plan-review index</code> → reviewer URL for this plan (id <code>plan_uc1OCTpwWJPW</code>).</li>
+</ol>
+</div>
+
+<h2 id="decisions">Decisions log (append-only)</h2>
+<div class="phase" id="decisions-log">
+<ul>
+  <li><strong>2026-09-16</strong> — Plan drafted after read-only research. Chose unique keys + value dedup over session-in-key-only because of the rename feature. Initial order 1→2→3→4.</li>
+  <li><strong>2026-09-16 — Christie's answers.</strong> Q1 either export → standardize SDOC on the Registration Report. Q2 all Clay Hub = pottery → venue-first detection. Q3 pottery person never scans; EA scans. Q4 semester: contact at semester end only → one session per semester per class. Q5 role name accepted. Q6 cadence accepted.</li>
+  <li><strong>2026-09-16 — Reorder (v2):</strong> fall-scan phase moved next to the key fix because Scan is the bridge between the two roles.</li>
+  <li><strong>2026-09-16 — Review round 1 (v3):</strong> Claude Opus and Codex reviewed independently (34 + 32 findings). Six blockers accepted: dotted-key FieldPath bug (new B13, live today), D1 rename/same-name rules, transaction for stale-delete, inserts stay set-merge, backfill whole-map save (B14), ship concurrency fix before second editor. Phases renumbered into execution order: 1 identity → 2 fall scan → 3 two-person safety → 4 role. Builds reduced from 4 to 3. All findings dispositioned in the table above; none dismissed without checking the code (B13, B15, B16, B21, studio gate all re-verified by hand).</li>
+</ul>
+</div>
+
+</body>
+</html>
