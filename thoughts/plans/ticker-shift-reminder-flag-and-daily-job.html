@@ -495,6 +495,29 @@ match /timeclock_reminder_log/{logId} {
     <code>isReminderBot()</code> pins to and what <code>rules.test.js</code> uses as <code>REMINDER_BOT_UID</code>.
     Netlify env vars (<code>REMINDER_BOT_EMAIL</code>, <code>REMINDER_BOT_PASSWORD</code>, <code>REMINDER_PREVIEW_SECRET</code>)
     are Christie's to add before Phase 5 deploys; confirm at that point.</li>
+  <li><strong>Sep 21 — Phase 2 BUILT + REVIEWED, NOT DEPLOYED</strong> (studio-hub <code>1da12e3</code>, Ticker
+    <code>ba7dc3a</code>; 199 rules tests, 714 Ticker tests). Two-model implementation review, all findings applied:
+    (1) BLOCKER (both) — the update rule re-validated <code>lastAttemptAt == request.time</code> on every write once
+    the field existed, because <code>request.resource.data</code> is the whole post-write document → a claim that
+    failed once could never be marked sent → checked only when THIS write changes it; fail → retry → mark-sent is
+    now a test. (2) Because of (1), seven denials in the failed-attempt test were passing for the wrong reason →
+    every denial now carries a fresh <code>lastAttemptAt</code> so only the clause under test can deny, and each
+    of the 11 safety clauses was mutation-checked (each one removed turns the suite red). (3) Least privilege
+    tightened: the bot is excluded from the users self-read (an id-constrained LIST got through), the self-update,
+    and centrally from <code>isActiveUser()</code>; an ADMIN cannot create/update a users doc keyed to the bot uid
+    (delete stays); a hand-made admin-role doc for the bot is tested to open nothing. (4) The log's
+    <code>shift</code> snapshot is an exact typed shape (<code>hasAll</code> + string bounds), not just
+    <code>hasOnly</code>. (5) Tests pin get-vs-read for the bot on the log, <code>claimedAt</code> immutability,
+    the id-constrained users list. (6) Guard refusal moved above the different-user reload.
+    <strong>Notes for Phase 5 from this review:</strong> <code>claimedAt</code> is immutable, so the staleness check
+    for re-claiming must use <code>lastAttemptAt ?? claimedAt</code>; <code>markSent</code> should also
+    <code>deleteField()</code> a stale <code>error</code>; only <code>requireAuth()</code> refuses the bot in the
+    browser — kiosk mode and the standalone import pages rely on the rules alone (accepted).
+    <strong>Deploy incident, same day:</strong> while these rules sat in the shared working tree, another session
+    deployed the file for its own change. The live ruleset was verified byte-for-byte against <code>43173d6</code>
+    (the payroll commit): Phase 2 is NOT live — the other deploy preceded these edits. The gate held by timing,
+    not by design; a deploy guard (clean tree + approved sha + <code>rules-live</code> tag + a cross-session hook)
+    is proposed under the Resilience Plan before this phase deploys.</li>
   <li><strong>Sep 21 — Phase 1 DONE</strong> (<code>f380968</code> in tinker-timeclock, local, not deployed; 713 tests). Two-model
     IMPLEMENTATION review (Claude + Codex) of the phase's diff, all findings applied in the same commit:
     (1) BLOCKER — the new date helper was named <code>addDays</code>; app.js declares a Date-in/Date-out
