@@ -143,6 +143,39 @@ When: npm test
 Then: all 161 tests pass, zero requests reached production, and the Firebase console shows no read burst for the run window</div>
 </div>
 
+<h2 id="reviewer-questions">Reviewer questions (2026-09-21) — answered</h2>
+
+<div class="phase" id="rq-1">
+  <h3>Q1 — "Is the integrity the same as before? Does this align with my hardening work and AI configs, or negate it? Was it set up wrong in the first place?"</h3>
+
+  <p><strong>Integrity: the same for everything this suite exists to prove, stronger in three ways, with two honest trade-offs.</strong></p>
+  <p><em>What is identical.</em> The exact app code under test (the real <code>js/app.js</code>, <code>firebase-data.js</code>, <code>auth-guard.js</code>, served as-is); the real Firebase SDKs (the same compat 10.8.0 build from gstatic in the browser, the real <code>firebase</code> client in Node); the real studio-hub rules file, loaded unchanged and genuinely enforced (verified: an unauthenticated read came back 403 citing <code>firestore.rules</code> lines 106–112); the real Storage rules; and real Firestore semantics — the emulator is Google's own Firestore engine, not a mock, so transactions, <code>arrayUnion</code>/<code>arrayRemove</code>, <code>FieldValue.delete()</code>, <code>merge:true</code>, <code>getDocFromServer</code> and <code>onSnapshot</code> listeners behave as in production. The 161 tests' logic is unchanged — the diff is fixture data, one URL-scheme assertion, and two timing helpers (see the Decisions log).</p>
+  <p><em>Where it is stronger.</em> (1) Deterministic starting state: every run begins from exactly the fixture set. Production carried debris from crashed runs (the leaked <code>TEST_DATA_SAFETY_*</code> keys are still there), so a test could pass or fail on leftovers. (2) The suite now exercises <strong>the rules file × the app together before a rules release</strong>. Before, it only ever saw rules that were already live; a regression like May's would now fail this suite on your machine first. (3) No auth quota throttling (the <code>auth/quota-exceeded</code> timeouts that were misread as network flake for weeks) and no ~2M billable reads per run — 3.8 minutes, green, zero attempted production requests across three runs.</p>
+  <p><em>Trade-offs, stated plainly.</em> (1) It no longer runs on top of the real dataset's size: a 3,150-doc load takes ~100 ms here vs 1.5–3 s in production. That matters for one class of bug — timing races. It cut both ways: the emulator's speed exposed three real harness races that production's slowness had masked (all fixed in Phase 4), but a race that only appears under a slow load is not reproduced here. (2) The emulator does not enforce composite-index requirements or per-project quotas, so a query that needed an index would pass here and fail live — the Classbook has no such queries today (and the indexes-hazard note already says to avoid multi-field <code>orderBy</code>). (3) It tests the rules <em>file</em> in studio-hub, not the rules currently live; "file → live" is what the release guard and studio-hub's <code>npm test</code> gate cover. None of these touch what this suite is for: proving the save paths don't destroy data and the rules permit exactly what they should.</p>
+
+  <p><strong>Alignment: this <u>is</u> the hardening work, not a departure from it.</strong></p>
+  <ul>
+    <li><code>studio-hub/firebase-agent-defense-hardening.md</code> (Resilience Plan Step 3), Credential-handling section, verbatim: "tests must talk to the local emulator, never production." §3.1 calls pointing these tests at the emulator "the top recommendation for the next session that touches Classbook." §5 ranks the production-backed helper as <strong>unresolved risk #1</strong> and describes the Aug 12 production sign-in as "a stop-gap, not the full fix — … The full fix (app + tests both pointed at a local emulator) is scoped but not yet built."</li>
+    <li>The Resilience Plan's Step 4 sequencing (your memory notes) lists "do the Classbook emulator switch" as a planned item — deferred only so it would not collide with the Data Safety Plan session that was using the same test files.</li>
+    <li><code>~/.claude/CLAUDE.md</code>, the Classbook <code>AGENTS.md</code>, and the <code>development-workflow</code> skill all say emulator tests first. The Classbook AGENTS.md itself carried the "stop-gap … full fix not yet built" note until this change replaced it.</li>
+    <li>Firebase's own guidance is the same: emulators for automated tests, <code>demo-</code> project ids for exactly this. Nothing in your configs marks this as a way not to go.</li>
+    <li>Nothing was negated. The release guard, the "approved to change firebase" phrase, the ONE-rules-file rule and the <code>--only</code> release forms are untouched and remain the only path to production. One interaction is logged for the guard session: the generated <code>e2e/.emulators/firebase.json</code> names the rules files so the emulators can load them; it is only ever passed to <code>emulators:exec</code>/<code>emulators:start</code>, never to a release command.</li>
+  </ul>
+  <p><strong>Was it set up wrong?</strong> In stages. The original (pre-Aug) helper minted a production OAuth token from your CLI login and bypassed rules — wrong, and the audit's top finding. The Aug 12 rewrite moved it to a rules-enforced production sign-in — better, and labelled "stop-gap" in three places (the hardening doc, AGENTS.md, and the helper's own header). The emulator setup is the end state those documents scoped. The reads incident on Sep 21 is what made the stop-gap's cost visible.</p>
+</div>
+
+<div class="phase" id="rq-2">
+  <h3>Q2 — "I thought we were supposed to do it via the production path instead of emulator-only…?"</h3>
+  <p><strong>No — the opposite.</strong> The production path was the interim step, never the target: the hardening doc (§5, risk #1), the Classbook AGENTS.md and the helper file itself all called it a stop-gap pending "app + tests both pointed at a local emulator." Every standing rule you have on testing (<code>~/.claude/CLAUDE.md</code>, AGENTS.md, <code>development-workflow</code>, the hardening doc's credential-handling section) says emulator, never production. Deleting the production sign-in path is what makes the guarantee real: with no production config and no env-supplied password anywhere in <code>e2e/</code>, there is nothing for a future change (or a future agent) to fall back to.</p>
+  <p><strong>What still legitimately touches production — unchanged:</strong></p>
+  <ul>
+    <li>The planning workflow's manual <em>spot-check one real document in the Firebase Console</em> after any data-write phase. That is a human verifying real data, not an automated test, and it stays.</li>
+    <li>Local development at <code>:8087</code> (<code>npx http-server</code>) still runs against production exactly as before — the emulator flag is injected only by the test server, so nothing about your dev workflow changed.</li>
+    <li>Rules releases, via the guarded <code>--only</code> forms, after the phrase.</li>
+  </ul>
+  <p>If you want a deliberately tiny production smoke check some day (e.g. "the live site loads and a signed-in read succeeds"), that should be its own read-only script with its own approval — not folded back into this suite, which writes.</p>
+</div>
+
 <h2 id="safety">Firebase safety checklist</h2>
 <div class="phase">
   <table>
