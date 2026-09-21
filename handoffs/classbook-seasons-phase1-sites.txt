@@ -1,5 +1,6 @@
 Classbook (tinker-spring-curriculum) — camp-seasons + SDOC Phase 1 site inventory
 Read-only research, Sep 21, 2026, against main @ a08dbeb. Line numbers are exact at that commit.
+Updated after plan-review round 1 (Sep 21): sections D, E, G, H, K, M gained the items marked (r1).
 Companion: handoffs/sca-seasons-phase1-sites.txt (Summer Camp App side).
 
 A. `summer-2026` LITERALS (must become semesterType / stored season)
@@ -41,8 +42,9 @@ D. SUMMER COLLECTION READS (what a season filter must scope)
   js/firebase-data.js:1118   summerCamps_projectDetails whole (step 4)
   js/firebase-data.js:1227   summerCamps_lessonData   whole   (step 6; keyed by decodeFirestoreKey(doc.id) at :1231)
   js/firebase-data.js:429-431 summerCamps_campComplete where teacher == (loadCampCompleteData)
-  js/app.js:3445             summerCamps_prepHelpQueue whole  (loadSummerUnreadData; id fallback :3452)
-  js/app.js:3472             summerCamps_prepHelpQueue whole  (injectSummerUnreadBanner; id fallback :3479)
+  js/app.js:3445             summerCamps_prepHelpQueue whole  (loadSummerUnreadData; id fallback :3452; swallows errors :3458-3461)
+  js/app.js:3472             summerCamps_prepHelpQueue whole  (injectSummerUnreadBanner; id fallback :3478; swallows errors :3486-3488)
+  js/firebase-data.js:436-438 loadCampCompleteData() swallows errors → {} (r1: every checkbox unchecked, next click writes false)
   js/app.js:6772             summerCamps_lessonData   whole   (computeLiveContentCountByTeacher — deliberately cross-season; not filtered in Phase 1)
 
 E. SUMMER DOC-ID FORMATION (the cross-app contract: season-{year}||| prefix for non-2026 seasons)
@@ -58,12 +60,12 @@ E. SUMMER DOC-ID FORMATION (the cross-app contract: season-{year}||| prefix for 
   Storage path:
   js/firebase-data.js:1012   uploadSummerCampPhoto(): summerCamps/${lessonKey}/demo-{unique}.jpg  (storage.rules /summerCamps/** already allows)
   parse sites (doc.id → in-memory key; must strip the prefix, Phase 1 only — see plan):
-  js/firebase-data.js:1231, js/app.js:3452, js/app.js:3479
+  js/firebase-data.js:1231, js/app.js:3452, js/app.js:3478
 
 F. CALLERS THAT MUST PASS semKey / season DOWN
   saveSummerCampLessonData ← js/firebase-data.js:367 (saveLessonData, has semesterKey)
   saveCampComplete         ← js/app.js:2107 (camp-complete checkbox; semKey = getTvSemKey())
-  sendSummerLessonQaMessage ← js/app.js:3521 (sendSummerQaMessage; getTvSemKey())
+  sendSummerLessonQaMessage ← js/app.js:3521 (sendSummerQaMessage — pass the MODAL's semKey captured at :10457, not getTvSemKey(); call sites :10638-10641) (r1)
   getSummerLessonQaThread  ← js/app.js:3495 (loadSummerLessonQa)
   uploadSummerCampPhoto    ← js/app.js:10841 (summer modal; semKey in scope at :10457)
   loadCampCompleteData     ← js/app.js:1652 (renderSummerCampView)
@@ -73,12 +75,19 @@ F. CALLERS THAT MUST PASS semKey / season DOWN
 
 G. HARD-CODED SEASON FACTS (11 weeks, 2026 dates, single global sessions list)
   js/app.js:1581, 1598      renderSummerTeacherCalendar(): Math.max(..., 11)
-  js/app.js:3798, 3860, 3869 renderSummerCA()/buildSummerScheduleGridHtml(): Array.from({length: 11})
+  js/app.js:3798, 3860, 3869, 3873 renderSummerCA()/buildSummerScheduleGridHtml(): Array.from({length: 11}) / for w <= 11 (r1: 3873 added)
+  js/app.js:3863, 3884      buildSummerScheduleGridHtml(): break column hard-coded after w === 5 (r1)
+  js/app.js:3871            slot labels 'AM (9am-12pm)' / 'PM (1pm-4pm)' (r1) → semester.timeSlots
+  js/app.js:3854            studioOrder list (r1) → semester.studios
   js/app.js:3908-3912       getSummerWeekDate(): literal 2026 week dates {1:'5/26',…,11:'8/11'}
   js/app.js:1533,1550-1571  calendar anchors on semester.startDate (config) — correct source, keep
   js/app.js:1597            calendar break weeks from semester.breakWeeks (config) — keep
   js/firebase-data.js:35, 1082, 1264  currentSummerSessions — ONE global list; must become per-semester (two camp seasons loaded at once)
   js/app.js:1536, 3834, 3993 currentSummerSessions consumers
+  js/firebase-data.js:554, 566, 576, 584; js/app.js:2046, 2085-2087, 10903, 10989-10991  displacedSummerServerCopies (keyed by bare lessonKey; prune at :566 is global) (r1)
+  js/app.js:10446 (used :2006-2098) summerPlanCompleteSavesInFlight — keyed by bare lessonKey (r1)
+  js/app.js:3394-3404       qaLastRead_${lessonKey} localStorage marks — keyed by bare lessonKey (r1)
+  js/app.js:10715           summerLessonSaveChains — already keyed [semKey, lessonKey]
   js/app.js:3989-4038       buildSummerByWeekHtml(): builds keys `${teacher}-${camp}-${block}-${week}` (an old key scheme that never matches the loader's teacher|||camp|||block|||project keys — pre-existing dead view; out of scope, noted)
 
 H. appData (curriculum/appData) — semester config write sites (all whole-document set via saveConfig(), firebase-data.js:79-86)
@@ -89,6 +98,8 @@ H. appData (curriculum/appData) — semester config write sites (all whole-docum
   js/app.js:10233           saveSettings() (spreads the existing semester → preserves semesterType/season)
   js/app.js:10424-10437     seedSettings() — DEAD (no caller in index.html); "overwrite current settings" foot-gun → remove
   js/firebase-data.js:115-125 setupConfigListener() — DEFINED, NEVER CALLED (config has no live listener → stale admin tabs are real)
+  js/firebase-data.js:53-56  loadConfig() returns getDefaultConfig() on ANY read error — the May-2026 silent fallback (r1: goes loud in Phase 1)
+  js/app.js:10339-10375     renameTeacherInSemester() — DEAD (no caller) and a whole-document set() of curriculum/lessonData from currentLessonData incl. the summer maps (r1) → remove
 
 I. SEMESTER CREATION / SELECTORS / GATING
   index.html:169-213        New Semester modal (name, start, weeks, breaks, closures, copy-from) — no Type field
@@ -111,14 +122,14 @@ J. TEACHER VIEW MACHINERY THE SDOC PLAN REUSES
   js/app.js:10456-11143     openLessonModal() — the summer plan editor (save at :10889 via saveSingleLesson(semKey, …))
   js/firebase-data.js:984-1003 getPhotoPath()/uploadLessonPhoto(): curriculum/{semesterKey}/{lessonKey}/demo-{unique}.jpg — allowed by storage.rules /curriculum/** → SDOC photos need NO storage rules change
 
-K. RULES (studio-hub/firestore.rules @ 4fd8d01)
-  :514-545  /curriculum/{docId} — manager+ all; classbook-admin/curriculum-admin/classbook read + create/update except appData/prepCycleConfig; delete classbook-admin/curriculum-admin
-  :587-590  summerCamps_prepHelpQueue — read/create/update: manager+ | summer-camp | classbook | classbook-admin
-  :620-623  summerCamps_lessonData — read: manager+ | summer-camp | classbook; create/update/delete: manager+ | classbook
-  :625-629  summerCamps_campComplete — read: +classbook-admin/curriculum-admin; create/update: manager+ | classbook
-  :615-618, 631-634, 641-644  curriculum / projectDetails / schedule — read incl. classbook, classbook-admin, curriculum-admin; write manager+
-  :597-601  materialsHub — read incl. classbook/classbook-admin/curriculum-admin
-  (no summerCamps_seasons block yet — ships with summer-camp-app-seasons Phase 1; no dayOffCamps_* blocks — this plan)
+K. RULES (studio-hub/firestore.rules @ 43173d6 — studio-hub moved from 4fd8d01 to 43173d6 mid-session; +24 lines) (r1)
+  :538-569  /curriculum/{docId} — manager+ all; classbook-admin/curriculum-admin/classbook read + create/update except appData/prepCycleConfig; delete classbook-admin/curriculum-admin (:561-564)
+  :611-614  summerCamps_prepHelpQueue — read/create/update: manager+ | summer-camp | classbook | classbook-admin
+  :644-647  summerCamps_lessonData — read: manager+ | summer-camp | classbook; create/update/delete: manager+ | classbook
+  :649-653  summerCamps_campComplete — read: +classbook-admin/curriculum-admin; create/update: manager+ | classbook
+  :639-642, 655-658, 665-668  curriculum / projectDetails / schedule — read incl. classbook, classbook-admin, curriculum-admin; write manager+
+  :621-625  materialsHub — read incl. classbook/classbook-admin/curriculum-admin
+  (no summerCamps_seasons block yet — ships with summer-camp-app-seasons Phase 1; no dayOffCamps_* blocks — the SDOC plan)
   storage.rules :12-18 /curriculum/**, :21-27 /summerCamps/** (signed-in read/create/update/delete, 5 MB image); default deny :54-56
 
 L. BACKUP SCRIPT (~/tinker-backups/backup.js)
@@ -129,4 +140,5 @@ M. TESTS
   e2e/helpers/firestore.js:157 TEST_SEMESTER_KEY = /^test[-_]data[-_]safety/i (whole-semester cleanup guard); :202 Storage cleanup accepts only summerCamps/TEST||| and curriculum/TEST_DATA_SAFETY_semester/
   Prerequisite doc (spec header): summerCamps_curriculum/TEST_DATA_SAFETY_curriculum { campTopic 'TEST_DATA_SAFETY', teacher 'TEST', publishedToClassbook true, blocks… } — carries NO season today
   In-page semester injection pattern: currentConfig.semesters[key] = {…} (spec :3699, :3886, :3950) — reusable for camp-season and SDOC test semesters without touching appData
-  studio-hub/rules.test.js — fixtures: CLASSBOOK_UID (appAccess classbook), CLASSBOOK_ADMIN_UID, MANAGER_UID, ADMIN_UID, SUMMER_CAMP_UID, STAFF_NOACCESS_UID, archived users; 'Default deny' describe at :1369
+  studio-hub/rules.test.js — fixtures: CLASSBOOK_UID (appAccess classbook), CLASSBOOK_ADMIN_UID, MANAGER_UID, ADMIN_UID, SUMMER_CAMP_UID, STAFF_NOACCESS_UID, archived users; NO curriculum-admin fixture; 'Default deny' describe at :1580 (@ 43173d6)
+  e2e/helpers/firestore.js:54-71 summer doc helpers accept ANY doc ID (no TEST guard); no helpers exist for summerCamps_campComplete / summerCamps_prepHelpQueue; the saveConfig stub pattern is at e2e/data-safety.spec.js:3911 (r1)
