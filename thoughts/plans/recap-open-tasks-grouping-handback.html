@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Recap Open Tasks — grouping, hand-back, topics, reassign</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Recap Open Tasks — grouping, hand-back, topics, reassign</h1>
+<p><strong>App:</strong> Recap (<code>~/recap</code>) &middot; <strong>Drafted:</strong> Sep 22 2026 &middot;
+<strong>execution-ready: false</strong> — <em>awaiting second-model design review.</em></p>
+
+<div class="status">
+  <strong>Goal:</strong> the Open Tasks list reads as organised work instead of one long list (grouped by meeting and
+  topic, with the meeting viewable in place), and no task can silently fall through the cracks when someone says
+  it isn't theirs.
+  <br><br>
+  <strong>Scope limits:</strong> no Firestore rules change and no new collection in any phase. Every new field
+  (<code>topic</code>, <code>passedBy</code>) lives inside <code>summary.beforeNextMeeting</code>, the one field a
+  shared non-manager is already allowed to write. Roles are never changed (see CLAUDE.md, "Roles are GLOBAL").
+</div>
+
+<h2>Current state (researched Sep 22)</h2>
+<ul>
+  <li><code>tasks.html</code> + <code>renderOpenTasks()</code> (<code>js/app.js</code> ~5196) group by assignee only.
+      Each row carries its meeting title, date and series as small meta text.</li>
+  <li>The meeting link calls <code>openMeetingById()</code>, which <strong>navigates away</strong> to
+      <code>meetings.html#meeting=</code>.</li>
+  <li><strong>"Not mine" only hides.</strong> It appends <code>taskKey</code> to the viewer's
+      <code>users/{uid}.dismissedTaskKeys</code>. The meeting still lists the task under the same assignee, so a
+      task someone has disowned still looks owned. This is the silent-drop problem.</li>
+  <li>Data shape: <code>summary.beforeNextMeeting = [{ assignee, items: [string | {text, done}] }]</code>.
+      One assignee can already have several groups; <code>applyTaskDone()</code> walks all of them.</li>
+  <li>Writes from Open Tasks: <code>setTaskDone()</code>, a transaction that finds the item by assignee + text and
+      writes <code>summary.beforeNextMeeting</code> <em>only</em>. That is the only update a shared non-manager's
+      rule branch (<code>onlyActionItemsChanged()</code>) accepts.</li>
+  <li>The detail view (<code>meetings.html</code>) renders action groups at ~3387 and allows drag between groups,
+      renaming an assignee and "+ Add person". The new-meeting summary renders them at ~1818, and the copy-as-text/HTML
+      formatters at ~4311 / ~4392.</li>
+  <li>The summarize prompts in <code>server/server.js</code> emit <code>{assignee, items}</code>. Personal/logistics
+      prompts already use <code>assignee</code> as a life category.</li>
+  <li>Tests: <code>task-helpers.test.js</code> (pure helpers) and <code>task-write.emulator.test.js</code>
+      (firebase-admin, behaviour only). Meetings <em>rules</em> are covered in
+      <code>studio-hub/rules.test.js</code>.</li>
+</ul>
+
+<div class="trap"><strong>Trap to respect (CLAUDE.md):</strong> the detail view's concurrency protocol (one object per
+meeting via <code>canonicalMeeting()</code>, one write queue per meeting, a <code>_savedSummary</code> baseline).
+The Open Tasks popup must <strong>not</strong> reuse <code>showMeetingDetail()</code> or create a meeting object that
+reaches it. The popup is a separate, read-only render. Its only write is the existing <code>setTaskDone()</code>
+transaction.</div>
+
+<h2>Phases</h2>
+
+<div class="phase">
+<h3>Phase 1 — Group by meeting + view-only meeting popup <small>(display only, no data writes beyond the existing tick)</small></h3>
+<p><strong>Acceptance (user outcomes):</strong></p>
+<ul>
+  <li>Everyone's view nests <strong>Person → Meeting (title · date) → tasks</strong>; My tasks nests
+      <strong>Meeting → tasks</strong>. Meetings are newest first. Unknown speaker / Unassigned stay last.</li>
+  <li>Clicking a meeting header (or a task's meeting link) opens a <strong>popup</strong> over the list showing the
+      meeting's summary, including its action items with checkboxes for tasks the viewer can tick
+      (<code>canEditTaskMeeting</code>). Closing it returns to the same scroll position.</li>
+  <li>The popup has an "Open full meeting" button that goes to <code>meetings.html#meeting=</code> for editing.</li>
+  <li>Ticking in the popup removes the task from the list behind it without a reload.</li>
+</ul>
+<p><strong>Implementation notes:</strong> add a pure <code>groupTasksForDisplay(tasks, {byPerson})</code> to
+<code>task-helpers.js</code> (unit-tested) that returns the nested structure. The popup reads the meeting from the
+<code>meetings</code> array <code>loadOpenTasks()</code> already fetched (keep it in a module-level map; no extra
+read). Build a task object per item and tick through <code>setTaskDone()</code>. Close on Esc, the backdrop and the ×.</p>
+<div class="bdd"><strong>Happy:</strong> Given Anika has 6 open tasks from 2 meetings, when she opens My tasks, then she
+sees 2 meeting headers with 4 and 2 tasks under them, newest meeting first.</div>
+<div class="bdd"><strong>Edge:</strong> Given a meeting whose summary is malformed, when its header is clicked, then the
+popup shows what it can and "some items couldn't be read", and the list behind it is unaffected.</div>
+<div class="bdd"><strong>Failure:</strong> Given the meeting was unshared from Anika after the page loaded, when she ticks
+a task in the popup, then she sees the existing "no longer shared" message, the checkbox reverts, and nothing else
+changes.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — "Not mine" hands the task back + Needs attention <small>(data write: beforeNextMeeting only)</small></h3>
+<p><strong>Acceptance:</strong></p>
+<ul>
+  <li><strong>Assigned solely to the viewer</strong> (the trimmed assignee equals one of their name variants,
+      case-insensitive): "Not mine" asks for confirmation ("This goes back to Unassigned on the meeting so someone
+      can reassign it"), then <strong>moves the item</strong> into the meeting's Unassigned group (creating the group if
+      needed) with <code>passedBy: "&lt;first name&gt;"</code> and <code>passedAt</code> (ISO date string).</li>
+  <li><strong>Shared assignee</strong> ("Anika or Christie", "Carey/Christie"): "Not mine" keeps today's
+      hide-only behaviour, because someone else still owns the task. The confirm text says so.</li>
+  <li>The Open Tasks page gets a third tab, <strong>Needs attention</strong>, listing every Unassigned and Unknown
+      speaker task across readable meetings, grouped by meeting, with "passed on by Anika · Sep 22" where it applies.</li>
+  <li>For managers, the <strong>Open Tasks nav link shows a count</strong> ("Open Tasks · 3") on every Recap page,
+      so handed-back tasks aren't missed.</li>
+  <li>The detail view shows "passed on by Anika" next to such an item. Dragging it to a person clears
+      <code>passedBy</code>/<code>passedAt</code>.</li>
+</ul>
+<p><strong>Implementation notes:</strong> add a pure <code>moveTaskToAssignee(rawGroups, task, newAssignee, extraFields)</code>
+to <code>task-helpers.js</code> and use it in Phases 2 and 4. It follows the same invariant as
+<code>applyTaskDone</code>: locate by assignee + text, touch nothing else byte-for-byte, and append to the first group
+with the target assignee (and the same topic, once Phase 3 lands) or push a new group. Write through a new
+<code>moveTask()</code> transaction mirroring <code>setTaskDone()</code>, with <code>summary.beforeNextMeeting</code>
+as the only field. If the source group becomes empty, <strong>leave it</strong> (removing groups is the owner's
+call in the detail view).</p>
+<div class="bdd"><strong>Happy:</strong> Given "Order clay" is assigned to "Anika" on a meeting shared with her, when she
+clicks Not mine and confirms, then the meeting shows it under Unassigned with "passed on by Anika", her list drops it,
+and Christie's nav reads "Open Tasks · 1".</div>
+<div class="bdd"><strong>Edge:</strong> Given "Book the kiln tech" is assigned to "Anika or Christie", when Anika clicks
+Not mine, then it only hides from Anika's list (existing dismissedTaskKeys) and stays on Christie's.</div>
+<div class="bdd"><strong>Failure:</strong> Given Christie renamed the item in the detail view after Anika's list loaded,
+when Anika clicks Not mine, then the transaction can't find it, she sees "That item has changed — reload and try
+again", and nothing is written.</div>
+<div class="warn"><strong>Accepted limit (existing, same-section last-save-wins):</strong> if Christie has the same
+meeting open in the detail view and edits its action items <em>after</em> Anika hands one back, Christie's save can put
+it back under Anika. <code>carryRemoteDoneFlags</code> carries ticks, not moves. This is rare, and the item is never lost,
+just un-handed-back. A per-item merge is the fix if it ever bites.</div>
+<div class="warn"><strong>Nav count cost:</strong> the count needs <code>queryReadableMeetings()</code> on pages that
+don't already run it (index, meetings, settings). That's one extra query per page load, for managers only, run after
+the page renders so it never blocks it.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — Topic headers <small>(data write: new optional <code>topic</code> on groups; prompt change)</small></h3>
+<p><strong>Acceptance:</strong></p>
+<ul>
+  <li>New summaries of work meetings group each person's items by topic: a group is
+      <code>{assignee, topic, items}</code>, with several groups per person when there are distinct topics.
+      Personal/logistics prompts are unchanged (they already use assignee as the category).</li>
+  <li>The detail view shows each group as "<em>Person</em> · <em>Topic</em>". The topic is click-to-edit like the
+      assignee, a "+ Add topic" button under a person creates a new group for them, and drag between groups moves items
+      between topics.</li>
+  <li>Open Tasks nests <strong>… → Meeting → Topic → tasks</strong>, in both My tasks and Everyone's. Groups
+      without a topic (every existing meeting) render with no topic header, exactly as today.</li>
+  <li>Copy-as-text/HTML includes the topic as a subheading.</li>
+</ul>
+<p><strong>Implementation notes:</strong> topic is on the <em>group</em>, so every existing identity rule
+(assignee + text in <code>applyTaskDone</code>, <code>carryRemoteDoneFlags</code>, <code>taskKey</code>) is
+unchanged. Renaming a topic never breaks a tick or a dismissal. <code>collectOpenTasks</code> adds
+<code>topic: asText(group.topic)</code>. Strip an empty topic before any write (never store <code>""</code>). Update
+all four renderers (new-meeting summary, detail, text, HTML) plus the <code>server.js</code> prompts and schema
+examples. The prompts must not use topic to <em>infer</em> an assignee, so the evidence-only attribution rules stay
+as they are.</p>
+<div class="bdd"><strong>Happy:</strong> Given a leadership meeting where Maryssa takes 9 items about camp, hiring and
+supplies, when it's summarized, then her tasks appear under 3 topic headers in both the detail view and her task
+list.</div>
+<div class="bdd"><strong>Edge:</strong> Given a meeting summarized before this change, when it's viewed, then it looks
+exactly as it does today (no "undefined" or empty headers).</div>
+<div class="bdd"><strong>Failure:</strong> Given the model returns a group with a non-string topic, when rendered, then it
+is treated as no topic, and nothing throws out of the rollup.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — Reassign from the task list <small>(data write: beforeNextMeeting; optionally sharedWith by a manager)</small></h3>
+<p><strong>Acceptance:</strong></p>
+<ul>
+  <li>For the meeting's creator and managers (<code>canEditMeetingDetail</code>), "Not mine" and each Needs
+      attention row get a <strong>Reassign…</strong> menu listing: people the meeting is shared with, then the
+      meeting's participants (from <code>meeting.participants</code>), de-duplicated by first name. Participants the
+      meeting isn't shared with are marked "not shared".</li>
+  <li>Picking a "not shared" person <strong>asks every time</strong>: "Share this meeting with Maryssa too?" with the
+      choices <em>Share &amp; assign</em>, <em>Assign only</em> or <em>Cancel</em>. Share &amp; assign is offered to
+      managers only, because a staff creator can't change <code>sharedWith</code> under the rules. Staff see
+      "Assign only — they won't see it until a manager shares the meeting".</li>
+  <li>Reassigning clears <code>passedBy</code>/<code>passedAt</code> and lands the item in the new person's group with
+      the same topic.</li>
+  <li>Shared staff never see Reassign. They keep Not mine (Phase 2).</li>
+</ul>
+<p><strong>Implementation notes:</strong> reuse <code>moveTaskToAssignee</code>. Share &amp; assign is ONE transaction
+writing <code>summary.beforeNextMeeting</code> + <code>sharedWith</code> (a union of the current list read in the
+transaction, never a list rebuilt from the UI; see CLAUDE.md "Sharing — two traps"). Participants map to users by
+name through the same list <code>loadRecapUsers()</code> uses (active users only). A participant with no matching user
+can be assigned but not shared.</p>
+<div class="bdd"><strong>Happy:</strong> Given a handed-back task on a meeting Maryssa attended but isn't shared on,
+when Christie picks Maryssa → Share &amp; assign, then the meeting is shared with Maryssa and the task is in her
+My tasks.</div>
+<div class="bdd"><strong>Edge:</strong> Given the participants list says "Julia, Christie" and Julia has no Recap user,
+when Christie reassigns to Julia, then only Assign only is offered.</div>
+<div class="bdd"><strong>Failure:</strong> Given someone else unshared Maryssa while the menu was open, when Christie
+confirms Share &amp; assign, then the transaction re-reads <code>sharedWith</code>, unions Maryssa back in (Christie
+explicitly chose to share), and writes both fields atomically. Nothing is half-written.</div>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<table>
+<tr><th>Check</th><th>Answer</th></tr>
+<tr><td>New collection / rules change?</td><td>None. Every write stays inside the existing meetings rule branches.
+Phase 2's shared-staff write is <code>summary.beforeNextMeeting</code> only, the Phase 3 rule surface.</td></tr>
+<tr><td>Rules tests</td><td>Add <code>studio-hub/rules.test.js</code> cases: a shared staff user CAN write a
+beforeNextMeeting that moves an item to Unassigned with passedBy; a staff creator CANNOT write sharedWith alongside a
+reassign; a manager CAN write both. These pin existing behaviour. Run <code>npm test</code> in studio-hub (no deploy
+needed).</td></tr>
+<tr><td>Partial updates</td><td><code>tx.update</code> on named fields only, never <code>set</code>.</td></tr>
+<tr><td>Empty/undefined stripped</td><td>No <code>topic: ""</code>, no undefined <code>passedBy</code>. Delete the
+key instead.</td></tr>
+<tr><td>Writes awaited</td><td>Yes, all in transactions. The UI changes only after commit.</td></tr>
+<tr><td>Bulk ops / migration</td><td>None. Existing meetings are never rewritten; topics are optional.</td></tr>
+<tr><td>Emulator tests</td><td><code>task-write.emulator.test.js</code>: move-to-Unassigned and reassign round-trips,
+including string-shaped items and malformed siblings, which must be byte-for-byte preserved.</td></tr>
+<tr><td>Console spot-check</td><td>After Phases 2, 3 and 4 ship, open one real meeting doc and confirm the shape.</td></tr>
+</table>
+
+<h2>Completeness — if interrupted</h2>
+<ul>
+  <li>Each phase is independently shippable and committed separately. Phase 1 has no data effect.</li>
+  <li>Every data write is a single transaction, so there is no half-moved item.</li>
+  <li>Phase 3 fields are optional. Code from Phases 1–2 ignores <code>topic</code>, and older clients render topic-less.
+      A half-deployed Phase 3 at worst shows groups without headers.</li>
+</ul>
+
+<h2>Resume instructions</h2>
+<ol>
+  <li>Read this plan + <code>~/recap/CLAUDE.md</code> (the Open Tasks section).</li>
+  <li><code>git log --oneline</code> in <code>~/recap</code>. Commits are titled <code>phase N: …</code>.</li>
+  <li>Run <code>npm test</code> in <code>~/recap</code> (emulator) before and after the next phase.</li>
+  <li>For Phases 2–4, run a second-model <em>implementation</em> review of the diff before starting the next phase.</li>
+  <li>Deploy = <code>git push</code> (Render, free). Ask Christie before pushing.</li>
+</ol>
+
+<h2>Decisions log</h2>
+<ul>
+  <li><strong>Sep 22 (Christie):</strong> Group by meeting, with the meeting title as header.</li>
+  <li><strong>Sep 22 (Christie):</strong> The meeting opens as a popup, not by navigating away. <em>(Claude)</em> The
+      popup is view + tick only; editing stays in the full detail view to keep its concurrency protocol single-sourced.</li>
+  <li><strong>Sep 22 (Christie):</strong> "Not mine" must not silently drop a task. It hands a solely-assigned task back
+      to Unassigned with who passed on it, and a Needs attention view + nav count surfaces those tasks.</li>
+  <li><strong>Sep 22 (Christie):</strong> Only the creator and managers can reassign; shared staff can only hand back.</li>
+  <li><strong>Sep 22 (Christie):</strong> Assigning to a not-shared attendee asks every time whether to share.</li>
+  <li><strong>Sep 22 (Claude):</strong> Topic lives on the group, not the item, so identity (assignee + text) and all
+      existing tick/merge code stay unchanged.</li>
+  <li><strong>Sep 22 (Claude):</strong> Build order is 1 → 2 → 3 → 4 (display-only first, most careful write last).</li>
+</ul>
+</body>
+</html>
