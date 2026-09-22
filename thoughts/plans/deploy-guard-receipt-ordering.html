@@ -13,7 +13,6 @@
   .bad { background: #fdecea; border-left: 4px solid #c53030; padding: 10px 14px; margin: 12px 0; }
   .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
   .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
-  .new { background: #f3effa; border-left: 4px solid #6b46c1; padding: 10px 14px; margin: 12px 0; }
   ul.checklist li { margin: 4px 0; }
   table { border-collapse: collapse; font-size: 14px; margin: 8px 0; width: 100%; } td, th { border: 1px solid #ddd; padding: 5px 8px; text-align: left; vertical-align: top; }
   .k { font-variant: small-caps; font-weight: 700; letter-spacing: .04em; }
@@ -25,353 +24,194 @@
 <h1>Plan: Deploy guard — receipt ordering (&ldquo;what shipped last&rdquo;)</h1>
 
 <p>Repo: <code>~/studio-hub</code> &middot; <code>scripts/deploy-rules.sh</code>, <code>scripts/deploy-rules.test.sh</code> only &middot;
-Drafted Sep 22 2026 &middot; <strong>v4</strong> — after <strong>two</strong> two-model plan reviews (Claude + Codex), both rounds
-request-changes &middot; <strong>execution-ready: false</strong> &middot;
-Under the <a href="firebase-deploy-guard.html">Firebase deploy guard</a> plan. No rules change, no data change, no deploy.</p>
+Sep 22 2026 &middot; <strong>v5 — scope cut to what has converged (Christie's call)</strong> &middot;
+<strong>execution-ready: true</strong> &middot; No rules change, no data change, no deploy.</p>
 
 <div class="status">
-  <strong>Goal.</strong> The guard <strong>never presents a guess as a fact</strong>. It names the receipt it used, states what
-  else it could have used, and refuses only when a tag's own contents contradict themselves. It does not claim to
-  always know what shipped last, because it cannot.
+<strong>Goal.</strong> Fix the receipt ordering bug and the test flake it causes, with a change small enough to be
+right the first time. <strong>Nothing in this change can refuse a deploy that succeeds today</strong>, except a
+genuinely unreadable receipt record.
 </div>
 
-<h2>Why v4 is SMALLER than v3</h2>
-
-<div class="new">
-<p>Across two review rounds and four reviewers, the split is stark:</p>
-<pre>ordering key (name stamp, tag date, refname)   endorsed 4/4, never once challenged
-fail-closed ref reads · one predicate ·
-pre-release monotonic wait                     endorsed 4/4
-──────────────────────────────────────────────────────────────────────────
-v1 two-argmax detector                         REJECTED — 3 verified counterexamples
-v3 H2 skew detector                            REJECTED — inverted; both reviewers
-v3 H1 same-stamp refusal                       REJECTED — bricks the deploy path; both
-v3 Phase 2 marker                              REJECTED — 3 defects; both</pre>
-<p><strong>Every defect in two rounds has been in the detection layer, never in the fix itself.</strong> And both
-reviewers independently concluded that the worst case — a hand-written receipt carrying a <em>consistent</em>
-improvised timestamp — is <strong>undetectable from local git evidence</strong>. A detection layer that cannot catch
-the case it exists for is not worth the risk of building it wrong a third time.</p>
-<p>So v4 keeps what is endorsed, adds only checks that are <em>provably</em> sound, replaces warnings with
-<em>facts</em>, and defers the rest to its own plan (Christie's call, Sep 22).</p>
-</div>
-
+<h2>Why v5 is a cut, not another expansion</h2>
 <div class="bad">
-<strong>The finding that forced this. Both reviewers, independently.</strong> v3 claimed H2 (stamp-to-tag-date skew)
-catches an operator who hand-writes a missing receipt with a fresh timestamp. It does the exact opposite:
-<table>
-<tr><th>recovery style</th><th>skew</th><th>ordering</th><th>H2</th></tr>
-<tr><td><strong>faithful</strong> — copies the printed command</td><td>49 min</td><td class="yes">correct</td><td class="no">WARNS</td></tr>
-<tr><td><strong>improvised</strong> — types <code>date -u</code> fresh</td><td>~0</td><td class="no">WRONG</td><td class="no">SILENT</td></tr>
-</table>
-H2 was <em>anti-correlated with the harm</em>. It would also have fired on day one, permanently, on the only real
-receipt that exists (the seeded one, 49m12s skew) — an unactionable warning above every diff Christie reads.
-Dropped entirely.
+<p>Three rounds of two-model plan review. The split is unambiguous:</p>
+<pre>the ordering key and its supporting rules   endorsed 6/6 reviewers, 3 rounds, NEVER challenged
+─────────────────────────────────────────────────────────────────────────────────────────────
+v1 two-argmax detector          REJECTED   v3 H1 same-stamp refusal   REJECTED (deadlocks)
+v3 H2 skew detector             REJECTED   v4 rule 3 (future = junk)  REJECTED (aging inversion)</pre>
+<p><strong>Every rejection was of detection machinery added on top of the fix. The fix itself was never
+challenged once.</strong> After round 2 the correct response was to cut; instead scope grew and round 3 rejected
+the new part too. v5 ships the converged core and defers the rest to its own plan.</p>
 </div>
 
 <h2>The bug, and the measured baseline</h2>
-<p><code>deploy-rules.sh:76</code> orders receipts with <code>--sort=-refname</code>. Names are
+<p><code>deploy-rules.sh:76</code> orders receipts by <code>--sort=-refname</code>. Names are
 <code>&hellip;/&lt;UTC yyyymmddTHHMMSSZ&gt;-&lt;sha7&gt;</code>; the stamp has <strong>second</strong> resolution, so two deploys in one
-second tie and the tie breaks on the <strong>sha7</strong> — no order at all. Nine baseline runs of the guard suite on
-this branch, before any change:</p>
+second tie and the tie breaks on the <strong>sha7</strong> — which carries no order at all. Nine baseline runs of the
+guard suite on this branch, before any change:</p>
 <pre>90/0  90/0  <strong>87/3</strong>  <strong>89/1</strong>  90/0  90/0  <strong>89/1</strong>  90/0  90/0      → 3 of 9 failed</pre>
-<p>Mechanism, verified and independently re-verified by a reviewer: at <code>deploy-rules.test.sh:127</code> the third
-deploy reads the record at <code>deploy-rules.sh:218</code> <em>before</em> writing its own receipt, sees two receipts tied
-on stamp, and picks by sha7. When it picks the <code>SHA2</code> one the diff is <code>SHA2 → SHA2</code> — <strong>empty</strong>.</p>
-<div class="bad"><strong>The harm is not only a wrong diff.</strong> A mis-picked receipt that points at <code>origin/main</code>
-makes <code>--status</code> print <em>&ldquo;nothing to deploy&rdquo;</em> (<code>:125&ndash;126</code>) and the operator walks away from a change
-that never shipped — silent, with no diff to contradict it.</div>
-<div class="bad"><strong>d43a171's approach stays permanently off the table.</strong> It ordered by tag creation date. The one
-real receipt was hand-written <strong>49m12s</strong> after the deploy it records (<code>by=seeded</code>), and the script's own
-<code>EX_RECEIPT</code> path <em>instructs</em> operators to hand-write receipts.</div>
+<p>Mechanism, independently re-verified by a reviewer: at <code>deploy-rules.test.sh:127</code> the third deploy reads
+the record at <code>:218</code> <em>before</em> writing its own receipt, sees two receipts tied on stamp, and picks by
+sha7. When it picks the <code>SHA2</code> one the diff is <code>SHA2 → SHA2</code> — <strong>empty</strong>.</p>
+<div class="bad"><strong>Two harms, not one.</strong> A wrong diff — and worse, a mis-picked receipt that points at
+<code>origin/main</code> makes <code>--status</code> print <em>&ldquo;nothing to deploy&rdquo;</em> (<code>:125&ndash;126</code>), so the operator walks
+away from a change that never shipped. Silent, with no diff to contradict it.</div>
+<div class="status"><strong>Current real-world exposure is nil, and the flake is the actual blocker.</strong> The repo holds
+exactly <strong>one</strong> receipt, so there is nothing to mis-order. But the guard runs <code>npm test</code> at
+<code>:236</code>, which includes the flaky guard suite, so roughly <strong>1 deploy in 3 aborts</strong> on a flake unrelated
+to the rules being shipped. Fixing the bug fixes the flake.</div>
 
-<h2>Part 1 — The ordering model (endorsed 4/4; unchanged)</h2>
+<h2>What ships</h2>
 
-<h3>The order: (name stamp, tag date, refname), descending</h3>
+<h3>1. The order: (name stamp, tag date, refname), descending</h3>
 <table>
 <tr><th>Key</th><th>Justification</th></tr>
-<tr><td><span class="k">1. name stamp</span></td><td><strong>The stamp is not a timestamp the script observes — it is a value the script
-<em>writes</em> and that hand-recovery <em>transcribes</em></strong> (<code>:258</code> prints the recovery command with <code>$TAG</code>
-already interpolated). A receipt written 49 minutes late still carries deploy time. The tag date is the only field
-that cannot survive that transcription. <em>That asymmetry is the whole argument.</em></td></tr>
-<tr><td><span class="k">2. tag date</span></td><td>Consulted <strong>only</strong> inside an exact stamp tie. Honest about its worth: after the
-write-side reservation, a same-clone same-second tie cannot be produced by the script at all. It exists to make
-<code>--status</code> deterministic, so two sessions comparing notes get the same string — not to establish history.</td></tr>
-<tr><td><span class="k">3. refname</span></td><td>Determinism only. Carries no chronology.</td></tr>
+<tr><td><span class="k">1. name stamp</span></td><td><strong>The stamp is not a time this script observes — it is one the script
+<em>writes</em>, and that hand-recovery <em>transcribes</em></strong> (<code>:258</code> prints the tag name for the operator to
+copy). A receipt written 49 minutes late still carries deploy time; the tag date cannot survive that
+transcription. <em>That asymmetry is the whole argument</em>, and it is why ordering by tag date was tried,
+reviewed and reverted (d43a171). Permanently off the table.</td></tr>
+<tr><td><span class="k">2. tag date</span></td><td>Breaks <strong>exact</strong> stamp ties only — where it is the only evidence there is.</td></tr>
+<tr><td><span class="k">3. refname</span></td><td>Determinism only; carries no chronology.</td></tr>
 </table>
-<p>Verified on a hand-built fixture (explicit <code>GIT_COMMITTER_DATE</code>; far-future dates need the epoch form
-<code>@32503680000 +0000</code>, because git rejects <code>2999-01-01T00:00:00 +0000</code> outright):</p>
-<table>
-<tr><th>Reader</th><th>Picks</th><th></th></tr>
-<tr><td>today's <code>-refname</code></td><td><code>not-a-stamp-xxxxxxx</code></td><td class="no">a malformed tag — not a receipt at all</td></tr>
-<tr><td>reverted <code>-creatordate</code></td><td><code>29990101T000000Z-light</code></td><td class="no">a lightweight tag</td></tr>
-<tr><td>this plan</td><td><code>20260922T090000Z-bbbbbbb</code></td><td class="yes">the receipt that genuinely shipped last</td></tr>
-</table>
+<div class="warn">
+<strong>Pinned, because a single-timezone test harness cannot catch this</strong> (found and verified in review round 3):
+<pre>%(creatordate:format:%Y%m%dT%H%M%SZ)             → 20260921T165412Z   WRONG — tagger-LOCAL time wearing a fake "Z"
+TZ=UTC %(creatordate:format-local:…)             → 20260921T225412Z   correct
+%(creatordate:unix)                              → 1790031252         correct, timezone-free
+%(creatordate:iso)  (the truth)                  → 2026-09-21 16:54:12 -0600</pre>
+The tie-break key is <strong><code>%(creatordate:unix)</code></strong>, compared numerically. Any human-readable UTC display
+uses <code>TZ=UTC</code> + <code>format-local</code>. Using <code>format:</code> would print a false time to Christie <em>and</em>
+invert the ordering between clones in different timezones, while every fixture in a single-timezone harness
+still passed.
+</div>
 
-<h3>The receipt predicate — one definition, used by reader AND writer</h3>
-<p>A <strong>receipt</strong> is a ref under <code>refs/tags/&lt;TAG_PREFIX&gt;</code> that is:</p>
+<h3>2. One receipt predicate — used by the reader AND the writer</h3>
+<p>A <strong>receipt</strong> is a ref under this target's namespace that is:</p>
 <ol>
-  <li>an <strong>annotated</strong> tag (<code>objecttype == tag</code>) — a lightweight tag has no date of its own; and</li>
-  <li>named with a stamp that is a <strong>real UTC instant</strong>, and</li>
-  <li>whose stamp is <strong>not in the future</strong>.</li>
+  <li>an <strong>annotated</strong> tag — step 9 writes nothing else, and a lightweight tag has no date of its own (git
+  reports the pointed-to commit's date, which for a rollback is not deploy time at all);</li>
+  <li>named with a stamp that is a <strong>real UTC date-time</strong> (full calendar validation, leap years included —
+  arithmetic in the same <code>awk</code> pass, so no subprocess per ref and no BSD/GNU <code>strptime</code> divergence); and</li>
+  <li><strong>stamped no later than its own tag object was written</strong> (<code>stamp &le; creatordate</code>).</li>
 </ol>
-<div class="new">
-<p><strong>Rule 3 is the one structural change in v4, and it is the highest-risk new idea here — reviewers should
-attack it first.</strong> A receipt's stamp asserts &ldquo;I shipped at time T&rdquo;. If T is in the future that assertion is
-false, so the tag is corrupt by definition — exactly like a malformed stamp. Treating it as a non-receipt rather
-than as evidence collapses <em>four</em> separate v3 problems at once:</p>
-<ul>
-  <li>A far-future tag can no longer dominate the ordering, so the reader is never poisoned by one (v3 left the
-  bogus tag winning forever even <em>after</em> the override — Claude 1g).</li>
-  <li>It can no longer trap the writer, so v3's three-way clock split, its cap, and its
-  <code>--accept-out-of-order-receipt</code> override all become <strong>unnecessary</strong> and are deleted.</li>
-  <li>The wait now terminates in &le;1 s by construction: a valid stamp is &le; now, so <code>now</code> exceeds it unless
-  they are equal, and one second fixes that. A wait that <em>doesn't</em> terminate now means a genuinely stopped or
-  backwards clock — a real, reportable fault rather than a guess.</li>
-  <li>Impossible-but-well-shaped stamps (<code>20269999T999999Z</code>, <code>20260921T990000Z</code>) are handled by the same rule
-  rather than by luck.</li>
-</ul>
-<p><strong>Cost, stated honestly:</strong> if a future-stamped tag <em>does</em> record a real deploy (a clone with a fast
-clock), the guard reports an older receipt as what shipped last. That is why exclusion is never silent — see F3.</p>
-<p><strong>Validation is arithmetic, not <code>date</code> parsing:</strong> range-check the fields in the same <code>awk</code> pass
-(month 1&ndash;12, day 1&ndash;31, hour &le;23, min/sec &le;59) and compare the stamp against a single &ldquo;now&rdquo; stamp taken once.
-No subprocess per ref, no BSD/GNU <code>strptime</code> divergence, no <code>set -e</code> abort on a parse error.
-Verified: this rejects <code>20260921T990000Z</code> and <code>20261332T100000Z</code> and accepts valid stamps. Accepted limit:
-it admits <code>20260229</code> in a non-leap year — harmless for ordering, and noted rather than hidden.</p>
-</div>
-<div class="warn"><strong>Do not</strong> tighten the predicate to require <code>by=deploy-rules.sh</code>. The real receipt says
-<code>by=seeded</code> and would vanish from the record.</div>
-
-<h3>Reads fail closed</h3>
-<p>A failed <code>git for-each-ref</code> must never read as &ldquo;no receipt yet&rdquo; — d43a171 put it inside a command
-substitution feeding a here-string, discarding its exit status, and the guard then printed <em>&ldquo;the whole file is
-new to the record&rdquo;</em> with no diff and carried on. Three rules, all verified on this machine (bash 3.2.57):</p>
-<table>
-<tr><th>Rule</th><th>Why</th></tr>
-<tr><td><code>local x</code> on its own line, then <code>x="$(…)" || return 1</code></td>
-    <td>Verified: <code>local y="$(exit 7)"</code> → status <strong>0</strong> (masked); separate → status <strong>7</strong>.</td></tr>
-<tr><td>Every call site uses an explicit <code>|| die $EX_RECORD_READ "…"</code></td>
-    <td>Bare <code>set -e</code> would exit with no message at all.</td></tr>
-<tr><td><strong>Every fallible command <em>inside</em> those functions carries its own <code>|| return 1</code></strong></td>
-    <td><strong>New, from review round 2.</strong> <code>set -e</code> is suppressed inside a function invoked in a
-    <code>|| die</code> context, so failures inside it are otherwise ignored. The outer rule alone is not enough.</td></tr>
-</table>
-<p>Shell traps that must not be dropped again (they are the same <em>class</em> that killed the first attempt):
-no <code>| head -1</code> under <code>pipefail</code> (<code>head</code> exits early, <code>sort</code> takes SIGPIPE, and a healthy read becomes
-a refusal) — use <code>awk 'NR==1'</code>; and <code>LC_ALL=C</code> on any shell-side sort, because BSD <code>sort</code> under
-<code>en_US.UTF-8</code> does not give byte order for <code>-</code> and <code>/</code>, and byte order is what fixed-width stamp
-comparison assumes.</p>
-
-<h2>Part 2 — Facts, not warnings (this replaces v3's H1&ndash;H4)</h2>
-
-<p>Three of these are <strong>statements printed with the answer</strong>, not alarms. One is a refusal. Nothing here has a
-threshold, and nothing can brick the deploy path.</p>
-
-<table>
-<tr><th></th><th>Condition</th><th>Behaviour</th></tr>
-<tr><td><span class="k">F1</span></td>
-    <td>always</td>
-    <td><strong>Print the winning receipt's provenance and tag date beside its stamp</strong> — in <code>--status</code>, in the
-    <code>--diff</code> header, and on the <code>replaces:</code> line (<code>:227</code>). e.g.
-    <code>replaces: …/20260921T220500Z-1da12e3 (1da12e3dbb3c) — tag written 22:54:12Z, by=seeded</code>.
-    This is what v3 tried to achieve with a skew alarm: it turns an invisible model assumption into something a
-    human can check, with no threshold to get wrong and no day-one noise.</td></tr>
-<tr><td><span class="k">F2</span></td>
-    <td>more than one receipt shares the maximum stamp <em>and they point at different commits</em></td>
-    <td><strong>Say so with the answer</strong>, naming every candidate and its commit, and proceed. If the tied candidates
-    resolve to the <em>same</em> commit the answer is forced for every purpose the guard has, so nothing is printed.
-    <em>No refusal:</em> v3 refused here and both reviewers showed it deadlocks — a tie never resolves with time, and
-    the only way to add a newer receipt is a deploy, which the refusal blocks.</td></tr>
-<tr><td><span class="k">F3</span></td>
-    <td>refs under the namespace excluded by the predicate (lightweight, malformed, or future-stamped)</td>
-    <td><strong>Say so, naming them and why.</strong> Never silent: an excluded ref may be the record of a real deploy.
-    A future-stamped one is called out specifically, because rule 3 is what excluded it.</td></tr>
-<tr><td><span class="k">R1</span></td>
-    <td>the winner's <code>at=</code> field disagrees with its own name stamp</td>
-    <td class="no"><strong>REFUSE</strong> (<code>EX_RECORD_CORRUPT</code>) on <code>--approved</code> <em>and</em> <code>--diff</code>.</td></tr>
-</table>
-
 <div class="status">
-<strong>Why R1 is the one check worth keeping, and why it cannot misfire.</strong> The script writes the name stamp and
-<code>at=</code> from the <em>same shell variable</em>, so a script-written receipt can never trip it. A human editing the
-printed <code>git tag -a</code> command will change the stamp in the tag <em>name</em> and is very likely to leave
-<code>at=</code> at its original value — which is precisely the improvised-recovery case that every other detector
-misses. A tag whose own body contradicts its own name is unambiguously corrupt, so refusing needs no threshold
-and no judgement. Verified on the real receipt: name stamp and <code>at=</code> both <code>20260921T220500Z</code> — it passes.
+<p><strong>Rule 3 in v5 is time-independent, and that is the point.</strong> The script reserves the stamp <em>before</em> the
+release and tags <em>after</em> it, so a genuine receipt always satisfies <code>stamp &le; its own tag date</code> —
+<em>including</em> one written by a clone whose clock is wrong, because both values come from that same clock.
+A tag naming a time after it was itself written was fabricated.</p>
+<p>Crucially this compares two values <strong>frozen in the tag object</strong>, never against <code>now</code>. v4's rule
+compared the stamp to <code>now</code> and both reviewers broke it: a legitimate receipt from a 2-seconds-fast clone was
+excluded, a later deploy wrote a <em>lower</em> stamp, and then the excluded receipt <strong>aged into</strong> validity and
+won permanently. Nothing can age in or out under v5's rule.</p>
+<p><strong>Verified on four fixtures:</strong></p>
+<pre>seeded receipt (faithful late recovery)   stamp 22:05, tagged 22:54     → RECEIPT
+script-written                            stamp 10:00, tagged 10:00:30  → RECEIPT
+clock-skewed clone (+2s)                  stamp == tagdate              → RECEIPT   ← v4's rule broke this
+planted year-2999 junk                    stamp ≫ tagdate               → excluded  ← permanently</pre>
 </div>
 
-<div class="warn">
-<strong>Stated plainly in the plan and in the script header, because it is the honest limit:</strong> a hand-written
-receipt whose name stamp, <code>at=</code> and tag date are all <em>consistently</em> improvised is
-<strong>undetectable from local git evidence</strong>. No check in this plan catches it. <strong>Phase 2 is the mitigation</strong>
-— it removes the human from the timestamp — which is what makes Phase 2 load-bearing rather than a bonus.
-Likewise, cross-clone misordering (A reserves 10:00:00 and finishes last; B reserves 10:00:01 and finishes first)
-produces two valid, unique-stamped receipts and is <strong>completely undetectable</strong>, not merely unknowable.
-</div>
+<h3>3. Reads fail closed</h3>
+<p>A failed <code>git for-each-ref</code> must never read as &ldquo;no receipt yet&rdquo; — d43a171 put it inside a command
+substitution feeding a here-string, discarding its exit status, and the guard printed <em>&ldquo;the whole file is new
+to the record&rdquo;</em> with no diff and carried on. Four rules, all verified on this machine (bash 3.2.57):</p>
+<ul>
+  <li><code>local x</code> on its own line, then <code>x="$(…)" || return 1</code>. Verified: <code>local y="$(exit 7)"</code> →
+  status <strong>0</strong> (masked); separate → status <strong>7</strong>.</li>
+  <li>Every call site uses an explicit <code>|| die $EX_RECORD "…"</code> — bare <code>set -e</code> exits with no message.</li>
+  <li><strong>Every fallible command <em>inside</em> those functions carries its own <code>|| return 1</code></strong>: <code>set -e</code>
+  is suppressed inside a function invoked in a <code>|| die</code> context.</li>
+  <li>No <code>| head -1</code> under <code>pipefail</code> (<code>head</code> exits early, <code>sort</code> takes SIGPIPE, and a healthy
+  read becomes a refusal) — use <code>awk 'NR==1'</code>. <code>LC_ALL=C</code> on any shell-side sort, because BSD
+  <code>sort</code> under <code>en_US.UTF-8</code> does not give byte order for <code>-</code> and <code>/</code>.</li>
+</ul>
+<p><code>EX_RECORD=19</code> is the one new refusal, and it fires only when the record genuinely cannot be read —
+strictly better than today's silent wrong answer, and unreachable on a healthy repo.</p>
 
-<p><strong>All of F1&ndash;F3 print via <code>say()</code> to stdout</strong>, not <code>warn()</code> to stderr. &ldquo;Above the diff&rdquo; is a
-stream-ordering claim that does not survive a piped or captured transcript, and the workflow is that Claude runs
-<code>--diff</code> and Christie reads <em>that</em> output.</p>
-
-<h2>Part 3 — The write side</h2>
+<h3>4. The monotonic stamp reservation moves BEFORE the release</h3>
 <p>A new receipt must be strictly newer <em>by stamp</em> than every receipt recorded for this target — not merely
-not-a-duplicate. That is what makes the primary key monotonic and the flaky test deterministic by construction.</p>
-<div class="warn">
-<strong>Before the release, never after</strong> — and this is now a stated constraint, not a happy consequence. d43a171
-waited <em>after</em> <code>firebase deploy</code> returned, opening up to ten seconds in which production had changed and
-neither a receipt nor a marker existed. Nothing new may be able to fail between <code>:243</code> and <code>:260</code>; the
-reservation must not <code>cd</code> into or touch <code>$TMP</code> or anything the predeploy hook hashes.
-</div>
-<p><strong>Sequencing, pinned</strong> (v3 left this ambiguous and one reading defeated the argument):</p>
-<table>
-<tr><th>Where</th><th>What</th></tr>
-<tr><td>after step 1's reconcile, before the tests</td><td>the record health pass (F1&ndash;F3, R1). It needs only the ref
-list, so an R1 refusal costs one second instead of a full rules suite.</td></tr>
-<tr><td>immediately before step 8</td><td>the <strong>reservation loop</strong>: take a stamp, test monotonicity (over receipts)
-<em>and</em> name collision (over <em>all</em> refs) — evaluated <strong>independently</strong>, never chained on <code>||</code>, which
-is how d43a171's capped path skipped the collision check. Also compute <code>HASH</code> here (<code>$TMP/$FILE</code> is
-immutable from <code>:208</code>), so Phase 2's marker is complete before the release.</td></tr>
-<tr><td>&mdash;</td><td><strong><code>:253</code>'s existing post-release dedup loop MOVES here.</strong> It does not stay and it is not
-duplicated. Today it can <code>sleep 1</code> <em>after</em> production changed; that is removed.</td></tr>
-</table>
-<p>If the loop cannot get a strictly-newer stamp within a few seconds, that now means a stopped or backwards clock
-(see rule 3), so it <strong>refuses pre-release</strong> with <code>EX_CLOCK</code> — free, because nothing has shipped.
-Consequence documented: <code>at=</code> becomes the instant the stamp was reserved, immediately before the release.</p>
+not-a-duplicate. That is what makes the key monotonic and the flaky test deterministic by construction.</p>
+<div class="warn"><strong>Before the release, never after.</strong> <code>:253</code>'s existing dedup loop <strong>moves</strong> here — it
+is not duplicated and it does not stay. Today it can <code>sleep 1</code> <em>after</em> production changed, widening the
+window between &ldquo;production changed&rdquo; and &ldquo;a receipt exists&rdquo;; a Ctrl-C there leaves production changed with no
+record. The release takes far longer than the wait, so this costs nothing.</div>
+<p>Two conditions — stale stamp, and name already taken — evaluated <strong>independently</strong>, never chained on
+<code>||</code> (chaining is how d43a171's capped path silently skipped the collision check). If the wait cannot
+succeed within a small bound, the guard <strong>prints a fact naming the blocking receipt and proceeds</strong>. It does
+<em>not</em> refuse: a refusal here would let one stray tag brick the only sanctioned deploy path for all 21 apps,
+which is precisely the failure that got v3's design rejected. Consequence documented: <code>at=</code> becomes the
+instant the stamp was reserved, immediately before the release.</p>
 
-<h2>Phases</h2>
+<h3>5. The answer carries its evidence</h3>
+<p><code>--status</code> and the <code>replaces:</code> line print the winning receipt's <strong>tag date (true UTC)</strong> and its
+<strong><code>by=</code> provenance</strong> beside its stamp. No threshold, no alarm, no refusal — facts, so a human can see at a
+glance that a receipt was hand-written rather than having the guard guess about it.</p>
 
+<h2>Deferred to its own plan — with reasons</h2>
+<ul>
+  <li><strong>R1</strong> (refuse when a tag's <code>at=</code> contradicts its name). Sound in principle and cheap, but round 3
+  showed the missing-<code>at=</code> case bricks under the natural implementation, and the field needs anchored parsing.
+  Needs specifying, not guessing.</li>
+  <li><strong>F2/F3</strong> (report same-stamp ties and excluded refs) and making <code>--status</code>'s conclusion line
+  conditional. Wording-level and safe, but each needs its own tests; not required to fix the bug.</li>
+  <li><strong>Phase 2</strong> — the unrecorded deploy (<code>:257</code>'s failed <code>git tag -a</code> writes no marker). Round 3 found
+  the marker is never cleared on the success path, the pre-release guard emits a post-release message, and the
+  idempotency comparison is undefined. A real bug worth fixing, in a plan that specifies the state machine.</li>
+  <li><strong>Cross-clone serialization.</strong> Out of scope; cross-clone misordering is undetectable from local git
+  evidence and is stated as a limit in the script header.</li>
+</ul>
+
+<h2>Phase 1 — the only phase</h2>
 <div class="phase">
-<h3>Phase 1 — reader, writer and tests, as ONE atomic change</h3>
-<p>Reader and writer land together. Reader-alone reduces the same-clone flake by <strong>zero</strong> (both keys have
-one-second resolution, so a same-second pair ties on both and still falls through to sha7), and shipping a phase
-whose known effect is &ldquo;the gate stays flaky&rdquo; trains operators to re-run until green.</p>
 <p><strong>Acceptance criteria (user outcomes):</strong></p>
 <ul class="checklist">
   <li>A receipt written by hand after a later deploy does not become &ldquo;what shipped last&rdquo;.</li>
-  <li>Every answer carries its evidence — which receipt, when its tag was written, who wrote it.</li>
-  <li>When two receipts are equally recent and disagree about the commit, the guard says so and names both,
-  instead of picking one silently.</li>
-  <li>A tag whose own body contradicts its own name stops the deploy.</li>
-  <li>A tag in the namespace that is not a receipt is never named as what shipped last, and never silently ignored.</li>
+  <li>A tag in the namespace that is not a receipt is never named as what shipped last.</li>
   <li>If the record cannot be read, the guard refuses and says so — never &ldquo;no receipt yet&rdquo;.</li>
-  <li>The guard suite passes every run, because the guard is deterministic — not because a test sleeps.</li>
+  <li>Every answer shows when the receipt's tag was written and who wrote it.</li>
+  <li><strong>The guard suite passes every run</strong>, because the guard is deterministic — not because a test sleeps.</li>
+  <li>Nothing that deploys successfully today is refused after this change.</li>
 </ul>
 <div class="bdd"><strong>Happy:</strong> Given receipts A (stamp 08:00, hand-tagged 11:00) and B (stamp 09:00, tagged 10:00)
-When <code>--status</code> Then B is named, with its tag date and <code>by=</code> shown, and nothing warns.</div>
-<div class="bdd"><strong>Edge:</strong> Given two receipts sharing the max stamp but pointing at different commits
-When <code>--approved</code> Then both are named with their commits, the deploy <em>proceeds</em>, and the chosen base is
-stated explicitly.</div>
-<div class="bdd"><strong>Edge:</strong> Given a stray future-stamped <em>annotated</em> tag When a deploy runs Then it is not a
-receipt, F3 names it and says why, the deploy is <strong>not</strong> stalled or refused, and it completes at normal speed.</div>
-<div class="bdd"><strong>Failure:</strong> Given a receipt whose <code>at=</code> says 22:05 but whose name says 23:10
-When <code>--approved</code> Then <code>EX_RECORD_CORRUPT</code>, the message names the contradiction, and
-<strong>firebase was never called</strong>.</div>
-<div class="bdd"><strong>Failure:</strong> Given <code>git for-each-ref</code> fails When <code>--status</code> Then
-<code>EX_RECORD_READ</code> and a sentence saying the record could not be read — not &ldquo;no receipt yet&rdquo;, no empty diff.</div>
-</div>
-
-<div class="phase">
-<h3>Phase 2 — the unrecorded deploy: a failed <code>git tag -a</code> must leave a marker</h3>
-<p>Separate commit, after Phase 1. <strong>Load-bearing, not a bonus</strong> — it is the only mitigation for the
-undetectable improvised-timestamp case above.</p>
-<p><strong>The bug (pre-existing).</strong> Step 9 treats its two failure paths differently: a failed <code>git push</code>
-(<code>:262</code>) writes <code>$PENDING</code> and the next run reconciles; a failed <code>git tag -a</code> (<code>:257</code>) writes
-<strong>nothing</strong>, so production has changed, nothing records it, and the next deploy proceeds as if nothing
-happened.</p>
-<p><strong>Design — recover faithfully.</strong> The human typing a timestamp is the corruptor, so remove the human from
-the timestamp. Everything needed is computed <em>before</em> the release (sha, reserved stamp, target, sha256,
-the exact message), so the post-release step is a single atomic publish. The next run rebuilds the receipt
-<strong>with its original stamp</strong>. Two marker files, not one overloaded format — a <code>$PENDING</code> entry naming a
-tag that does not exist would fail <code>[ "$LOCAL_O" = "$PO" ]</code> at <code>:178</code> and produce a misleading refusal.</p>
-<table>
-<tr><th>Defect found in review</th><th>v4</th></tr>
-<tr><td>marker was to contain <code>sha256</code> yet be written <em>ahead of</em> the <code>shasum</code> — impossible</td>
-    <td>hash and full marker contents computed pre-release; post-release is one <code>mv</code> of a pre-written temp file</td></tr>
-<tr><td>bare <code>printf &gt; marker</code> aborts silently under <code>set -e</code> — and a full/read-only disk is the most
-    likely cause of <em>both</em> the tag failure and the marker failure</td>
-    <td>guarded: <code>|| { print the full hand-write instructions; exit $EX_RECEIPT; }</code> — never a bare redirect</td></tr>
-<tr><td>rebuild deadlocks: <code>git tag -a</code> most often fails because the name <em>exists</em>, and <code>:258</code> tells the
-    operator to write it by hand, so the next run retries and refuses forever</td>
-    <td>idempotent: if the tag exists and matches the recorded sha and message → treat as recovered, clear the
-    marker; if it exists and differs → refuse and say what a human does. <code>:258</code> keeps printing the
-    instructions <em>plus</em> &ldquo;or just re-run the guard&rdquo;.</td></tr>
-<tr><td>a faithfully rebuilt receipt has original-stamp + late-tag-date by construction</td>
-    <td>moot — v4 has no skew detector. The rebuilt message still carries <code>recovered=&lt;stamp&gt;</code> so the record
-    is self-documenting about the window where production was unrecorded.</td></tr>
-<tr><td>reused <code>EX_UNPUBLISHED</code> (12), whose meaning <code>deploy-rules.test.sh:175</code> pins</td>
-    <td>a new code — this fault (&ldquo;live and <em>completely</em> unrecorded&rdquo;) is more severe than the old one</td></tr>
-<tr><td>claimed to &ldquo;remove the cause&rdquo;</td>
-    <td><strong>narrowed:</strong> it <em>reduces</em> the window to one <code>mv</code>. The process can still die between Firebase
-    returning and that rename. It cannot be removed, only shrunk.</td></tr>
-</table>
-<p>Precedence if both markers exist: <code>$PENDING</code> first.</p>
-<div class="bdd"><strong>Happy:</strong> Given a deploy succeeded but <code>git tag -a</code> failed When the guard runs again Then it
-rebuilds that receipt with its <em>original</em> stamp, pushes it, says what it did, clears the marker, and proceeds.</div>
-<div class="bdd"><strong>Edge:</strong> Given the marker exists AND the operator already hand-wrote the tag When the guard runs
-Then it recognises the tag as matching, clears the marker, and proceeds — no deadlock.</div>
-<div class="bdd"><strong>Edge:</strong> Given a marker in the OLD <code>$PENDING</code> format When the guard runs Then it behaves
-exactly as today; <code>deploy-rules.test.sh:170&ndash;191</code> stays green, unmodified.</div>
-<div class="bdd"><strong>Failure:</strong> Given the marker exists and the rebuild also fails When the guard runs Then it
-refuses with the new code, names the live-but-unrecorded commit, prints the literal commands, and
-<strong>firebase is never called</strong>.</div>
+When <code>--status</code> Then B is named, with its true UTC tag date and <code>by=</code> shown.</div>
+<div class="bdd"><strong>Edge:</strong> Given a lightweight tag, an annotated tag with an unparseable name, an impossible
+calendar stamp, and a planted year-2999 tag all in the namespace When <code>--status</code> Then none is ever named.</div>
+<div class="bdd"><strong>Edge:</strong> Given a receipt from a clone whose clock is 2s fast When a deploy runs Then it IS a
+receipt, the writer waits past it, and the new stamp is strictly greater.</div>
+<div class="bdd"><strong>Failure:</strong> Given <code>git for-each-ref</code> fails When <code>--status</code> Then <code>EX_RECORD</code> and a
+sentence saying the record could not be read — not &ldquo;no receipt yet&rdquo;, no empty diff.</div>
 </div>
 
 <h2>Tests</h2>
-<div class="bad">
-<strong>Three vacuous assertions have now been caught — one shipped, two proposed.</strong> All three passed while the bug
-was present:
-<ol>
-  <li>d43a171's &ldquo;name order and date order agree&rdquo; — under any tie both sorts degenerate to refname.</li>
-  <li>v1's &ldquo;a 4th deploy's <code>replaces:</code> names the 3rd receipt&rdquo; — <code>:253</code>'s dedup loop already sleeps when
-  names collide, so the 3rd receipt lands a second later <em>with or without</em> the fix.</li>
-  <li>v3's &ldquo;deploy A with the tag write failing, deploy B, recover A; assert <code>--status</code> names B&rdquo; — today A
-  leaves <em>no receipt at all</em>, so B is trivially named. <strong>Fixed:</strong> assert A's receipt <em>exists</em> with
-  A's original stamp and sorts before B's. That is the part that fails today.</li>
-</ol>
-</div>
-<div class="warn"><strong>Standing rule, written into the test file's header:</strong> never assert that two orderings agree.
-Assert on <em>values</em> — stamps, receipt names, the text of <code>replaces:</code>, diff content, exit codes.</div>
-
-<h3>Determinism by controlled time</h3>
-<p>A fake <code>date</code> on the harness <code>PATH</code> serves the stamp from a counter file; a fake <code>sleep</code> advances it.
-Two traps pinned, both from review:</p>
+<div class="bad"><strong>Four vacuous assertions have now been caught</strong> — one shipped, three proposed. All passed while
+the bug was present: d43a171's &ldquo;name order and date order agree&rdquo; (any tie degenerates both sorts to refname);
+v1's &ldquo;4th deploy's <code>replaces:</code> names the 3rd receipt&rdquo; (<code>:253</code>'s dedup loop already sleeps on a name
+collision); v3's &ldquo;recover A, assert B still wins&rdquo; (today A leaves no receipt at all, so B wins trivially); and
+v4's F1 display, which a single-timezone harness cannot distinguish from the wrong <code>format:</code> spelling.</div>
+<div class="warn"><strong>Standing rule, written into the test file's header:</strong> never assert that two orderings agree,
+and never assert distinctness where you mean order. Assert on <em>values</em> — stamps, receipt names, the text of
+<code>replaces:</code>, diff content, exit codes.</div>
 <ul>
-  <li><strong>The fake intercepts <em>only</em> <code>date -u +%Y%m%dT%H%M%SZ</code> with no other flags</strong> and delegates every
-  <code>-v</code>/<code>-j</code>/<code>-f</code>/<code>-r</code> form to the real <code>date</code>. (The guard also uses <code>date</code> for the lock owner
-  line.)</li>
-  <li><strong>The counter holds real epoch seconds</strong>, formatted through the real <code>date</code> — otherwise it breaks at the
-  59→60 boundary and the guard's comparison starts failing on a clock that &ldquo;advanced&rdquo;.</li>
-</ul>
-<p>Tag dates stay deterministic via explicit <code>GIT_COMMITTER_DATE</code> on <code>git tag -a</code> (verified). The transparent
-<code>git</code> wrapper (for the failed-ref-read case) takes its switch <strong>scoped to the guard invocation</strong>
-— <code>FAIL_GIT=… run --status</code> — never exported, or it corrupts the harness's own fixture setup.</p>
-
-<h3>The battery — every case forced, none hoped for</h3>
-<ul>
-  <li><strong>Stamps strictly increasing</strong> across three back-to-back deploys, each captured from that run's own
-  <code>receipt:</code> line. <em>Use three DISTINCT shas</em> — with a repeated sha the old writer's dedup loop produces
-  <code>C, C, C+1</code> rather than <code>C, C, C</code>, so the fixture must avoid the name collision for the test to fail for
-  the right reason.</li>
-  <li><strong>Delayed hand-recovery</strong> (08:00 tagged 11:00 vs 09:00 tagged 10:00) — <em>labelled as an F1 test, not an
-  ordering test</em>: today's <code>-refname</code> already picks the same winner, so the ordering half passes while the bug
-  is present.</li>
-  <li><strong>R1:</strong> annotated receipt, name stamp now, <code>at=</code> an hour earlier → refused, firebase never called.</li>
-  <li><strong>Predicate, all three exclusions:</strong> a lightweight future tag; an annotated <code>not-a-stamp-abc1234</code>
-  (which sorts above every real receipt under refname); an annotated <code>20269999T999999Z</code> and a
-  <code>20260921T990000Z</code> → none is ever named, each appears in F3.</li>
-  <li><strong>Predicate parity, both directions in one test:</strong> a future <em>lightweight</em> tag → the writer must not
-  wait or refuse; this is d43a171's asymmetry exactly.</li>
-  <li><strong>F2:</strong> two receipts at the max stamp pointing at different commits → both named, deploy proceeds;
-  and pointing at the <em>same</em> commit → nothing printed.</li>
-  <li><strong>Failed ref read</strong> → <code>EX_RECORD_READ</code>.</li>
-  <li><strong>Synthesized real-receipt shape</strong> (annotated, <code>by=seeded</code>, 49-minute skew, <code>at=</code> matching the
-  name) → still named as what shipped last, and <strong>nothing warns</strong>. The harness builds a throwaway repo, so
-  this is synthesized, not read from the real one.</li>
-  <li><strong>Negative assertions — every check gets a &ldquo;stays silent on a healthy record&rdquo; test.</strong> Without these an
-  implementation that reports unconditionally passes the whole battery. <code>run()</code> captures stderr into
-  <code>$OUT</code>, so an over-eager message is otherwise invisible.</li>
-  <li><strong>Phase 2:</strong> marker written on tag failure (fails today); faithful rebuild uses the <em>original</em> stamp
-  (asserted equal to the one captured from the first run, which catches a &ldquo;recovery&rdquo; that silently re-stamps);
-  rebuild when the tag already exists → no deadlock; legacy <code>$PENDING</code> untouched.</li>
+  <li><strong>Stamps strictly increasing</strong> (an ordered comparison, never <code>sort -u | wc -l</code>) across three
+  back-to-back deploys with <strong>three distinct shas</strong> — with a repeated sha the old writer's dedup loop yields
+  <code>C, C, C+1</code> instead of <code>C, C, C</code> and the test would pass for the wrong reason.</li>
+  <li><strong>Every predicate exclusion:</strong> lightweight; unparseable name; impossible calendar stamp
+  (<code>20260931T120000Z</code>, <code>20260229</code> in a non-leap year, <code>20260921T990000Z</code>); stamped-after-written.
+  Each sorts <em>above</em> the real receipt under <code>-refname</code>, so today's reader names each of them.</li>
+  <li><strong>The clock-skew case:</strong> a receipt stamped 2s ahead but consistent with its own tag date is still a
+  receipt and still constrains the writer. This is the case v4's rule broke.</li>
+  <li><strong>Timezone:</strong> two receipts at the same name stamp whose tag objects carry <em>different UTC offsets</em>;
+  assert both the resulting order and the printed time. A single-offset fixture cannot catch the
+  <code>format:</code> trap.</li>
+  <li><strong>Failed ref read</strong> → <code>EX_RECORD</code>, via a transparent <code>git</code> wrapper on the harness
+  <code>PATH</code>, inert unless a switch is set, and <strong>scoped to the guard invocation</strong> (<code>FAIL_GIT=… run …</code>)
+  rather than exported, or it corrupts the harness's own fixture setup.</li>
+  <li><strong>Synthesized real-receipt shape</strong> (annotated, <code>by=seeded</code>, 49-minute skew) → still named.
+  <em>Labelled as a regression pin, not a forced case</em> — it passes today too.</li>
+  <li><strong>Negative assertions:</strong> a healthy record prints no exclusion notice and no blocking-receipt notice.
+  Without these, an implementation that reports unconditionally passes the whole battery. <code>run()</code> captures
+  stderr into <code>$OUT</code>, so an over-eager message is otherwise invisible.</li>
 </ul>
 
 <h2>Firebase safety checklist</h2>
@@ -379,61 +219,45 @@ Two traps pinned, both from review:</p>
   <li><strong>No Firestore data change. No rules change. No deploy of any kind.</strong> <code>firestore.rules</code> untouched.</li>
   <li>Files changed: <code>scripts/deploy-rules.sh</code>, <code>scripts/deploy-rules.test.sh</code>. Nothing else.</li>
   <li>No new Firestore collection, so no new rule required.</li>
-  <li><strong>Bytes:</strong> the bytes and the Firebase invocation are unchanged — validation may newly refuse
-  <em>before</em> Firebase is called. Traced independently by both reviewers: <code>RECEIPT</code>/<code>RC</code> are consumed only
-  at <code>:106&ndash;134</code> and <code>:218&ndash;231</code>; the payload is <code>$TMP</code> from <code>:208</code>; the hook re-checks
-  <code>TINKER_DEPLOY_SHA</code>. Receipt ordering cannot reach the payload. Re-confirm independently at implementation review.</li>
-  <li>Receipt <em>creation</em> stays after successful Firebase completion; only the stamp and hash are chosen beforehand.</li>
+  <li><strong>Bytes:</strong> unchanged, and the Firebase invocation is unchanged. Traced independently by both reviewers:
+  <code>RECEIPT</code>/<code>RC</code> are consumed only at <code>:106&ndash;134</code> and <code>:218&ndash;231</code>; the payload is <code>$TMP</code>
+  from <code>:208</code>; the hook re-checks <code>TINKER_DEPLOY_SHA</code>. Receipt ordering cannot reach the payload.
+  Re-confirm independently at implementation review.</li>
+  <li>The reservation loop may <em>read</em> <code>$TMP</code> but must not modify it or anything the predeploy hook hashes.</li>
+  <li>Receipt <em>creation</em> stays after successful Firebase completion; only the stamp is chosen beforehand.</li>
   <li>Never reads <code>~/.config/configstore/firebase-tools.json</code>; no raw Firestore REST call.</li>
   <li><code>npm test</code> run repeatedly, counts actually seen reported — never a hardcoded number.</li>
   <li>studio-hub is a shared tree: commit only these two files, never <code>git add -A</code>.</li>
 </ul>
 
-<h2>Deferred — with reasons, not as an oversight</h2>
+<h2>Completeness check &amp; resume</h2>
 <ul>
-  <li><strong>Refusal-with-override machinery for ambiguous records</strong> (v3's H1/H3/H4 refusals and break-glass flags).
-  Deferred because every review round found a new bricking or blind-spot defect in it, and because the cases it
-  guards are rare and partly undetectable regardless. F2/F3 report those conditions instead, which cannot brick.</li>
-  <li><strong><code>--diff</code> printing a diff per candidate</strong> under an ambiguous max. Follows the above; F2 names the
-  candidates so a human can ask for either diff.</li>
-  <li><code>RULES-ROLLBACK.md</code> needs &ldquo;a bogus receipt is blocking deploys&rdquo;. Outside the scripts-only scope; refusal
-  messages carry the literal flags and literal commands meanwhile, because a non-technical operator under
-  pressure retypes exactly what they see.</li>
-  <li><strong>Real cross-clone serialization</strong> (a remote ref lock). Large; the goal is narrowed instead.</li>
+  <li><strong>Interrupted:</strong> nothing deployed, no production state to unwind. <code>git checkout</code> of the two files
+  is a complete undo.</li>
+  <li>The tag name format does not change. The existing receipt is annotated, its stamp is a real UTC time, and
+  its stamp precedes its tag date — it passes the predicate and stays the unique newest.
+  <strong>The first real deploy after this change is not blocked.</strong></li>
+  <li><strong>Resume:</strong> <code>git -C ~/studio-hub log --oneline -5</code>;
+  <code>grep -n 'receipt_rows\|EX_RECORD' ~/studio-hub/scripts/deploy-rules.sh</code>; then
+  <code>npm run test:guard</code> several times. Eight review files under
+  <code>~/tinker-ai-configs/thoughts/reviews/2026-09-22-*receipt-ordering-*</code>.</li>
 </ul>
-
-<h2>Completeness check</h2>
-<ul>
-  <li><strong>Interrupted mid-phase:</strong> nothing deployed, no production state to unwind. <code>git checkout</code> of the two
-  files is a complete undo.</li>
-  <li><strong>Phase 1 without Phase 2:</strong> safe and strictly better than today — the ordering is correct and every
-  answer carries its evidence. The undetectable improvised-recovery case remains until Phase 2.</li>
-  <li>The tag name format does not change, so <code>20260921T220500Z-1da12e3</code> stays discoverable. Verified by both
-  reviewers: it is annotated, its stamp parses, it is not future, and its <code>at=</code> matches its name — it passes
-  the predicate, passes R1, and is the unique max. <strong>The first real deploy after this change is not blocked.</strong></li>
-</ul>
-
-<h2>Resume instructions</h2>
-<p>Read this file. Then <code>git -C ~/studio-hub log --oneline -5</code>;
-<code>grep -n 'receipt_\|EX_RECORD\|EX_CLOCK' ~/studio-hub/scripts/deploy-rules.sh</code> shows what landed; run
-<code>npm run test:guard</code> several times for the flake. Prior art: revert <code>1ff50b2</code>, and six review files under
-<code>~/tinker-ai-configs/thoughts/reviews/2026-09-22-*receipt-ordering-*</code>.</p>
 
 <h2>Decisions log</h2>
 <ul>
-  <li><strong>Sep 22 — drafted</strong> after d43a171 was reverted. Baseline measured: 9 guard runs, 3 failed.</li>
-  <li><strong>Sep 22 — ordering model:</strong> (name stamp, tag date, refname). Proposed independently by both reviewers of
-  the revert and endorsed by both reviewers of the plan, twice. Date-primary is permanently ruled out.</li>
-  <li><strong>Sep 22 — v2:</strong> two-argmax detector replaced after I reproduced all three of its failure cases;
-  &ldquo;self-clearing&rdquo; withdrawn as false; phase split abandoned.</li>
-  <li><strong>Sep 22 — v3:</strong> the unrecorded-deploy bug promoted from follow-up to Phase 2 (Christie).</li>
-  <li><strong>Sep 22 — v4, scope reduced (Christie's call).</strong> Two review rounds endorsed the ordering fix 4/4 and
-  rejected the detection layer every time. v4 keeps what is endorsed, adds only R1 (which cannot misfire, because
-  the script writes both fields from one variable) and rule 3, replaces warnings with facts, and defers the
-  refusal/override machinery to its own plan.</li>
-  <li><strong>Sep 22 — structural change to attack first:</strong> a future-stamped ref is not a receipt. This collapses the
-  three-way clock split, its cap, its override, the &ldquo;bogus tag wins forever&rdquo; defect and impossible-stamp handling
-  into one rule. It is the newest idea in this plan and therefore the likeliest to be wrong.</li>
+  <li><strong>Sep 22 — drafted</strong> after d43a171 was reverted. Baseline: 9 guard runs, 3 failed.</li>
+  <li><strong>Sep 22 — ordering key</strong> (name stamp, tag date, refname): endorsed by 6/6 reviewers across three
+  rounds, never challenged. Date-primary permanently ruled out.</li>
+  <li><strong>Sep 22 — v2/v3/v4</strong> each added a detection layer; each was rejected by both reviewers. Full history in
+  the review files.</li>
+  <li><strong>Sep 22 — v5, scope cut (Christie).</strong> Ship the converged core; defer R1, F2/F3 and Phase 2. The
+  deciding evidence: every rejection in three rounds was of machinery added on top, never of the fix itself.</li>
+  <li><strong>Sep 22 — the one design change kept from round 3:</strong> the predicate's rule 3 compares a receipt's stamp
+  to <em>its own tag date</em> rather than to <code>now</code>, making it time-independent and immune to the aging
+  inversion both reviewers found in v4.</li>
+  <li><strong>Sep 22 — deliberately accepted:</strong> at the reservation cap the guard proceeds with a printed fact rather
+  than refusing. A refusal there could brick the only deploy path; the inversion it allows is cross-clone, which
+  is already undetectable and out of scope.</li>
 </ul>
 
 </body>
