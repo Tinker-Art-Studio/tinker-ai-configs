@@ -25,8 +25,9 @@
 <h1>Plan: Deploy guard — receipt ordering (&ldquo;what shipped last&rdquo;)</h1>
 
 <p>Repo: <code>~/studio-hub</code> &middot; <code>scripts/deploy-rules.sh</code>, <code>scripts/deploy-rules.test.sh</code> only &middot;
-Drafted Sep 22 2026 &middot; <strong>v2 after a two-model plan review (Claude + Codex) — both said request changes</strong> &middot;
-<strong>execution-ready: false</strong> &middot;
+Drafted Sep 22 2026 &middot; <strong>v3</strong> — v2 rewrote the detector after a two-model plan review (Claude + Codex, both
+request changes); <strong>v3 promotes the unrecorded-deploy bug from a follow-up to Phase 2</strong> at Christie's
+direction &middot; <strong>execution-ready: false</strong> &middot;
 Under the <a href="firebase-deploy-guard.html">Firebase deploy guard</a> plan. No rules change, no data change, no deploy.</p>
 
 <div class="status">
@@ -285,6 +286,72 @@ the warning persists in later <code>--status</code>.</div>
 saying the record could not be read — not &ldquo;no receipt yet&rdquo;, and no empty diff.</div>
 </div>
 
+<div class="phase">
+<h3>Phase 2 — the unrecorded deploy: a failed <code>git tag -a</code> must leave a marker</h3>
+<p>Promoted from &ldquo;named follow-up&rdquo; to a phase of this session (Christie, Sep 22). Lands <strong>after</strong> Phase 1,
+in its own commit — not folded in, because it changes a different protocol and Phase 1 has already failed once by
+being too clever.</p>
+
+<p><strong>The bug (pre-existing; found by both reviewers).</strong> Step 9 treats its two failure paths differently:</p>
+<table>
+<tr><th>Path</th><th>Marker written?</th><th>Next run</th></tr>
+<tr><td><code>:262</code> — <code>git push</code> of the receipt fails</td><td class="yes">yes, <code>$PENDING</code> (name + tag object id)</td>
+    <td class="yes">publishes it first, or refuses</td></tr>
+<tr><td><code>:257</code> — <code>git tag -a</code> itself fails</td><td class="no">NO marker at all</td>
+    <td class="no">proceeds normally, as if nothing happened</td></tr>
+</table>
+<p>So production has changed, nothing records it, and the guard does not know. This is the precondition for the
+worst corruption the ordering work can suffer: the operator later hand-writes the missing receipt and — if they
+improvise a fresh <code>date -u</code> instead of copying the printed command — produces a receipt with a later stamp
+<em>and</em> a later tag date than the deploy that actually shipped last. It then wins under every key.
+<strong>H2 catches that after the fact; Phase 2 removes the cause.</strong></p>
+
+<div class="status">
+<strong>Design — recover faithfully rather than refuse.</strong> The marker is written by the guard itself, immediately
+after <code>firebase deploy</code> returned 0, so it can record everything needed to reconstruct the <em>exact</em> receipt
+the guard would have written: <code>sha</code>, the reserved <code>stamp</code>, <code>target</code>, <code>sha256</code>. The next run
+rebuilds that receipt <strong>with its original stamp</strong> and publishes it — which is strictly better than a human
+improvising a fresh timestamp, because it is precisely the improvised timestamp that corrupts the order. This
+parallels the existing <code>$PENDING</code> path, which already auto-publishes rather than refusing.
+</div>
+
+<p><strong>Two marker files, not one format with two meanings</strong> — so there is no format migration and no ambiguity
+about a marker written before this change:</p>
+<table>
+<tr><th>File</th><th>Means</th><th>Step 1 does</th></tr>
+<tr><td><code>tinker-deploy-pending</code> (existing, unchanged)</td><td>the tag exists locally; the push failed</td>
+    <td>push it, or refuse</td></tr>
+<tr><td><code>tinker-deploy-unrecorded</code> (new)</td><td>production changed; no tag object exists</td>
+    <td>rebuild the receipt from the marker, tag, push, clear — or refuse if any step fails</td></tr>
+</table>
+
+<div class="warn">
+<strong>The ordering constraint from Phase 1 applies here too, and is the whole point:</strong> the marker must be written
+<em>before</em> anything that can fail, and the window between &ldquo;production changed&rdquo; and &ldquo;a marker exists&rdquo; must be as
+close to zero as the shell allows. A marker write that itself fails leaves the original bug, so it is the very
+first thing after a successful release — ahead of the <code>shasum</code>, ahead of the tag.</div>
+
+<p><strong>Acceptance criteria (user outcomes):</strong></p>
+<ul class="checklist">
+  <li>If the receipt tag cannot be written after a successful deploy, the next run says so and refuses to deploy
+  anything else until the record is straight.</li>
+  <li>That recovery reproduces the receipt the guard meant to write — same stamp, same message — so the record's
+  order stays correct without anyone typing a timestamp.</li>
+  <li>An operator who does nothing but re-run the guard ends up with a correct record.</li>
+  <li>The existing push-failure behaviour is unchanged, and a marker left by the old version still works.</li>
+</ul>
+<div class="bdd"><strong>Happy:</strong> Given a deploy succeeded but <code>git tag -a</code> failed When the guard is run again
+Then it rebuilds that receipt with its <em>original</em> stamp, pushes it, says what it did, clears the marker, and
+proceeds with the new deploy.</div>
+<div class="bdd"><strong>Edge:</strong> Given a marker in the OLD <code>$PENDING</code> format (tag name + object id) When the guard
+runs Then it behaves exactly as today — no format migration, no misreading.</div>
+<div class="bdd"><strong>Failure:</strong> Given the unrecorded marker exists and the rebuild <em>also</em> fails When the guard
+runs Then it refuses with <code>EX_UNPUBLISHED</code>, names the commit that is live and unrecorded, and prints the exact
+<code>git tag -a</code> / <code>git push</code> commands — <strong>and firebase is never called</strong>.</div>
+<div class="bdd"><strong>Failure:</strong> Given the unrecorded marker exists When <code>--status</code> runs Then it says plainly that
+production may be ahead of the record, rather than reporting the older receipt as what shipped last.</div>
+</div>
+
 <h2>Tests</h2>
 
 <div class="bad">
@@ -336,6 +403,29 @@ tagger date). Far-future dates need the epoch form — <code>@32503680000 +0000<
   discoverable.</li>
 </ul>
 
+<h3>Phase 2's own tests</h3>
+<p>The harness can force the failure directly — the guard's <code>git</code> is whatever is on <code>PATH</code>, and the
+transparent <code>git</code> wrapper already needed for Phase 1's failed-ref-read test can be told to fail
+<code>tag -a</code> instead of <code>for-each-ref</code>. One wrapper, two switches, no new mechanism.</p>
+<ul>
+  <li><strong>Marker written:</strong> deploy with <code>git tag -a</code> forced to fail → exit <code>EX_RECEIPT</code>, and the
+  <em>unrecorded</em> marker exists naming that sha and stamp. (Today: no marker — this is the regression test for
+  the bug itself, and it fails against the current code.)</li>
+  <li><strong>Faithful rebuild:</strong> run again with the failure cleared → the receipt exists with the
+  <strong>original</strong> stamp from the marker, not a fresh one; it is pushed; the marker is gone. Assert the stamp
+  <em>equals</em> the one captured from the first run's output — this is the assertion that would catch a
+  &ldquo;recovery&rdquo; that silently re-stamps.</li>
+  <li><strong>Order preserved end-to-end:</strong> deploy A with the tag write failing, deploy B normally, then recover A.
+  Assert <code>--status</code> still names <strong>B</strong> as what shipped last. This is the whole point of Phase 2 and it
+  fails today.</li>
+  <li><strong>Refuses when recovery also fails:</strong> marker present, rebuild forced to fail → <code>EX_UNPUBLISHED</code>,
+  message names the live-but-unrecorded commit, and <code>assert_lacks … "argv="</code> proves firebase was never called.</li>
+  <li><strong>Old marker format still works:</strong> hand-write a legacy <code>$PENDING</code> (name + object id) → behaves
+  exactly as the existing tests at <code>deploy-rules.test.sh:170&ndash;191</code> expect. Those tests stay green, unmodified.</li>
+  <li><strong>--status is honest:</strong> with the unrecorded marker present, <code>--status</code> says production may be ahead
+  of the record instead of naming the older receipt as what shipped last.</li>
+</ul>
+
 <h2>Firebase safety checklist</h2>
 <ul class="checklist">
   <li><strong>No Firestore data change. No rules change. No deploy of any kind.</strong> <code>firestore.rules</code> untouched.</li>
@@ -353,12 +443,6 @@ tagger date). Far-future dates need the epoch form — <code>@32503680000 +0000<
 
 <h2>Named follow-ups — deliberately NOT in this change</h2>
 <ul>
-  <li><strong>(Found by review, pre-existing.)</strong> <code>deploy-rules.sh:257</code>'s <code>git tag -a</code> failure path does
-  <em>not</em> write <code>$PENDING</code> — only the push failure at <code>:262</code> does. So a failed tag write leaves production
-  changed with no marker, and the next deploy does not refuse. This is the exact precondition for the improvised
-  hand-recovery that H2 exists to catch. It is excluded here because <code>$PENDING</code> records
-  <em>name + tag object id</em> and no tag object exists on that path — fixing it changes the reconcile protocol,
-  which is its own plan.</li>
   <li><code>RULES-ROLLBACK.md</code> needs &ldquo;a bogus receipt is blocking deploys&rdquo;. Outside this change's scripts-only scope;
   the recovery steps are carried in the refusal message meanwhile.</li>
   <li>Real cross-clone serialization (a remote ref lock). Large, and the goal statement is narrowed instead.</li>
@@ -391,6 +475,12 @@ revert) and <code>&hellip;2026-09-22-plan-review-receipt-ordering-*</code> (the 
   replaced after I reproduced all three of its failure cases; the &ldquo;self-clearing&rdquo; claim was withdrawn as false;
   the phase split was abandoned; the cap became a three-way split with an override; one proposed assertion was
   dropped for passing while the bug is present.</li>
+  <li><strong>Sep 22 — v3, at Christie's direction:</strong> the unrecorded-deploy bug (<code>:257</code> writes no marker)
+  becomes <strong>Phase 2 of this session</strong> rather than a deferred follow-up. It stays a separate commit after
+  Phase 1 — it changes the reconcile protocol, and folding it in would widen a change that has already failed once.
+  Design choice made here: <em>recover faithfully</em> (rebuild the receipt from the marker with its original stamp)
+  rather than refuse-and-instruct, because the improvised hand-typed timestamp is exactly what corrupts the order.
+  A second marker file is used instead of overloading <code>$PENDING</code>'s format, so no migration is needed.</li>
   <li><strong>Sep 22 — accepted deliberately:</strong> H1 makes <code>--approved</code> refuse on a same-stamp collision. This is
   stricter than v1 and can refuse a deploy that would have been correct. Taken because the guard's one job is to
   let Christie approve a diff she can trust, and a guess presented as fact is the failure being fixed.</li>
