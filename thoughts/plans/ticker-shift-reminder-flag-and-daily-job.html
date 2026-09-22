@@ -20,7 +20,7 @@
 </head>
 <body>
 <h1>Plan: 48-hour shift reminders — a per-shift flag and a daily job</h1>
-<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) + rules in <code>~/studio-hub/firestore.rules</code> &middot; <strong>Drafted:</strong> Sep 20 2026 &middot; <strong>execution-ready:</strong> false &middot; <strong>v2</strong> after a two-model design review (Claude + Codex, Sep 20; every finding folded in — see the Decisions log). Awaiting Christie's read and one decision (recipient resolution, below).</p>
+<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) + rules in <code>~/studio-hub/firestore.rules</code> &middot; <strong>Drafted:</strong> Sep 20 2026 &middot; <strong>Status (Sep 21 late):</strong> Phases 0–5 BUILT and each implementation-reviewed by both models (rules live since <code>1da12e3</code>; Ticker main at <code>db3e394</code>) — awaiting the single Phases 3–5 Netlify deploy and the first real reminder; Phase 6 (close-out docs) after that &middot; <strong>v2</strong> after a two-model design review (Claude + Codex, Sep 20; every finding folded in — see the Decisions log).</p>
 
 <div class="status">
   <strong>Goal:</strong> a manager can mark any dated shift "remind", and the person working it gets one email in the
@@ -478,6 +478,40 @@ match /timeclock_reminder_log/{logId} {
 
 <h2>Decisions log</h2>
 <ul>
+  <li><strong>Sep 21 — Phase 5 DONE + REVIEWED (both models); Phase 4's Codex review applied</strong> (<code>c8924b3</code> built;
+    <code>db3e394</code> applies the Codex Phase 4 + Codex/Claude Phase 5 reviews; studio-hub <code>30686c2</code> pins the job's
+    literal write payloads against the live rules — tests only, no rules change, no deploy). The job:
+    <code>send-shift-reminders.js</code> via <code>schedule('0 * * * *')</code>, gate ≥ 9 Denver, core <code>_lib/shift-reminder.js</code>
+    (pure, injected), Firestore side <code>_lib/shift-reminder-firestore.js</code> (firebase/auth + firestore/lite as the bot, own
+    web-config copy, deleteApp in finally), preview <code>preview-shift-reminders.js</code> (sha256 + timingSafeEqual, fails closed
+    BEFORE the method check, 8 s budget, names/dates/shifts only). Resend idempotency key
+    <code>ticker-shift-reminder/{docId}/{date}</code> via <code>sendEmail({ idempotencyKey })</code>; netlify.toml esbuild +
+    included_files; <code>netlify build --offline</code> proved the bundle. <strong>Decisions from the reviews:</strong>
+    (1) ALL READS BEFORE ANY WRITE — every account is fetched first with bounded concurrency; one denied read aborts with nothing
+    claimed (the per-worker abort let in-flight sends through at concurrency 4 — both Codex reviews); a claim the rules deny is
+    counted and logged as an ERROR, not an abort (a single over-long id must not stop every run). (2) The document PATH is the
+    identity in every reader (<code>{ ...data, uid: id }</code>) — a stored <code>uid</code> field can no longer redirect a toggle or a
+    claim. (3) Crash recovery: the claim answers with the payload to send — the snapshot as re-read on create, the STORED snapshot
+    on re-claim — so a retry's body is identical under the same key; a Resend 409 <code>invalid_idempotent_request</code> means the
+    first send succeeded (keys are stored only for successes) → marked sent, deduplicated; a claim older than Resend's 24 h retention
+    is never retried automatically (<code>expired</code>, "needs a look" in the view — a re-send could no longer be deduplicated;
+    recovery = delete the log document in the console once the cause is known). (4) The claim transaction re-reads the schedule
+    (unticked/reassigned since the load → <code>stale-schedule</code>; rewritten → the fresh snapshot) and every SIBLING document's
+    log (<code>selectRemindersDue</code> now names twin documents and the migration lineage) — one send per account+date, never a
+    second under another id after a manager unticks the sent one. (5) <code>attempts</code> counts FAILED sends (≤ 3); a re-claim only
+    refreshes <code>lastAttemptAt</code>; freshness is <code>lastAttemptAt ?? claimedAt</code>; <code>REMINDER_STALE_CLAIM_MS</code> and
+    <code>REMINDER_CLAIM_EXPIRY_MS</code> are shared with the view. (6) The deadline runs from the invocation's START (cold start +
+    sign-in count), with a sign-in timeout and a per-send timeout; <code>RESEND_API_KEY</code> is preflighted with the bot credentials so
+    a guaranteed-to-fail send never burns three attempts. (7) The shared email helper redacts addresses in every failure log
+    (<code>g***@domain</code>) and carries the provider's error name; the job's own logs never held one. (8) A malformed
+    <code>remindUid</code> is "no account", never a denied read; snapshot fields are clipped by UTF-8 bytes; the job's skip word for
+    a flag naming nobody is <code>no-account</code>, the view's word. (9) Reminders view: from 23:xx a shift two days out "sends
+    TOMORROW from 9 AM" (<code>reminderNextRunDate</code> / <code>reminderPromiseCutoff</code> — the status, the sub promise and the
+    confirmation endpoint share it); a toggle carries the DISPLAYED shift and the transaction refuses a date whose stored shift
+    differs ('changed'); a failed/claimed log whose flag is gone says "flag removed, will not retry". <strong>Accepted:</strong> a
+    rename between a crash-after-send and its retry yields the 409 above (handled); an outage &gt; 24 h leaves claims for a human;
+    "Run now" may or may not exist in Netlify's UI for scheduled functions — otherwise the next hourly tick after 9 AM is the
+    first run; the Node runtime is whatever the site uses (nodejs20.x in the local manifest). 871 tests; sw.js v20.</li>
   <li><strong>Sep 21 — Phase 4 DONE + REVIEWED</strong> (<code>686ea3b</code>, review applied in <code>0189ace</code>). The
     Reminders card in the Schedule Builder tab: rows from BOTH maps of every schedule (active and archived) from today−7,
     <code>layer</code> + <code>hidden</code> (the resolver would not read that map for that date) + <code>valid</code>;
@@ -507,9 +541,10 @@ match /timeclock_reminder_log/{logId} {
     (5) <code>scheduleSignature</code> canonicalises nested keys (it now guards the CSV importer's transaction; production
     Firestore returns sorted keys). Accepted: a reminder sent under an <code>emp_</code> id followed by a reassign could be
     claimed again under the new id (needs a prior failed migration — rare); a stored <code>uid</code> field overriding
-    <code>d.id</code> in <code>loadAllSchedules</code> is mirrored by the job's adapter, so both agree. Review: Claude only —
-    <strong>Codex is out of workspace credits</strong> ("Your workspace is out of credits"); its Phase 4 and Phase 5 runs are
-    owed once credits are added. <code>sw.js</code> is v20. 843 tests.</li>
+    <code>d.id</code> in <code>loadAllSchedules</code> is mirrored by the job's adapter, so both agree. Review: Claude first (credits were out
+    for Codex); Codex's Phase 4 review ran once credits returned and is applied in <code>db3e394</code> — see the Phase 5 entry
+    above (reads before any write, path identity, the last-tick send date, the stale-row guard, the endpoint's 23:xx cutoff).
+    <code>sw.js</code> is v20.</li>
   <li><strong>Sep 21 — Phase 3 DONE + REVIEWED</strong> (<code>614e515</code>, then the review applied in <code>686ea3b</code>;
     Ticker, deployed together with Phases 4–5). Editor checkbox under Details (hidden for Day Off, reset, pre-filled;
     the checkbox OWNS the flag — Phase 1's implicit carry-over removed); <code>resolveReminderUid</code> (document id when a
