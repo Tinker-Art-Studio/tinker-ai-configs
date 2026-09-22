@@ -12,6 +12,7 @@
   .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
   .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
   .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
   ul.checklist li { margin: 4px 0; }
   table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
   th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
@@ -21,97 +22,94 @@
 <body>
 <h1>Plan: A flagged shift hidden by a temporary schedule</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 22 2026
-&middot; <strong>execution-ready:</strong> false &middot; <strong>Status: DRAFT &mdash; awaiting review</strong>
-&middot; Found by the Claude half of the Sep 22 sub-tabs implementation review (finding #3,
-<code>2026-09-22-impl-review-subtabs-claude.md</code>). Follows the &ldquo;48-hour shift reminders&rdquo; plan,
-which shipped Sep 21 (<code>62db9a2</code>) and the sub-tabs, which shipped Sep 22 (<code>6cc4732</code>).</p>
+&middot; <strong>v2</strong> after a two-model design review (Claude + Codex, Sep 22 &mdash; every finding folded in; see
+the Decisions log) &middot; <strong>execution-ready:</strong> false &mdash; <em>pending only Christie's answer to the
+one decision below and her written approval to edit the repo.</em>
+&middot; Found as finding #3 of the Sep 22 sub-tabs implementation review.</p>
 
 <div class="status">
-  <strong>Goal:</strong> when a manager has ticked &ldquo;remind&rdquo; on a shift that the app will never show
-  &mdash; because a temporary schedule covers that date, or because the flag landed on a temporary schedule that
-  does not &mdash; she is <em>told</em>, in the Reminders view and on its badge, instead of the reminder silently
-  never going out.
+  <strong>Goal:</strong> when a manager has ticked &ldquo;remind&rdquo; on a shift the app will never show &mdash;
+  because a temporary schedule covers that date, or because the flag landed on a temporary schedule that does not
+  &mdash; she is <em>told</em>, and she can clear it without leaving the app.
   <br><br>
-  <strong>What this is NOT:</strong> the reminder job is behaving correctly and does not change. A shift the app
-  does not show should not send &mdash; that is the design. The whole defect is that nobody is told.
-  No rules change, no new collection, no change to the job, and (in Phase 1) no Firestore write at all.
+  <strong>What this is NOT:</strong> the reminder job is correct and does not change. Both reviewers confirmed it
+  independently: <code>selectRemindersDue</code> resolves through <code>getShiftForDate</code>, so a shadowed flag
+  is invisible to the job <em>by construction</em>, and sending it would email hours the person is not working.
+  No rules change, no new collection, no change to the job.
 </div>
 
 <h2>The mechanism, exactly</h2>
+<p><code>listReminderRows</code> (<code>js/schedule-helpers.js:584</code>) marks a row hidden when the layer it
+lives on is not the layer that serves its date: <code>hidden: (layer === 'future') !== inFuture</code>.
+Then <code>reminderRowStatus</code> (<code>:661</code>) checks <code>hidden</code> <em>before</em> <code>remind</code>
+(<code>:662</code>), so a flagged hidden row and an unflagged one produce a byte-identical status. The information is
+gone before anything downstream can use it.</p>
 
-<p>Two lines. First, <code>listReminderRows</code> (<code>js/schedule-helpers.js:584</code>) marks a row hidden
-when the layer it lives on is not the layer that serves its date:</p>
-<p><code>hidden: (layer === 'future') !== inFuture</code></p>
-<p>Then <code>reminderRowStatus</code> (<code>:661</code>) checks <code>hidden</code> <em>before</em> it checks
-<code>remind</code> (<code>:662</code>):</p>
-<p><code>if (row.hidden) return { code: 'hidden' };</code><br>
-<code>if (!row.remind) return { code: 'none' };</code></p>
-<p>So a flagged hidden row and an unflagged hidden row produce a byte-identical status. Everything downstream &mdash;
-the row's rendering (<code>cls: 'muted'</code>, grey), and the attention badge added Sep 22 &mdash; is blind to the
-difference, because the information has already been discarded.</p>
-
-<h3>The two ways in</h3>
 <table>
   <tr><th>#</th><th>How it happens</th><th>Result</th></tr>
-  <tr>
-    <td>1</td>
-    <td><strong>The temporary schedule arrives after the flag.</strong> A base-layer override is flagged for Oct 15.
-    Later a temporary schedule is created covering Oct 12&ndash;20 (by the editor, the AI tool, or a CSV import).</td>
-    <td>Oct 15 is now served by the future layer; the flag sits on <code>base</code> &rarr; hidden.</td>
-  </tr>
-  <tr>
-    <td>2</td>
-    <td><strong>The flag lands on the wrong layer.</strong> A temporary schedule runs Nov 1&ndash;30. On Nov 10, with
-    it active, the editor is used to add a Dec 5 shift and tick remind. The editor writes to the layer active
-    <em>today</em>, which is <code>future</code>.</td>
-    <td>Dec 5 is outside Nov 1&ndash;30 &rarr; the flag sits on <code>future</code>, which does not serve it &rarr; hidden.</td>
-  </tr>
+  <tr><td>1</td><td><strong>The temporary schedule arrives after the flag.</strong> A base override is flagged for
+  Oct 15; later a temporary schedule covering Oct 12&ndash;20 is created (editor, AI tool, or CSV import).</td>
+  <td>Oct 15 is served by the future layer; the flag sits on <code>base</code> &rarr; hidden.</td></tr>
+  <tr><td>2</td><td><strong>The flag lands on the wrong layer.</strong> A temporary schedule runs Nov 1&ndash;30. On
+  Nov 10, with it active, the editor adds a Dec 5 shift and ticks remind &mdash; the editor writes the layer active
+  <em>today</em>.</td>
+  <td>Dec 5 is outside the window; the flag sits on <code>future</code>, which does not serve it &rarr; hidden.</td></tr>
 </table>
 
-<p>Way 2 is the reminder-shaped face of an already-known follow-up: <em>the schedule editor and the time-off/sub
-writers still write whichever layer is active today; only the AI path routes per date.</em> Fixing that routing is
-its own plan and is NOT in scope here &mdash; but it is the upstream cause of way 2, and closing it would remove
-that half of this bug at the source.</p>
+<p>Way 2 is the reminder-shaped face of a known follow-up (<em>the editor and the time-off/sub writers write whichever
+layer is active today; only the AI path routes per date</em>). Fixing that routing is its own plan and is NOT in scope
+&mdash; this plan detects its consequences, it does not prevent new wrong-layer flags.</p>
 
 <div class="warn">
-  <strong>Edge case that makes this worse than it looks.</strong>
-  <code>isInFutureWindow</code> (<code>:296</code>) is
-  <code>!!future &amp;&amp; (!validFrom || d &gt;= validFrom) &amp;&amp; (!validUntil || d &lt;= validUntil)</code>.
-  A <code>futureSchedule</code> that exists with <em>no bounds at all</em> therefore swallows every date &mdash;
-  so every base override on that person becomes hidden at once, and today every one of them is silently grey.
+  <strong>The edge case that makes this worst.</strong> <code>isInFutureWindow</code> (<code>:296</code>) has no
+  bounds requirement, so a <code>futureSchedule</code> with no <code>validFrom</code> and no <code>validUntil</code>
+  swallows every date &mdash; every base override for that person goes hidden at once. And because a bounds-less
+  window is <em>by definition active today</em>, it always lands in the unreachable case below.
 </div>
 
-<h3>Why it is easy to miss</h3>
-<p>The row is present and does say &ldquo;(not shown &mdash; inside/outside the temporary schedule&rsquo;s dates)&rdquo;.
-But it renders grey, alongside <em>every</em> override on the non-active layer &mdash; for a month-long temporary
-schedule, that is every base override in that month. The one that matters looks exactly like the dozens that do not.</p>
-<p>And the irony worth naming: <code>too-late</code> <strong>is</strong> counted by the badge, and it also means
-&ldquo;will never send&rdquo;. The badge flags the harmless version of this failure and misses the dangerous one.</p>
+<div class="warn">
+  <strong>Two different &ldquo;is the temporary schedule active&rdquo; tests exist.</strong>
+  <code>isInFutureWindow</code> (<code>:296</code>) does not require <code>future.recurring</code>; the editor's
+  <code>futureActive</code> (<code>app.js:3339</code>) and <code>getNormalRecurringShift</code> (<code>:859</code>) do.
+  A <code>futureSchedule</code> with overrides but no recurring therefore shadows base overrides in the resolver while
+  the editor still edits base. Whoever implements this must not assume one test.
+</div>
+
+<h2>Why Phases 1 and 2 must ship together</h2>
+<p>v1 recommended shipping the display fix alone and deciding on unticking later. <strong>Both reviewers rejected
+that, and they were right.</strong> <code>openScheduleEditor</code> (<code>app.js:3338-3347</code>) loads
+<code>future.overrides</code> whenever the temporary schedule covers <em>today</em>, and the base map is then never
+rendered:</p>
+
+<table>
+  <tr><th>The window covers&hellip;</th><th>Reminders view</th><th>Can she clear it?</th></tr>
+  <tr><td>the date, but <strong>not today</strong></td><td>hidden</td>
+  <td><strong>Yes</strong> &mdash; the editor loads base, the row is listed, Remove works.</td></tr>
+  <tr><td>the date <strong>and today</strong></td><td>hidden</td>
+  <td><strong>No.</strong> The editor loads future; the base override is invisible. The AI tool routes per date to the
+  future map; <code>reminderRowToggleable</code> refuses hidden rows; &ldquo;Clear all shown&rdquo; filters on that same
+  predicate; the schedule-view modal is read-only. <em>Only the Firebase console.</em></td></tr>
+</table>
+
+<p>So Phase 1 alone would put a permanent amber count on the badge that nothing in the app can clear &mdash; the exact
+failure the Sep 22 date gate was added to prevent (<em>&ldquo;a red badge nobody can clear is one people learn to
+ignore&rdquo;</em>). <strong>Phase 1 and Phase 2 are separate commits and separate review gates, but one release.</strong></p>
 
 <h2>One decision for Christie</h2>
 <div class="decision-needed">
-  <strong>Should the manager be able to untick a hidden flag from the Reminders view (Phase 2), or is being
-  told enough (Phase 1 only)?</strong>
+  <strong>Include Phase 1.5 &mdash; catch this at the moment it is created?</strong>
   <br><br>
-  This is not a free addition. <code>planReminderToggles</code> (<code>:754</code>) computes the layer that
-  <em>serves</em> the date and refuses any toggle whose layer differs:
-  <br><code>const layer = isInFutureWindow(d.futureSchedule, dateStr) ? 'future' : 'base';</code>
-  <br><code>if (t.layer !== layer) { skipped.push({ date: dateStr, reason: 'moved' }); return; }</code>
+  <code>handleSaveSchedule</code> <em>already</em> stops and confirms when a temporary schedule will hide the regular
+  one &mdash; twice (<code>app.js:3741</code> &ldquo;their regular schedule stays hidden until this temporary schedule
+  ends&rdquo;, and <code>:3752</code> for a missing end date). That confirm is the precise moment way 1 is created and
+  the last cheap moment to act.
   <br><br>
-  A hidden row is <em>by definition</em> one where those differ, so the transaction would always skip it as
-  <code>moved</code>. That guard is deliberate &mdash; it is what stops a row whose date has moved layers from being
-  written blind. Phase 2 therefore means loosening a safety guard that was added on purpose, which is why it is
-  a separate, reviewed phase and not part of Phase 1.
+  Counting base overrides inside the new window that carry <code>remind: true</code> and naming them in that existing
+  prompt (&ldquo;<em>3 of the dates this covers have a reminder set &mdash; those reminders will stop sending</em>&rdquo;)
+  prevents the bug rather than reporting it, for a fraction of Phase 2's cost. It is not a substitute &mdash; CSV
+  imports and bounds edits bypass that path entirely &mdash; but it is the highest-value line in the plan per unit of risk.
   <br><br>
-  <strong>Worth knowing before choosing:</strong> unticking does not deliver the reminder. The flag is on a shift
-  that is not happening. If she still wants the person reminded she must add the shift on the layer that
-  actually serves the date &mdash; and if that date is served by the temporary schedule&rsquo;s <em>recurring</em>
-  pattern rather than an override, there is no row to flag at all, because the flag only ever lives on overrides.
-  So Phase 2 buys tidiness, not delivery.
-  <br><br>
-  <strong>Recommendation: Phase 1 first, then decide.</strong> Phase 1 carries nearly all the value (she finds out),
-  costs no write path, and after a week of seeing how often this actually fires she will know whether Phase 2 is
-  worth loosening the guard for.
+  <strong>Recommendation: yes, include it.</strong> It is a read-only count added to a prompt that already exists.
 </div>
 
 <h2>Phases</h2>
@@ -120,141 +118,266 @@ schedule, that is every base override in that month. The one that matters looks 
 <h3>Phase 1 &mdash; the status tells the truth <em>(no Firestore write)</em></h3>
 <p><strong>Acceptance criteria, as user outcomes:</strong></p>
 <ul class="checklist">
-  <li>A shift Christie ticked &ldquo;remind&rdquo; on that the app will never show is called out in the Reminders
-  list in amber, saying plainly that it will not send and why.</li>
+  <li>A shift Christie ticked &ldquo;remind&rdquo; on that the app will never show is called out in amber in the
+  Reminders list, saying plainly that it will not send and why &mdash; and the row does not also render grey and italic.</li>
   <li>The Reminders sub-tab badge counts it, so she finds out without opening the tab.</li>
-  <li>An <em>unflagged</em> hidden shift still renders exactly as it does today &mdash; grey, uncounted. There are
-  many of these and they are not problems.</li>
+  <li>An <em>unflagged</em> hidden shift renders exactly as today &mdash; grey, uncounted. There are many and they
+  are not problems.</li>
+  <li>If the shift the app <em>does</em> show for that date is itself flagged, the shadowed row says so and is NOT
+  counted &mdash; the person is getting their reminder.</li>
+  <li>After a future-schedule CSV import, the badge is right immediately, without pressing Refresh.</li>
   <li>Nothing about what does or does not get emailed changes.</li>
 </ul>
-<p><strong>Changes:</strong> <code>reminderRowStatus</code> returns <code>{ code: 'hidden', flagged: row.remind }</code>;
-<code>describeReminderStatus</code> renders <code>flagged</code> ones <code>warn</code> with their own text and title;
-<code>reminderAttentionSummary</code> counts them under a new label, date-gated with the rest of the amber family.</p>
-<p><strong>Tests that must change (they assert today's behaviour exactly):</strong>
-<code>schedule-helpers.test.js:2341</code> and <code>:2342</code> both
-<code>toEqual({ code: 'hidden' })</code>. They become the two halves of the new contract.</p>
 
-<div class="bdd"><strong>Given</strong> a base override on Oct 15 with <code>remind: true</code>, <strong>and</strong> a
-temporary schedule covering Oct 12&ndash;20, <strong>when</strong> Christie opens Schedule Builder,
-<strong>then</strong> the Reminders badge counts that shift and its row reads amber, naming the temporary schedule as
-the reason it cannot send.</div>
+<p><strong>Change sites &mdash; all five (v1 named three):</strong></p>
+<ol>
+  <li><code>reminderRowStatus</code> (<code>helpers:661</code>) &mdash; return a <strong>distinct code</strong>,
+  <code>hidden-flagged</code>, not <code>{ code: 'hidden', flagged }</code>. Both reviewers asked for this
+  independently: <code>reminderAttentionSummary</code> is a pure <code>code &rarr; label</code> lookup
+  (<code>:708</code>) and cannot express &ldquo;only when flagged&rdquo; without a special case, whereas a distinct
+  code drops straight into <code>REMINDER_ATTENTION_LABELS</code> and leaves the existing <code>hidden</code>
+  contract byte-identical.</li>
+  <li><code>describeReminderStatus</code> (<code>app.js:3176</code>) &mdash; <code>cls: 'warn'</code> with text and
+  title that name <em>which</em> way it happened (it already branches on <code>row.layer</code> for the title).</li>
+  <li><code>reminderAttentionSummary</code> (<code>helpers:708</code>) &mdash; one label entry; date-gated with the
+  rest of the amber family; explicitly NOT in <code>REMINDER_ATTENTION_SEVERE</code>.</li>
+  <li><code>renderRemindersView</code> (<code>app.js:3213</code>) &mdash; <code>cls = r.hidden ? 'hidden-row' : &hellip;</code>
+  paints the row grey italic (<code>css/styles.css:2303</code>). A flagged hidden row must not get that class, or
+  &ldquo;called out in amber&rdquo; is a coloured pill inside a row the app's own visual language says to ignore.</li>
+  <li><code>listReminderRows</code> (<code>helpers:562</code>) &mdash; set <code>servingRemind: true</code> on a hidden
+  row when the serving layer holds a flagged shift for the same date. This is the only place with the whole schedule in
+  hand; <code>reminderRowStatus</code> only ever sees one row.</li>
+</ol>
+<p>Plus wiring: <code>runFutureScheduleWrite</code> (<code>app.js:6258</code>) currently ends at
+<code>renderFutureCsvTable</code> + <code>showToast</code> with no reload, so an import that creates shadowed flags
+leaves the badge stale. Add <code>await loadSchedulesData(); await loadRemindersView();</code> &mdash; reads only.</p>
 
-<div class="bdd"><strong>Given</strong> the same shift but <em>without</em> <code>remind</code>, <strong>when</strong>
-she opens Schedule Builder, <strong>then</strong> the row is grey &ldquo;hidden&rdquo; as today and the badge does not
-count it.</div>
+<p><strong>Tests that must change (three sites &mdash; v1 named two):</strong>
+<code>schedule-helpers.test.js:2341</code> and <code>:2342</code> (<code>toEqual({ code: 'hidden' })</code>), and
+<code>:2629</code> (the Sep 22 &ldquo;job working normally is never counted&rdquo; case, which pins a
+<code>'hidden'</code> row as uncounted). With a distinct code, <code>:2629</code> stays true unchanged &mdash; which is
+itself the argument for the distinct code.</p>
 
-<div class="bdd"><strong>Given</strong> a flagged hidden shift whose date has already passed, <strong>when</strong> the
-badge is drawn, <strong>then</strong> it is not counted &mdash; a past shift cannot be fixed (the same date gate the
-amber family got on Sep 22).</div>
+<div class="bdd"><strong>Way 1. Given</strong> a base override on Oct 15 with <code>remind: true</code>,
+<strong>and</strong> a temporary schedule covering Oct 12&ndash;20, <strong>when</strong> Christie opens Schedule
+Builder, <strong>then</strong> the badge counts it and its row reads amber, naming the temporary schedule as the reason.</div>
 
-<div class="bdd"><strong>Given</strong> a <code>futureSchedule</code> with no <code>validFrom</code> and no
-<code>validUntil</code>, so every base override is hidden, <strong>when</strong> three of them are flagged,
-<strong>then</strong> the badge counts exactly three, not the whole map.</div>
+<div class="bdd"><strong>Way 2 (v1 had no BDD for this direction at all). Given</strong> a <em>future</em>-layer override
+for Dec 5 with <code>remind: true</code> <strong>and</strong> a window of Nov 1&ndash;30, <strong>when</strong> the view
+renders, <strong>then</strong> that row is amber and counted, with a title naming the <em>outside-the-window</em> reason
+&mdash; an implementation that handles only the base direction must fail here.</div>
 
-<div class="bdd"><strong>Given</strong> both a hidden base row and a live future row for the same date, both flagged,
-<strong>when</strong> the badge is drawn, <strong>then</strong> the live one is counted by its own status and the
-hidden one is counted once as not-sending &mdash; the manager is not shown a contradiction.</div>
+<div class="bdd"><strong>Given</strong> the same shift <em>without</em> <code>remind</code>, <strong>then</strong> the row
+is grey &ldquo;hidden&rdquo; exactly as today and is not counted.</div>
 
-<div class="bdd"><strong>Given</strong> an orphan log row (<code>hidden: true</code>, <code>remind: false</code>,
-carrying a log), <strong>when</strong> its status is computed, <strong>then</strong> the log still decides it
-(&ldquo;sent &mdash; shift since removed&rdquo;) and the hidden branch is never reached.</div>
+<div class="bdd"><strong>Given</strong> a flagged hidden shift whose date has passed, <strong>then</strong> it is not
+counted &mdash; unfixable and unclearable; the Sep 22 date gate applies unchanged. <strong>And</strong>
+<code>hidden-flagged</code> is never severe: it can never produce a log, so it can never be evidence of a send that
+went wrong.</div>
+
+<div class="bdd"><strong>Boundary. Given</strong> <code>validFrom</code>/<code>validUntil</code> are inclusive, a row
+dated exactly on each bound, and one-sided windows (missing <code>validFrom</code>; missing <code>validUntil</code>) in
+both layer directions, <strong>then</strong> each row's hidden-ness matches <code>getShiftForDate</code> for that date.</div>
+
+<div class="bdd"><strong>Given</strong> a bounds-less <code>futureSchedule</code>, so every base override is hidden,
+<strong>and</strong> three of them are flagged, <strong>then</strong> the badge counts exactly three, not the whole map.</div>
+
+<div class="bdd"><strong>Corrected from v1 (which asserted the wrong total). Given</strong> a hidden flagged base row and
+a live flagged future row for the same date, with no log, <strong>then</strong> the live row is <code>sends</code> and is
+NOT counted (<code>sends</code> is deliberately uncounted), the hidden row reports &ldquo;the shift shown for this date is
+flagged and will send&rdquo; via <code>servingRemind</code>, and the badge total is <strong>0</strong>.</div>
+
+<div class="bdd"><strong>Given</strong> the same pair but the live row has its own amber problem
+(<code>no-account</code>), <strong>then</strong> the total is 1 &mdash; the live row's &mdash; and the shadowed row is
+still benign.</div>
+
+<div class="bdd"><strong>Given</strong> a hidden flagged row and a log recording a send for that date,
+<strong>then</strong> the log still decides the status (<code>if (log)</code> precedes the hidden branch) and the table
+never shows &ldquo;sent &#10003;&rdquo; and &ldquo;will never send&rdquo; for the same person and date.</div>
+
+<div class="bdd"><strong>Given</strong> an orphan log row (<code>hidden: true</code>, <code>remind: false</code>, with a
+log), <strong>then</strong> the log decides it and the hidden branch is never reached.</div>
+
+<div class="bdd"><strong>Given</strong> a flagged hidden row that is also <code>valid: false</code> (no start/end),
+<strong>then</strong> it is counted (it is a real stale flag) but offers no checkbox even after Phase 2 &mdash;
+<code>planReminderToggles:758</code> refuses it &mdash; and its title says to fix it in the editor.</div>
 </div>
 
 <div class="phase">
-<h3>Phase 2 &mdash; the manager can clear a stale flag <em>(Firestore write &mdash; gated on the decision above)</em></h3>
-<p><strong>Acceptance criteria:</strong></p>
+<h3>Phase 1.5 &mdash; prevent way 1 at the save confirm <em>(gated on the decision above; no new write)</em></h3>
+<ul class="checklist">
+  <li>When a save is about to create or widen a temporary schedule that will hide dates carrying reminders, the
+  existing confirm names how many, so Christie can cancel instead of discovering it later.</li>
+</ul>
+<div class="bdd"><strong>Given</strong> a save that creates a window covering three flagged base overrides,
+<strong>when</strong> the existing &ldquo;regular schedule stays hidden&rdquo; confirm appears, <strong>then</strong> it
+also says three reminders will stop sending; <strong>and</strong> cancelling writes nothing.</div>
+<div class="bdd"><strong>Given</strong> a window covering no flagged overrides, <strong>then</strong> the prompt is
+unchanged from today.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2 &mdash; the manager can clear a stale flag <em>(Firestore write)</em></h3>
 <ul class="checklist">
   <li>Christie can untick a flagged hidden shift from the Reminders view and the flag is actually removed.</li>
-  <li>She can never <em>tick</em> a hidden shift &mdash; that would create a flag that cannot send, which is the
-  bug this plan exists to remove.</li>
-  <li>Every other toggle behaves exactly as it does today; the <code>moved</code> guard still protects them.</li>
+  <li>She can never <em>tick</em> a hidden shift &mdash; that would create a flag that cannot send.</li>
+  <li>Every other toggle behaves exactly as today.</li>
 </ul>
-<p><strong>Shape:</strong> the toggle carries an explicit opt-in (for example <code>shadowed: true</code>) meaning
-&ldquo;I am deliberately acting on the layer this row was shown from, which is not the serving layer&rdquo;. The
-guard becomes: layers must match <em>unless</em> the caller said shadowed <em>and</em> the toggle is an untick.
-Leaf-delete only, same-shape guard unchanged.</p>
+
+<p><strong>The guard, as an assertion rather than a bypass</strong> (Claude's shape; it makes the write surface
+<em>move</em> rather than widen, and Phase 2's &ldquo;bounds edited between load and untick&rdquo; case falls out of it
+for free):</p>
+<pre><code>const serving = isInFutureWindow(d.futureSchedule, dateStr) ? 'future' : 'base';
+const wantShadowed = t.shadowed === true;
+if ((t.layer !== serving) !== wantShadowed) { skipped.push({ date: dateStr, reason: 'moved' }); return; }
+if (wantShadowed &amp;&amp; t.remind) { skipped.push({ date: dateStr, reason: 'shadowed-tick' }); return; }
+const layer = t.layer;   // &larr; everything below MUST use this</code></pre>
+
+<div class="trap">
+  <strong>The trap both reviewers named, and the most likely partial implementation.</strong> Today <code>layer</code>
+  is <em>both</em> the guard's subject and the map/path selector (<code>:756</code>, <code>:760</code>). Loosening the
+  guard without repointing <code>layer</code> to <code>t.layer</code> reads and deletes from the <em>serving</em> map
+  &mdash; precisely the blind write the guard exists to stop &mdash; <strong>and it passes any test that only asserts
+  &ldquo;the untick succeeded&rdquo;.</strong> Every Phase 2 test must assert the stored document on BOTH layers.
+</div>
+
+<p><strong>Correction carried from the review:</strong> v1 credited the <code>moved</code> guard with preventing the
+phantom-shift / bounds-less-<code>futureSchedule</code> hazard. It does not &mdash; the <code>changed</code> guard does
+(<code>:758</code> requires the date to exist in the chosen map with <code>start</code> and <code>end</code>;
+<code>:759</code> requires <code>sameShift</code>). What <code>moved</code> uniquely prevents is a <em>tick</em> landing
+on a layer that can never send, which the untick-only rule covers.</p>
+
+<p><strong>UI sites (v1 named none):</strong> <code>reminderRowToggleable</code> (<code>app.js:3155</code>) categorically
+rejects hidden rows; the renderer (<code>:3218</code>) emits no checkbox for them; <code>describeSkipped</code>
+(<code>:3258</code>) needs a <code>shadowed-tick</code> case. And <strong>decide explicitly whether &ldquo;Clear all
+shown&rdquo; includes them</strong> &mdash; it filters on the same <code>reminderRowToggleable</code>
+(<code>:3294</code>), so it would sweep them in by default, while its confirmation text currently says hidden rows are
+excluded.</p>
+
 <p><strong>Required before coding (AGENTS.md, non-negotiable):</strong> a failing Firestore <em>emulator</em> test
 first, then the fix, then green. Then a second-model implementation review of the diff before Phase 3.</p>
 
-<div class="bdd"><strong>Given</strong> a flagged hidden base override, <strong>when</strong> Christie unticks it,
-<strong>then</strong> <code>remind</code> and <code>remindUid</code> are deleted from that base override only, and
-the temporary schedule and every other date are untouched.</div>
+<div class="bdd"><strong>Given</strong> a flagged hidden <em>base</em> override, <strong>when</strong> Christie unticks
+it, <strong>then</strong> <code>remind</code> and <code>remindUid</code> are deleted from that base override only, and
+the <code>futureSchedule</code> and every other date are byte-identical afterwards.</div>
 
-<div class="bdd"><strong>Given</strong> a hidden row, <strong>when</strong> a tick (not an untick) is attempted,
-<strong>then</strong> it is refused and reported &mdash; no write.</div>
+<div class="bdd"><strong>The mirror. Given</strong> a flagged hidden <em>future</em> override, <strong>when</strong> she
+unticks it, <strong>then</strong> the future override loses its two keys and the base map is untouched.</div>
 
-<div class="bdd"><strong>Given</strong> a row shown as hidden, <strong>when</strong> the temporary schedule's bounds
-are edited between the view loading and the untick so the row is no longer shadowed, <strong>then</strong> the
-transaction re-reads and skips it rather than writing where she did not look.</div>
+<div class="bdd"><strong>Given</strong> a hidden row, <strong>when</strong> a tick is attempted, <strong>then</strong> it
+is skipped <code>shadowed-tick</code> and reported &mdash; no write.</div>
 
-<div class="bdd"><strong>Given</strong> the shift was rewritten by someone else since the view loaded,
-<strong>when</strong> she unticks, <strong>then</strong> the existing <code>sameShift</code> guard still skips it
-as <code>changed</code>.</div>
+<div class="bdd"><strong>Given</strong> an ordinary stale toggle whose layer no longer matches and which does NOT carry
+<code>shadowed</code>, <strong>then</strong> it is still skipped <code>moved</code> &mdash; the exception cannot be
+exploited by a stale normal row.</div>
+
+<div class="bdd"><strong>Given</strong> a row shown as hidden whose window bounds changed since the view loaded so it is
+no longer shadowed, <strong>then</strong> the assertion fails and it is skipped <code>moved</code> &mdash; never written
+where she did not look.</div>
+
+<div class="bdd"><strong>Given</strong> the requested hidden map or value was deleted, set to <code>null</code>, or made
+incomplete since the view loaded, <strong>then</strong> it is skipped <code>changed</code> and no parent is recreated.</div>
+
+<div class="bdd"><strong>Given</strong> the shift was rewritten by another manager since the view loaded,
+<strong>then</strong> <code>sameShift</code> still skips it as <code>changed</code>.</div>
+
+<div class="bdd"><strong>Given</strong> another manager already removed the hidden flag, <strong>then</strong> the
+untick is an idempotent success with no write (matching today's &ldquo;a toggle that already holds is counted as applied
+with no write&rdquo;), and the row refreshes.</div>
 </div>
 
 <div class="phase">
 <h3>Phase 3 &mdash; close-out docs</h3>
 <ul class="checklist">
-  <li><code>memory/timeclock-app.md</code>: the trigger map's #12 gains the shadowed-flag case.</li>
-  <li><code>CLAUDE.md</code> / <code>AGENTS.md</code>: the line &ldquo;a flagged override the app would not show never
-  sends&rdquo; gains &ldquo;&hellip;and the Reminders view now says so&rdquo;.</li>
-  <li>This plan's Decisions log; the sub-tabs review finding marked closed.</li>
-  <li><code>sw.js</code> bump on the deploy carrying the <code>app.js</code> change.</li>
+  <li><code>memory/timeclock-app.md</code>: trigger map #12 gains the shadowed-flag case.</li>
+  <li><code>CLAUDE.md</code> / <code>AGENTS.md</code>: &ldquo;a flagged override the app would not show never sends&rdquo;
+  gains &ldquo;&hellip;and the Reminders view now says so, and she can clear it&rdquo;.</li>
+  <li>This plan's Decisions log; the sub-tabs review finding #3 marked closed.</li>
+  <li>The per-date writer-routing defect stays tracked as its own follow-up &mdash; this plan detects way 2, it does
+  not prevent it.</li>
 </ul>
 </div>
 
 <h2>Firebase safety checklist</h2>
 <ul class="checklist">
-  <li><strong>New collection?</strong> No. Nothing beyond <code>timeclock_schedules</code>, which has had a rule
-  since before this feature (<code>firestore.rules:381</code>, manager read/write). <strong>No rules change, so
-  nothing to deploy to Firebase.</strong></li>
+  <li><strong>New collection?</strong> No &mdash; only <code>timeclock_schedules</code>, rule at
+  <code>firestore.rules:381</code> (manager read/write). <strong>No rules change; nothing to deploy to Firebase.</strong>
+  One check before Phase 2: confirm no rule constrains field paths on that collection.</li>
   <li><strong>Partial updates?</strong> Phase 2 writes leaf deletes through the existing
-  <code>toggleShiftRemindersTransaction</code> &mdash; never <code>setDoc</code>, never a whole map.</li>
-  <li><strong>Empty fields stripped?</strong> Unchanged: <code>remind</code> is true or absent, never
-  <code>false</code>/<code>null</code>/<code>""</code>.</li>
-  <li><strong>Awaited writes?</strong> Unchanged &mdash; the existing toggle path already awaits and surfaces failures.</li>
+  <code>toggleShiftRemindersTransaction</code> (<code>firebase-data.js:285-309</code>) &mdash; same
+  <code>tx.update</code> + <code>FieldPath</code> shape that works today. Never <code>setDoc</code>, never a whole map.</li>
+  <li><strong>Empty fields stripped?</strong> Unchanged &mdash; <code>remind</code> is true or absent.</li>
+  <li><strong>Awaited writes?</strong> Unchanged.</li>
   <li><strong>Bulk delete/import?</strong> None. Every write is one human untick.</li>
-  <li><strong>Emulator test before code?</strong> Required for Phase 2. Phase 1 is pure functions and is covered by
-  <code>schedule-helpers.test.js</code>.</li>
-  <li><strong>Console spot-check?</strong> Required after Phase 2 &mdash; one real document, confirming the base
-  override lost its two keys and the <code>futureSchedule</code> is untouched.</li>
+  <li><strong>Emulator test before code?</strong> Required for Phase 2, asserting the stored document on BOTH layers
+  before and after (see the trap above). Phases 1 and 1.5 are pure functions plus rendering.</li>
+  <li><strong>Which suites:</strong> Ticker <code>npm test</code> (1753 at drafting &mdash; read the printed count) and,
+  for Phase 2, the Studio Hub rules suite, even though no rule changes: the existing reminder emulator test uses the
+  Admin SDK and explicitly does not prove rules.</li>
+  <li><strong>Console spot-check</strong> after Phase 2 ships: one real document, confirming the shadowed override lost
+  its two keys and the other layer is untouched. This is Christie looking at production <em>after</em> a deploy &mdash;
+  it is not a test, and it does not conflict with &ldquo;tests never touch production&rdquo;.</li>
+  <li><strong><code>sw.js</code> bump</strong> belongs to the FIRST phase that deploys an <code>app.js</code> change
+  (Phase 1), not to Phase 3 &mdash; the shell is cache-first.</li>
 </ul>
 
 <h2>Completeness check &mdash; what if this stops part-way?</h2>
 <ul class="checklist">
-  <li><strong>After Phase 1:</strong> Christie is told about shadowed flags but can only clear them through the
-  schedule editor. That is strictly better than today and is a sensible permanent stopping point.</li>
-  <li><strong>After Phase 2:</strong> she can also clear them in place. Docs would lag; nothing behaves wrongly.</li>
-  <li><strong>Mid-Phase 1:</strong> the helper and the renderer are one commit. Split across a deploy, the worst case
-  is a status the renderer does not recognise, which falls through to
+  <li><strong>After Phase 1 alone:</strong> Christie is told, but in the window-covers-today case she cannot clear it
+  anywhere except the Firebase console. Acceptable only as a brief intermediate state &mdash; <strong>not a permanent
+  stopping point</strong> (this is what v1 got wrong). If it must ship alone, the amber title has to name the console.</li>
+  <li><strong>After Phase 1.5:</strong> new occurrences of way 1 are largely prevented; existing ones are visible.</li>
+  <li><strong>After Phase 2:</strong> feature complete; only docs lag.</li>
+  <li><strong>Mid-Phase 1:</strong> an unrecognised status code falls through to
   <code>default: { cls: 'muted', text: s.code }</code> &mdash; today's behaviour. Safe either way.</li>
 </ul>
 
 <h2>Resume instructions</h2>
 <ol>
-  <li>Read this plan and its Decisions log.</li>
-  <li>Confirm Christie's answer to the one decision above &mdash; Phase 2 does not start without it.</li>
-  <li><strong>Written approval is required before editing anything in <code>~/tinker-timeclock</code></strong> (the
-  Ticker rule); it is a payroll-adjacent repo.</li>
-  <li>Phase 1: change <code>reminderRowStatus</code>, then <code>describeReminderStatus</code>, then
-  <code>reminderAttentionSummary</code>; update <code>schedule-helpers.test.js:2341-2342</code>; add the six BDDs.
-  <code>npm test</code> must be green (1753 at the time of drafting &mdash; read the printed count, it drifts).</li>
-  <li>Commit per phase. Ask before any <code>netlify deploy</code> &mdash; it costs credits.</li>
-  <li>After the deploy, reload the live app <strong>twice</strong>: the service worker is cache-first and the first
-  load after a deploy serves the old shell. This cost real confusion three times on Sep 22.</li>
+  <li>Read this plan and its Decisions log. Both design reviews are archived at
+  <code>~/tinker-ai-configs/thoughts/reviews/2026-09-22-plan-review-shadowed-flag-{claude,codex}.md</code>.</li>
+  <li>Confirm Christie's answer on Phase 1.5, and <strong>get written approval to edit
+  <code>~/tinker-timeclock</code></strong> (the Ticker rule) before touching a file.</li>
+  <li>Phases 1 and 2 are separate commits and separate review gates, but ONE release &mdash; see &ldquo;Why Phases 1
+  and 2 must ship together&rdquo;.</li>
+  <li>Phase 2 order is fixed: failing emulator test &rarr; fix &rarr; green &rarr; second-model implementation review.</li>
+  <li>Ask before any <code>netlify deploy</code> &mdash; it costs credits.</li>
+  <li>After deploying, reload the live app <strong>twice</strong>: the service worker is cache-first and the first load
+  serves the old shell. This cost real confusion three times on Sep 22.</li>
 </ol>
 
 <h2>Decisions Log</h2>
 <ul>
-  <li><strong>Sep 22 &mdash; drafted.</strong> Raised as finding #3 of the sub-tabs implementation review (Claude);
-  Codex did not find it. Scoped deliberately narrow after research: the job is correct and unchanged, the rules are
-  unchanged, and Phase 1 contains no write at all &mdash; this is a visibility defect, not a sending defect.</li>
-  <li><strong>Sep 22 &mdash; found during research, and it reshaped the plan.</strong>
-  <code>planReminderToggles</code> refuses any toggle whose layer is not the serving layer
-  (<code>reason: 'moved'</code>, <code>:754</code>). A hidden row always trips it, so &ldquo;just let her untick it&rdquo;
-  is not a small addition &mdash; it requires loosening a guard that exists to stop blind writes. That is why
-  unticking became its own gated phase with its own emulator test and implementation review, rather than riding
-  along with the display fix.</li>
+  <li><strong>Sep 22 &mdash; drafted (v1).</strong> Raised as finding #3 of the sub-tabs implementation review (Claude;
+  Codex did not find it). Scoped narrow after research: the job is correct and unchanged, rules unchanged, Phase 1
+  writes nothing.</li>
+  <li><strong>Sep 22 &mdash; found during research and it reshaped the plan.</strong>
+  <code>planReminderToggles</code> refuses any toggle whose layer is not the serving layer (<code>:754</code>), which a
+  hidden row always trips. &ldquo;Just let her untick it&rdquo; therefore needs its own gated phase, not a line.</li>
+  <li><strong>Sep 22 &mdash; v2 after a two-model design review. The blocking finding, raised independently by BOTH
+  models, inverted v1's central recommendation.</strong> v1 said ship Phase 1 alone and decide on Phase 2 later, on the
+  belief that the schedule editor was a reliable fallback. It is not: <code>openScheduleEditor</code> loads the future
+  overrides whenever the window covers <em>today</em>, so the shadowed base override is unreachable everywhere in the
+  app &mdash; and the worst edge case (a bounds-less window) is always in that state. Phase 1 alone would have shipped
+  a permanent uncleanable badge. Phases 1 and 2 now ship together.</li>
+  <li><strong>Sep 22 &mdash; other v2 changes, all from the review.</strong> (a) A distinct <code>hidden-flagged</code>
+  code instead of <code>{ code: 'hidden', flagged }</code> &mdash; both models; it drops into the label lookup and
+  leaves the old contract and test <code>:2629</code> untouched. (b) v1's change list was short by two sites: the row
+  CSS class (<code>app.js:3213</code>), which would have left the &ldquo;amber&rdquo; pill inside a grey italic row, and
+  <code>listReminderRows</code> for <code>servingRemind</code>. (c) v1's test list was short by one
+  (<code>:2629</code>). (d) v1's both-layers-flagged BDD asserted the wrong total &mdash; <code>sends</code> is
+  uncounted, so it is 0, not 2; the real contradiction was &ldquo;sent &#10003;&rdquo; above &ldquo;will never
+  send&rdquo;, which needs cross-row context. (e) v1 had no BDD for way 2 at all, so an implementation handling only the
+  base direction would have passed. (f) v1 misattributed the phantom-shift hazard to the <code>moved</code> guard; it is
+  the <code>changed</code> guard. (g) The guard became an assertion rather than a bypass, with the
+  <code>layer</code>/<code>t.layer</code> trap named as the likeliest partial implementation. (h) The CSV write path
+  does not reload the Reminders view, so the badge would have gone stale after an import. (i) Phase 1.5 added &mdash;
+  the save confirm that creates this bug already exists.</li>
+  <li><strong>Sep 22 &mdash; one review point NOT taken.</strong> Codex read the required Firebase Console spot-check as
+  conflicting with &ldquo;never touch production&rdquo; and asked for its removal. Declined: that constraint governs
+  automated tests, while the spot-check is a human looking at one document after a deploy, required by
+  <code>/planning-workflow</code> for every data-write phase. Codex's underlying point was taken instead &mdash; the
+  emulator test must assert the exact stored document rather than leaning on the console.</li>
 </ul>
 
 </body>
