@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Failed reads that look like no data</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  ul.checklist li { margin: 4px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 13.5px; width: 100%; }
+  th, td { border: 1px solid #ddd; padding: 6px 9px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+  .t1 { background: #fdecea; } .t2 { background: #fef9e7; } .t3 { background: #f4f4f4; }
+</style>
+</head>
+<body>
+<h1>Plan: Failed reads that look like no data</h1>
+<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 23 2026
+&middot; <strong>execution-ready:</strong> false &mdash; awaiting review and Christie's scope decision.
+&middot; Found by both models while reviewing the Sep 23 HFWA index fix, then re-inventoried from source.</p>
+
+<div class="status">
+  <strong>Goal:</strong> when the app cannot read something, it says so &mdash; instead of drawing an empty list,
+  a zero, or a default that looks exactly like real data. Today a permission error, an offline moment, a missing
+  index or a slow network is indistinguishable from &ldquo;there is nothing here&rdquo; in ten places, two of
+  which feed payroll.
+  <br><br>
+  <strong>Not a hypothetical.</strong> This exact pattern hid a real employee's sick-leave submission from her on
+  Sep 22&ndash;23: a missing index made the query throw, the catch returned <code>[]</code>, and her card said
+  &ldquo;No submissions yet&rdquo;. It is also the pattern the global CLAUDE.md names by name
+  (&ldquo;apps with <code>loadConfig()</code> silently fall back to defaults on permission errors&rdquo;).
+</div>
+
+<h2>The inventory</h2>
+<p>Every read in <code>js/firebase-data.js</code> whose <code>catch</code> returns an empty-looking value.
+Writes that return <code>false</code> are excluded &mdash; <code>false</code> is an honest failure signal the
+caller can act on. These are reads where failure is <em>indistinguishable from emptiness</em>.</p>
+
+<table>
+  <tr><th>Tier</th><th>Function</th><th>Returns on failure</th><th>What the manager or employee sees</th></tr>
+  <tr class="t1"><td><strong>1</strong></td><td><code>getLockedPeriods</code></td><td><code>{}</code></td>
+    <td><strong>A locked pay period renders as UNLOCKED</strong>, with the Lock button live again.</td></tr>
+  <tr class="t1"><td><strong>1</strong></td><td><code>getEntriesByDateRange</code></td><td><code>[]</code></td>
+    <td>&ldquo;No timesheet data for this period&rdquo; &mdash; and zero-hour totals.</td></tr>
+  <tr class="t1"><td><strong>1</strong></td><td><code>loadSettings</code></td><td><code>{ ...DEFAULT_SETTINGS }</code></td>
+    <td>Nothing. The app silently runs on default grace rules, which change paid hours.</td></tr>
+  <tr class="t2"><td>2</td><td><code>loadAllSchedules</code></td><td><code>[]</code></td>
+    <td>&ldquo;No schedules created yet&rdquo; &mdash; and an editor save could then write a duplicate.</td></tr>
+  <tr class="t2"><td>2</td><td><code>getTodayEntries</code></td><td><code>[]</code></td>
+    <td>&ldquo;Not Clocked In&rdquo; / &ldquo;No entries yet today&rdquo; to someone who IS clocked in.</td></tr>
+  <tr class="t2"><td>2</td><td><code>getAllTodayEntries</code></td><td><code>[]</code></td>
+    <td>&ldquo;No one is clocked in&rdquo; on Who's Working.</td></tr>
+  <tr class="t2"><td>2</td><td><code>getRecentEntries</code></td><td><code>[]</code></td>
+    <td>&ldquo;No entries in the last 3 days&rdquo;.</td></tr>
+  <tr class="t3"><td>3</td><td><code>getPendingTimeOffRequests</code></td><td><code>[]</code></td>
+    <td>&ldquo;No pending requests&rdquo; while requests sit unreviewed.</td></tr>
+  <tr class="t3"><td>3</td><td><code>getMyTimeOffRequests</code></td><td><code>[]</code></td>
+    <td>&ldquo;No time off requests yet&rdquo; &mdash; the direct twin of the HFWA bug.</td></tr>
+  <tr class="t3"><td>3</td><td><code>getAllTimeOffRequests</code></td><td><code>[]</code></td>
+    <td>&ldquo;No requests match this filter&rdquo;.</td></tr>
+  <tr class="t3"><td>3</td><td><code>loadStreakData</code></td><td><code>{ ...DEFAULT_STREAK }</code></td>
+    <td>Nothing. A streak silently reads as zero.</td></tr>
+</table>
+
+<p>Already correct, and the model to copy: <code>getHfwaByDateRangeResult</code>,
+<code>getMyHfwaEntriesResult</code>, <code>loadReminderLogResult</code>, <code>loadScheduleResult</code>,
+<code>loadAllUsersResult</code>, <code>loadEmployeeRosterResult</code>, <code>findSchedulesMigratedFrom</code>,
+<code>findFlaggedTimeOffFor</code>, <code>getTimeOffRequestResult</code>. The <code>{ ok }</code> idiom is
+already half-applied across this file; this plan finishes it.</p>
+
+<div class="trap">
+  <strong>The worst one, and it is worse than &ldquo;a confusing screen&rdquo;.</strong>
+  <code>getLockedPeriods</code> failing makes <code>isLocked</code> false (<code>app.js:2055</code>), which
+  re-enables the Lock Period button on a period that is <em>already locked</em>. <code>lockPayPeriod</code>
+  writes with <code>set(..., { merge: true })</code>, so locking again <strong>overwrites the existing
+  <code>lockedAt</code>, <code>lockedBy</code> and <code>employeeTotals</code></strong> &mdash; the immutable
+  snapshot of what was actually paid, which the Payroll Tool reads. A read failure can therefore destroy the
+  record of a completed payroll run. Nothing about this is visible at the time.
+</div>
+
+<h2>One decision for Christie</h2>
+<div class="decision-needed">
+  <strong>How far do we go &mdash; Tier 1 only, or all three?</strong>
+  <br><br>
+  <strong>Tier 1 (3 reads)</strong> is where money is. It is small, and it removes the one case that can destroy
+  a payroll record. <strong>Tiers 2&ndash;3 (8 more)</strong> are the same mechanical change and mostly prevent
+  confusion and duplicate data entry rather than wrong numbers.
+  <br><br>
+  <strong>Recommendation: Tier 1 now as its own release, then Tiers 2 and 3 together when convenient.</strong>
+  Tier 1 is worth interrupting other work for. The rest is worth doing, but not urgently, and shipping it
+  separately keeps the payroll-critical change small enough to review properly.
+</div>
+
+<h2>The shape of the fix</h2>
+<p>The repo has already settled this, twice: a <code>xxxResult()</code> that returns <code>{ ok, &hellip; }</code>,
+plus a thin same-name wrapper preserving the old contract for callers not yet converted. Then the render site
+distinguishes three states rather than two: <strong>loaded-and-empty</strong>, <strong>loaded-with-data</strong>,
+and <strong>could not load</strong>.</p>
+<p>The failure message follows the one shipped on Sep 23, which says the two things a person actually needs:
+that it could not be loaded, and <strong>that the data is not lost</strong>.</p>
+
+<h2>Phases</h2>
+
+<div class="phase">
+<h3>Phase 1 &mdash; the payroll tier <em>(no Firestore write; one write path gains a guard)</em></h3>
+<p><strong>Acceptance criteria, as user outcomes:</strong></p>
+<ul class="checklist">
+  <li>If the lock status cannot be read, the timesheet says so and the <strong>Lock Period button is
+  disabled</strong> &mdash; never enabled on a period that might already be locked.</li>
+  <li>If timesheet entries cannot be read, the period shows &ldquo;could not be loaded&rdquo; rather than
+  &ldquo;No timesheet data for this period&rdquo; and zero hours.</li>
+  <li>If settings cannot be read, the app says so rather than silently running on default grace rules.</li>
+  <li>Nothing changes when the reads succeed, including a genuinely empty period.</li>
+</ul>
+
+<div class="bdd"><strong>Given</strong> the lock-status read fails, <strong>when</strong> a manager opens
+Timesheets, <strong>then</strong> the lock area says the status could not be read, the Lock button is disabled,
+and <strong>no lock can be written</strong> &mdash; so an existing <code>employeeTotals</code> snapshot cannot be
+overwritten.</div>
+
+<div class="bdd"><strong>Given</strong> the lock read fails, <strong>when</strong> a staff member views their
+entries, <strong>then</strong> change requests on possibly-locked dates are refused rather than allowed by a
+default-open <code>isDateInLockedPeriod</code>.</div>
+
+<div class="bdd"><strong>Given</strong> the entries read fails for a pay period, <strong>then</strong> the
+timesheet reports the failure and shows no totals at all &mdash; never 0.00 hours, which a manager could
+reasonably act on.</div>
+
+<div class="bdd"><strong>Given</strong> a pay period that genuinely has no entries, <strong>then</strong> it still
+says &ldquo;no entries&rdquo; exactly as today.</div>
+
+<div class="bdd"><strong>Given</strong> the settings read fails, <strong>then</strong> the app reports it and does
+not silently apply DEFAULT_SETTINGS grace rules to hour calculations.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2 &mdash; the operational tier</h3>
+<ul class="checklist">
+  <li>A failed schedules read says so instead of &ldquo;No schedules created yet&rdquo; &mdash; and the editor
+  refuses to save while the list is unknown, so it cannot create a duplicate document.</li>
+  <li>A failed today's-entries read never tells someone they are not clocked in when they are.</li>
+  <li>Who's Working says the read failed rather than &ldquo;No one is clocked in&rdquo;.</li>
+</ul>
+<div class="bdd"><strong>Given</strong> <code>loadAllSchedules</code> fails, <strong>when</strong> a manager opens
+the schedule editor for someone, <strong>then</strong> saving is blocked with a clear reason &mdash; the known
+duplicate-document hazard when an existing schedule is invisible.</div>
+<div class="bdd"><strong>Given</strong> the today read fails for a clocked-in person, <strong>then</strong> the
+clock buttons do not offer a second clock-in.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 3 &mdash; the time-off and streak tier</h3>
+<ul class="checklist">
+  <li>Employee-facing: a failed time-off read says so, like the sick-leave card now does.</li>
+  <li>Manager-facing: the pending list distinguishes &ldquo;nothing pending&rdquo; from &ldquo;could not load&rdquo;.</li>
+  <li>A failed streak read does not render as a zero streak.</li>
+</ul>
+<div class="bdd"><strong>Given</strong> the pending time-off read fails, <strong>then</strong> the dashboard says
+so rather than showing an empty, reassuring &ldquo;No pending requests&rdquo;.</div>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul class="checklist">
+  <li><strong>New collection?</strong> No. No rules change; nothing to deploy to Firebase.</li>
+  <li><strong>Writes?</strong> Phase 1 adds no write. It <em>removes</em> one: a lock cannot be written while the
+  lock status is unknown. That is the point of the phase.</li>
+  <li><strong>Partial updates / stripped fields / awaited writes:</strong> unchanged &mdash; no write paths are
+  modified beyond guarding entry to one.</li>
+  <li><strong>Bulk delete/import:</strong> none.</li>
+  <li><strong>Tests:</strong> pure-function and structural, as for the Sep 23 HFWA fix &mdash; each converted read
+  asserts it uses the Result variant, and each render site asserts the failure branch exists AND precedes the
+  empty branch. That ordering is load-bearing: an empty-on-failure read still lies if the branches are reversed.</li>
+  <li><strong>Downstream:</strong> the Payroll Tool reads <code>employeeTotals</code> from locked periods. This plan
+  does not change that shape &mdash; it protects it from being overwritten.</li>
+</ul>
+
+<h2>Completeness check &mdash; what if this stops part-way?</h2>
+<ul class="checklist">
+  <li><strong>After Phase 1:</strong> the money-critical reads are honest; the rest behave as today. A clean,
+  defensible stopping point &mdash; and the intended first release.</li>
+  <li><strong>After Phase 2:</strong> add operational clarity. Still coherent.</li>
+  <li><strong>Mid-phase:</strong> each function is converted with its back-compat wrapper intact, so a half-done
+  conversion leaves unconverted callers behaving exactly as they do now. No intermediate state is worse than today.</li>
+</ul>
+
+<h2>Resume instructions</h2>
+<ol>
+  <li>Read this plan and its Decisions log. Confirm Christie's tier decision.</li>
+  <li><strong>Written approval is required before editing <code>~/tinker-timeclock</code></strong> (the Ticker rule).</li>
+  <li>Convert one function at a time: add <code>xxxResult()</code>, keep the thin wrapper, convert the render site,
+  add the two assertions. <code>npm test</code> green between each.</li>
+  <li>Commit per phase. Second-model review before the release ships.</li>
+  <li>Ask before <code>netlify deploy</code> &mdash; it costs credits. Commit AND push before deploying.</li>
+  <li>Reload the live app twice afterwards; the service worker is cache-first.</li>
+</ol>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Sep 23 &mdash; drafted.</strong> Raised by both models reviewing the HFWA index fix, then
+  re-inventoried directly from <code>js/firebase-data.js</code> rather than taken from the reviews. That
+  re-inventory mattered twice: a first automated pass wrongly cleared <code>getLockedPeriods</code>, and the
+  reviews had not noticed that a failed lock read does not merely mislead &mdash; it re-enables a write that
+  overwrites the paid-totals snapshot.</li>
+  <li><strong>Sep 23 &mdash; writes excluded on purpose.</strong> Functions returning <code>false</code> on failure
+  (<code>saveSchedule</code>, <code>lockPayPeriod</code>, &hellip;) are out of scope: <code>false</code> is an
+  honest signal. Whether every caller CHECKS it is a separate question and its own plan.</li>
+</ul>
+
+</body>
+</html>
