@@ -53,7 +53,7 @@ Re-run the test. It must pass before proceeding.
 cd /Users/christiehubley/studio-hub && npm test
 ```
 
-All 29 tests must pass. If any fail, fix the rules — never deploy failing rules.
+All tests must pass — check the printed count, never compare against a number written down. If any fail, fix the rules — never deploy failing rules. Deploying is a separate step: only `/Users/christiehubley/studio-hub/scripts/deploy-rules.sh --approved <full sha>` after Christie says "approved to change firebase <full sha>" (see `~/.claude/CLAUDE.md` → FIREBASE RULES).
 
 ### Step 5 — Spot-check in the app
 
@@ -82,10 +82,10 @@ git commit -m "fix: <what and why — reference the symptom, not just the mechan
 | `await` all critical writes | Un-awaited writes vanish on page unload |
 | Snapshot before any bulk delete or import | No undo in Firestore |
 | New collection → new rule, same commit | No rule = silent deny = data appears missing |
-| Never bare `firebase deploy` | Use `--only firestore:rules`; bare deploy overwrites everything |
+| Deploy only via `studio-hub/scripts/deploy-rules.sh --approved <full sha>` | It ships the named commit from git, not the shared tree; a raw `firebase … deploy` is denied and refused |
 | Rules source of truth: `/Users/christiehubley/studio-hub/firestore.rules` | Never edit in Console or elsewhere |
 
 ## Apps with Firestore emulator tests
 
-- `studio-hub` — 29 rules tests via `npm test`
+- `studio-hub` — rules suite + deploy-guard suite via `npm test` (check the printed count)
 - All other apps: no emulator test suite yet (flag as a gap in the plan)

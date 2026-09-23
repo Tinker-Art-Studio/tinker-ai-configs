@@ -11,12 +11,12 @@ Use when making architectural decisions, starting a new app, or designing a feat
 | Auth | Firebase Auth | 3 roles: admin, manager, staff |
 | Backend server (when needed) | Node.js / Express on Render | Auto-deploys from GitHub push, free tier |
 | Frontend | Vanilla HTML + CSS + JS | No framework unless explicitly approved |
-| Firestore rules | `/Users/christiehubley/studio-hub/firestore.rules` | Single source of truth, always `--only firestore:rules` |
+| Firestore rules | `/Users/christiehubley/studio-hub/firestore.rules` | Single source of truth, deployed only via `studio-hub/scripts/deploy-rules.sh` |
 
 ## Firebase deploy discipline
 
-- **NEVER** run bare `firebase deploy` — always `--only firestore:rules` (or `storage`, or `indexes`)
-- **Always** run `cd /Users/christiehubley/studio-hub && npm test` before any rules deploy
+- **Only** deploy through `/Users/christiehubley/studio-hub/scripts/deploy-rules.sh --approved <full sha>` (add `--target storage` or `--target firestore:indexes` for those), after Christie says "approved to change firebase <full sha>" — a raw `firebase … deploy` in any form is denied by a hook and refused by the predeploy check
+- **Always** run `cd /Users/christiehubley/studio-hub && npm test` before asking (check the printed count); the guard re-runs the rules suite
 - New Firestore collection → new rule block in the same commit
 - Rules regression = data looks missing = check rules before assuming data loss
 

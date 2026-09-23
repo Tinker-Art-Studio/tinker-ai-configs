@@ -135,9 +135,10 @@ plan-review index
 These are automatic every time — you don't need to remind me:
 
 ```
-❌ Never: firebase deploy
-✅ Always: firebase deploy --only firestore:rules  (from ~/studio-hub/)
-✅ Always: npm test first (all 29 must pass)
+❌ Never: a raw `firebase … deploy`, in any form (a hook denies it; the predeploy check refuses it)
+✅ Always: ~/studio-hub/scripts/deploy-rules.sh --approved <full sha>  (from any cwd)
+✅ Always: I say "approved to change firebase <full sha>" first  (--status prints the sentence)
+✅ Always: npm test first (all must pass — check the printed count)
 ✅ Always: updateDoc for partial edits, never setDoc
 ✅ Always: snapshot before any bulk delete
 ```

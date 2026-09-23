@@ -63,8 +63,9 @@ These apply to every change in this repo:
 - `await` all critical Firestore writes
 - Snapshot to JSON before any bulk delete or import
 - New collection → add rule to `/Users/christiehubley/studio-hub/firestore.rules` in the same commit
-- Deploy rules: `cd /Users/christiehubley/studio-hub && firebase deploy --only firestore:rules`
-- NEVER run bare `firebase deploy`
+- Deploy rules: ONLY through the guard, from any cwd — `/Users/christiehubley/studio-hub/scripts/deploy-rules.sh --approved <full sha>`, after Christie says
+  "approved to change firebase <full sha>" (`--status` prints the exact sentence; `--diff` prints the change to paste when asking)
+- A raw `firebase … deploy` in any form is denied by a hook and refused by the predeploy check — see `~/.claude/CLAUDE.md` → FIREBASE RULES
 - Rules source of truth: `/Users/christiehubley/studio-hub/firestore.rules` only
 
 ## Data-loss pattern to know
@@ -95,12 +96,13 @@ If data appears missing or blank, check rules before assuming data loss. Several
 - Strip empty fields before writing; `await` all writes
 - Snapshot before bulk delete/import
 - New collection → new rule in `/Users/christiehubley/studio-hub/firestore.rules`, same commit
-- Deploy: `firebase deploy --only firestore:rules` from `/Users/christiehubley/studio-hub/`
+- Deploy rules: ONLY through `/Users/christiehubley/studio-hub/scripts/deploy-rules.sh --approved <full sha>`, after Christie says "approved to change firebase <full sha>"
+  (`--status` prints the sentence). A raw `firebase … deploy` in any form is refused by the predeploy check in `firebase.json`
 
 ## Test requirements
 - Data-write / rules / delete changes: write a failing emulator test first, then fix, then green
 - Emulator: `cd /Users/christiehubley/studio-hub && firebase emulators:start --only firestore`
-- Rules test suite: `cd /Users/christiehubley/studio-hub && npm test` (must pass: 29/29)
+- Rules test suite: `cd /Users/christiehubley/studio-hub && npm test` (must pass: check the printed count — don't hardcode a number, it drifts as tests are added)
 
 ## Commit discipline
 - Commit after each phase, not at the end of a session
