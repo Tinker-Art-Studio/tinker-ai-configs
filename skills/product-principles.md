@@ -32,7 +32,7 @@ Use when making architectural decisions, starting a new app, or designing a feat
 - When the correct answer is obvious: just do it and tell Christie what you did
 - When something is risky or irreversible: stop and explain before proceeding
 - Approval phrase for pushes to GitHub, Netlify deploys, or shared system changes: **"yes, do it"**
-- When Christie says "deploy": run `netlify deploy --prod` — don't ask about the mechanism
+- When Christie says "deploy": run `netlify deploy --prod --message "<full commit sha>"` from a clean, pushed tree — don't ask about the mechanism (see `~/.claude/CLAUDE.md` → NETLIFY DEPLOYS)
 
 ## Design system
 
