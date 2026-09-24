@@ -69,7 +69,7 @@
   <p><strong>Sequencing recommendation</strong> (Christie's call): this plan's Phase 1 (season field + backfill — invisible to users, unblocks 2027 planning) → Phase 2 (create 2027, read-only 2026, New Camp form) → the Classbook's seasons Phase 1/3 so 2027 camps can be published → Phase 3 here (carry-forward + drafts + Cut Bank). The backtracking audit's remaining Phases 6, 7, 10 are independent and can be interleaved; Phase 10 (overlapping-save serialization) is the most valuable of the three.</p>
 </div>
 
-<h2 id="phases">Phases (Phase 1 designed in detail Sep 21, 2026; Phases 2–5 still draft shape)</h2>
+<h2 id="phases">Phases (Phase 1 live Sep 23, 2026; Phase 2 designed in detail Sep 24, 2026; Phases 3–5 still draft shape)</h2>
 
 <div class="phase" id="phase-1">
   <h3>Phase 1 — Seasons exist; 2026 is stamped; the app still behaves exactly as today</h3>
@@ -237,17 +237,200 @@ Then: 2026 IDs are unchanged and round-trip; 2027 IDs are `season-2027|||&lt;ful
   <div class="danger">🛑 <strong>Data-write phase — the ONE backfill for both apps.</strong> Gates in order: rules tests + Fable 5.1 review + "approved to change firebase" for the <code>summerCamps_seasons</code> rule (D8); the Classbook compatibility patch (its own red tests, review, "okay to deploy"); red emulator tests for <code>season.js</code> and the migration; dual Codex+Claude implementation review of the real diff before the app deploy; Netlify deploy only on Christie's "okay to deploy"; <code>backup.js --force</code> immediately before pressing the button (enforced by the 10-minute server-side check); the backup tripwire and the Classbook's Content Count panel must stay quiet afterwards; the read-only verify scan plus a Console hand-check of three docs after the run. <strong>Coordination with <code>wip/step4-data-safety</code> (<code>4604473</code>):</strong> it rewrites <code>importCurriculumData()</code> / <code>saveOrders()</code> / <code>saveHelpQueue()</code> — the same functions 1.7 season-scopes — and it is the safety net for exactly those destructive imports, so it lands <em>first</em>, in its own dedicated Step 4 session, <strong>but not as-is</strong>: its guard stores every snapshotted doc inline in one <code>backupStatus</code> document, which can exceed Firestore's 1 MiB limit on real collection sizes (review finding) — redesign the snapshot representation and test it at realistic size before merging. Phase 1 then adapts the merged guard to snapshot and delete exactly the selected season. "Park it" is acceptable only if the legacy imports are disabled for the entire Phase 1 rollout.</div>
 </div>
 
-<div class="phase">
+<div class="phase" id="phase-2">
   <h3>Phase 2 — Create Summer 2027; switch between seasons</h3>
-  <div class="danger">🛑 <strong>Entry gate (round 3):</strong> Phase 2 may not create any 2027 document, nor move <code>_current</code> off <code>'2026'</code>, until the Classbook's season-filtering phase (<code>classbook-camp-seasons.html</code> — <strong>its Phase 1 since Sep 21, 2026</strong>: the filtering moved there from its old Phase 3 on this plan's suggestion; its Phase 0 is the compatibility patch in 1.7) is deployed. Until then the Classbook loads <code>curriculum</code>, <code>schedule</code>, <code>materialsHub</code>, <code>projectDetails</code>, <code>lessonData</code>, <code>campComplete</code> and <code>prepHelpQueue</code> whole into its Summer 2026. Recorded in both plans. Carve-out (Sep 21, from the Classbook plans' review): transient <code>TEST</code>-namespaced documents the Classbook e2e suite writes and deletes (keys <code>season-2099|||TEST|||…</code>, camp <code>TEST_DATA_SAFETY</code>) are not "2027 documents" for this gate — a pre-filter Classbook keys lessons by decoded doc ID so they match no scaffold, and the only leaks affect teacher "TEST".</div>
-  <p><strong>Acceptance:</strong> Christie creates "Summer 2027" with its dates, week structure, time slots and studios (D6); the app-wide season switcher lets her view 2026 or 2027; 2027 starts empty (no camps, no schedule); <code>currentSeason</code> is set explicitly in the Seasons panel; every tab renders correctly for an empty season (no crashes on "no camps found" — today <code>loadSummerCampData</code>-style code throws on an empty collection); <strong>a brand-new camp can be created in-app</strong> (D2 — campTopic, teacher(s), age range, studio, blocks/projects, notes) with <code>season: '2027'</code>; <strong>any non-current season is read-only</strong> (D4 — edit controls disabled, banner shown, only "Carry forward" allowed); the legacy sheet import is hidden for 2027+.</p>
-  <div class="bdd">Given: Summer 2027 exists and is empty, and the switcher is on 2027
-When: Christie opens Curriculum, Schedule, Materials Hub, Kid Notes
-Then: each shows a clear empty state for 2027; switching to 2026 shows everything exactly as before
+  <p><span class="status-tag not-ready">execution-ready: false</span> — <strong>designed Sep 24, 2026; awaiting the two-model plan review, then Christie's go.</strong> Research: a read-only sweep of <code>summer-camp-app</code> (every write path, every empty-season hazard, the migration's hard-coded season, the team model, the Sheets import's dead code) plus the Classbook's live code, with the load-bearing claims re-checked by hand. Line numbers are as of <code>4ba983d</code>.</p>
 
-Given: two admins, one viewing 2026 and one viewing 2027
-When: each saves a camp edit
-Then: each write carries ITS OWN viewer's season — the season comes from the document being edited, never from a global "current season" a different tab might have changed</div>
+  <div class="safe">✅ <strong>Entry gate — MET Sep 24, 2026.</strong> The Classbook's camp-seasons Phase 1 (season filtering, <code>b2bbaac</code>) is live: the production <code>js/firebase-data.js</code> carries <code>listRegisteredSeasons</code>, <code>campSeasonLoadPlan</code> and <code>registrySeasonProblems</code>; it filters every summer read by <code>where('season','==', seasonForSemester(semKey))</code> (<code>firebase-data.js:1616-1797</code>) and uses <code>_current</code> only to choose filtered vs legacy mode (<code>:315-319</code>) — so creating a 2027 doc or moving <code>_current</code> changes nothing in its Summer 2026. (Housekeeping: <code>classbook-camp-seasons.html</code>'s header still says "awaiting okay to deploy" — correct it.) Original gate text: Phase 2 may not create any 2027 document, nor move <code>_current</code> off <code>'2026'</code>, until the Classbook filters by season; TEST-namespaced <code>season-2099|||TEST|||…</code> e2e docs are carved out.</div>
+
+  <p><strong>Acceptance (user outcomes):</strong> Christie opens Settings → Seasons and creates <strong>Summer 2027</strong> — dates, week structure (generated from the dates, breaks and holidays, then editable), time slots, studios, capacities and placement notes, pre-filled from 2026's shape. She clicks <strong>Make Summer 2027 current</strong>; from then on 2027 is where every edit goes, and <strong>Summer 2026 is read-only</strong> (a persistent banner, no edit controls, and a write that slips through is refused loudly — never silently). A season switcher in the header lets anyone view 2026 or 2027. 2027 starts empty and every tab says so plainly. She can create a brand-new camp (it appears in Lesson Plans too) and <strong>add schedule sessions</strong> in-app — the Sheets import is gone for good. Team shows the people working <em>this</em> summer; a returning person is added to 2027 with one click that starts from their 2026 details; nobody is deleted because they didn't return. Kid Notes filter by season, and a 2026 note never badges a 2027 camp. <strong>Kid Notes and Notes for Next Year stay editable in every season</strong> (they are about children and next year, not about one summer's plan).</p>
+
+  <div class="decision"><strong>Decisions recorded Sep 24, 2026 (Christie: "go with your recommendations for 2–5"; "keep the sheets import gone"):</strong>
+  <strong>P2-D1</strong> — the Google Sheets import is removed entirely (code, config, UI binding) — not just hidden for 2027+.
+  <strong>P2-D2</strong> — schedule sessions get an in-app <strong>Add / edit / delete session</strong> form in Phase 2 (the import was the only thing that ever created them; without it a new 2027 camp can never be scheduled). Phase 3's carry-forward may offer "also copy its 2026 sessions" through the same builder.
+  <strong>P2-D3</strong> — Team: a person is shared across years (name, notes); role, studios, weeks, schedule, additional roles and hire status are <strong>per season</strong>. "Add to 2027" copies their 2026 entry as a starting point. <strong>Open positions</strong> (unnamed slots) belong to exactly one season.
+  <strong>P2-D4</strong> — creating a season, editing it, and making it current are <strong>admin-only</strong> in the UI (Settings is already admin-only; the rules allow manager+, which stays as the backstop).
+  <strong>P2-D5</strong> — project photos: 2027 never deletes a 2026 photo file. It is a Phase 3 mechanism (carry-forward is what first shares a photo URL across seasons); Phase 2 only makes sure new uploads are stored under a season-scoped path — see 2.6.</div>
+
+  <h4>2.0 Clean-up first (code only, no data)</h4>
+  <ul>
+    <li><strong>Remove the Sheets import</strong> (P2-D1): <code>app.js:8288-8988</code> — <code>sheetImportRefusal</code>, <code>applySheetImportAvailability</code>, <code>handleImportData</code>, <code>fetchTSV</code>, the <code>parse*Data</code> family, <code>saveSessions</code>, <code>saveTopics</code>, <code>importCurriculumData</code>, <code>saveMaterials</code>, <code>saveProjectDetails</code>, <code>saveOrders</code>, <code>saveHelpQueue</code>; the dead binding at <code>:7683-7692</code>; <code>config.js:54-65</code> (<code>publishedSheetBase</code>, <code>sheetGIDs</code>); <code>Season.ownsDoc</code> (<code>season.js</code>) and its tests; their literal allow-list entries in <code>season-completeness.test.js</code>. Every reference is internal — verified by the completeness walk staying clean and a grep for each name. Also dead in that block: <code>showEmptyPrepState</code> / <code>renderPrepOverview</code> (no callers) — removed if a grep confirms. <code>DataSafety</code> stays (Export uses it).</li>
+    <li><strong>Remove the 11 one-off incident pages</strong> committed at the repo root and therefore <strong>deployed with the app</strong>: <code>check-brody-lisa</code>, <code>check-dragons-lair</code>, <code>check-glow-hat</code>, <code>check-kaitlyn</code>, <code>check-mariah-orphan</code>, <code>check-who-saved</code>, <code>fix-lead-teacher-weeks</code>, <code>recover-brody-backup</code>, <code>recover-lesson-data</code>, <code>recover-mariah-orphan</code>, <code>verify-brody-recovery</code> (<code>.html</code>). Each writes <code>summerCamps_*</code> documents by raw collection name with no season stamp, outside the completeness check (it scans only what <code>index.html</code> loads) — and <code>fix-lead-teacher-weeks.html</code> writes the flat <code>weeks</code> field on team docs that 2.8 retires. They stay in git history. Rules still gate them (sign-in + role), so this is hygiene with teeth, not an emergency.</li>
+    <li><strong>Outside this repo (not touched here):</strong> <code>tinker-timeclock/summer-camp-sync.html</code> — the abandoned (Jun 2026) sync page — reads the flat team fields and writes <code>timeclock_schedules</code>. After 2.8 those flat fields are frozen 2026 values (additive backfill), so the page keeps reading what it reads today. Recommend removing it in a Tinker Ticker session; that repo needs Christie's written approval before any edit.</li>
+  </ul>
+
+  <h4>2.1 Viewing season vs current season — and one chokepoint for read-only</h4>
+  <p><code>season.js</code> today has one season in state (<code>load()</code>, <code>:177-228</code>) and <code>assertWritable</code> (<code>:392</code>) is a no-op with <strong>zero call sites</strong>. Phase 2 splits it:</p>
+  <div class="bdd">Season.current()      // what _current names — where edits go (unchanged meaning)
+Season.viewing()      // what this tab is showing; defaults to current()
+Season.isWritable()   // viewing() === current() && !state.currentMoved
+Season.seasons()      // the registered seasons, sorted (read once at load from the registry, forced-server)
+Season.doc()          // the VIEWING season's registry doc      (was: the current one — same thing until 2027 exists)
+Season.query(key)     // filters by viewing()
+Season.weekForDate()  // uses the viewing season's week1Monday / breaks
+Season.stamp(p)       // stamps current() — and throws unless isWritable() (a stamp IS a write)
+Season.ref(key)       // per-season key: throws SeasonReadOnlyError unless isWritable();
+                      //   cross-season keys (kidNotes, notesNextYear) and shared keys: never gated
+Season.docId(id)      // current() by default, like stamp()</div>
+  <ul>
+    <li><strong>Why <code>ref()</code> is the chokepoint:</strong> every add/set/update/delete on a per-season collection gets its reference from <code>Season.ref()</code> (Phase 1's completeness check enforces it) — <em>except</em> six writes through a query snapshot's <code>doc.ref</code> (<code>app.js:10368, 10394, 10661, 10901, 11021, 12234</code>). Those are rewritten to <code>Season.ref(key).doc(snap.id)</code>, and a new completeness rule forbids <code>.ref.set/update/delete</code> and <code>batch.*(x.ref, …)</code> on a snapshot doc. With that, "read-only" is enforced in one place, not in 60 UI branches.</li>
+    <li><strong>Loud, not silent:</strong> a gated write throws <code>SeasonReadOnlyError</code>; the app's existing save error paths show it ("Summer 2026 is read-only — switch to Summer 2027 to edit"). A test asserts a gated write attempt never reaches Firestore.</li>
+    <li><strong>UI:</strong> a <code>canEdit()</code> helper = the existing role check <strong>and</strong> <code>Season.isWritable()</code>; the ~42 <code>isManagerPlus</code>/<code>isAdmin</code> checks that draw <em>edit</em> controls switch to it (controls are drawn in JS with inline handlers, so CSS cannot hide them). Read-only views of a past season show a persistent banner: "Viewing Summer 2026 — read-only." Storage uploads (project photos, <code>:12852, :12864</code>) call <code>Season.assertWritable()</code> explicitly — Storage does not go through <code>ref()</code>.</li>
+    <li><strong>The switcher:</strong> a header dropdown, shown only when more than one season is registered. Choosing a season writes <code>sessionStorage['sca.viewingSeason']</code> and <strong>reloads the page</strong>. A reload, not a live swap, because the app caches season data in a dozen places that never invalidate (<code>scheduleCache</code> <code>:5328</code>, <code>ensureTeamDataLoaded</code> <code>:5331</code>, <code>ensureScheduleLoaded</code> <code>:5337</code>, many <code>window.*_ALL</code> globals) — a live swap would show 2027 headers over 2026 rows. <code>sessionStorage</code> is per tab, so two tabs can view different seasons. A stored value that is not a registered season is discarded (viewing = current), with a console note, never an error.</li>
+    <li><strong><code>_current</code> moving under an open tab:</strong> a dedicated <code>onSnapshot</code> on <code>_current</code> (the same pattern the Classbook adopted). If it changes after load, the tab sets <code>currentMoved</code> (so <code>isWritable()</code> goes false immediately — no write can carry the old season) and shows "Summer 2027 is now the current season — reload to continue." This is what makes the "two admins" scenario safe: a write carries the season the tab <em>knows</em> is current, and a tab whose knowledge is stale cannot write.</li>
+    <li><strong>Days off is per season</strong> and follows the gate like everything else. <strong>Kid Notes / Notes for Next Year</strong> are never gated (see 2.7).</li>
+  </ul>
+
+  <h4>2.2 Computed document IDs that would collide with 2026</h4>
+  <p>Phase 1's contract (1.4): 2026 IDs unchanged; any other season is <code>season-{year}|||&lt;legacy id&gt;</code> via <code>Season.docId()</code>. Only one of this app's computed-ID writers actually uses it (the lesson reassign, <code>:525</code>). <strong>Open Studio</strong> (<code>week_${week}</code> — reads and writes at <code>:13675, :14084, :14140, :14241, :14371, :14396, :14480</code>) and <strong>weekly prep</strong> (<code>${campTopic}_week${n}</code>, <code>:10964</code>) build raw IDs — a 2027 save would <strong>overwrite the 2026 document</strong> of the same week. All of them route through <code>Season.docId()</code> (and reads through the same helper so a 2027 view reads its own doc). For 2026 the ID is byte-identical, so no existing document moves. New completeness rule: <code>.doc(&lt;template literal or concatenation&gt;)</code> on any of the five computed-ID collections must be <code>.doc(Season.docId(…))</code>.</p>
+
+  <h4>2.3 Empty-season safety and the last hard-coded 2026 structure</h4>
+  <p>Nothing throws on an empty collection today (loaders catch, percentages are guarded, reductions have initial values) — the real hazards are the season <em>doc's</em> shape and structure still written into the code:</p>
+  <ul>
+    <li><strong>Season doc shape:</strong> <code>weekStructure[w]</code> without optional chaining (<code>:855, 1383, 1438, 3946, 13658, 14227, 14266, 14496, 14525</code>), <code>studios.includes</code> (<code>:3921, 7486, 14185</code>), <code>studioCapacities[studio]</code> (<code>:7489</code>). Fix at the source: <code>Season.load()</code> validates the viewing season's doc (every week 1…numWeeks present, <code>studios</code>/<code>timeSlots</code> non-empty, a capacity per studio, <code>week1Monday</code> a Monday) and a failure is the red load banner naming the field — never a TypeError deep inside a tab. The create form (2.5) runs the same validator, so an invalid doc cannot be written from the app.</li>
+    <li><strong>Still hard-coded:</strong> the Schedule's "Week Off Jun 29–Jul 3" after week 5 (<code>:3953</code>) → <code>breaks</code>; slots fixed to <code>['AM','PM']</code> (<code>:3928, :7473</code>, plus a header/body mismatch at <code>:7480</code>) → <code>timeSlots</code>; Extra Help studio lists (<code>:1324, 1362, 1397</code>) → <code>studios</code>; Open Studio's current week clamped to 11 and counted from <code>startDate</code> (<code>:13623</code>) → <code>Season.weekForDate()</code> clamped to <code>numWeeks</code>; team week grid (<code>:5342, :5582-5593</code>) → <code>numWeeks</code>; <code>KN_WEEK_STARTS</code>'s 2026 dates (<code>:6819</code>) → from <code>weekStructure</code>; <code>index.html</code> week filters (<code>:705, :846-866</code> — the team filter is missing Week 6 today; <code>:988</code>) → built from the season doc; Settings' "undefined weeks" when <code>numWeeks</code> is absent (<code>:4772</code>). The literal ratchet from Phase 1 tightens accordingly.</li>
+    <li><strong>Prep Dashboard:</strong> <code>loadWeeklyPrepIndex</code> returns early on an empty season (<code>:723-730</code>) before filling <code>SCHEDULE_BY_WEEK</code> (<code>:748-760</code>) — reorder so the empty state is explicit.</li>
+    <li><strong>Every tab's empty state</strong> says what is missing and, where the user can act, how ("No sessions in Summer 2027 yet — add one from the Schedule tab").</li>
+    <li><strong>Open Studio's rotation tables</strong> (<code>osRotation</code> and categories) stay in <code>config.js</code> as studio facts, per 1.1.</li>
+  </ul>
+
+  <h4>2.4 The migration code stops assuming 2026 is the only season</h4>
+  <p><code>season-migration.js</code> hard-codes the legacy season: <code>sweepStragglers</code> refuses when <code>_current</code> ≠ <code>'2026'</code> (<code>:380-384</code> — the automatic admin sweep, <code>app.js:4403-4420</code>, would then fail quietly into the console forever); <code>classify</code>/<code>expectedSeason</code> (<code>:88-116</code>) accept only <code>'2026'</code> for auto-ID collections, so <strong>every legitimate 2027 document would be reported "invalid"</strong> the moment it exists; <code>KID_NOTE_YEARS</code> (<code>:80</code>), <code>LEGACY</code> (<code>:24</code>), <code>ensureSeasonDoc</code>/<code>switchOn</code> (<code>:175, :293-304</code>). Change: the valid set is <strong>the registered seasons</strong> (read from the registry, forced-server) plus <code>'2025'</code> for imported kid notes; a stamped doc is valid iff its season is registered (computed-ID docs must also agree with <code>parseDocId</code>); an <strong>unstamped</strong> auto-ID doc, once more than one season exists, is ambiguous → listed under "needs a choice" in the Seasons card with a per-row season picker (default: current), never guessed. <code>ensureSeasonDoc</code>/<code>switchOn</code> stay 2026-only (they are the Phase 1 setup, finished) and say so.</p>
+
+  <h4>2.5 Seasons card: create, edit, make current (admin-only)</h4>
+  <ul>
+    <li><strong>Create:</strong> "+ New season" opens a form pre-filled from the most recent season's <em>shape</em> — time slots, studios, capacities, placement notes — with dates blank. Christie enters the year, name ("Summer 2027"), first camp day, number of weeks, break weeks (e.g. the July 4 week) and single days off (Memorial Day, Juneteenth, July 4). A <strong>week-structure generator</strong> (a pure function) produces <code>week1Monday</code>, <code>startDate</code>/<code>endDate</code> and every week's <code>numDays</code>/<code>daysOff</code>/<code>note</code>/<code>dateRange</code>; the table is then editable row by row. Parity test: fed 2026's inputs, the generator reproduces the stored 2026 <code>weekStructure</code> exactly. Validation = the 2.3 validator ∪ the Classbook's own requirements (<code>registrySeasonProblems</code> — name, YYYY-MM-DD <code>startDate</code>, <code>numWeeks</code> ≥ 1, keyed <code>timeSlots</code>, non-empty <code>studios</code>), so a season this app accepts is one the Classbook accepts.</li>
+    <li><strong>Write:</strong> a transaction that creates <code>summerCamps_seasons/{year}</code> and refuses if it exists (never overwrite a registry — 1.5's rule). The rules already permit it (<code>studio-hub/firestore.rules:764-795</code>: manager+, <code>season</code> must equal the doc ID). <strong>No rules change in Phase 2.</strong></li>
+    <li><strong>Edit:</strong> name, time-slot <em>labels</em>, capacities, placement notes — any time. Adding a studio or time slot — any time. Removing a studio/slot, or changing dates / week count / week structure — <strong>only while that season has no per-season documents</strong> (a forced-server count across the 14 collections), because week numbers and slot keys are baked into every document; the form explains why when it refuses. After any edit, the card reminds: "Open the Classbook → Summer 2027 → Re-sync to pick this up" (its semester copies the registry once, <code>app.js:4481-4506, :10474</code>).</li>
+    <li><strong>Make current:</strong> a separate, confirmed action, written <strong>after</strong> the season doc exists (the rule's <code>exists()</code> guard reads pre-write state, so it cannot share a batch). The confirmation spells out: "Summer 2026 becomes read-only in this app. Kid Notes and Notes for Next Year stay editable. The Classbook is not affected." Preconditions shown with ✓/✗ and enforced: the season doc validates; the team migration (2.8) has completed; the straggler scan is clean. Reversible (point <code>_current</code> back to 2026) by the same control — the rule allows it.</li>
+  </ul>
+
+  <h4>2.6 New camp → Lesson Plans; Add session</h4>
+  <ul>
+    <li><strong>New camp:</strong> the existing "+ Add New Camp" (<code>openCurriculumEditor('new')</code>, create branch <code>:394-400</code>) writes the curriculum doc only. The Lesson Plans dashboard lists camps from <code>summerCamps_projectLibrary</code> (<code>loadLessonPlans</code> <code>:2714</code>, empty when there are no topics <code>:2735</code>) and so does the Materials camp dropdown (<code>:11162</code>) — which only the Sheets import ever filled. The create branch now also writes the topic entry <code>{ name: campTopic, ageRange, description: '', prepStatus: 'Not Started' }</code> (auto-ID, stamped) in the <strong>same batch</strong>; a camp rename updates the current season's topic entry whose <code>name</code> matches. A camp that already has a topic entry is left alone (no duplicates — checked by name within the season).</li>
+    <li><strong>Add / edit / delete session</strong> (P2-D2), Schedule tab, <code>canEdit()</code> only. Fields: camp (dropdown of the current season's curriculum), week (1…<code>numWeeks</code>), time slot (the season's <code>timeSlots</code>), studio (the season's <code>studios</code>), teacher (this season's team, free text allowed), max capacity (defaults to <code>studioCapacities[studio]</code>), enrollment and the prep quantities default 0. The payload mirrors the 2026 session shape exactly (<code>campTopic, week, timeSlot, studio, teacher, enrollment, maxCapacity, extraDemos, trialQty, totalPrepQty</code>; auto doc ID, <code>sessionId</code> = the doc ID). <strong>Implementation check before code:</strong> the stored <code>timeSlot</code> must be the same string form the 2026 docs use (sampled read-only from production), because the Classbook and <code>normalizeTimeSlot()</code> match on it. Duplicate guard: the same camp + week + slot + studio in the season is refused. Delete asks for confirmation and warns when that camp-week has weekly prep, camp-complete, or kid-note enrollments pointing at it (they are not deleted).</li>
+    <li><strong>Photos (P2-D5, groundwork):</strong> new uploads go to <code>projectDetailPhotos/{season}/{camp}/{project}/…</code> for non-2026 seasons (2026 keeps its path). The protection itself — never deleting a file whose path belongs to another season — lands with carry-forward in Phase 3, the first time a URL can be shared.</li>
+  </ul>
+
+  <h4>2.7 Kid Notes and Notes for Next Year on <code>season</code></h4>
+  <ul>
+    <li><strong>Never read-only:</strong> both collections are cross-season (1.2); edits are allowed while viewing any season. A <em>new</em> note is stamped <code>Season.current()</code>; an edit never moves a note between seasons (<code>patch()</code> strips <code>season</code>).</li>
+    <li><strong>Year toggle</strong> (<code>index.html:603-606</code>, handler <code>:7720-7724</code>, default <code>:6433</code>, filter <code>:6594-6618</code>): options built from the seasons present (2025, 2026, 2027 …) plus All; filters on <code>season</code> instead of the numeric <code>importYear</code>. Default = the viewing season.</li>
+    <li><strong>Returning camper</strong> (<code>:6641</code>, today keyed on <code>importYear</code>, so only <em>imported</em> notes count): becomes "this child has a note in any season earlier than the one being viewed". <strong>Named delta</strong> (1.7 promised it would be): manually-added and CSV-imported notes start counting, so a few more children may show as returning. See Q1.</li>
+    <li><strong>Badges</strong> (<code>campTopic|||week(|||slot)</code>, <code>:7136-7150</code>, over an all-seasons read <code>:7121</code>) gain the season: a 2026 note never badges a same-named 2027 camp-week.</li>
+    <li><strong>CSV de-dup</strong> (<code>:7066-7070</code>) matches name + camp + week <em>within the current season only</em> — today a 2027 import would update a 2026 note in place.</li>
+    <li><strong>Notes for Next Year</strong> (<code>:6230</code>) gets a "Written in: 2026 / 2027 / All" filter, default All.</li>
+  </ul>
+
+  <h4>2.8 Team: shared people, per-season details (the one data backfill)</h4>
+  <div class="bdd">summerCamps_team/{id} = {
+  name, notes, createdAt, createdBy, updatedAt, updatedBy,              // the person — shared
+  seasons: {
+    '2026': { role, studios, weeks, scheduleDays, scheduleStart, scheduleEnd,
+              scheduleGroups, additionalRoles, hireStatus },            // per summer
+    '2027': { … }
+  },
+  // role, studios, weeks, scheduleDays, scheduleStart, scheduleEnd, scheduleGroups,
+  // additionalRoles, hireStatus, studio  ← the flat 2026 fields: LEFT IN PLACE, frozen,
+  //                                        never read or written by the app after the backfill
+}</div>
+  <ul>
+    <li><strong>Additive backfill, nothing removed:</strong> for each team doc without <code>seasons</code>, one <code>update({ 'seasons.2026': { …its flat per-season fields… } })</code> (field path — the rest of the doc is untouched). The flat fields stay as a frozen copy, so anything that still reads them (the Ticker's abandoned sync page, old backups) sees exactly what it sees today, and rollback is "stop reading <code>seasons</code>". Removing them is a later, separate clean-up.</li>
+    <li><strong>Run like Phase 1's migration:</strong> an admin-only card in Settings → Seasons: dry run (forced-server scan: how many docs, how many already have <code>seasons</code>, any open positions), the 10-minute backup gate (<code>backupStatus/latest.lastSuccessAt</code>), batches of ≤ 400 awaited updates only for docs missing <code>seasons</code>, resumable, then verify: every doc has <code>seasons.2026</code> deep-equal (order-insensitive) to its flat fields. Completion is recorded as <code>teamMigratedAt</code> on <code>summerCamps_seasons/2026</code> — the switch the app reads.</li>
+    <li><strong>Two modes, like 1.6:</strong> until <code>teamMigratedAt</code> exists the Team tab behaves exactly as today (flat fields); after it, reads and writes use <code>seasons[viewing]</code>. No mixed reads.</li>
+    <li><strong>Writes after the backfill</strong> always use field paths — <code>update({ ['seasons.' + current]: entry, name, notes, updatedAt, updatedBy })</code> — never replace the <code>seasons</code> map. <strong>"Add to 2027"</strong> copies <code>seasons['2026']</code> into <code>seasons['2027']</code> for editing. <strong>"Remove from 2027"</strong> deletes only <code>seasons.2027</code> (<code>FieldValue.delete()</code>). Deleting a <em>person</em> is only offered from "Show everyone", with a confirm naming every season they appear in.</li>
+    <li><strong>Open positions</strong> (P2-D3): an unnamed doc has exactly one season key; "Add to 2027" is not offered for it; "+ Open position" creates it with <code>seasons[current]</code> only.</li>
+    <li><strong>Team tab:</strong> shows people with an entry for the viewing season; "Show everyone" lists all, with the seasons each appears in. Days Off "covered by" (<code>:5135-5150</code>) and <code>importTeachersFromSchedule</code> (<code>:6192-6216</code> — builds from the current season's schedule, writes <code>seasons[current]</code>) follow. Team stays shared and is not gated by <code>ref()</code>; its writers (<code>saveTeamMember</code> <code>:5885-5944</code>, <code>deleteTeamMember</code> <code>:5961</code>, <code>importTeachersFromSchedule</code>) check <code>isWritable()</code> themselves for the per-season part (a person's name/notes stay editable from any season).</li>
+    <li><strong>Other readers:</strong> no other app reads <code>summerCamps_team</code> (grep of every repo: only this app, its backup script, the one-off page removed in 2.0, and the Ticker's abandoned sync page). The Classbook does not read it. The rule (<code>firestore.rules:873-877</code>) has no field constraints — no rules change.</li>
+  </ul>
+
+  <h4>2.9 Tests (red first, emulator only — this repo's AGENTS.md)</h4>
+  <ul>
+    <li><code>season.emulator</code>: <code>viewing()</code>/<code>current()</code>/<code>isWritable()</code>; <code>ref()</code> throws for per-season keys when not writable and never for kidNotes/notesNextYear/shared keys; <code>stamp()</code> refuses when not writable; a stored viewing season that isn't registered falls back to current; <code>_current</code> moving under a loaded tab flips <code>isWritable()</code> false; the season-doc validator (each missing field named).</li>
+    <li>Pure functions with their own tests: the week-structure generator (2026 parity), the session payload builder (2026 shape parity against a real session doc's field set), the team entry builder and the backfill's classify/verify.</li>
+    <li><code>season-migration.emulator</code>: registry-driven classify (a 2027 stamped doc is valid once 2027 is registered, invalid before); unstamped auto-ID doc with two seasons → "needs a choice"; the automatic sweep works with <code>_current</code> = 2027.</li>
+    <li>Team backfill (emulator): dry run, backup gate (stale → refused; exactly 10 min accepted), interrupted mid-batch then resumed, verify, flat fields byte-identical afterwards, an already-migrated doc untouched, <code>teamMigratedAt</code> written last.</li>
+    <li>Completeness: the new rules (no <code>doc.ref</code> writes; computed-ID collections through <code>docId()</code>) — each red on a planted violation.</li>
+    <li>e2e (production, read-only, test account): the Open Studio / tab-render checks stay green in single-season mode; once 2027 exists — the switcher appears, viewing 2026 shows the banner and <strong>no</strong> edit controls on Curriculum, Schedule, Materials, Open Studio, Team; viewing an empty 2027 shows every tab's empty state with zero page errors.</li>
+  </ul>
+
+  <h4>2.10 Release order</h4>
+  <table>
+    <tr><th>Release</th><th>What</th><th>Writes data?</th></tr>
+    <tr><td><strong>2A</strong></td><td>2.0 clean-up, 2.1 viewing/gate (switcher hidden with one season), 2.2 IDs, 2.3 hardening, 2.4 registry-driven migration code. With one season registered the app behaves exactly as today — screenshot parity on every tab like 1.8(f).</td><td>No</td></tr>
+    <tr><td><strong>2B</strong></td><td>2.5 Seasons card (create/edit/make current), 2.6 topic entry + sessions, 2.7 Kid Notes, 2.8 team model + backfill card.</td><td>Only when Christie uses it</td></tr>
+    <tr><td><strong>Christie</strong></td><td><code>backup.js --force</code> → run the team backfill → Console check of one team doc → create Summer 2027 → (Classbook: New Semester from the registry when she wants it there) → <strong>Make Summer 2027 current</strong> → start planning.</td><td>Yes — each step gated as above</td></tr>
+  </table>
+  <p>Each release: red tests → green → dual Codex + Claude implementation review of the real diff → "okay to deploy" → live-bytes check.</p>
+
+  <h4>Scenarios</h4>
+  <div class="bdd">Given: Release 2A is deployed and only Summer 2026 is registered
+When: admin, manager, prep and team-only users open every tab
+Then: everything matches the pre-2A screenshots; no switcher, no banner; every edit works as before
+
+Given: Summer 2027 exists and is current, and a tab is viewing Summer 2026
+When: the user looks for any edit control on Curriculum, Schedule, Materials, Open Studio, Days Off, Team
+Then: there are none; a "Viewing Summer 2026 — read-only" banner is shown; Kid Notes and Notes for Next Year remain editable
+
+Given: a tab viewing Summer 2026 somehow calls a save (a stale handler, the console)
+When: the write reaches Season.ref()/Season.stamp()
+Then: it throws SeasonReadOnlyError, the user sees "Summer 2026 is read-only", and nothing is written
+
+Given: two admins — A has a tab open since before 2027 was made current, B makes 2027 current
+When: A clicks Save on a curriculum edit
+Then: A's tab already shows "Summer 2027 is now the current season — reload", the save is refused, and no document is stamped 2026 by accident
+
+Given: Summer 2027 is current and viewed and has no documents
+When: Christie opens every tab
+Then: each shows a plain empty state (what's missing, where to add it), zero page errors
+
+Given: Summer 2027 is current
+When: Christie saves Open Studio week 3 and a weekly prep for "Fired Up!" week 3
+Then: the docs written are season-2027|||week_3 and season-2027|||Fired_Up!_week3; the 2026 week_3 and Fired_Up!_week3 documents are unchanged (forced-server read, field by field)
+
+Given: Christie creates a new camp "Paper Worlds" in 2027
+When: she opens Lesson Plans and the Materials camp dropdown
+Then: "Paper Worlds" is listed in both, and exactly one 2027 topic entry exists for it
+
+Given: "Paper Worlds" is scheduled for week 2 AM in SoBo already
+When: she adds the same session again
+Then: it is refused as a duplicate and nothing is written
+
+Given: the create-season form, fed 2026's first day, 11 weeks, a break after week 5 and Memorial Day
+When: the week table is generated
+Then: it equals the stored Summer 2026 weekStructure exactly
+
+Given: Summer 2027 already has sessions
+When: Christie tries to change its number of weeks
+Then: the form refuses and explains that week numbers are part of every 2027 record
+
+Given: the team backfill is interrupted after the first batch
+When: it is re-run
+Then: only docs without `seasons` are touched, every doc ends with seasons.2026 equal to its flat fields, and the flat fields are byte-identical to the backup
+
+Given: the team backfill has run and Summer 2027 is current
+When: Christie clicks "Add to 2027" for Lisa, then "Remove from 2027"
+Then: seasons.2027 is created from seasons.2026, then deleted; seasons.2026, name and notes are untouched
+
+Given: a 2026 kid note for "Fired Up!" week 3 AM
+When: the 2027 Schedule shows "Fired Up!" week 3 AM
+Then: no kid-note badge appears on the 2027 cell
+
+Given: a 2027 CSV import contains a child who has a 2026 note for the same camp and week
+When: it is imported
+Then: a new 2027 note is created; the 2026 note is unchanged
+
+Given: Summer 2027 is registered and a 2027 curriculum doc exists
+When: the automatic straggler sweep runs
+Then: the doc is valid (not "invalid"), and the sweep completes with _current = 2027</div>
+
+  <h4>Open questions for Christie</h4>
+  <ul>
+    <li><strong>Q1 — "Returning camper":</strong> today only kid notes imported from the 2025/2026 spreadsheets count. Moving to seasons, should <em>any</em> earlier-season note (including ones typed in by hand) mark a child as returning? <em>Recommendation: yes — it's what "returning" means; a few more children may get the flag.</em></li>
+    <li><strong>Q2 — When to make 2027 current:</strong> only the current season is editable (D4), so 2027 planning starts the moment 2027 is made current, and 2026 becomes read-only then (Kid Notes and Notes for Next Year excepted). Anything left to change in 2026 camps, schedule, materials or Open Studio should be done first. <em>Recommendation: make 2027 current as soon as you want to start planning — 2026 is finished.</em></li>
+  </ul>
+
+  <div class="danger">🛑 <strong>Data-write parts:</strong> 2.5 (the 2027 registry doc and <code>_current</code>), 2.6 (topic entries, sessions), 2.7 (note writes, unchanged in kind), 2.8 (the team backfill). Gates: red emulator tests first; dual implementation review before each release; <code>backup.js --force</code> before the team backfill (enforced by the 10-minute check); Console spot-check of one team doc after it and of the 2027 registry doc after creation; the backup tripwire must stay quiet. No rules change, no new collection, no index.</div>
 </div>
 
 <div class="phase">
@@ -300,6 +483,7 @@ Then: the admin sees exactly what landed, and re-running the carry-forward compl
 
 <h2 id="decisions-log">Decisions Log</h2>
 <ul>
+  <li><strong>Sep 24, 2026 — PHASE 2 DESIGNED (not execution-ready; awaiting the two-model plan review).</strong> The entry gate is met: the Classbook's camp-seasons Phase 1 (<code>b2bbaac</code>) is live and verified by its production bytes. Christie's decisions today, all recorded as P2-D1…D5 in the Phase 2 section: the Sheets import is <strong>removed</strong>, not hidden; an in-app Add-session form is Phase 2 (the import was the only thing that ever created sessions); team = shared people with per-season details, open positions per season; season creation/current switch admin-only; photos — 2027 never deletes a 2026 file (mechanism in Phase 3). Design choices worth a reviewer's attention: <code>Season.ref()</code> as the single read-only chokepoint (after rewriting six snapshot-<code>doc.ref</code> writes); a reload-based season switcher (the app's caches never invalidate); a <code>_current</code> listener that makes a stale tab unwritable; an <strong>additive</strong> team backfill that leaves the flat 2026 fields frozen in place; season date/week edits refused once a season has documents. Found in research and folded in: Open Studio and weekly prep build raw computed IDs (a 2027 save would overwrite 2026's week doc) → <code>docId()</code>; the migration classifies every 2027 doc as invalid → registry-driven; 11 one-off incident pages at the repo root are deployed and write unstamped summer docs → removed in 2.0. Also today, outside the plan: <strong>Open Studio had been blank since the Phase 1 deploy</strong> — the codemod stamped a Map key in <code>renderWeekCampList</code> (strict mode threw) — fixed in <code>4ba983d</code> (Netlify <code>6ab582c7</code>, live bytes verified) with a completeness rule and an e2e check that are each red on the bug.</li>
   <li><strong>Sep 23, 2026 — PHASE 1 IS LIVE AND VERIFIED.</strong> Rules shipped through the guard at <code>06262f71</code> (receipt <code>20260923T185351Z-06262f7</code>, guard suite 141/141), app deployed (<code>776f4a2</code>, Netlify <code>6ab42211</code>), Christie ran the set-up card, and season filtering is on.
   <strong>The numbers:</strong> preview showed 5,367 records across 14 collections, 5,365 to label, <strong>zero in "needs a look"</strong>. The 2 already labelled (one HelpQueue, one CampComplete) were the Classbook's Phase 0 patch working on real data since Sep 21 — the cross-app contract proving itself before it was needed. After switch-on, an independent check signed in to PRODUCTION and compared the season-filtered read with the unfiltered read for every collection: <strong>identical counts in all 14</strong> (Curriculum 49, Schedule 229, LessonData 3150, ProjectDetails 440, Materials 1143, Orders 42, HelpQueue 46, WeeklyPrep 89, CampComplete 32, OpenStudio 11, DaysOff 23, Projects 48, KidNotes 18, NotesNextYear 47), matching the preview exactly. <code>Season.doc()</code> carries <code>createdAt</code>, so the app is reading the real registry and not the legacy seed. Zero page errors. That is the acceptance criterion met on production, not inferred.
   <strong>The bug the e2e run caught, an hour before the app would have shipped it:</strong> <code>config.js</code> declares <code>const APP_CONFIG</code>, and a top-level const is NOT a property of <code>window</code> — so <code>season.js</code>'s <code>root.APP_CONFIG</code> was always undefined in the browser. In legacy mode the seed was null, <code>Season.doc()</code> threw from inside <code>applySeasonLabels()</code>, and because that is called from the MIDDLE of <code>setupButtonHandlers()</code> the throw aborted <code>initializeApp()</code> — silently killing every handler registered after it. The page still looked alive because tab navigation is wired early, and <strong>31 of 33 e2e tests passed against a half-dead app</strong>. Only the page-title assertion failed, and it had just been changed, so the easy move was to call it stale. Fixed three ways (lexical-global lookup; a missing seed is now a loud load failure; the label calls are isolated so they can never decapitate handler registration), plus a guard with teeth: <code>initializeApp()</code> sets <code>APP_STATE.initialized</code> on its last line and the e2e title test asserts it, which a half-dead app cannot fake. <em>Lesson worth keeping: a green suite against a partly-dead page is the failure mode static checks and unit tests cannot see — the only thing that found it was running the real app against the real rules.</em>
@@ -333,6 +517,8 @@ Then: the admin sees exactly what landed, and re-running the carry-forward compl
 
 <h2 id="resume">Resume Instructions</h2>
 <div class="phase">
+  <p><strong>Status (Sep 24, 2026): Phase 2 is DESIGNED (sections 2.0–2.10) and NOT execution-ready.</strong> Next, in order: (1) two-model plan review of the Phase 2 section (Codex + Claude), findings verified against the code and folded in; (2) Christie answers Q1 (returning camper) and Q2 (when to make 2027 current) and gives her go; (3) Release 2A (code only) — red tests first, dual implementation review, "okay to deploy", screenshot parity; (4) Release 2B; (5) Christie's operational steps (backup → team backfill → create 2027 → make it current). Phase 1 follow-up still optional for Christie: a Console hand-check of three records. Suites at <code>4ba983d</code>: season 35, migration 25, bootstrap 10, data-safety 11, completeness clean, e2e 33.</p>
+
   <p><strong>Status (Sep 23, 2026): PHASE 1 IS LIVE AND VERIFIED ON PRODUCTION.</strong> Rules shipped (<code>06262f71</code>), app shipped (<code>776f4a2</code> / Netlify <code>6ab42211</code>), 5,365 records labelled, season filtering on, and the filtered read returns identical counts to the unfiltered read in all 14 collections. Suites: season 34, migration 25, bootstrap 10, data-safety 11, completeness clean, e2e 32, studio-hub rules 255, deploy guard 141.
   <strong>Next:</strong> Phase 2 (create Summer 2027; switch between seasons) — design it in the same detail as Phase 1 first; it is NOT execution-ready. Entry gate unchanged: no 2027 document in any collection the Classbook loads whole, and <code>_current</code> must not move off '2026', until the Classbook's camp-seasons Phase 1 filters by season. That plan is now unblocked by this rules deploy. Phase 2 must also model <code>team</code> as <code>seasons: { '2026': {…} }</code> per person rather than a flat doc, and make the straggler sweep's accepted season set come from the registry instead of the hard-coded legacy season.
   <strong>Left for Christie, optional:</strong> a Console hand-check of three records and an eyeball pass over the tabs.</p>
