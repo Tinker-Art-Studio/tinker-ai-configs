@@ -230,34 +230,164 @@ Then: both render exactly as before (screenshots), the full suite is green, and 
   <p><strong>Resolved open questions:</strong> (a) Materials complete allowed with unticked items after a warning, refused at zero items (both reviewers agreed); (b) add order + ↑/↓, ties broken by item id (both agreed).</p>
 </div>
 
-<div class="phase">
-  <h3>Phase 2B (was Phase 2) — Teachers plan their days (draft shape — designed after 2A ships; materials are now admin-built in 2A and shown read-only to teachers, as in summer)</h3>
-  <p><strong>Acceptance:</strong> once the year is published, a teacher who is on any camp sees "SDOC 2026-27" and, inside, their events → camps → projects, and opens the summer plan editor for each project; <strong>one plan per camp-project, shared by every teacher on the camp</strong> (D4) — both can see and edit it; saves are targeted single-document writes through <code>saveSingleLesson()</code>'s new <code>day-off-camps</code> branch with the same guards as summer (load guard, empty-field stripping, explicit clears, forced read-back, photo upload to a unique path under <code>curriculum/{yearKey}/…</code> with delete-after-confirmed-save); the plan's <code>classSize</code> is the camp's headcount and its materials are 2A's admin-built <code>materialItems</code>, shown read-only (never a teacher-edited <code>materialsList</code> or the text field <code>materials</code>); Plan Complete works as for summer; <strong>Q&amp;A sequencing (round 3, Claude):</strong> the summer editor's question writer goes to <code>summerCamps_prepHelpQueue</code>, which SDOC must not use, so the teacher-side SDOC question path is the weekly writer <code>sendTeacherQaMessage()</code> (a switch site that calls the existence check, <code>app.js:3320</code>) — Phase 2 therefore adds the <code>day-off-camps</code> branch to <em>both</em> <code>sendTeacherQaMessage()</code> and <code>adminLessonStillExistsWithRetry()</code>, or defers all SDOC Q&amp;A (teacher and admin sides) to Phase 3 together; the Phase 2 design decides, and the Phase 1 BDD's "before Phase 3 adds the SDOC branches" follows that choice; the Publish toggle becomes available for SDOC years. Another camp's plan is untouched by any save (canary).</p>
-  <div class="bdd">Given: Mariah and Lisa are both on "Clay Creatures" (Thanksgiving Break) and Kathy is on "Paint Party" the same day, each with plans
-When: Mariah saves the Clay Creatures plan
-Then: Lisa sees Mariah's text when she opens it (one shared document); Kathy's Paint Party document is byte-identical before and after (forced server read)
+<div class="phase" id="phase-2a1">
+  <h3>Phase 2A.1 — One materials checklist per event (prep ticks everything for a break in one place) — DESIGN, revision 1 (Sep 25, 2026) — <span class="status-tag not-ready">execution-ready: false</span></h3>
+  <p><strong>Why (Christie, Sep 25, after using 2A):</strong> "can we have a pop up that shows all materials for all projects in that SDOC event container? grouped by project, rather than clicking into each individual project?" Today the prep team opens one popup per camp-project (<code>openDayOffMaterials(campId, title)</code>, app.js:12597) to tick; for a 3-day break with four camps that is eight-plus popups.</p>
+  <p><strong>Acceptance (user outcomes):</strong></p>
+  <ul>
+    <li>Each event card's header gains a <strong>Materials checklist</strong> button (with "<em>n</em> of <em>m</em> ticked" across the event) for everyone who can tick (<code>canTickDayOffMaterials()</code>: planners, Kathy, Allie). Shown only when at least one of the event's camps has at least one item.</li>
+    <li>It opens one popup titled "<em>Thanksgiving Break</em> — materials" listing, in the order the camps appear on the card, <strong>each camp</strong> (title · time · headcount) and under it <strong>each project</strong> of that camp (in <code>dayOffCampTitles()</code> order) with its items: tick box, name, <strong>total</strong> (the same per-camper/class-set/per-table total 2A shows), size/specs, notes, and who/when for a tick. A project with no items shows "No materials listed". Projects are grouped under their camp because the camp is what gets signed off, and the same project title can run in two camps of one event (two different lists).</li>
+    <li>Each camp section carries the same <strong>Materials complete</strong> / "✓ Materials complete — Allie, Oct 9 · Undo" control as its card, with the same warning when items are unticked.</li>
+    <li>Ticking here is exactly a 2A tick (same writer, same transaction, same refusals); the camp cards and the per-project popup agree afterwards. Editing items stays in the per-project popup (planners only) — this popup is a checklist, not an editor.</li>
+    <li>The popup reads every project record of the event fresh from the server when it opens (as the per-project popup does); a record that fails to load shows its error in its section and the rest still render.</li>
+  </ul>
+  <p><strong>Data — none new; no rules change.</strong> Reads: <code>readDayOffPlan(yearKey, campId, title)</code> (firebase-data.js:2551) for each (camp, title) of the event, in parallel. Writes: only the existing, reviewed <code>setDayOffMaterialCheck()</code> (:2649) and <code>setDayOffCampSignoff()</code> (:2694) — unchanged.</p>
+  <p><strong>UI mechanics:</strong> a second modal <code>#sdoc-event-materials-modal</code> with state <code>dayOffEventMaterialsView = { yearKey, eventId, plans: Map(lessonKey → plan|Error) }</code>. The tick handler generalises 2A's <code>tickDayOffMaterial()</code>: it takes (campId, title, itemId) from <code>data-</code> attributes (never interpolated into <code>onclick</code> strings — 2A's review finding; item ids are filtered through <code>DAY_OFF_ITEM_ID</code> via <code>dayOffSortedItems()</code>), shares the <code>pendingDayOffTicks</code> set keyed by <code>lessonKey|itemId</code>, and after the write re-reads that one plan from <code>currentDayOffPlans</code> and re-renders only if the same view is still open. <code>markDayOffCampComplete()</code> gains an <code>onDone</code> re-render so the popup (not only the grid) redraws. The body is built with <code>sdocEsc</code>/<code>sdocEscA</code> throughout. Closing: ×, Esc, backdrop (nothing typed here, so no sticky guard).</p>
+  <div class="bdd">Given: Thanksgiving Break has "Clay Creatures" (Beanie Painting: 2 items; Glaze Day: 3 items) and "Paint Party" (Canvas: 1 item)
+When: Allie opens the event's Materials checklist
+Then: she sees two camp sections, three projects, six items, each with its total; "0 of 6 ticked" in the header
 
-Given: Mariah's plan save fails after a new photo uploaded
-When: the failure surfaces
-Then: her old photo still exists in Storage and Firestore still points at it; the new upload is an orphan at its own unique path (backtracking audit Phase 5 semantics), and she sees a clear error
+Given: the checklist is open
+When: Allie ticks "Beanie" under Clay Creatures → Beanie Painting
+Then: the same tick is on the server (forced read), the per-project popup shows it ticked, the camp card reads "1 of 5 items ticked"
 
-Given: Mariah and Lisa both have the shared Clay Creatures plan open and each edits a different field
+Given: the planner removed "Uniposcas" after Allie opened the checklist
+When: Allie ticks it
+Then: the tick is refused with 2A's message and the section re-renders without it
+
+Given: Clay Creatures has 1 unticked item
+When: Allie presses Materials complete in its section and confirms the warning
+Then: the sign-off is written exactly as from the card; the section shows "✓ Materials complete — Allie · 1 unticked" with Undo
+
+Given: a teacher (classbook only, not prep) is signed in
+When: they view the SDOC year
+Then: no Materials checklist button exists (capability gate, same as 2A)</div>
+  <p><strong>Tests (emulator, red first):</strong> new cases in <code>e2e/day-off-materials.spec.js</code> (M16+) for each scenario above, using the existing planner + prep sessions; spy asserts the only writes are 2A's tick/sign-off transactions; an XSS case with a hostile project title and item name.</p>
+  <p><strong>Sequencing:</strong> ships before 2B (independent of teacher planning; useful for Thanksgiving prep). One review round (Codex + Claude) on this section, Christie's go, build, implementation review, "okay to deploy".</p>
+</div>
+
+<div class="phase" id="phase-2b">
+  <h3>Phase 2B — Teachers plan their days — DESIGN, revision 1 (Sep 25, 2026; line numbers @ <code>2894adf</code>) — <span class="status-tag not-ready">execution-ready: false</span></h3>
+  <p><strong>Christie's decisions (Sep 25):</strong> (1) <strong>No Q&amp;A for SDOCs at all</strong> — "we can skip the help queue entirely for SDOCs. we just chat with teachers, no need for the ask a question flow." The SDOC editor has no question box; Phase 3's Q&amp;A part is dropped; <code>sendTeacherQaMessage()</code>, <code>adminLessonStillExistsWithRetry()</code>, <code>sendHelpResponse()</code>, <code>sendQaReply()</code> keep refusing SDOC keys (nothing writes an SDOC <code>qaThread</code>). (2) An <strong>unfilled block shows to the teacher as "project not assigned yet"</strong> (no editor), and fills in once the planner names it.</p>
+
+  <p><strong>Acceptance (user outcomes):</strong></p>
+  <ul>
+    <li><strong>Publish:</strong> a manager can publish an SDOC year from the Curriculum Admin bar and Settings, like any semester. Until then plain teachers see nothing SDOC anywhere (today's rule, unchanged).</li>
+    <li><strong>Teacher View for an SDOC year</strong> (published; or any year for manager+ / prep, per <code>canSeeSemester()</code>): the teacher picker lists <em>single</em> names — every name in any camp's <code>teachers</code> — never "Mariah + Lisa". A plain teacher is fixed to their own name (as today).</li>
+    <li>For the chosen teacher: their events in date order, each with its date chips; under each, <strong>their camps</strong> (title, time, location, studios/ages, headcount, "with Lisa" for co-teachers); under each camp, one line per camp day showing Block 1 · Block 2 · Open Studio:
+      <ul>
+        <li>a named project → its title, a status pill (<em>not started / in progress / complete</em> from the same progress calculation as summer), <strong>Open plan</strong>, and a <strong>Plan complete</strong> checkbox;</li>
+        <li>an empty block → "project not assigned yet" (greyed, no button);</li>
+        <li>"—" → nothing (deliberately unused); Open Studio / no-plan titles → the label only.</li>
+      </ul>
+      The same title on two days is one plan: both lines open the same plan and share its status and checkbox.</li>
+    <li>A teacher on no camp sees the year with "You're not on any day-off camps yet" (D4 b).</li>
+    <li><strong>The plan editor</strong> is the summer editor (same fields: intro/pitch, steps 1–4, closure, day-of notes, demo photo; autosave; the serialized save chain; close-wait), opened by plan key, with: the header "Clay Creatures · Beanie Painting — Thanksgiving Break, Mon Nov 23 (+ Tue)", headcount, and studios; <strong>materials = the planner's list read-only</strong> with totals for this camp's headcount ("No materials listed yet" when empty; no prep ticks shown to teachers); <strong>no question box</strong>; no weekday/"Day:" line.</li>
+    <li><strong>Shared plan (D4):</strong> every teacher on the camp can edit; what one saves the other sees on next open (the editor reads the plan fresh from the server when it opens). Two teachers editing different fields both survive; the same field → last save wins (stated, accepted).</li>
+    <li><strong>Who can edit:</strong> planners (<code>canPlanDayOffCamps()</code>: Christie, managers) and the camp's own teachers. Everyone else who can see it — other teachers via a manager's picker, <strong>Kathy and Allie</strong> (prep) — sees the editor <strong>read-only</strong> (inputs disabled, "View only" in place of Save). This deliberately does <em>not</em> use <code>hasPrepAccess()</code> (which lets prep and curriculum-admin edit any weekly/summer lesson): consistent with Christie's Sep 24 "Kathy/Allie view-only" for SDOC. <em>Flag for Christie at review.</em></li>
+    <li>If the planner renames or removes a project while a teacher has its plan open, the teacher's next save is <strong>refused</strong> ("This project was renamed or removed — copy your text, close, and reopen the camp"), the typed text stays in the form, and no stray old-title record is created.</li>
+  </ul>
+
+  <p><strong>Data — no new collections, no Firestore or Storage rules change.</strong> Plans are the existing <code>dayOffCamps_lessonData/{encode(yearKey|||campId|||projectTitle)}</code> records (the same doc 2A's materials live on), which the deployed rules let any <code>classbook</code> user create/update (firestore.rules:699-703). Photos go under <code>curriculum/{yearKey}/{planDocId}/demo-{unique}.jpg</code>, already allowed by storage.rules:12-18. Accepted gap (same as summer, recorded): the rules do not restrict <em>which fields</em> a classbook teacher writes, so the client's payload allow-list below is the only thing keeping teacher saves off <code>materialItems</code>/<code>materialChecks</code>/sign-off docs. A rules field-pin (<code>diff().affectedKeys()</code>) is a candidate follow-up, not 2B.</p>
+
+  <p><strong>Save path — <code>saveSingleLesson()</code> day-off branch (firebase-data.js:1357).</strong> Today <code>lessonStoreFor()</code> (:64-72) throws for SDOC before any branch runs. 2B adds <code>SEMESTER_TYPES.dayOff → 'dayOff'</code> to that switch <em>and</em> audits its other six callers so each still refuses SDOC explicitly (the Q&amp;A/help writers at app.js:3396, 5606, 6913, 6998 and <code>saveLessonData</code>/<code>saveMultipleLessonFields</code> at firebase-data.js:811, 1465) — none may start treating an SDOC key as weekly by falling through. The new branch:</p>
+  <ol>
+    <li>Same load guard (:1358) plus <code>assertDayOffWritable()</code> (:1953). Refuses a <code>projectTitle</code> that is a no-plan title or <code>#signoff</code>.</li>
+    <li>Same empty-save block, empty-field strip and explicit clears (<code>FieldValue.delete()</code>) as summer (:1381-1393). <strong>No season stamp</strong> (<code>seasonForSemester()</code> throws for SDOC keys, :113-121).</li>
+    <li><strong>Payload allow-list:</strong> only <code>CONTENT_FIELDS</code>, <code>photoUrl</code>, <code>photoPath</code>, <code>planComplete</code>, <code>lastEditedBy</code>, <code>lastEditedAt</code> from the caller; anything else is dropped with a console warning. The identity stamp <code>{ yearKey, eventId, campId, projectTitle }</code> is added from the <em>camp</em> (not the caller) — without it <code>loadDayOffCampData()</code>'s <code>where('yearKey')</code> query never sees the doc (:2078, :2087).</li>
+    <li><strong>Transaction (the 2A mechanics):</strong> <code>runTransaction</code> reads the camp and the plan doc with <code>transaction.get()</code> before writing; refuses if the camp is gone, or <code>dayOffAssertCampHasTitle()</code> (:2536) fails (renamed/removed project — the rename move of :2394-2429 already ran); then <code>transaction.set(planRef, payload, { merge: true })</code>. This closes the "save after rename recreates an old-title leftover" race the camp-save transaction cannot close on its own.</li>
+    <li>Forced read-back through the generic <code>verifySummerLessonWrite(docRef, fields)</code> (:1319); then install the read-back into <code>currentDayOffPlans[yearKey]</code> and <code>rebuildDayOffSlots()</code> (:2098), and schedule 2A's debounced reload.</li>
+  </ol>
+  <p><strong>Photo:</strong> new <code>uploadDayOffPlanPhoto(yearKey, lessonKey, file)</code> — the same guards as <code>uploadSummerCampPhoto()</code> (:1536-1558: load guard, SDK check) with the curriculum path above and <code>uniquePhotoSuffix()</code>; delete-after-confirmed-save through the generic <code>deleteLessonPhoto()</code> (:1560), exactly as the summer editor does it (app.js:11615-11621).</p>
+  <p><strong>Plan complete:</strong> the SDOC list's checkbox writes a narrow <code>{ planComplete }</code> through the same branch (the empty-save block already admits <code>'planComplete' in lessonData</code>), identified by <code>data-lesson-key</code> — never the summer handler's campName/block fallback (app.js:2066-2074; SDOC <code>block</code> is display-only and titles repeat across events). Optimistic tick, rollback + message on failure, as summer.</p>
+
+  <p><strong>Editor reuse — <code>openLessonModal()</code> (app.js:11162-11849).</strong> Split it: the current campName/projectTitle/block lookup (:11170-11184) becomes a thin summer entry point that resolves a <code>lessonKey</code> and calls the shared body <code>openPlanEditor(semKey, lessonKey)</code>; the SDOC list calls <code>openPlanEditor</code> directly with the plan key. Inside, <code>isDayOffYear(semKey)</code> switches only these pieces, each a small branch, so the hardened save chain, dirty-diff, close-wait and failure-revert (:11434-11793) stay one copy:</p>
+  <table>
+    <tr><th>Piece</th><th>Summer (unchanged)</th><th>SDOC</th></tr>
+    <tr><td>Open</td><td>cached slot</td><td>await a forced server read of the plan doc (<code>readDayOffPlan</code>), install, rebuild slots, then build the form — shared docs make a stale open likely</td></tr>
+    <tr><td>Header / meta</td><td>camp, Day: <code>dayName</code> (:11225)</td><td>camp · project, event label + the dates this title runs, headcount, studios</td></tr>
+    <tr><td>Materials</td><td><code>materialsList</code> from the Materials Hub (:11200-11215)</td><td><code>dayOffSortedItems(plan)</code> + <code>dayOffItemTotal(item, headcount)</code> read-only (2A's row markup, no ticks)</td></tr>
+    <tr><td>Q&amp;A</td><td>question box (:11303-11347)</td><td>omitted</td></tr>
+    <tr><td>Edit gate</td><td><code>canEditLesson()</code></td><td><code>canEditDayOffPlan(slot)</code> = <code>canPlanDayOffCamps()</code> or <code>slot.teachers</code> includes my name; read-only rendering when false</td></tr>
+    <tr><td>Payload identity</td><td>teacher, campName, block, projectTitle, className (:11578-11582)</td><td>none from the editor — the branch stamps identity from the camp</td></tr>
+    <tr><td>Photo upload</td><td><code>uploadSummerCampPhoto</code> (:11547)</td><td><code>uploadDayOffPlanPhoto</code></td></tr>
+    <tr><td>After close</td><td><code>renderSummerCampView</code>, restore by campName id</td><td><code>renderDayOffTeacherView</code>, restore scroll to <code>data-lesson-key</code></td></tr>
+  </table>
+  <p>Read-only rendering is new for this editor (summer today leaves inputs live and silently blocks the save, :11435-11438): SDOC disables every input, hides photo controls and Save, and shows "View only". The summer path is unchanged.</p>
+
+  <p><strong>Teacher View (app.js).</strong></p>
+  <ul>
+    <li><code>initTeacherView()</code>'s SDOC branch (:647-651) stops returning early to the placeholder: it builds the teacher list from <code>currentDayOffCamps[yearKey]</code> (<em>camps</em>, not slots, so a teacher whose camps have only empty blocks still appears), flattening <code>teachers</code>; the same in the semester-change handler (:759) and <code>populateTvTeacherList()</code> (:784-809). Non-admin users are fixed to their own name (unchanged rule).</li>
+    <li><code>getTeacherNameForCurrentUser()</code> (:527-562): for an SDOC year, after <code>teacherMappings[uid]</code>, the exact/first-name fallback matches against the set of single names (camp <code>teachers</code> ∪ the year's <code>teacherNames</code>), never the joined <code>teacher</code> string.</li>
+    <li><code>renderTeacherView()</code> (:1510-1577): SDOC routes to a new <code>renderDayOffTeacherView(yearKey, teacherName)</code> built from <code>currentDayOffEvents</code>/<code>currentDayOffCamps</code>/slots per the acceptance above. All text via <code>sdocEsc</code>/<code>sdocEscA</code>; keys in <code>data-</code> attributes.</li>
+    <li>Not used for SDOC (all summer-season-keyed and several throw on SDOC keys): the summer unread banner / prep-help query (:3554-3613), Camp Complete (:1864-1873, :2183-2206), My Calendar (:1589-1693), the Mon–Fri grid (:1834-1854), print (:11851, :11898). Print is a follow-up if Christie asks.</li>
+    <li>The Teacher View's own listener (:619-637) re-renders SDOC as it does summer.</li>
+  </ul>
+  <p><strong>Publish (app.js):</strong> add <code>SEMESTER_TYPES.dayOff</code> to <code>PUBLISHABLE_SEMESTER_TYPES</code> (:4392); delete the now-dead "Draft … until teacher planning ships" branches (:4272-4276, :10414-10415) and the refusal in <code>toggleSemesterPublish()</code> (:4371). Publishing asks first when any camp has no teachers ("2 camps have no teacher yet — publish anyway?").</p>
+  <p><strong>Wipe monitor:</strong> <code>computeLiveContentCountByTeacher()</code> (app.js:7257-7284) stays summer + weekly; SDOC plans are covered by <code>backup.js</code>'s per-collection Tier-1 tripwire (Phase 1, 1.1). Recorded, reviewers to confirm.</p>
+
+  <p><strong>BDD (emulator e2e, new <code>e2e/day-off-teacher.spec.js</code>; the seeded <code>teacher</code> login "Fixture Teacher" + the planner and prep sessions; the TEST year published in-page):</strong></p>
+  <div class="bdd">Given: "Clay Creatures" (Thanksgiving Break) has teachers Fixture Teacher + TESTteacher2 and "Paint Party" the same day has TESTteacher3, each with a plan
+When: Fixture Teacher saves the Clay Creatures · Beanie Painting plan
+Then: the plan doc carries her text + yearKey/eventId/campId/projectTitle and no materialItems/materialChecks change (forced read); Paint Party's doc is byte-identical before and after
+
+Given: TESTteacher2 opens the same plan afterwards
+When: the editor opens
+Then: Fixture Teacher's text is there (fresh server read on open)
+
+Given: both teachers have the plan open and edit different fields
 When: both saves land
-Then: both edits are present (dirty-field set-merge); if both edited the same field, the later save wins — the accepted last-write-wins model, stated here so nobody expects a merge
+Then: both edits are present; same field → the later save wins (stated, accepted)
+
+Given: the planner renames "Beanie Painting" to "Beanie Art" while Fixture Teacher's editor is open
+When: she saves
+Then: the save is refused with the rename message, her text stays in the form, and no document for "Beanie Painting" exists afterwards (forced read)
+
+Given: a save fails after a new photo uploaded
+When: the failure surfaces
+Then: the old photo still exists and Firestore still points at it; the new upload is an orphan at its own unique curriculum/{yearKey}/… path; a clear error shows
+
+Given: Allie (prep) opens a teacher's SDOC plan from Teacher View
+When: the editor renders
+Then: every input is disabled, there is no Save, and no write is attempted (spy)
+
+Given: Monday has Block 1 named and Block 2 empty; Tuesday has Block 2 set to "—"
+When: the assigned teacher views the camp
+Then: Monday's Block 1 has Open plan; Monday's Block 2 reads "project not assigned yet" with no button; Tuesday's "—" shows nothing
+
+Given: a title runs Monday (Block 1) and Tuesday (Block 2)
+When: the teacher ticks Plan complete on Monday's line
+Then: one narrow {planComplete:true} write; Tuesday's line shows it ticked too
 
 Given: the SDOC year is unpublished
-When: an assigned teacher signs in
-Then: no SDOC year, events or plans are shown anywhere in the UI (the rules still permit the reads — visibility is UI gating, the same accepted model as summer)</div>
+When: Fixture Teacher signs in
+Then: no SDOC year in either selector (unchanged — M10 still holds)
+
+Given: a manager publishes the SDOC year with one camp that has no teachers
+When: they press Publish
+Then: a confirm names the gap; after confirming, the year is published and Fixture Teacher sees it
+
+Given: an SDOC key reaches sendTeacherQaMessage / adminLessonStillExistsWithRetry / sendHelpResponse / sendQaReply / saveLessonData / saveMultipleLessonFields
+When: called
+Then: each refuses (no write) — the lessonStoreFor change did not turn any of them into a weekly write
+
+Given: a project title and teacher name containing &lt;img onerror&gt;
+When: the teacher list, SDOC list and editor render
+Then: nothing executes (escaped)</div>
+  <p>Existing tests to update: <code>day-off-camps.spec.js</code> SDOC 16 (can't be published → can) and SDOC 17 (placeholder / saveSingleLesson refusal → the new behaviour). Summer editor specs in <code>data-safety.spec.js</code> must stay green untouched (the <code>openLessonModal</code> split is behaviour-preserving for summer).</p>
+
+  <p><strong>Build order:</strong> red tests → data branch (<code>lessonStoreFor</code> + caller audit, <code>saveSingleLesson</code> day-off branch, photo) → editor split + SDOC pieces → Teacher View list + name matching → Publish → full suite → dual implementation review → "okay to deploy" → Christie publishes when ready. No rules deploy.</p>
+  <p><strong>Not in 2B:</strong> Q&amp;A (dropped by Christie), print, teacher-side prep ticks, a rules field-pin, the wipe-monitor tally, the admin plan-status columns (Phase 3).</p>
 </div>
 
 <div class="phase">
-  <h3>Phase 3 — Admin overview and editing</h3>
-  <p><strong>Acceptance:</strong> the admin's date list shows each session's teacher(s), plan status and Plan Complete; Christie can open any plan and edit it through the admin path with its guarantees; a Q&amp;A/help question on an SDOC plan appears in the same help queue admins already watch.</p>
+  <h3>Phase 3 — Admin overview (plan status on the planner's cards)</h3>
+  <p><strong>Acceptance:</strong> the planner's camp cards show each project's plan status and Plan complete; Christie can open any plan from there (the 2B editor, which already lets planners edit). <em>Q&amp;A dropped Sep 25 (Christie: "skip the help queue entirely for SDOCs").</em></p>
 </div>
 
 <div class="phase">
-  <h3>Phase 4 — Prep integration (only if D5 says yes)</h3>
-  <p><strong>Acceptance:</strong> the prep dashboard shows the next upcoming SDOC date with its day-of materials; the Materials Hub can list SDOC materials by date. No new write paths — reads only over Phase 2's data.</p>
+  <h3>Phase 4 — Prep integration — superseded</h3>
+  <p>Superseded by 2A (materials built by the planner, ticked by prep) and 2A.1 (one checklist per event). Christie, Sep 24: no prep dashboard for SDOC.</p>
 </div>
 
 <h2 id="safety">Firebase safety checklist</h2>
@@ -285,6 +415,7 @@ Then: no SDOC year, events or plans are shown anywhere in the UI (the rules stil
 
 <h2 id="decisions-log">Decisions Log</h2>
 <ul>
+  <li><strong>Sep 25, 2026 (Phase 2A.1 + Phase 2B designed, revision 1 — NOT yet reviewed):</strong> Christie, before the design: "we can skip the help queue entirely for SDOCs. we just chat with teachers, no need for the ask a question flow" → no SDOC Q&amp;A in any phase (Phase 3's Q&amp;A dropped; the Q&amp;A/help writers keep refusing SDOC keys); an unfilled block shows the teacher "project not assigned yet". Mid-design she asked for "a pop up that shows all materials for all projects in that SDOC event container … grouped by project" → Phase 2A.1 (UI only over 2A's reviewed writers, grouped camp → project because the camp is the sign-off unit and a title can run in two camps), sequenced before 2B. Research (read-only inventory @ 2894adf) corrected the model's assumption: the type switch is <code>lessonStoreFor()</code>, not inside <code>saveSingleLesson()</code>, and it has seven callers; <code>seasonForSemester()</code> throws for SDOC keys (so the summer save/photo/unread/camp-complete paths cannot be reused as-is); SDOC slots carry a joined <code>teacher</code> string, so every <code>l.teacher === name</code> site needs the <code>teachers</code> array. Design choices: plan saves in a transaction that re-checks the camp still has the title (closes the rename race), payload allow-list + identity stamped from the camp, forced read on editor open, <code>openLessonModal()</code> split into a summer lookup + shared <code>openPlanEditor()</code>, read-only editor for prep (not <code>hasPrepAccess()</code> — flagged for Christie), no rules change, Phase 4 marked superseded. Next: Codex + Claude review of 2A.1 and 2B.</li>
   <li><strong>Sep 24, 2026 (late — Phase 2A BUILT, on <code>main</code> @ <code>b0407c4</code>, awaiting "okay to deploy"):</strong> Built as designed (revision 3) in <code>bcb0996</code>. Dual implementation review (Codex + Claude): camp removal didn't re-read the camp in its transaction (orphan race); stale popups could edit a kept leftover; Materials complete could cover a list changed after the warning; item ids reached <code>onclick</code> strings (a hand-made key could run script — the rules let any classbook user write this collection); quick ticks were dropped — all fixed in <code>5980102</code>. Codex confirmation round: junk keys still counted, pre-refresh didn't forget moved titles, concurrent tick read-backs could show a tick unticked — fixed in <code>b0407c4</code>. Tests: <code>e2e/day-off-materials.spec.js</code> M1–M14 (planner + prep sessions, incl. races via an injected pre-transaction write); full suite 273/273. <strong>Test-environment note:</strong> tonight's first full runs crashed because another session's Summer Camp App e2e run shared the OS temp folder with the Storage emulator (and the machine); the Classbook run now needs a private <code>TMPDIR</code> when another emulator suite is active — worth making the harness set it itself (not done).</li>
   <li><strong>Sep 24, 2026 (evening — Phase 2A designed; 3 review rounds, Codex + Claude):</strong> Christie's decisions: Kathy/Allie view-only for events/camps; materials hashed out in the build phase by the planner (not in teacher plans); simple fields; per-item ticks + a camp "Materials complete" button on the card; no prep dashboard for SDOC; 2A before teachers (2B). Round 1 (both CHANGES NEEDED): rename/delete races → transactions; sign-off must not drift → per-camp sign-off doc that planner changes clear; <code>materials</code> name collides with the existing text field → <code>materialItems</code>/<code>materialChecks</code>; capability gates matching the rules; prep users need <code>classbook</code>. Round 2 (both CHANGES NEEDED): Undo would be a delete the rules deny for staff → update to <code>complete:false</code>; a bare generation bump would swallow load failures → re-run the gated reload; normative transaction mechanics; cell-based rename pairing; stale-editor guard; Teacher View selector's pre-existing draft rule deliberately unchanged. Round 3: Codex READY; Claude text-only fixes (leftover "deletes" wording, sign-off never counts as user data, debounced reload, checklist in its own modal) applied. <strong>Christie, Sep 24 evening: go — 2A execution-ready.</strong> Same message: <strong>hide draft semesters from Kathy/Allie in Teacher View too</strong> — so <code>canSeeSemester()</code> now governs the Teacher View selector as well (reverses round 2's "left unchanged"); prep staff then see only published semesters plus the unpublished SDOC year, in both selectors.</li>
   <li><strong>Sep 24, 2026 (later — Christie, entering the first real camp): MODEL CHANGE to a camp's projects.</strong> "There should be 2 project blocks and 1 Open Studio block per day, like our summer camps … we don't have them all yet, but I want to create the camp container … a note that says how many blocks still need to be filled in." So <code>camp.projects[date]</code> is now <code>{ block1, block2, openStudio }</code> (replacing "1–3 titles per day"): an empty block is absent and counts as "to fill in"; "—" marks a block deliberately unused (no plan, counted as filled); projects are no longer required to save a camp (a real title repeated within a day is still refused). The camp editor's projects section is the Summer Camp App's Build Curriculum grid (days as columns, Block 1 / Block 2 / Open Studio as rows, Open Studio pre-filled) with a live "N of M project blocks still to fill in"; the list shows "to fill" per block and a per-camp count. Slots/plans stay keyed by title (so Phase 2's plan model is unchanged); the slot's display block is "Block 1"/"Block 2". The first-deploy array shape is still read everywhere (<code>normaliseDayOffDayBlocks()</code>) and normalised before dirty-diffing (Codex MEDIUM, fixed). Also from her use: both SDOC editors no longer close on a backdrop click (<code>data-sticky</code>), and × / Cancel ask before discarding typed work; Settings' Teacher Names now says "first name only, spelled exactly as in other semesters". And a pre-existing Settings hazard she surfaced: the form only redrew on a semester change made while on Settings, and Save writes to the header's semester — fixed (form tracks its semester, redraws on mismatch from the tab or footer link, Save refuses a mismatch). Commits <code>b2e9078</code>, <code>91bcdf9</code> (deployed), <code>3167d8d</code>, <code>c655b68</code>, <code>967bf17</code>; suite 259/259.</li>
@@ -311,7 +442,7 @@ Then: no SDOC year, events or plans are shown anywhere in the UI (the rules stil
 
 <h2 id="resume">Resume Instructions</h2>
 <div class="phase">
-  <p><strong>Status (Sep 25, 2026) — read this first:</strong> Phase 1 and Phase 2A are LIVE (Classbook <code>main</code> @ <code>67583e3</code>, Netlify <code>6ab683df</code>; rules <code>97f7915</code>). Christie has real data in production: SDOC 2026-27 (teachers Mariah, Kaitlyn), 3 events, 4 camps, some materials. <strong>Next, in order:</strong> (1) confirm her Sep 25 materials and a Kathy/Allie tick + Materials complete in a backup; (2) <strong>design Phase 2B</strong> (teachers plan their days; the Publish toggle for the type; Q&amp;A sequencing — see the Phase 2B draft and the model) to the same standard as 2A: write the design here → Codex + Claude review rounds until clean → Christie's go → build with emulator tests (use a private <code>TMPDIR</code> if another emulator suite is running) → dual implementation review → "okay to deploy". The Sep 24 Decisions Log entries hold every decision made in use (blocks grid, optional projects, materials in the build phase, prep check-off, view-only Kathy/Allie, drafts hidden in Teacher View).</p>
+  <p><strong>Status (Sep 25, 2026, afternoon) — read this first:</strong> Christie's Sep 25 materials are confirmed in the 11:54 backup (Beanie Painting: 2 items; no ticks yet). <strong>Phase 2A.1 (event materials checklist) and Phase 2B (teachers plan) are designed, revision 1, awaiting their Codex + Claude review</strong> — see the top Decisions Log entry; then Christie's go per phase (2A.1 first). Earlier the same day: Phase 1 and Phase 2A are LIVE (Classbook <code>main</code> @ <code>67583e3</code>, Netlify <code>6ab683df</code>; rules <code>97f7915</code>). Christie has real data in production: SDOC 2026-27 (teachers Mariah, Kaitlyn), 3 events, 4 camps, some materials. <strong>Next, in order:</strong> (1) confirm her Sep 25 materials and a Kathy/Allie tick + Materials complete in a backup; (2) <strong>design Phase 2B</strong> (teachers plan their days; the Publish toggle for the type; Q&amp;A sequencing — see the Phase 2B draft and the model) to the same standard as 2A: write the design here → Codex + Claude review rounds until clean → Christie's go → build with emulator tests (use a private <code>TMPDIR</code> if another emulator suite is running) → dual implementation review → "okay to deploy". The Sep 24 Decisions Log entries hold every decision made in use (blocks grid, optional projects, materials in the build phase, prep check-off, view-only Kathy/Allie, drafts hidden in Teacher View).</p>
   <p><strong>Earlier status (Sep 21, 2026):</strong> model redrawn; Phase 1 designed in detail (real line numbers @ <code>a08dbeb</code>). Nothing built. Next, in order: (1) <code>/second-model-review</code> (Codex + Claude) on the model + Phase 1 until a round comes back clean — <strong>done — three rounds Sep 21, round 3 clean from both reviewers</strong> (see the Decisions Log); (2) <strong>done — Christie's go given Sep 21 ("go — mark all three execution-ready"); Phase 1 is execution-ready</strong>; (3) confirm the seasons plan's Phase 1 has shipped (or carry its five items — see the note under Phase 1); (4) build in the 1.1 → 1.6 order: <code>backup.js</code> edit + grep of both arrays (outside git) → rules commit in <code>studio-hub</code> (blocks, tests; other sessions' rules edits committed or stashed first) → Fable review → "approved to change firebase" → rules deploy → red e2e tests → implementation → dual implementation review → "okay to deploy"; (5) design Phase 2 in the same detail (the editor reuse, <code>saveSingleLesson()</code>'s third branch, Publish for the type). <strong>First step in any new session:</strong> check the plan reviewer (<code>plan-review index</code>) for Christie's comments, then re-read the model section — every later phase hangs off it. Do not touch product code before step (2).</p>
   <p><strong>Standing rules that apply:</strong> red test on real Firestore first; commit per phase; per-phase Codex + Claude implementation review of the actual diff; Console/read-only spot-check; Netlify deploy only on Christie's explicit "okay to deploy"; rules changes need "approved to change firebase" plus a Fable 5.1 second review of the rules diff.</p>
 </div>
