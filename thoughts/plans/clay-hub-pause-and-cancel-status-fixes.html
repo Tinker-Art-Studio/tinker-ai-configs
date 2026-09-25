@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clay Hub Status Fixes</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1f1d1a;--muted:#6b665e;--line:#e3ded4;--accent:#9a4f2b;--card:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1a1917;--fg:#ece8e1;--muted:#a39d93;--line:#34312c;--accent:#e08a5f;--card:#23211e}}
+:root[data-theme="dark"]{--bg:#1a1917;--fg:#ece8e1;--muted:#a39d93;--line:#34312c;--accent:#e08a5f;--card:#23211e}
+body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:820px;margin:0 auto}
+h1{font-size:1.6rem;margin:0 0 4px}h2{font-size:1.2rem;margin-top:2rem;border-bottom:1px solid var(--line);padding-bottom:4px}
+.muted{color:var(--muted)}code{font-size:.9em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}
+.tag{display:inline-block;font-size:.8rem;padding:1px 8px;border-radius:10px;border:1px solid var(--accent);color:var(--accent)}
+li{margin:4px 0}
+</style>
+</head>
+<body><main>
+<h1>Clay Hub Membership — pause &amp; cancellation status fixes</h1>
+<p class="muted">Repo: clay-hub-membership · Collection: <code>clayHub_members</code> (rule exists, firestore.rules ~L920) · Sep 25 2026</p>
+
+<h2>Goal</h2>
+<p>A member who has paused more than once is resumed (or not) based on their <em>current</em> pause, and removing a scheduled cancellation puts the member back in Active (or Paused if they are mid-pause) instead of leaving them stuck in Off-Boarding.</p>
+
+<h2>Research findings</h2>
+<ul>
+<li><code>checkExpiredPauses</code> (js/app.js ~L599) reads <code>pauseHistory[0]</code>; <code>completeWorkflow</code> appends with <code>push</code> (~L3062). Every other reader (pause eligibility ~L2433, paused list ~L1242, ~L4652) already uses the last element. The premature-pause correction also removes <code>shift()</code> — the wrong entry for multi-pause members.</li>
+<li>The auto-resume log text uses <code>currentPause.end</code>, which is undefined for entries written by <code>completeWorkflow</code> (they use <code>endDate</code>) — logs "pause ended undefined". Fixed alongside since it is the same lines.</li>
+<li><code>cancelScheduledCancellation</code> (~L2862) nulls <code>scheduledCancellation</code> but leaves <code>stage:'offboarding'</code>. <code>checkExpiredOffboarding</code> then returns early (no final date), so the member is stuck forever. Prior stage is not stored.</li>
+<li>No test suite exists in this repo (gap). <code>app.js</code> touches <code>document</code> at load, so it cannot be required in Node.</li>
+</ul>
+
+<h2>Phase 1 — Pure status helpers + tests <span class="tag">execution-ready: false</span></h2>
+<p>New <code>js/member-status.js</code> (classic script, loaded before app.js; also <code>module.exports</code> for Node): <code>getLatestPauseIndex</code>, <code>evaluatePausedMember</code>, <code>stageAfterCancellationRemoved</code>. Tests in <code>tests/member-status.test.js</code> run with <code>node --test tests/</code> (no new dependencies, no root package.json so Render's build is untouched).</p>
+<div class="card"><strong>Acceptance:</strong> tests fail against the old logic's behaviour and pass against the helpers.</div>
+
+<h2>Phase 2 — Wire into app.js</h2>
+<ul>
+<li><code>checkExpiredPauses</code> uses <code>evaluatePausedMember</code>; premature correction removes the entry by index (<code>splice</code>), not <code>shift</code>.</li>
+<li><code>cancelScheduledCancellation</code>: if stage is <code>offboarding</code>, set stage to <code>stageAfterCancellationRemoved(member)</code> (paused if today falls inside the latest pause window, else active), and log <code>"Scheduled cancellation removed — moved from Off-Boarding back to Active/Paused"</code>. Other stages are left alone.</li>
+</ul>
+<div class="card"><strong>Acceptance:</strong> in the local app (port 8083), a two-pause member whose newest pause ended is auto-resumed; removing a cancellation moves the card out of Off-Boarding.</div>
+
+<h2>BDD scenarios</h2>
+<div class="card">
+<p><strong>Resume, happy:</strong> Given a paused member with pauses [Jan 2025 (ended), Sep 1–20 2026] and today Sep 25 2026, when the page loads, then they move to Active and the log says the pause ended 2026-09-20.</p>
+<p><strong>Resume, bug case:</strong> Given pauses [Jan 2025 (ended), Sep 1–Oct 31 2026], when the page loads, then they stay Paused (old code wrongly resumed them).</p>
+<p><strong>Premature, edge:</strong> Given pauses [Jan 2025, Nov 1–30 2026] and stage paused, then they return to Active, the Nov pause becomes <code>scheduledPause</code>, and the Jan 2025 entry stays in history.</p>
+<p><strong>Legacy fields / out-of-order array:</strong> entries using <code>start</code>/<code>end</code> are handled; the latest is chosen by date, not position; missing/invalid start dates fall back to array order.</p>
+<p><strong>Remove cancellation, happy:</strong> Given an Off-Boarding member with no current pause, when admin clicks Remove, then stage = active and an action is logged.</p>
+<p><strong>Remove cancellation, mid-pause:</strong> Given today inside their latest pause window, then stage = paused.</p>
+<p><strong>Failure path:</strong> Given the Firestore write fails, the existing <code>saveMemberToFirestore</code> logs the error; localStorage still holds the change and the next page-load bulk save re-writes it (existing behaviour, unchanged).</p>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+<li>Rules change: <strong>none</strong> — no new collection. No deploy of any kind.</li>
+<li>Bulk delete/import: none, so no snapshot needed.</li>
+<li>Write path: unchanged — uses existing <code>saveMemberChanges</code> → <code>saveMemberToFirestore</code>, which does a full-document <code>.set()</code> of the in-memory member. This is a pre-existing deviation from the "updateDoc for partial edits" invariant; <strong>flagged, not changed</strong> (along with the bulk <code>.set()</code> on every page load) pending Christie.</li>
+<li>No fields written as <code>undefined</code>: stage is always 'active' or 'paused'.</li>
+<li>Emulator test: not applicable — no rules or write-shape change; logic is covered by Node unit tests.</li>
+</ul>
+
+<h2>Out of scope — flagged for Christie</h2>
+<ul>
+<li>Future-dated pauses only set <code>scheduledPause</code>; nothing flips stage to 'paused' when the start date arrives.</li>
+<li><code>saveAllMembersToFirestore</code> rewrites every member doc with <code>.set()</code> (no merge) on every page load.</li>
+<li>Date-only strings are parsed as UTC midnight across the app, so in Colorado every pause/cancel date is treated as one day early (resume happens on the end date, "PAUSE TODAY" shows the day before). Consistent, so harmless-ish; fixing it must be app-wide in one change.</li>
+<li>Members already stuck in Off-Boarding with no <code>scheduledCancellation</code> are not auto-repaired.</li>
+<li>After removing a cancellation, any saved in-progress cancel checklist (<code>workflows.cancel</code>) remains, so the card still shows a "pending action" highlight.</li>
+</ul>
+
+<h2>Completeness / interruption</h2>
+<p>Each phase is one commit. If interrupted after Phase 1, nothing user-visible has changed (helper file unused). Phase 2 is a single commit; revert restores old behaviour. No data migration — members already stuck in Off-Boarding with no cancellation are <em>not</em> auto-fixed (would need Christie's call; they can be found by <code>stage=='offboarding' && !scheduledCancellation</code>).</p>
+
+<h2>Resume instructions</h2>
+<p>Branch <code>claude/reverent-clarke-b455dd</code>. Run <code>node --test tests/</code>. Check <code>git log</code> for "phase 1"/"phase 2" commits.</p>
+
+<h2>Decisions log</h2>
+<ul>
+<li>2026-09-25: Prior stage isn't recorded, so restore is derived from pause history (paused iff today within latest pause window) rather than adding a new stored field.</li>
+<li>2026-09-25: Helpers in a separate classic script so they are unit-testable without a DOM; no bundler or new dependency.</li>
+<li>2026-09-25: Phases 1–2 committed (65ee6a6, d2e62c5). Second-model implementation review found a blocker: the helper briefly parsed dates as local while completeWorkflow/alerts use <code>new Date(str)</code>, which would flip a same-day pause Paused↔Active on every reload. Reverted to the app-wide convention (the app-wide one-day-early UTC parsing is left as-is and flagged). Also: undefined fields stripped from the rebuilt <code>scheduledPause</code>; a started pause with no end date keeps the member Paused on cancellation removal. Commit 5f6fb13. 18 tests green in Denver/UTC/Auckland.</li>
+<li>2026-09-25: Not changed (reviewer nits): restoring to Active doesn't touch <code>isActive</code>; the confirm dialog still says "They will remain an active member" even when restoring to Paused.</li>
+</ul>
+</main></body></html>
