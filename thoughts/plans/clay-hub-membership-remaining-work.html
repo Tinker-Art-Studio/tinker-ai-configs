@@ -32,10 +32,10 @@ li{margin:4px 0}
 <div class="scroll"><table>
 <tr><th>#</th><th>Phase</th><th>Size</th><th>Needs from Christie</th><th>Data risk</th></tr>
 <tr><td>1</td><td>Quick fixes: hide wrong sections, small leftovers</td><td>Small</td><td>—</td><td>None</td></tr>
-<tr><td>2</td><td>Scheduled pauses start on their own</td><td>Small</td><td>One yes/no</td><td>Low (stage change)</td></tr>
-<tr><td>3</td><td>Term dates, "Member Since", commitment cycle</td><td>Medium</td><td>How terms work</td><td>Medium (term fields)</td></tr>
+<tr><td>2</td><td>Scheduled pauses start on their own + Sawyer timing alert</td><td>Small–medium</td><td>Decided ✓ (one detail on 3-month billing)</td><td>Low (stage change)</td></tr>
+<tr><td>3</td><td>Member Since, auto-activate on orientation day, real notice/pause rules</td><td>Medium–large</td><td>Onboarding Spreadsheet + 3 small answers</td><td>Medium (term fields)</td></tr>
 <tr><td>4</td><td>Stop full-record rewrites on every page load</td><td>Medium–large</td><td>—</td><td>High (touches every save) — emulator tests first</td></tr>
-<tr><td>5</td><td>Checklists &amp; email templates refresh</td><td>Depends on edits</td><td>The new wording</td><td>None (config/text)</td></tr>
+<tr><td>5</td><td>Checklists &amp; email templates refresh</td><td>Depends on edits</td><td>Markup in the doc</td><td>None (config/text)</td></tr>
 </table></div>
 <p>Each phase is its own commit(s), reviewed, and pushed only after Christie's OK. Phases 1, 2 and 5 are independent; 3 should land before 4 (4 changes how term fields get saved).</p>
 
@@ -53,38 +53,56 @@ li{margin:4px 0}
 <div class="card"><strong>Acceptance:</strong> Anne's card shows no commitment/eligibility boxes; an Active member's card shows their own real numbers; the email modal has no Waitlist Welcome tab.</div>
 <div class="card"><strong>BDD:</strong> Given Anne is Off-Boarding, when her card opens, then no Commitment Cycle or Pause Eligibility box appears. · Given I open an Active member right after Anne, then the box shows that member's cycle, never Anne's or placeholder values. · Given a member with no term start, then the box is hidden (existing behaviour).</div>
 
-<h2>Phase 2 — Scheduled pauses start on their own <span class="tag">execution-ready: false</span></h2>
+<h2>Phase 2 — Scheduled pauses start on their own + Sawyer timing alert <span class="tag">execution-ready: false</span></h2>
 <h3>Finding</h3>
-<p>Processing a pause with a future start date completes the pause checklist and stores <code>scheduledPause</code>, but nothing moves the member to Paused when the day comes. They stay Active (and keep counting toward billing-date updates) until someone notices.</p>
-<div class="q"><strong>Question for Christie:</strong> When a scheduled pause's start date arrives, should the app move the member to <em>Paused automatically</em> (and add it to their pause history), or keep the "PAUSE TODAY — process pause" reminder and wait for someone to click? Recommendation: <strong>automatic</strong>. The checklist (including "Process pause in Sawyer") was already done when it was scheduled. Keep a banner note "1 pause started today" for visibility.</div>
-<h3>Changes (if automatic)</h3>
+<p>Processing a pause with a future start date stores <code>scheduledPause</code>, but nothing moves the member to Paused when the day comes, and nothing reminds anyone <em>when</em> to process it in Sawyer.</p>
+<h3>Christie's decision (Sep 25)</h3>
 <ul>
-<li>On page load, for Active members whose <code>scheduledPause.startDate</code> ≤ today: push the pause into <code>pauseHistory</code>, set stage Paused, clear <code>scheduledPause</code>, log "Scheduled pause started". If the end date has also passed, skip straight to the existing auto-resume.</li>
-<li>Pure decision function in <code>member-status.js</code> with tests; same local-date rules as the rest.</li>
-<li>Check the interplay with the existing "stale scheduledPause cleanup" and "premature pause" correction so a member can't bounce between stages.</li>
+<li><strong>Automatic:</strong> on the pause start date the member moves to Paused on their own.</li>
+<li><strong>Sawyer alert:</strong> the pause must be processed in Sawyer <em>just after the last billing before the pause starts</em> (so that billing goes through and the next one is skipped). The app raises a banner/View-list alert "Process pause in Sawyer: [Name]" from the day after that billing date until someone marks it done.</li>
 </ul>
-<div class="card"><strong>BDD:</strong> Given a pause scheduled Oct 1–31, on Sep 30 the member is Active with "Pause Scheduled"; on Oct 1 they are Paused and the pause is in history; on Nov 1 they auto-resume. · Given a pause scheduled for a date already fully in the past (app not opened that month), then it goes into history and the member stays/returns Active. · Given the member is Off-Boarding, then the scheduled pause is left alone.</div>
+<h3>Changes</h3>
+<ul>
+<li>Scheduling a future pause records it without requiring the "Process pause in Sawyer" step; that step moves to a <code>scheduledPause.sawyerProcessedAt</code> flag set by a "Mark processed in Sawyer" button on the member card.</li>
+<li>Alert date = day after the last billing date before the pause start, computed from <code>nextPaymentDate</code> and billing type. Alert stays until marked; escalates if the pause start arrives unmarked.</li>
+<li>On page load, Active members whose <code>scheduledPause.startDate</code> ≤ today: add to <code>pauseHistory</code> (carrying the Sawyer flag), stage Paused, clear <code>scheduledPause</code>, log "Scheduled pause started". Banner note "1 pause started today". If the end date has also passed, go straight to the existing auto-resume.</li>
+<li>Pure decision functions in <code>member-status.js</code> with tests; checked against the premature-pause correction and stale-pause cleanup so nobody bounces between stages.</li>
+</ul>
+<div class="q"><strong>To confirm while building:</strong> for 3-month prepaid members, is "the last billing before the pause" their last 3-month charge (possibly weeks before the pause), or do you convert them to monthly first? The app will show the computed alert date on the card so it can be sanity-checked.</div>
+<div class="card"><strong>BDD:</strong> Given a monthly member billed on the 15th schedules a pause Nov 1–30, then on Oct 16 the banner says "Process pause in Sawyer: [Name]"; after "Mark processed" it clears; on Nov 1 they are Paused; on Dec 1 they auto-resume. · Given the pause start arrives and Sawyer was never marked, then they still move to Paused and the alert turns red ("pause started — Sawyer not processed"). · Given the member is Off-Boarding, the scheduled pause is left alone.</div>
 
-<h2>Phase 3 — Term dates, "Member Since", commitment cycle <span class="tag">execution-ready: false</span></h2>
+<h2>Phase 3 — Member Since, onboarding → active, and the real membership rules <span class="tag">execution-ready: false</span></h2>
 <h3>Findings</h3>
 <ul>
-<li>For 3-month prepaid members, when the billing date passes the app sets <code>termStart</code> = next billing date − 1 day. That is the <em>next</em> term's start, so the term shown runs in the future (Anne: "Oct 29, 2026 → Jan 28, 2027" today).</li>
-<li>"Member Since" displays <code>termStart</code>, so it moves forward every renewal and the real join date is overwritten in Firestore each time.</li>
-<li>The commitment cycle and pause eligibility ("3+ months as a member") are both computed from that moving <code>termStart</code> — so cycles restart and long-time members can look newly joined.</li>
-<li>Sawyer's CSV also supplies term start/end; how those relate to the app's own roll-forward needs checking.</li>
+<li>For 3-month prepaid members, when the billing date passes the app sets <code>termStart</code> = next billing date − 1 day — the <em>next</em> term — so terms show in the future (Anne: "Oct 29, 2026 → Jan 28, 2027").</li>
+<li>"Member Since" shows <code>termStart</code>, so it moves forward each renewal and the real start date is overwritten in Firestore.</li>
+<li>The "3-Month Commitment Cycle" box and pause eligibility are computed from that moving date, and model a 3-month commitment the studio doesn't actually enforce.</li>
+<li>Onboarding members already have an <code>orientationDate</code> (date + time) set in the app, but nothing uses it to activate them.</li>
 </ul>
-<div class="q"><strong>Questions for Christie</strong> (we can go through these together — no need to know the code):
-<ol>
-<li>What should "Member Since" mean — the date they first joined (orientation)? Do you have that anywhere reliable (Onboarding Spreadsheet, Sawyer, the waitlist move date)?</li>
-<li>For 3-month prepaid members: does the term run from billing date to the day before the next billing date? Is the "3-month commitment" the same thing as the prepaid term, or does it apply to monthly members too?</li>
-<li>Earliest cancel date: is it "end of the current 3-month commitment", and does a pause extend it?</li>
-</ol></div>
-<h3>Changes (once rules are confirmed)</h3>
+<h3>Christie's rules (Sep 25)</h3>
 <ul>
-<li>Add a separate <code>memberSince</code> field that never moves; backfill it from the best source (snapshot to JSON first; fill only where empty).</li>
-<li>Fix the roll-forward to set the <em>current</em> term; compute cycle and eligibility from <code>memberSince</code> + the confirmed rules; tests for each rule.</li>
+<li><strong>Member Since</strong> = orientation day = first bill date.</li>
+<li>3-month prepaid members are treated like monthly ones for pauses and cancellations.</li>
+<li>With <strong>1 month's notice</strong>, a pause or cancellation can be processed regardless of where they are in their term.</li>
+<li><strong>No refunds:</strong> a cancellation takes effect at the end of a billing cycle.</li>
+<li><strong>Pauses:</strong> at most 2 months per year; never retroactive; not before they're eligible (existing 3+ months as a member).</li>
+<li>Cancelling isn't possible before a member is pause-eligible.</li>
 </ul>
-<div class="card"><strong>Firebase safety:</strong> backfill is a bulk write → JSON snapshot of <code>clayHub_members</code> first, fill-only-if-empty, emulator test, spot-check one real doc after.</div>
+<h3>Changes</h3>
+<ul>
+<li>New <code>memberSince</code> field that never moves. <strong>Going forward:</strong> on the orientation day, onboarding members move to Active automatically and <code>memberSince</code> is set to that date (banner: "N moved to Active today — confirm they attended orientation", with a one-click undo for no-shows).</li>
+<li><strong>Backfill</strong> existing members from the Onboarding Spreadsheet (Christie to share it); members it lacks are listed for Christie to fill by hand. JSON snapshot first; fill only where empty.</li>
+<li>Fix the 3-month roll-forward so the term shown is the <em>current</em> one; "Member Since" reads <code>memberSince</code>.</li>
+<li>Replace the "3-Month Commitment Cycle" box with a <strong>"Notice &amp; dates"</strong> box: next billing date, earliest cancellation (end of the first billing cycle at least 1 month out, and not before pause eligibility), earliest pause start (1 month out), and pause months used in the last 12 months. Pure functions with tests for each rule.</li>
+</ul>
+<div class="q"><strong>Still open:</strong>
+<ol>
+<li>"2 months per year": is that any rolling 12 months, or per calendar year? The app today uses cooldowns instead (6 months after a 1-month pause, 12 after a 2-month one); those differ from a rolling window in edge cases.</li>
+<li>Does a pause push back the earliest cancel date? You leaned "probably not, since they can't cancel before pause-eligible". Recommendation: <strong>no</strong>, keep it simple: earliest cancel = later of (pause-eligible date, end of the first billing cycle ≥ 1 month out).</li>
+<li>Auto-activation on orientation day: OK to happen automatically with the confirm/undo banner, or should it wait for a click?</li>
+</ol></div>
+<div class="card"><strong>BDD:</strong> Given an onboarding member with orientation Oct 29, on Oct 29 they become Active with Member Since Oct 29, 2026 and the banner asks to confirm. · Given a monthly member billed on the 15th asks on Sep 25 to cancel, then earliest cancellation shows Nov 14 (the cycle ending ≥ 1 month out). · Given a member who paused Jan and Feb this year, then Pause shows "0 months left until [date]". · Given Anne's term rolls, Member Since stays her orientation date.</div>
+<div class="card"><strong>Firebase safety:</strong> backfill = bulk write → JSON snapshot of <code>clayHub_members</code> first, fill-only-if-empty, emulator test, spot-check one real doc after.</div>
 
 <h2>Phase 4 — Stop full-record rewrites on page load <span class="tag">execution-ready: false</span></h2>
 <h3>Findings</h3>
@@ -102,13 +120,13 @@ li{margin:4px 0}
 <div class="card"><strong>BDD:</strong> Given Christie edits Member A's notes while an employee has the app open, when the employee reloads, then Christie's notes survive. · Given one member has a malformed field, then every other member still saves. · Given a save fails, then the person sees an error instead of silent loss.</div>
 
 <h2>Phase 5 — Checklists &amp; email templates refresh <span class="tag">execution-ready: false</span></h2>
-<p>Today's content (in <code>js/config.js</code> and <code>js/app.js</code>):</p>
+<p>Every current checklist (Cancellation, Pause, Tour) and all 11 email templates are copied word-for-word into a markup doc, with an empty Onboarding checklist to fill and a section for versions living elsewhere: <a href="https://claude.ai/code/artifact/b6736e38-a793-42cc-a1f1-32c8b7bd96e5">Clay Hub Checklists &amp; Email Templates</a>.</p>
 <ul>
-<li><strong>Checklists:</strong> Cancellation (11 steps: Initial / Notifications / After Final Day), Pause (6 steps), Tour (evaluation criteria). There is <em>no onboarding checklist</em> today — onboarding cards only show the orientation date.</li>
-<li><strong>Email templates:</strong> Waitlist Invitation, Tour Scheduling, Welcome to Clay Hub, Stay on Waitlist, Pause Confirmation, Pause Ending, Cancellation Options, Final Cancellation, Internal Offboarding, Custom (Waitlist Welcome removed in Phase 1).</li>
+<li>Christie marks it up (and adds other versions); Claude reconciles, then turns it into app changes with a before/after for approval.</li>
+<li>Noticed while copying: Internal Offboarding addressed to Julia but signed "Alexis"; signatures vary; Cancellation Options says "even mid-3-month-cycle"; Pause checklist's Sawyer step changes with Phase 2.</li>
+<li>If an onboarding checklist is added, it shows on onboarding cards like the cancellation one, and pairs with Phase 3's auto-activation.</li>
 </ul>
-<div class="q"><strong>Needs from Christie:</strong> the edits — rough notes are fine (which steps to add/remove/reword, who does each, new template wording). Also: do you want an onboarding checklist like the cancellation one? I can print the current text of every checklist and template on one page to mark up.</div>
-<div class="card"><strong>Acceptance:</strong> each checklist and template matches Christie's marked-up version; saved in-progress checklists keep working (step IDs that still exist keep their checked state).</div>
+<div class="card"><strong>Acceptance:</strong> each checklist and template matches the marked-up doc; saved in-progress checklists keep checked states for steps that still exist.</div>
 
 <h2>Not planned (noted only)</h2>
 <ul>
@@ -124,6 +142,7 @@ li{margin:4px 0}
 
 <h2>Decisions log</h2>
 <ul>
+<li>2026-09-25: Christie's answers: pauses auto-start + Sawyer alert after the last billing before the pause; Member Since = orientation day = first bill date, backfill from Onboarding Spreadsheet, auto-activate on orientation day going forward; 3-month prepaid treated like monthly (1 month notice, cancel at end of billing cycle, no refunds, max 2 pause months/year, not retroactive). Markup doc created for Phase 5.</li>
 <li>2026-09-25: Plan created after shipping 795e249. Christie asked to plan the remaining steps; commitment-cycle root causes found during research (missing section IDs; termStart rolled forward and overwriting join date).</li>
 </ul>
 </main></body></html>
