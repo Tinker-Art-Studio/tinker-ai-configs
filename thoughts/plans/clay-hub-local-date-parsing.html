@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clay Hub Local Dates</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1f1d1a;--muted:#6b665e;--line:#e3ded4;--accent:#9a4f2b;--card:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1a1917;--fg:#ece8e1;--muted:#a39d93;--line:#34312c;--accent:#e08a5f;--card:#23211e}}
+:root[data-theme="dark"]{--bg:#1a1917;--fg:#ece8e1;--muted:#a39d93;--line:#34312c;--accent:#e08a5f;--card:#23211e}
+body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:820px;margin:0 auto}
+h1{font-size:1.6rem;margin:0 0 4px}h2{font-size:1.2rem;margin-top:2rem;border-bottom:1px solid var(--line);padding-bottom:4px}
+.muted{color:var(--muted)}code{font-size:.9em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}
+.tag{display:inline-block;font-size:.8rem;padding:1px 8px;border-radius:10px;border:1px solid var(--accent);color:var(--accent)}
+li{margin:4px 0}
+</style>
+</head>
+<body><main>
+<h1>Clay Hub Membership — read dates as local calendar days</h1>
+<p class="muted">Repo: clay-hub-membership · Sep 25 2026 · follows clay-hub-pause-and-cancel-status-fixes (shipped 8ed73e2)</p>
+
+<h2>Goal</h2>
+<p>Every date in Membership Manager means the calendar day it says: "PAUSE TODAY" appears on the pause's start date (not the day before), pauses resume the day after they end, off-boarding members become cancelled the day after final access, and the Email Alexis message states the real final access date.</p>
+
+<h2>Research findings</h2>
+<ul>
+<li>Stored dates are mostly <code>YYYY-MM-DD</code> (from date inputs). <code>new Date('2026-09-26')</code> is UTC midnight = Sep 25 evening in Colorado; after <code>setHours(0)</code> it becomes Sep 25. ~30 comparison sites do this.</li>
+<li><code>formatDate</code> already parses <code>YYYY-MM-DD</code> as local — so cards display correctly while alerts/transitions fire a day early.</li>
+<li>7 writes use <code>date.toISOString().split('T')[0]</code> (UTC date). Only <code>stayOnListDate = new Date().toISOString()…</code> (move to Deferred) actually lands on the wrong day (after ~6pm → tomorrow); the others operate on local-midnight dates and happen to be right in US time, but are fragile.</li>
+<li><code>emailAlexis</code> / <code>getNextBusinessDay</code> comment claims to "match UTC-midnight parsing used by formatDate" — wrong since formatDate went local. Result: the email says final access is a day early, and the "on or shortly after" task date equals the final access date instead of the next business day.</li>
+<li>Non-<code>YYYY-MM-DD</code> strings ("Oct 30, 2026", "10/29/2026", ISO timestamps) already parse as local/instant and must keep doing so.</li>
+</ul>
+
+<h2>Phase 1 — Shared helpers + tests <span class="tag">execution-ready: false</span></h2>
+<p>In <code>js/member-status.js</code>: <code>parseLocalDate(value)</code> — exact <code>YYYY-MM-DD</code> → local midnight; Date → copy; anything else → <code>new Date(value)</code> unchanged. <code>toLocalYMD(date)</code> — local <code>YYYY-MM-DD</code>. <code>parsePauseDay</code> switches to <code>parseLocalDate</code>. Tests pin <code>TZ=America/Denver</code> inside the test file so they fail against UTC parsing on any machine.</p>
+<div class="card"><strong>Acceptance:</strong> tests for boundaries (start today, end today, day after end) pass in Denver; non-date-only strings parse exactly as before.</div>
+
+<h2>Phase 2 — Switch every site in app.js (single commit, single push)</h2>
+<ul>
+<li>Replace <code>new Date(storedField)</code> with <code>parseLocalDate(storedField)</code> at all stored-date parse sites (pause/cancel alerts, pending count, View list, checkExpiredOffboarding, stale scheduledPause cleanup, completeWorkflow, pause eligibility ×2, commitment cycle, quick-log process date, Email Alexis, Sawyer termEnd, custom alerts).</li>
+<li>Replace <code>toISOString().split('T')[0]</code> with <code>toLocalYMD(...)</code> at all 7 write sites.</li>
+<li>Leave <code>new Date()</code>, timestamps (<code>invitationSent</code>, form <code>timestamp</code>), and sorting untouched.</li>
+<li>All in one push: partial conversion re-creates the flip-flop bug the last review caught.</li>
+</ul>
+<div class="card"><strong>Acceptance:</strong> grep shows no <code>new Date(</code> on a stored date field and no <code>toISOString().split('T')[0]</code>; tests green; harness shows a pause starting tomorrow is "upcoming", not "TODAY".</div>
+
+<h2>BDD scenarios</h2>
+<div class="card">
+<p><strong>Happy:</strong> Given a scheduled pause starting 2026-09-26 and today Sep 25 (Denver), when the page loads, then the banner says "1 pause upcoming this week", not "to process TODAY". On Sep 26 it says TODAY.</p>
+<p><strong>Resume boundary:</strong> Given a pause ending 2026-09-25, on Sep 25 the member stays Paused; on Sep 26 they auto-resume.</p>
+<p><strong>Off-boarding boundary:</strong> Given final access 2026-11-29, the member is Off-Boarding through Nov 29 and Cancelled on Nov 30.</p>
+<p><strong>Email Alexis:</strong> Given final access 2026-11-29 (a Sunday), the email says "Sunday, November 29, 2026" and the task date "Monday, November 30, 2026".</p>
+<p><strong>Evening write:</strong> Given it is 9pm Sep 25 in Denver, moving someone to Deferred records 2026-09-25.</p>
+<p><strong>Non-ISO strings:</strong> "Oct 30, 2026" and ISO timestamps parse exactly as before.</p>
+<p><strong>Failure path:</strong> Unparseable dates still yield Invalid Date and hit the same <code>isNaN</code> guards as today.</p>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+<li>No rules change, no new collection, no bulk import/delete, no deploy of Firebase.</li>
+<li>No stored data is migrated. Existing <code>YYYY-MM-DD</code> values keep their text; they are simply read as the day they say. Writes use the same field names and format.</li>
+<li>One-time effect on first load after deploy: members whose transition was pulled a day early won't be affected (already transitioned); members on a boundary day will transition one day later than they would have. Expected and correct.</li>
+<li>Write path unchanged (full-doc <code>set()</code> remains flagged separately).</li>
+</ul>
+
+<h2>Out of scope</h2>
+<ul>
+<li>Commitment-cycle numbers looking wrong (e.g. Anne Pizzi) — parked by Christie; parsing fix may shift it by a day but won't fix the underlying logic.</li>
+<li>Future-dated pause not auto-flipping to Paused; full-doc rewrites on load.</li>
+</ul>
+
+<h2>Completeness / interruption</h2>
+<p>Phase 1 alone changes the helper's parsing — must not ship without Phase 2 (would reintroduce the flip-flop). Both phases are pushed together; if interrupted between them, do not push.</p>
+
+<h2>Resume instructions</h2>
+<p>Branch <code>claude/reverent-clarke-b455dd</code> (main at 8ed73e2 before this work). <code>node --test tests/</code>. Grep for <code>toISOString().split</code> and <code>new Date(m.</code> / <code>new Date(member.</code> to see remaining sites.</p>
+
+<h2>Decisions log</h2>
+<ul>
+<li>2026-09-25: Christie chose to do this now rather than in the new Members app.</li>
+<li>2026-09-25: Email Alexis date bug included — it's the same root cause and goes to a real person.</li>
+</ul>
+</main></body></html>
