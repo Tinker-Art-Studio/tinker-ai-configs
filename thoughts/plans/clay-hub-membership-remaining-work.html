@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clay Hub Remaining Work</title>
+<style>
+:root{--bg:#fbfaf7;--fg:#1f1d1a;--muted:#6b665e;--line:#e3ded4;--accent:#9a4f2b;--card:#fff;--q:#fff6e8;--qline:#ecd3a6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1a1917;--fg:#ece8e1;--muted:#a39d93;--line:#34312c;--accent:#e08a5f;--card:#23211e;--q:#2c261c;--qline:#5a4a2e}}
+:root[data-theme="dark"]{--bg:#1a1917;--fg:#ece8e1;--muted:#a39d93;--line:#34312c;--accent:#e08a5f;--card:#23211e;--q:#2c261c;--qline:#5a4a2e}
+body{background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,sans-serif;margin:0;padding:24px 16px}
+main{max-width:860px;margin:0 auto}
+h1{font-size:1.6rem;margin:0 0 4px}h2{font-size:1.25rem;margin-top:2.2rem;border-bottom:1px solid var(--line);padding-bottom:4px}
+h3{font-size:1rem;margin:1.2rem 0 .3rem}
+.muted{color:var(--muted)}code{font-size:.9em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}
+.q{background:var(--q);border:1px solid var(--qline);border-radius:8px;padding:10px 16px;margin:12px 0}
+.tag{display:inline-block;font-size:.8rem;padding:1px 8px;border-radius:10px;border:1px solid var(--accent);color:var(--accent);margin-left:6px;vertical-align:middle}
+table{border-collapse:collapse;width:100%;font-size:.95rem}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+.scroll{overflow-x:auto}
+li{margin:4px 0}
+</style>
+</head>
+<body><main>
+<h1>Clay Hub Membership Manager — remaining work</h1>
+<p class="muted">Repo: clay-hub-membership · main at 795e249 · Sep 25 2026 · follows the pause/cancel fixes (8ed73e2) and local-dates fix (795e249)</p>
+
+<h2>Goal</h2>
+<p>Finish cleaning up Membership Manager so every card, alert and email tells the truth: sections only appear when they apply, term and "member since" dates are real, scheduled pauses take effect on their own, page loads can't silently overwrite data, and checklists and email templates match how the studio actually works today.</p>
+
+<h2>Order at a glance</h2>
+<div class="scroll"><table>
+<tr><th>#</th><th>Phase</th><th>Size</th><th>Needs from Christie</th><th>Data risk</th></tr>
+<tr><td>1</td><td>Quick fixes: hide wrong sections, small leftovers</td><td>Small</td><td>—</td><td>None</td></tr>
+<tr><td>2</td><td>Scheduled pauses start on their own</td><td>Small</td><td>One yes/no</td><td>Low (stage change)</td></tr>
+<tr><td>3</td><td>Term dates, "Member Since", commitment cycle</td><td>Medium</td><td>How terms work</td><td>Medium (term fields)</td></tr>
+<tr><td>4</td><td>Stop full-record rewrites on every page load</td><td>Medium–large</td><td>—</td><td>High (touches every save) — emulator tests first</td></tr>
+<tr><td>5</td><td>Checklists &amp; email templates refresh</td><td>Depends on edits</td><td>The new wording</td><td>None (config/text)</td></tr>
+</table></div>
+<p>Each phase is its own commit(s), reviewed, and pushed only after Christie's OK. Phases 1, 2 and 5 are independent; 3 should land before 4 (4 changes how term fields get saved).</p>
+
+<h2>Phase 1 — Quick fixes <span class="tag">execution-ready: false</span></h2>
+<h3>Findings</h3>
+<ul>
+<li><strong>Commitment Cycle and Pause Eligibility show for everyone.</strong> The code hides them for non-Active/Paused members via <code>commitment-cycle-section</code> / <code>pause-eligibility-section</code>, but those IDs don't exist in <code>index.html</code> (the real one is <code>commitment-section</code>; pause eligibility has none). For Off-Boarding members like Anne Pizzi the box keeps the placeholder text baked into the page ("Cycle 2 · Dec 15 → Mar 14 · 29 days") or the previous member's numbers.</li>
+<li>Leftovers from earlier reviews: "Waitlist Welcome" template (WL# email) still listed; <code>needsWLEmail</code> flag still set on new entries; <code>stayOnListDate</code> saved in two formats; unused <code>nextPaymentDateRaw</code> (and it can throw on an unexpected Sawyer value); "Mark Invitation Sent" button visible but inert for non-waitlist people.</li>
+</ul>
+<h3>Changes</h3>
+<ul>
+<li>Fix the section IDs so both boxes hide unless the member is Active or Paused; blank the placeholder text in <code>index.html</code> so a stale value can never show.</li>
+<li>Remove the Waitlist Welcome template tab and text; stop setting <code>needsWLEmail</code>; write <code>stayOnListDate</code> one way; drop <code>nextPaymentDateRaw</code> computation (field left on existing docs — no data removed); hide the invitation button for non-waitlist people.</li>
+</ul>
+<div class="card"><strong>Acceptance:</strong> Anne's card shows no commitment/eligibility boxes; an Active member's card shows their own real numbers; the email modal has no Waitlist Welcome tab.</div>
+<div class="card"><strong>BDD:</strong> Given Anne is Off-Boarding, when her card opens, then no Commitment Cycle or Pause Eligibility box appears. · Given I open an Active member right after Anne, then the box shows that member's cycle, never Anne's or placeholder values. · Given a member with no term start, then the box is hidden (existing behaviour).</div>
+
+<h2>Phase 2 — Scheduled pauses start on their own <span class="tag">execution-ready: false</span></h2>
+<h3>Finding</h3>
+<p>Processing a pause with a future start date completes the pause checklist and stores <code>scheduledPause</code>, but nothing moves the member to Paused when the day comes. They stay Active (and keep counting toward billing-date updates) until someone notices.</p>
+<div class="q"><strong>Question for Christie:</strong> When a scheduled pause's start date arrives, should the app move the member to <em>Paused automatically</em> (and add it to their pause history), or keep the "PAUSE TODAY — process pause" reminder and wait for someone to click? Recommendation: <strong>automatic</strong>. The checklist (including "Process pause in Sawyer") was already done when it was scheduled. Keep a banner note "1 pause started today" for visibility.</div>
+<h3>Changes (if automatic)</h3>
+<ul>
+<li>On page load, for Active members whose <code>scheduledPause.startDate</code> ≤ today: push the pause into <code>pauseHistory</code>, set stage Paused, clear <code>scheduledPause</code>, log "Scheduled pause started". If the end date has also passed, skip straight to the existing auto-resume.</li>
+<li>Pure decision function in <code>member-status.js</code> with tests; same local-date rules as the rest.</li>
+<li>Check the interplay with the existing "stale scheduledPause cleanup" and "premature pause" correction so a member can't bounce between stages.</li>
+</ul>
+<div class="card"><strong>BDD:</strong> Given a pause scheduled Oct 1–31, on Sep 30 the member is Active with "Pause Scheduled"; on Oct 1 they are Paused and the pause is in history; on Nov 1 they auto-resume. · Given a pause scheduled for a date already fully in the past (app not opened that month), then it goes into history and the member stays/returns Active. · Given the member is Off-Boarding, then the scheduled pause is left alone.</div>
+
+<h2>Phase 3 — Term dates, "Member Since", commitment cycle <span class="tag">execution-ready: false</span></h2>
+<h3>Findings</h3>
+<ul>
+<li>For 3-month prepaid members, when the billing date passes the app sets <code>termStart</code> = next billing date − 1 day. That is the <em>next</em> term's start, so the term shown runs in the future (Anne: "Oct 29, 2026 → Jan 28, 2027" today).</li>
+<li>"Member Since" displays <code>termStart</code>, so it moves forward every renewal and the real join date is overwritten in Firestore each time.</li>
+<li>The commitment cycle and pause eligibility ("3+ months as a member") are both computed from that moving <code>termStart</code> — so cycles restart and long-time members can look newly joined.</li>
+<li>Sawyer's CSV also supplies term start/end; how those relate to the app's own roll-forward needs checking.</li>
+</ul>
+<div class="q"><strong>Questions for Christie</strong> (we can go through these together — no need to know the code):
+<ol>
+<li>What should "Member Since" mean — the date they first joined (orientation)? Do you have that anywhere reliable (Onboarding Spreadsheet, Sawyer, the waitlist move date)?</li>
+<li>For 3-month prepaid members: does the term run from billing date to the day before the next billing date? Is the "3-month commitment" the same thing as the prepaid term, or does it apply to monthly members too?</li>
+<li>Earliest cancel date: is it "end of the current 3-month commitment", and does a pause extend it?</li>
+</ol></div>
+<h3>Changes (once rules are confirmed)</h3>
+<ul>
+<li>Add a separate <code>memberSince</code> field that never moves; backfill it from the best source (snapshot to JSON first; fill only where empty).</li>
+<li>Fix the roll-forward to set the <em>current</em> term; compute cycle and eligibility from <code>memberSince</code> + the confirmed rules; tests for each rule.</li>
+</ul>
+<div class="card"><strong>Firebase safety:</strong> backfill is a bulk write → JSON snapshot of <code>clayHub_members</code> first, fill-only-if-empty, emulator test, spot-check one real doc after.</div>
+
+<h2>Phase 4 — Stop full-record rewrites on page load <span class="tag">execution-ready: false</span></h2>
+<h3>Findings</h3>
+<ul>
+<li>Every page load runs <code>saveAllMembersToFirestore</code>, which rewrites <em>every</em> member doc with <code>.set()</code> (no merge) from whatever this browser has in memory. Every single-member save is also a full <code>.set()</code>.</li>
+<li>Risks: two people with the app open can overwrite each other's edits; a browser with stale or partially-loaded data can write that over good data; one bad record (e.g. an <code>undefined</code> field) makes the whole batch fail.</li>
+</ul>
+<h3>Changes</h3>
+<ul>
+<li>Load-time checks (auto-resume, off-boarding → cancelled, billing roll, pause start) track which members they actually changed and save only those.</li>
+<li>Saves send only the changed fields with <code>update()</code> (or <code>set(…, {merge:true})</code> where a doc may not exist yet); strip <code>undefined</code>/empty strings; <code>await</code> and surface failures instead of only logging.</li>
+<li>Same treatment for the waitlist batch save after the Google Sheet sync.</li>
+</ul>
+<div class="card"><strong>Firebase safety:</strong> Firestore emulator tests first (two-writer overwrite scenario must fail on old code, pass on new); JSON snapshot of <code>clayHub_members</code> and <code>clayHub_waitlist</code> before shipping; no rules change expected (collections already have rules); spot-check real docs after deploy.</div>
+<div class="card"><strong>BDD:</strong> Given Christie edits Member A's notes while an employee has the app open, when the employee reloads, then Christie's notes survive. · Given one member has a malformed field, then every other member still saves. · Given a save fails, then the person sees an error instead of silent loss.</div>
+
+<h2>Phase 5 — Checklists &amp; email templates refresh <span class="tag">execution-ready: false</span></h2>
+<p>Today's content (in <code>js/config.js</code> and <code>js/app.js</code>):</p>
+<ul>
+<li><strong>Checklists:</strong> Cancellation (11 steps: Initial / Notifications / After Final Day), Pause (6 steps), Tour (evaluation criteria). There is <em>no onboarding checklist</em> today — onboarding cards only show the orientation date.</li>
+<li><strong>Email templates:</strong> Waitlist Invitation, Tour Scheduling, Welcome to Clay Hub, Stay on Waitlist, Pause Confirmation, Pause Ending, Cancellation Options, Final Cancellation, Internal Offboarding, Custom (Waitlist Welcome removed in Phase 1).</li>
+</ul>
+<div class="q"><strong>Needs from Christie:</strong> the edits — rough notes are fine (which steps to add/remove/reword, who does each, new template wording). Also: do you want an onboarding checklist like the cancellation one? I can print the current text of every checklist and template on one page to mark up.</div>
+<div class="card"><strong>Acceptance:</strong> each checklist and template matches Christie's marked-up version; saved in-progress checklists keep working (step IDs that still exist keep their checked state).</div>
+
+<h2>Not planned (noted only)</h2>
+<ul>
+<li>Cancelled-list sort by <code>termEnd</code> uses raw parsing — only affects same-day order.</li>
+<li>The app serves its whole folder publicly (including <code>server/</code> source) — pre-existing; worth a look when the new Members app is built.</li>
+</ul>
+
+<h2>Completeness / interruption</h2>
+<p>Each phase stands alone and is pushed separately, so stopping between phases leaves the app consistent. Within Phase 3 and 4, backfills are fill-only-if-empty and re-runnable; snapshots are kept in <code>~/tinker-ai-configs/thoughts/snapshots/</code>.</p>
+
+<h2>Resume instructions</h2>
+<p>Repo <code>/Users/christiehubley/clay-hub-membership</code>; tests <code>node --test tests/</code> (TZ pinned to Denver). Start each phase by re-reading its section here and checking the Decisions log. Earlier plans: <code>clay-hub-pause-and-cancel-status-fixes.html</code>, <code>clay-hub-local-date-parsing.html</code>.</p>
+
+<h2>Decisions log</h2>
+<ul>
+<li>2026-09-25: Plan created after shipping 795e249. Christie asked to plan the remaining steps; commitment-cycle root causes found during research (missing section IDs; termStart rolled forward and overwriting join date).</li>
+</ul>
+</main></body></html>
