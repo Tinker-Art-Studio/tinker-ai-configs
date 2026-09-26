@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Plan: Clay Hub Members — foundation (retire Booking, secure the shared project, Phase 0)</title>
+<title>Plan: Clay Hub Members — foundation (retire Booking, own Firebase project, live link to Membership Manager, Phase 0)</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
   h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
@@ -23,115 +23,169 @@
   .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
   .not-ready { background: #fef3c7; color: #92400e; }
   .ready { background: #dcfce7; color: #166534; }
+  .flow { font-family: monospace; font-size: .85rem; background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .75rem 1rem; white-space: pre; overflow-x: auto; }
 </style>
 </head>
 <body>
 
-<h1 id="plan-title">Plan: Clay Hub Members — foundation (retire Booking, secure the shared project, Phase 0)</h1>
+<h1 id="plan-title">Plan: Clay Hub Members — foundation (retire Booking, own Firebase project, live link to Membership Manager, Phase 0)</h1>
 
 <div class="meta" id="plan-meta">
-  <strong>Goal:</strong> Before a single Clay Hub member can sign in, the old Clay Hub Booking app is gone, the shared <code>tinker-hq-apps</code> project is safe to let non-staff accounts into, and every architecture question the handoff left open is answered in the repo's docs, so Phase 1 (Book and check in) can be planned against facts.<br>
-  <strong>Apps touched:</strong> <code>/Users/christiehubley/clay-hub-members</code> (new, docs only in this plan) · <code>/Users/christiehubley/studio-hub</code> (<code>firestore.rules</code>, <code>storage.rules</code>, <code>rules.test.js</code>, <code>js/app.js</code>, later the deploy guard) · <code>/Users/christiehubley/clay-hub-booking</code> (retired and archived) · <code>~/tinker-ai-configs/skills/product-principles.md</code> and memory files (registry clean-up).<br>
-  <strong>Source docs:</strong> <code>clay-hub-members/docs/clayhub-members/</code>: <code>SPEC.md</code>, <code>DECISIONS.md</code>, <code>DATA-MODEL.md</code>, <code>OPEN-ITEMS.md</code>, <code>DESIGN.md</code> (commit <code>680b0d0</code>).<br>
-  <strong>Context:</strong> Created Sep 25, 2026. Christie: "retiring the old one can be at the beginning of this plan… it is literally barely built, completely useless." The handoff's own Phase 0 ("inspect and confirm, no app code") is Phase C here. Research ran the same day as three read-only investigations: Membership Manager's schema, Tinker HQ auth and rules, and Booking's footprint plus Functions and Blaze.<br>
-  <strong>Risk:</strong> HIGH for Phase B. It tightens Storage and Firestore rules that <em>every</em> app uses, so a wrong gate breaks uploads in Classbook, Summer Camp, Social Media or Training. LOW for A and C. MEDIUM for D (new deploy path).<br>
-  <span class="status-tag not-ready">execution-ready: false</span> — every phase. Waiting on Christie's answers to D1–D10 and a second-model review.
+  <strong>Goal:</strong> Before any member feature is built:
+  <ul>
+    <li>the old Clay Hub Booking app is gone;</li>
+    <li>Clay Hub Members has its <strong>own Firebase project</strong>, so member accounts can never reach Tinker's internal data;</li>
+    <li>Membership Manager's records flow into it <strong>automatically and continuously</strong>;</li>
+    <li>every open architecture question is answered in the repo's docs, so Phase 1 (Book and check in) can be planned against facts.</li>
+  </ul>
+  <strong>Projects:</strong> <code>tinker-hq-apps</code> (internal: unchanged except for one small outbound-link codebase) · <strong>new</strong> members project (name per D12).<br>
+  <strong>Repos touched:</strong>
+  <ul>
+    <li><code>/Users/christiehubley/clay-hub-members</code>: docs now. Later its own <code>firebase.json</code>, rules, functions and a deploy guard for the new project.</li>
+    <li><code>/Users/christiehubley/studio-hub</code>: <code>firestore.rules</code> (Booking block removed), a new <code>functions/</code> codebase <code>clayhub-link</code>, and the guard gains a functions target.</li>
+    <li><code>/Users/christiehubley/clay-hub-booking</code>: retired and archived.</li>
+    <li><code>product-principles.md</code>, memory files, <code>~/.claude/CLAUDE.md</code> (a wording change needs Christie's OK).</li>
+  </ul>
+  <strong>Source docs:</strong> <code>clay-hub-members/docs/clayhub-members/</code> (commit <code>680b0d0</code>).<br>
+  <strong>Context:</strong> Created Sep 25, 2026 and <strong>rewritten Sep 26</strong> after Christie chose a separate Firebase project (review comments on the first draft). Christie, Sep 25: retire Booking "at the beginning of this plan… it is literally barely built, completely useless." Christie, Sep 26: the member-record link "isn't a 1x thing, it will need ongoing ties into Membership Manager records" — hence the live link (Phase E).<br>
+  <strong>Risk:</strong> MEDIUM overall. The separate project removes the highest-risk item from the first draft (tightening every app's rules before launch). What's left:
+  <ul>
+    <li>the first Cloud Functions ever in <code>tinker-hq-apps</code> (Phase E, small and one-way);</li>
+    <li>a new cross-project permission (D11);</li>
+    <li>the deploy guard extended (Phases D and E).</li>
+  </ul>
+  <span class="status-tag not-ready">execution-ready: false</span> — every phase. Waiting on Christie's answers to the open decisions and a second-model review.
 </div>
 
-<h2 id="findings">What the research found (why this plan exists)</h2>
+<h2 id="architecture">The shape: two projects, one-way link</h2>
+<div class="flow">  tinker-hq-apps  (staff only · email/password)                 NEW members project  (members · magic link + Google)
+  ─────────────────────────────────────────────                  ──────────────────────────────────────────────────────
+  Membership Manager ──writes──▶ clayHub_members                   members/{memberId}      ← projection, link-written only
+  Tinker HQ Manage Team ─────▶ users                               staffRoster/{uid}       ← projection, link-written only
+                                   │                               bookings, activityLog, inbox, settings, posts, events …
+                                   │  clayhub-link functions       Cloud Functions: sign-in claim, cap/occupancy,
+                                   │  (trigger + nightly check)    reminders/release/auto-checkout, pause/offboard,
+                                   └──── one-way push ────────▶    kiosk lookup, staff sign-in exchange, CSVs
+                                         only the needed fields
+  Nothing in the members project can read or write tinker-hq-apps. Members never get an account in tinker-hq-apps.</div>
+<ul>
+  <li><strong>Membership Manager stays the only place staff edit members.</strong> Every add, pause, offboard or edit reaches the members app within seconds. A nightly full check repairs anything missed and applies date-based changes, like a pause starting today, even if nobody opened Membership Manager (Phase E).</li>
+  <li><strong>Staff keep their Tinker HQ login.</strong> The members app's <code>/staff</code> screens swap it for a members-project session via a tested exchange function, which checks role and <code>appAccess</code> against the pushed staff roster (D1).</li>
+  <li><strong>The internal rules file never learns about members.</strong> The members project has its own small <code>firestore.rules</code> and <code>storage.rules</code> in the <code>clay-hub-members</code> repo, with their own emulator tests.</li>
+</ul>
 
-<div class="danger">
-  <strong>1. The shared project isn't safe to let members sign in yet.</strong> Letting members in means creating Firebase Auth accounts for people who aren't staff. Today several rules trust <em>any</em> signed-in account:
+<h2 id="findings">What the research found</h2>
+
+<div class="note">
+  <strong>1. Existing holes in <code>tinker-hq-apps</code>:</strong> real, but <strong>no longer blocking this app</strong>. Members will never have accounts there. These are handed to the Backend Resilience plan's P2 item, "Tighten and test the Firestore/Storage rules" (step A6). They're still worth doing soon, because anyone with the public API key can create an account today.
   <ul>
-    <li><strong>Storage, every path</strong> (<code>storage.rules</code>): any signed-in account can read, overwrite and <strong>delete</strong> Classbook, Summer Camp, Social Media, project-detail and Training files.</li>
-    <li><strong><code>clayMembers</code> create</strong> (<code>firestore.rules:979-980</code>): any signed-in account can write <code>clayMembers/{own uid}</code> with <code>isAdmin:true</code>. It then reads, edits and deletes every Clay Hub Booking record. Booking's own <code>add-admin.html</code> bootstraps admins exactly this way.</li>
-    <li><strong><code>timeclock_settings/adminSubscriptions</code></strong> (<code>:449</code>): any signed-in account can read managers' Web Push subscriptions. <code>tinker-timeclock/netlify/functions/send-notification.js</code> has no auth check, so a member could send fake push notices to managers.</li>
-    <li><strong><code>isKiosk()</code></strong> (<code>:40-46</code>): it trusts <code>token.email</code> without <code>email_verified</code>. If either kiosk address has no Auth account, anyone could register it and get kiosk reads of every <code>users</code> doc and timeclock data.</li>
-    <li><strong>Tinker HQ auto-creates a <code>users</code> doc</strong> (<code>role:'staff'</code>, both studios) for anyone who signs in (<code>studio-hub/js/app.js:146-159</code>; the rule allows self-create at <code>:127-132</code>). It grants nothing today, but members would show up in Manage Team, where one checkbox gives them apps.</li>
+    <li><strong>Storage:</strong> every path trusts any signed-in account (read, overwrite, delete), and there are no Storage rules tests.</li>
+    <li><strong><code>clayMembers</code> self-create with <code>isAdmin:true</code></strong> (<code>firestore.rules:979-980</code>): <strong>fixed by Phase A</strong>.</li>
+    <li><strong><code>timeclock_settings/adminSubscriptions</code></strong> (<code>:449</code>) is readable by any account, and <code>tinker-timeclock/netlify/functions/send-notification.js</code> has no auth. Fixing that needs Christie's written approval (payroll gate).</li>
+    <li><strong><code>isKiosk()</code></strong> (<code>:40-46</code>) trusts <code>token.email</code>. The fix is pinning the kiosk <em>uids</em>, not adding <code>email_verified</code>, which would lock the kiosks out.</li>
+    <li><strong>Tinker HQ auto-creates a staff <code>users</code> doc</strong> for anyone who signs in (<code>studio-hub/js/app.js:146-159</code>, rule <code>:127-132</code>).</li>
   </ul>
-  These holes exist <strong>today</strong>, because anyone with the public API key can already sign up with email and password. Magic-link sign-in <em>requires</em> open account creation, so it can't be switched off. From here on the rule is <strong>"signed in ≠ trusted"</strong>, and everything in Phase B follows from it.
 </div>
 
 <div class="note">
   <strong>2. Membership Manager's data isn't shaped the way <code>DATA-MODEL.md</code> assumed</strong> (<code>clay-hub-membership/js/app.js</code>, <code>js/firebase-data.js</code>):
   <ul>
     <li><strong>Collection and doc ID:</strong> the collection is <code>clayHub_members</code>. The doc ID is the email, lowercased, with <code>.</code> and <code>/</code> replaced by <code>_</code> (<code>firebase-data.js:54</code>). The stored <code>email</code> field keeps its original case.</li>
-    <li><strong>Status is <code>stage</code>:</strong> <code>onboarding | touring | active | paused | offboarding | cancelled</code>, with a boolean <code>isActive</code> alongside it.</li>
-    <li><strong><code>stage</code> is only correct right after someone opens Membership Manager.</strong> Pause start and end, and offboarding → cancelled, are flipped by code that runs <em>on page load</em> (<code>app.js:599-759</code>). A pause set with a future start never becomes <code>paused</code> on its own.</li>
-    <li><strong>Pause dates</strong> live in <code>scheduledPause.{startDate,endDate}</code> and <code>pauseHistory[]</code>. <strong>Last day</strong> is <code>scheduledCancellation.finalAccessDate</code>. All dates are <code>YYYY-MM-DD</code> strings; there are no Timestamps.</li>
+    <li><strong>Status is <code>stage</code>:</strong> <code>onboarding | touring | active | paused | offboarding | cancelled</code>, plus a boolean <code>isActive</code>.</li>
+    <li><strong><code>stage</code> is only correct right after someone opens Membership Manager.</strong> Pause start and end, and offboarding → cancelled, are flipped by code that runs on page load (<code>app.js:599-759</code>).</li>
+    <li><strong>Pause dates</strong> live in <code>scheduledPause.{startDate,endDate}</code> and <code>pauseHistory[]</code>. <strong>Last day</strong> is <code>scheduledCancellation.finalAccessDate</code>. All dates are <code>YYYY-MM-DD</code> strings.</li>
     <li><strong>Name is one <code>name</code> string.</strong> There's no first/last split.</li>
-    <li><strong>No member-since field exists.</strong> <code>termStart</code> rolls forward every term.</li>
-    <li><strong><code>phone</code> is free text and not normalized.</strong> It's <strong>blank for everyone imported from Sawyer</strong>, and Sawyer re-imports also wipe it.</li>
-    <li><strong>Every Membership Manager page load re-writes <em>every</em> member doc in full</strong> with <code>.set()</code> and no merge (<code>saveAllMembersToFirestore</code>, <code>app.js:902</code>). Any field another app writes onto these docs is wiped. It also means any trigger on the collection fires for every member on every page load.</li>
-    <li><strong>Two existing Manager bugs matter here:</strong>
-      <ul>
-        <li>The resume check reads <code>pauseHistory[0]</code>, but new pauses are added at the end (<code>:617</code> vs <code>:3062</code>).</li>
-        <li>"Remove scheduled cancellation" leaves <code>stage:'offboarding'</code> for good (<code>:2862-2889</code>).</li>
-      </ul>
-    </li>
+    <li><strong>No member-since field exists.</strong></li>
+    <li><strong><code>phone</code> is free text</strong>, and it's <strong>blank for everyone imported from Sawyer</strong>.</li>
+    <li><strong>Every Membership Manager page load re-writes every member doc in full</strong> (<code>.set()</code>, no merge, <code>app.js:902</code>). So nothing else may ever write to these docs, and the link's trigger fires for every member on every load. The link must compare only the fields it sends and skip unchanged ones.</li>
+    <li><strong>Two Manager bugs</strong> (the resume check reads the oldest pause; "remove scheduled cancellation" leaves <code>stage:'offboarding'</code>) are being fixed in a separate session started Sep 25.</li>
   </ul>
 </div>
 
 <div class="note">
   <strong>3. The infrastructure the spec assumes doesn't exist yet.</strong>
   <ul>
-    <li><strong>No Cloud Functions anywhere</strong> in <code>tinker-hq-apps</code>. <code>firebase.json</code> has only <code>firestore</code> and <code>storage</code>. The project <em>is</em> on Blaze (since May 28, with a $20 budget alert).</li>
-    <li><strong>The deploy guard only ships rules, storage and indexes</strong> (<code>scripts/deploy-rules.sh</code>).</li>
-    <li><strong>Staff only sign in with email and password.</strong> No app uses email-link or Google sign-in, so both providers need to be switched on in the console.</li>
-    <li><strong>The spec's <code>beforeSignIn</code> blocking function needs a paid upgrade</strong> to Firebase Auth with Identity Platform.</li>
-    <li><strong>Tinker HQ doesn't host other apps' screens.</strong> Every app is its own site with a tile and an <code>appAccess</code> key.</li>
+    <li>No Cloud Functions anywhere. <code>tinker-hq-apps</code> is on Blaze (since May 28, with a $20 budget alert).</li>
+    <li>The deploy guard only ships rules, storage and indexes, for <code>tinker-hq-apps</code> only.</li>
+    <li>No app uses email-link or Google sign-in.</li>
+    <li>The spec's <code>beforeSignIn</code> blocking function needs the paid Identity Platform upgrade.</li>
+    <li>Tinker HQ doesn't host other apps' screens.</li>
   </ul>
 </div>
 
 <div class="note">
   <strong>4. Clay Hub Booking's footprint is small.</strong>
   <ul>
-    <li>Never deployed, linked from nowhere, 12 commits (all feature work Feb 26–28).</li>
+    <li>Never deployed and linked from nowhere.</li>
     <li>It left behind:
       <ul>
-        <li>a rules block (<code>firestore.rules:956-1003</code>) for 5 collections: <code>clayMembers</code>, <code>clayBookings</code>, <code>claySpots</code>, <code>clayBlockedSlots</code>, <code>claySettings</code></li>
-        <li>one composite index on <code>clayBookings</code> (<code>firestore.indexes.json:2-20</code>)</li>
+        <li>a rules block (<code>firestore.rules:956-1003</code>) for <code>clayMembers</code>, <code>clayBookings</code>, <code>claySpots</code>, <code>clayBlockedSlots</code>, <code>claySettings</code></li>
+        <li>one index (<code>firestore.indexes.json:2-20</code>)</li>
         <li>a registry row and a palette mention in <code>product-principles.md</code> (<code>:177</code>, <code>:102</code>)</li>
-        <li>a memory file (<code>~/.claude/projects/-Users-christiehubley/memory/clay-hub-booking.md</code>) plus its index lines</li>
+        <li>a memory file and its index lines</li>
         <li>mentions in two audit docs</li>
       </ul>
     </li>
-    <li>Production may hold 15–34 seeded <code>claySpots</code> docs, a <code>clayMembers</code> doc for Christie's uid, and Firebase Auth accounts that Booking created for any test members.</li>
+    <li>Production may hold seeded <code>claySpots</code>, a <code>clayMembers</code> doc for Christie's uid, and Auth accounts that Booking created.</li>
   </ul>
 </div>
 
-<h2 id="decisions-needed">Decisions needed from Christie (D1–D10)</h2>
-<p>Each has a recommendation. Anything that changes a documented rule in <code>SPEC.md</code> or <code>DECISIONS.md</code> gets logged there, dated, in Phase C.</p>
+<h2 id="decisions-needed">Decisions</h2>
+<p>D0 is decided. The rest each have a recommendation. Anything that changes a documented rule in <code>SPEC.md</code> or <code>DECISIONS.md</code> is logged there, dated, in Phase C.</p>
 
 <table>
-<tr><th style="width:5%">#</th><th style="width:30%">Question</th><th>Recommendation (and why)</th></tr>
-<tr><td>D1</td><td>Where do the staff screens live? The spec says "inside Tinker HQ", but Tinker HQ is a launcher.</td><td><strong>A <code>/staff</code> section of the new <code>clay-hub-members</code> site, opened from a Tinker HQ tile and gated by a new <code>appAccess</code> key <code>clayhub-members</code></strong>, with manager/admin for reports and settings. Staff sign in with their existing Tinker HQ login. This keeps the <em>intent</em> of DECISIONS #25 (same login, same roles) and follows the pattern every other Tinker app uses. Bolting app screens into the launcher has no precedent. Changes SPEC §2 wording.</td></tr>
-<tr><td>D2</td><td>Where does the server code (Cloud Functions) live, and how is it deployed?</td><td><strong>In <code>studio-hub/functions/</code> as a named Firebase codebase, <code>clayhub-members</code>.</strong> <code>studio-hub</code> is already the Firebase project root and home of the guard. <strong>Extend the guard</strong> with <code>--target functions:clayhub-members</code>: same sha phrase, same worktree-of-a-commit, same receipt tags, and the functions test suite runs first. A named codebase means a deploy can never delete another app's functions. The guard change gets its own review (Phase D).</td></tr>
-<tr><td>D3</td><td>How is sign-in limited to real members, without the paid blocking function?</td><td><strong>No <code>beforeSignIn</code>. After sign-in, the app calls a <code>claimMembership</code> function.</strong> The function:
+<tr><th style="width:5%">#</th><th style="width:28%">Question</th><th>Recommendation (and why)</th></tr>
+<tr><td>D0</td><td>Same Firebase project, or separate?</td><td><strong>✅ Decided Sep 26 (Christie): separate project.</strong> Members get accounts only in their own project, so no internal rule can ever trust them by mistake. The internal rules file and its tests stay staff-only.</td></tr>
+<tr><td>D1</td><td>Where do the staff screens live, and how do staff sign in?</td><td><strong>A <code>/staff</code> section of the members app, opened from a Tinker HQ tile.</strong>
+  <ul>
+    <li>Staff sign in there with their <strong>Tinker HQ email and password</strong>, handled by <code>tinker-hq-apps</code> Auth exactly as today.</li>
+    <li>The page then calls <code>exchangeStaffSession</code> in the members project. It verifies that login and looks the person up in the pushed <code>staffRoster</code> (active; manager or admin, or <code>appAccess</code> containing the new key <code>clayhub-members</code>).</li>
+    <li>It then issues a members-project session with a <code>staffRole</code> claim, under the id <code>staff_{tinker uid}</code>, so it can never collide with a member's id.</li>
+    <li>Access changes made in Manage Team flow through the link. Removing someone's access ends their staff session at the next token refresh (≤1 hour), or immediately if the link revokes it.</li>
+  </ul>
+  This keeps the intent of DECISIONS #25 (same login, same roles). It changes SPEC §2 wording from "inside Tinker HQ" to "opened from Tinker HQ".</td></tr>
+<tr><td>D2</td><td>Where does the server code live, and how is it deployed?</td><td><strong>Two small codebases, both deployed only through a guard:</strong>
+  <ul>
+    <li>(a) <code>studio-hub/functions/</code>, codebase <code>clayhub-link</code>: the outbound link only (Phase E). The guard gains <code>--target functions:clayhub-link</code>.</li>
+    <li>(b) <code>clay-hub-members/functions/</code>: everything else, deployed to the members project.</li>
+  </ul>
+  The members project gets its <strong>own copy of the guard</strong> in <code>clay-hub-members/scripts/</code>, with the same rules:
+  <ul>
+    <li>deploy a named commit on <code>origin/main</code>;</li>
+    <li>from a worktree;</li>
+    <li>after the sentence <em>"approved to change firebase &lt;sha&gt;"</em>;</li>
+    <li>receipt tags <code>deployed/&lt;members-project&gt;/…</code>;</li>
+    <li>its own tests run first.</li>
+  </ul>
+  The raw-deploy hook already covers every project.</td></tr>
+<tr><td>D3</td><td>How is sign-in limited to real members?</td><td><strong>Magic link and Google are switched on only in the members project. No paid <code>beforeSignIn</code>.</strong> After sign-in the app calls <code>claimMembership</code>, which:
   <ul>
     <li>requires a verified email;</li>
-    <li>finds the <code>clayHub_members</code> doc by the doc-ID rule;</li>
-    <li>works out the effective status (D4);</li>
-    <li>sets a custom claim <code>chm: {memberId}</code>.</li>
+    <li>finds the member in the local <code>members</code> projection by the doc-ID rule;</li>
+    <li>checks the effective status (D4);</li>
+    <li>sets the custom claim <code>member: {memberId}</code>.</li>
   </ul>
-  Every new rule requires that claim. For a non-member it returns "not found" and the app shows the spec's message. The throwaway account holds no data and can reach nothing. Offboarding removes the claim and disables the account. This avoids the Identity Platform upgrade, and the claim can't be forged from the browser.</td></tr>
-<tr><td>D4</td><td>Membership Manager's <code>stage</code> is stale between page loads. What decides "active / paused / offboarded"?</td><td><strong>The members app works it out from the dates, with <code>stage</code> as a backstop</strong> (one tested function, America/Denver dates):
+  Every member rule requires that claim. A non-member sees the spec's message, and their empty account can reach nothing. Offboarding removes the claim and disables the account.</td></tr>
+<tr><td>D4</td><td>Membership Manager's <code>stage</code> is stale between page loads. What decides active, paused or offboarded?</td><td><strong>The members project works it out from the dates, with <code>stage</code> as a backstop</strong> (one tested function, America/Denver dates):
   <ul>
-    <li><strong>Offboarded</strong> if <code>stage</code> is <code>cancelled</code>, or <code>scheduledCancellation.finalAccessDate</code> is before today.</li>
-    <li><strong>Paused</strong> if today falls inside <code>scheduledPause</code>, or inside the latest <code>pauseHistory</code> window (latest by <code>startDate</code>, not array position).</li>
+    <li><strong>Offboarded</strong> if <code>stage</code> is <code>cancelled</code>, or <code>finalAccessDate</code> is before today.</li>
+    <li><strong>Paused</strong> if today falls inside <code>scheduledPause</code>, or inside the latest <code>pauseHistory</code> window (latest by <code>startDate</code>).</li>
     <li><strong>Active</strong> if <code>stage</code> is <code>active</code>, <code>paused</code> (outside any window) or <code>offboarding</code> (before the last day).</li>
     <li><strong>No access</strong> for <code>onboarding</code> or <code>touring</code>.</li>
   </ul>
-  Flag the two Manager bugs as separate tasks.</td></tr>
-<tr><td>D5</td><td>Missing data: no member-since date, and no usable phone for Sawyer-imported members.</td><td><strong>Member since:</strong> add a <code>memberSince</code> date field to Membership Manager (its own field, edited there), shown as blank until filled. Or drop it from Profile and Reports. <strong>Phone:</strong> kiosk last-4 lookup only works for members with a phone on file. Everyone can still check in by QR or in the app. A separate Manager task: normalize phones on save, and stop Sawyer re-imports wiping them. <em>Christie: which members have phones today, roughly?</em></td></tr>
-<tr><td>D6</td><td>Can the members app ever write to <code>clayHub_members</code>?</td><td><strong>Never.</strong> Not a question, but please confirm. Membership Manager's full overwrite would wipe anything else written there. Derived data (<code>phoneLast4</code>, first name + last initial, effective status) lives in a server-maintained projection, <code>clayHubApp_directory/{memberId}</code>, which only functions write.</td></tr>
-<tr><td>D7</td><td>Collection names</td><td><strong>Prefix <code>clayHubApp_</code></strong> (<code>clayHubApp_bookings</code>, <code>_activityLog</code>, <code>_settings</code>, …). It reads clearly next to the existing <code>clayHub_*</code>, and it can't be mistaken for the retired <code>clay*</code> or for <code>clayHub_members</code>.</td></tr>
-<tr><td>D8</td><td>Who is the front-door tablet signed in as?</td><td><strong>A new, dedicated account with a custom claim, <code>chmKiosk:true</code></strong>, set by an admin-only function. It must <strong>not</strong> reuse the timeclock kiosk accounts: <code>isKiosk()</code> can read every staff <code>users</code> doc.</td></tr>
-<tr><td>D9</td><td>Is anyone both staff <em>and</em> a Clay Hub member?</td><td>Email-link sign-in to a staff email lands in that staff person's existing account. The design handles it: the same account gets the <code>chm</code> claim too, and the app shows member screens by claim and staff screens by role. <em>Christie: does this happen? If a staffer's membership uses a different email, they simply have two logins.</em></td></tr>
-<tr><td>D10</td><td>Clay Hub Booking's leftover production data</td><td><strong>Remove its rules first</strong>, so nobody can read or write it. Then <strong>Christie deletes the 5 collections in the Firebase Console</strong> after looking at them, and disables any Auth accounts Booking created for non-staff. Claude can't permanently delete data. If anything in them looks real, snapshot it first (A2).</td></tr>
+  The link sends raw fields. The members project computes the status, and recomputes it for everyone nightly.</td></tr>
+<tr><td>D5</td><td>Missing data: no member-since date, and no phone for Sawyer-imported members.</td><td><strong>Member since:</strong> add a <code>memberSince</code> field to Membership Manager (edited there), shown as blank until filled. Or drop it from Profile and Reports. <strong>Phone:</strong> kiosk last-4 lookup only works for members with a phone on file. QR and in-app check-in work for everyone. <em>Christie: roughly how many members have phones on file?</em></td></tr>
+<tr><td>D6</td><td>Does anything ever write back to Membership Manager?</td><td><strong>Never.</strong> The link is strictly one-way. Membership Manager's full overwrite would wipe anything written to its docs. Nothing in the spec needs data to flow back, since pause and cancel requests go by email. <em>Please confirm.</em></td></tr>
+<tr><td>D7</td><td>Collection names in the members project</td><td><strong>Plain names</strong> (<code>members</code>, <code>staffRoster</code>, <code>bookings</code>, <code>activityLog</code>, <code>inbox</code>, <code>settings</code>, …). The project holds only this app, so no prefix is needed, and nothing can be confused with <code>clayHub_members</code> or the retired <code>clay*</code>.</td></tr>
+<tr><td>D8</td><td>Who is the front-door tablet signed in as?</td><td><strong>A dedicated account in the members project with the claim <code>kiosk:true</code></strong>, set by an admin-only function. It has no relation to the timeclock kiosks.</td></tr>
+<tr><td>D9</td><td>A staff member who is also a Clay Hub member</td><td><strong>Resolved by D0/D1:</strong> they have a member account (their membership email, via magic link or Google) and a separate staff session (<code>staff_{uid}</code>, via their Tinker HQ login). They're two identities that never merge. No action needed.</td></tr>
+<tr><td>D10</td><td>Clay Hub Booking's leftover production data</td><td><strong>Remove its rules first</strong>, so nobody can read or write it. Then <strong>Christie deletes the 5 collections in the Firebase Console</strong> after looking at them, and disables any Auth accounts Booking created for non-staff. Snapshot first if anything looks real (A2).</td></tr>
+<tr><td>D11</td><td>How does the link get permission to write into the members project?</td><td><strong>Christie grants <code>tinker-hq-apps</code>' functions service account the <em>Cloud Datastore User</em> role on the members project only</strong> (Google Cloud Console → IAM). No key files. The grant runs one way: the members project gets no role on <code>tinker-hq-apps</code>. The link writes only <code>members/*</code> and <code>staffRoster/*</code>. That's enforced by code and tests, since IAM can't scope to a collection. Changing IAM is a security setting, so Christie makes the change.</td></tr>
+<tr><td>D12</td><td>Name of the new project</td><td><strong><code>tinker-clayhub-members</code></strong>, if available (project IDs are permanent). Christie creates it in the Console, links the same billing account (Blaze), and sets a budget alert (suggest $20, like <code>tinker-hq-apps</code>).</td></tr>
+<tr><td>D13</td><td>Backups for the new project</td><td><strong>From day one:</strong> PITR and delete protection on; the project added to the vault's daily managed backups and to <code>backup.js</code>; Storage versioning on. The activity log is "keep forever", so it can't wait.</td></tr>
 </table>
 
-<p><strong>Still open from <code>OPEN-ITEMS.md</code></strong>, needed before the Phase 1 plan, not this one: wheel and handbuilding counts; how far ahead booking opens; lengths; check-in window; cancellation cutoff; early-checkout rounding; extending when the area is full; the kiosk "Expected around now" list; the appAccess split; midnight closing; the real brand tokens (Classbook and Tinker HQ CSS hold them, so Claude can pull these itself).</p>
+<p><strong>Still open from <code>OPEN-ITEMS.md</code></strong>, needed before the Phase 1 plan, not this one: wheel and handbuilding counts; how far ahead booking opens; lengths; check-in window; cancellation cutoff; early-checkout rounding; extending when the area is full; the kiosk "Expected around now" list; the appAccess split; midnight closing. The real brand tokens come from Tinker HQ and Classbook CSS, which Claude pulls itself.</p>
 
 <h2 id="phases">Phases</h2>
 
@@ -140,37 +194,38 @@
 <p><strong>Acceptance criteria (user outcomes):</strong></p>
 <ul>
   <li>No account in <code>tinker-hq-apps</code> can read or write any of the five <code>clay*</code> Booking collections, including an account that already holds <code>clayMembers/{uid}.isAdmin:true</code>.</li>
-  <li>No Tinker app, skill, registry row or memory still presents Clay Hub Booking as a live app. Its GitHub repo is archived (read-only) with a README pointing to <code>clay-hub-members</code>.</li>
+  <li>No Tinker app, skill, registry row or memory still presents Clay Hub Booking as live. Its GitHub repo is archived with a README pointing to <code>clay-hub-members</code>.</li>
   <li>Every other app works exactly as before. The full rules suite passes, with new tests added.</li>
-  <li>Christie has seen what data was in the five collections before deciding whether to delete it.</li>
+  <li>Christie has seen what was in the five collections before deciding whether to delete it.</li>
+  <li>The other internal-project holes (finding 1) are recorded in the resilience plan, so they aren't lost now that this app no longer depends on them.</li>
 </ul>
 <p><strong>Steps:</strong></p>
 <ol>
-  <li><strong>A1 (Christie, Firebase Console, read-only):</strong> note the doc count in each of the 5 collections. Open the <code>clayMembers</code> docs to see who's in them. Note in Authentication any accounts that aren't staff.</li>
-  <li><strong>A2 (only if A1 shows anything beyond seed spots and Christie's own admin doc):</strong> snapshot to JSON before any deletion. The snapshot goes through the rules-enforced web SDK, signed in by Christie, and runs <em>before</em> A4 while <code>isClayAdmin</code> still lets her read. Never a service-account key or the CLI token. If A1 shows only seed data, log "nothing to keep" in the Decisions log instead.</li>
+  <li><strong>A1 (Christie, Firebase Console, read-only):</strong> note the doc count in each of the 5 collections. Open the <code>clayMembers</code> docs to see who's there. Note any non-staff accounts in Authentication.</li>
+  <li><strong>A2 (only if A1 shows anything beyond seed spots and Christie's own admin doc):</strong> snapshot to JSON through the rules-enforced web SDK, signed in by Christie, <em>before</em> A4 while she can still read. Never a service-account key or the CLI token. Otherwise log "nothing to keep".</li>
   <li><strong>A3 (studio-hub, on a branch):</strong>
     <ul>
-      <li><em>Tests first:</em> add rules tests that every one of the 5 collections denies read and write to:
+      <li><em>Tests first:</em> every one of the 5 collections denies read and write to:
         <ul>
           <li>an unauthenticated user;</li>
           <li>a signed-in account with no <code>users</code> doc;</li>
-          <li>an account holding <code>clayMembers/{uid}={isAdmin:true,active:true}</code>, seeded with rules disabled;</li>
+          <li>an account holding <code>clayMembers/{uid}={isAdmin:true,active:true}</code> (seeded with rules disabled);</li>
           <li>an admin.</li>
         </ul>
         They fail against today's rules.</li>
-      <li>Then delete lines <code>956-1003</code> (the whole block and its three helpers), leaving the default deny in place, so the tests go green.</li>
-      <li>Leave <code>firestore.indexes.json</code> unchanged. The <code>clayBookings</code> index is harmless, and the indexes-deploy hazard (see the <code>firestore-indexes-hazard</code> memory) makes an indexes deploy a separate, deliberate act. Log it as a known leftover.</li>
+      <li>Then delete lines <code>956-1003</code> (the block and its three helpers), so the tests go green.</li>
+      <li>Leave <code>firestore.indexes.json</code> alone because of the indexes-deploy hazard. Log it as a known leftover.</li>
       <li>Merge to <code>main</code> and push.</li>
     </ul>
   </li>
-  <li><strong>A4:</strong> run <code>deploy-rules.sh --status</code> and <code>--diff</code>, and paste the diff verbatim. If the diff has hunks not from A3, stop and say so. Deploy only after Christie says <em>"approved to change firebase &lt;sha&gt;"</em>.</li>
+  <li><strong>A4:</strong> run <code>deploy-rules.sh --status</code> and <code>--diff</code>, and paste the diff verbatim. If it has hunks not from A3, stop and say so. Deploy only after <em>"approved to change firebase &lt;sha&gt;"</em>.</li>
   <li><strong>A5 (Christie, Console):</strong> delete the 5 collections if she wants to (D10), and disable any Booking-only Auth accounts.</li>
   <li><strong>A6 (docs, no Firebase):</strong>
     <ul>
-      <li><code>clay-hub-booking/README.md</code> gets a "Retired Sep 2026: replaced by clay-hub-members" banner. Commit and push, then archive the repo on GitHub (Christie's yes needed: outward-facing).</li>
-      <li><code>product-principles.md</code>: registry row marked retired, palette line updated.</li>
-      <li>Memory: <code>clay-hub-booking.md</code> rewritten to "retired" (not deleted, so the history stays findable) and the <code>MEMORY.md</code> line updated.</li>
-      <li>The two audit docs get a one-line note.</li>
+      <li><code>clay-hub-booking/README.md</code> gets a "Retired Sep 2026: replaced by clay-hub-members" banner. Commit and push, then archive the GitHub repo (Christie's yes needed).</li>
+      <li><code>product-principles.md</code>: registry row marked retired, palette line updated, and a new row for Clay Hub Members.</li>
+      <li>The <code>clay-hub-booking.md</code> memory rewritten to "retired" and its <code>MEMORY.md</code> line updated. The two audit docs get a one-line note.</li>
+      <li><strong>Append the finding-1 holes to the resilience plan's P2 item</strong>, as a clearly marked addition. It's another plan, so this edit is shown to Christie first.</li>
     </ul>
   </li>
 </ol>
@@ -182,7 +237,7 @@
 Scenario: other Clay Hub apps are untouched (edge)
   Given a staff user with appAccess 'clay-membership' in studio clayhub
   When they read and write clayHub_members, clayHub_waitlist, clayHub_appData
-  Then everything that passed before still passes (existing tests unchanged, full suite green)
+  Then everything that passed before still passes (full suite green)
 
 Scenario: unexpected real data (failure path)
   Given A1 finds clayBookings docs that look like real member bookings
@@ -190,113 +245,110 @@ Scenario: unexpected real data (failure path)
   Then work stops until A2's snapshot exists and Christie has looked at it</div>
 </div>
 
-<div class="phase" id="phase-b">
-<h3>Phase B — Make the shared project safe for non-staff accounts <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance criteria:</strong></p>
-<ul>
-  <li>A signed-in account with no staff role and no <code>appAccess</code> can read, write or delete <strong>nothing</strong> in Firestore or Storage. The only exceptions are its own <code>users/{uid}</code> doc, which it can read but not create, and the intentionally public <code>materials</code>.</li>
-  <li>Every staff person who can upload, replace or delete photos and files today still can, in Classbook, Summer Camp, Social Media, project details and Training.</li>
-  <li>Both timeclock kiosks keep working.</li>
-  <li>Signing in to Tinker HQ no longer creates a <code>users</code> doc for someone Christie didn't add in Manage Team.</li>
-  <li>Storage rules have an emulator test suite, and the guard runs it before a <code>storage</code> deploy.</li>
-</ul>
-<p><strong>Steps (each one its own commit and its own sha-approved deploy; lowest-risk first):</strong></p>
-<ol>
-  <li><strong>B1 — Storage map, then gate.</strong>
-    <ul>
-      <li>First, for each of the 5 Storage paths, list every app and code path that uploads, replaces, deletes or reads it, and which role or <code>appAccess</code> those users hold. This is a read-only survey. Its table goes into this plan before any rule changes.</li>
-      <li>Then gate each path on <code>firestore.get(users/{uid})</code> with <code>isManagerOrAbove || the matching appAccess key(s)</code>, keeping today's size and type checks.</li>
-      <li>"Has a users doc" alone is <strong>not</strong> a staff check, because of the self-create rule.</li>
-      <li>Reads of photos shown to teachers stay possible for the teachers who see them today.</li>
-      <li>New suite <code>storage.rules.test.js</code> (Storage emulator), wired into <code>npm test</code> and the guard's <code>storage</code> target.</li>
-    </ul>
-  </li>
-  <li><strong>B2 — <code>adminSubscriptions</code> read:</strong>
-    <ul>
-      <li>First find every reader (Tinker Ticker, and possibly others). This is read-only; reading <code>tinker-timeclock</code> files is allowed, editing them isn't.</li>
-      <li>Restrict reads to manager+ or <code>appAccess('timeclock')</code>, whichever the readers actually hold.</li>
-      <li>The <code>send-notification.js</code> auth fix is in <code>tinker-timeclock/</code>, so <strong>it needs Christie's separate written approval</strong> and is listed as its own item, B2b.</li>
-    </ul>
-  </li>
-  <li><strong>B3 — <code>isKiosk()</code>:</strong> pin it to the two kiosk accounts' <strong>uids</strong> (Christie reads them from the Console), the same way the reminder bot is pinned. Adding <code>email_verified</code> is <em>not</em> the fix: the kiosk accounts are probably unverified email/password accounts, and that check would lock both kiosks out.</li>
-  <li><strong>B4 — Stop <code>users</code> self-creation:</strong>
-    <ul>
-      <li>Remove the auto-bootstrap in <code>studio-hub/js/app.js:146-159</code>. A signed-in account with no doc sees "Ask Christie to add you" instead.</li>
-      <li>Then remove the self-create rule (<code>:127-132</code>). Confirm first that Manage Team → Add Member writes the doc as the manager (<code>js/app.js:1323-1348</code>, per research), so no legitimate path needs self-create.</li>
-      <li>Check whether any <code>users</code> docs were self-created by non-staff. Christie reviews Manage Team for strangers.</li>
-    </ul>
-  </li>
-  <li><strong>B5 — A standing regression test:</strong> one <code>describe</code> block, "a signed-in stranger," that walks every collection in <code>firestore.rules</code> and asserts denial. Any future rule that accidentally trusts plain <code>isAuthenticated()</code> then fails the suite.</li>
-</ol>
-<div class="bdd">Scenario: a stranger's account can't touch staff files (happy path)
-  Given an email-link account with no users doc
-  When it lists, uploads to, or deletes anything under curriculum/, summerCamps/, social-media-photos/, projectDetailPhotos/, training/
-  Then every request is denied
-
-Scenario: a Classbook teacher still replaces a lesson photo (edge)
-  Given a staff user with appAccess 'classbook'
-  When they upload a new demo photo and the app deletes the old one
-  Then both succeed, exactly as today (the delete split in storage.rules is preserved)
-
-Scenario: a kiosk keeps clocking people in (failure path guarded)
-  Given the kiosk@ account signs in on the timeclock tablet
-  When it reads users for PIN lookup and writes timeclock_entries
-  Then it succeeds — and the same email registered on a new uid is denied</div>
-<div class="danger">This is the riskiest phase of the plan: it changes access for every app at once. Each step deploys alone, and after each deploy the affected apps are smoke-tested on real accounts. <code>RULES-ROLLBACK.md</code> is the undo path. Every step also gets an independent second-model review of its diff (planning-workflow §4).</div>
-</div>
-
 <div class="phase" id="phase-c">
 <h3>Phase C — Spec Phase 0: rewrite the docs to fit reality <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance criteria:</strong> Christie can read <code>docs/clayhub-members/</code> and find every D1–D10 answer and every OPEN-ITEMS answer recorded. <code>DATA-MODEL.md</code> names real fields and collections only. Nothing in <code>SPEC.md</code> contradicts the code the members app will read. This phase changes docs only; there's no app code and no Firebase.</p>
+<p><strong>Acceptance criteria:</strong> Christie can read <code>docs/clayhub-members/</code> and find every decision above, and every OPEN-ITEMS answer, recorded. <code>DATA-MODEL.md</code> names real fields and real projects only. Nothing in <code>SPEC.md</code> contradicts the two-project setup or the Membership Manager fields. This phase is docs only, in <code>clay-hub-members</code>.</p>
 <ol>
   <li><strong><code>DATA-MODEL.md</code>:</strong>
     <ul>
-      <li>replace <code>members/{id}</code> with <code>clayHub_members</code> and its real fields, doc-ID rule and the D4 effective-status function;</li>
-      <li>add <code>clayHubApp_directory</code> (D6);</li>
-      <li>rename every new collection to the D7 prefix;</li>
-      <li>replace <code>beforeSignIn</code> with <code>claimMembership</code> and the custom claims (D3, D8);</li>
-      <li>redesign <code>onMemberStatusChange</code>. Because Membership Manager rewrites every doc on each load, the trigger must diff only the fields it cares about (<code>stage</code>, <code>scheduledPause</code>, <code>pauseHistory</code>, <code>scheduledCancellation</code>, <code>email</code>, <code>name</code>, <code>phone</code>) and do nothing otherwise. A daily scheduled job re-derives everyone's status, so date-based changes happen even if nobody opens the Manager.</li>
+      <li>add a "Two projects" section, with the diagram above;</li>
+      <li>describe <code>clayHub_members</code>'s real fields and doc-ID rule as the <em>source</em>;</li>
+      <li>define the pushed <code>members/{memberId}</code> projection: <code>name</code>, <code>firstName</code>, <code>lastInitial</code>, <code>emailLower</code>, <code>stage</code>, <code>scheduledPause</code>, the latest pause window, <code>finalAccessDate</code>, <code>phoneLast4</code>, <code>memberSince?</code>, <code>sourceUpdatedAt</code>, <code>linkVersion</code>;</li>
+      <li>define <code>staffRoster/{tinkerUid}</code>: <code>name</code>, <code>role</code>, <code>active</code>, <code>hasClayhubMembers</code>;</li>
+      <li>use plain collection names (D7);</li>
+      <li>replace <code>beforeSignIn</code> with <code>claimMembership</code> and <code>exchangeStaffSession</code> (D1, D3, D8);</li>
+      <li>replace the <code>onMemberStatusChange</code> doc trigger with "on <code>members/*</code> write in the members project, plus the nightly recompute".</li>
     </ul>
   </li>
-  <li><strong><code>DECISIONS.md</code>:</strong> append D1–D10 as dated rows (#30 onward).</li>
-  <li><strong><code>SPEC.md</code>:</strong> §2 (staff screens location), §3 (status mapping per D4, member-since per D5), §13 (kiosk identity per D8), §14 (the Blaze question answered: yes).</li>
+  <li><strong><code>DECISIONS.md</code>:</strong> append D0–D13 as dated rows (#30 onward).</li>
+  <li><strong><code>SPEC.md</code>:</strong> §2 (staff screens, per D1), §3 (the live link, status per D4, member-since per D5), §13 (the kiosk claim, and "no member account exists in the internal project"), §14 (Blaze: the new project needs it too).</li>
   <li><strong><code>OPEN-ITEMS.md</code>:</strong> move each answered item to "Confirmed", with the date.</li>
-  <li>Pull the real brand tokens from Tinker HQ and Classbook CSS into <code>DESIGN.md</code>.</li>
+  <li><strong><code>DESIGN.md</code>:</strong> the real brand tokens.</li>
+  <li><strong>Repo <code>CLAUDE.md</code> / <code>AGENTS.md</code>:</strong> this repo holds the members project's rules. <strong>Proposed wording change for <code>~/.claude/CLAUDE.md</code></strong> ("All Firestore security rules live in ONE file" becomes "one file <em>per project</em>", naming both). That's Christie's file, so it's shown to her before any edit.</li>
 </ol>
 <div class="bdd">Scenario: a future session reads the docs cold
   Given only the clay-hub-members repo
   When it plans Phase 1
-  Then it finds the real member fields, the collection names, how sign-in is gated, and where functions live — without re-running this research</div>
+  Then it finds the two projects, the link, the real member fields, sign-in gating and where each rule file and codebase lives — without re-running this research</div>
 </div>
 
 <div class="phase" id="phase-d">
-<h3>Phase D — Build and test infrastructure (no member features) <span class="status-tag not-ready">execution-ready: false — outline; detailed after C</span></h3>
+<h3>Phase D — Stand up the members project <span class="status-tag not-ready">execution-ready: false — outline; detailed after C</span></h3>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li>A "hello" function in the <code>clayhub-members</code> codebase can be tested on emulators.</li>
-  <li>It can be deployed <em>only</em> through the guard, after the sha phrase. The receipt tag is written and no other codebase is touched.</li>
-  <li><code>clay-hub-members</code> has <code>npm test</code> running Auth, Firestore, Functions and Storage emulators against studio-hub's rules, following Classbook's pattern (<code>e2e/emulators/run.js</code>, production-host blocking).</li>
+  <li>The new project exists on Blaze, with a budget alert, backups (D13), and only the Email link and Google sign-in providers.</li>
+  <li>Its rules start as <strong>deny everything</strong> and are deployed through its own guard after the sha phrase. A receipt tag is written.</li>
+  <li><code>clay-hub-members</code> has <code>npm test</code> running Auth, Firestore, Functions and Storage emulators (demo project id, production hosts blocked, following Classbook's pattern), plus a rules suite that starts with "a signed-in stranger can do nothing".</li>
   <li>A shared time module passes tests for America/Denver week keys, DST spring-forward and fall-back, and a Sunday-night booking crossing into Monday.</li>
 </ul>
 <ul>
-  <li><strong>D-1:</strong> add <code>functions</code> to <code>studio-hub/firebase.json</code> (codebase <code>clayhub-members</code>, Node 22, us-central1), with a predeploy check extended to functions source.</li>
-  <li><strong>D-2:</strong> guard <code>--target functions:clayhub-members</code>, with its own <code>deploy-rules.test.sh</code> cases. Reviewed against <code>firebase-deploy-guard.html</code>.</li>
-  <li><strong>D-3:</strong> the hook that denies raw <code>firebase … deploy</code> stays as it is. The guard is the only path.</li>
-  <li><strong>D-4:</strong> Christie switches on the Email link and Google providers in the Console, and adds the new site's domain to Authorized domains. Console settings are hers to change.</li>
-  <li><strong>D-5:</strong> choose the stack (vanilla JS per product-principles, Firebase v12 modular SDK, PWA manifest for Add to Home Screen) and hosting (Netlify: static site, ask before each deploy). Recorded in the repo's <code>CLAUDE.md</code>.</li>
+  <li><strong>D-1 (Christie, Console):</strong>
+    <ul>
+      <li>create the project (D12) and link billing;</li>
+      <li>set the budget alert;</li>
+      <li>turn on Firestore (Native, <code>nam5</code> or <code>us-central1</code> to match), PITR, delete protection, Storage and versioning;</li>
+      <li>switch on the Email link and Google providers;</li>
+      <li>add the site's domain to Authorized domains.</li>
+    </ul>
+  </li>
+  <li><strong>D-2:</strong> <code>clay-hub-members/firebase.json</code>, <code>.firebaserc</code>, and deny-all <code>firestore.rules</code> and <code>storage.rules</code>, with a predeploy byte-check like studio-hub's.</li>
+  <li><strong>D-3:</strong> the guard copy for this project (D2), with its own tests. Reviewed against <code>firebase-deploy-guard.html</code>. The raw-deploy hook needs no change; verify that it covers this repo.</li>
+  <li><strong>D-4:</strong> backups (D13): vault schedule and <code>backup.js</code> entries.</li>
+  <li><strong>D-5:</strong> choose the stack (vanilla JS per product-principles, Firebase v12 modular SDK, PWA manifest for Add to Home Screen) and hosting (Netlify static site, ask before each deploy). Recorded in the repo's <code>CLAUDE.md</code>.</li>
 </ul>
 </div>
 
 <div class="phase" id="phase-e">
-<h3>Phase E — Spec Phase 1 (Book and check in): its own plan <span class="status-tag not-ready">not in this plan</span></h3>
-<p>After A–D, write <code>clayhub-members-phase1.html</code>. It's split so each piece can be tested and shipped to staff on its own:</p>
+<h3>Phase E — The live link from Membership Manager <span class="status-tag not-ready">execution-ready: false — outline; detailed after D</span></h3>
+<p><strong>Acceptance criteria (user outcomes):</strong></p>
+<ul>
+  <li>When staff add, edit, pause or offboard a member in Membership Manager, the members project's copy matches <strong>within a minute</strong>, with no extra step for staff.</li>
+  <li>Opening Membership Manager (which re-saves every member) causes <strong>no</strong> writes in the members project unless something the link sends actually changed.</li>
+  <li>If the link misses a change (outage, failed run), the <strong>nightly check</strong> repairs it by morning. A member deleted in Membership Manager is marked removed, never hard-deleted, so history stays.</li>
+  <li>Manage Team access changes (<code>clayhub-members</code> key, role, active) reach <code>staffRoster</code> the same way.</li>
+  <li>The link can write <strong>only</strong> <code>members/*</code> and <code>staffRoster/*</code> in the members project, and nothing at all in <code>tinker-hq-apps</code>. Membership Manager and every internal app behave exactly as before.</li>
+</ul>
+<ul>
+  <li><strong>E-1:</strong> <code>studio-hub/firebase.json</code> gains a <code>functions</code> section, codebase <code>clayhub-link</code>. The guard gains <code>--target functions:clayhub-link</code>. A named codebase can't delete or replace any other functions.</li>
+  <li><strong>E-2 (Christie, IAM):</strong> the one-way grant (D11).</li>
+  <li><strong>E-3 (tests first, emulators):</strong>
+    <ul>
+      <li>field mapping: name split, <code>phoneLast4</code> from messy free text, and blank phones;</li>
+      <li>skip-if-unchanged;</li>
+      <li>delete marks the member removed;</li>
+      <li>the nightly check repairs drift;</li>
+      <li>a Membership Manager bulk re-save of every member causes zero writes.</li>
+    </ul>
+  </li>
+  <li><strong>E-4:</strong> Firestore triggers on <code>clayHub_members/{id}</code> and <code>users/{uid}</code>, plus a nightly scheduled check. Idempotent, and each write carries <code>sourceUpdatedAt</code> so an older event never overwrites a newer one.</li>
+  <li><strong>E-5:</strong> an initial fill (the nightly check, run once by hand). Then Christie spot-checks three real members in the new project's Console.</li>
+</ul>
+<div class="bdd">Scenario: a pause flows through (happy path)
+  Given Jane is active in Membership Manager
+  When staff process a pause starting today
+  Then within a minute members/{jane} shows the pause window and the members app treats her as paused
+
+Scenario: a Membership Manager page load (edge)
+  Given 120 members and nothing changed
+  When Christie opens Membership Manager (it re-saves all 120 docs)
+  Then the link runs 120 times and writes nothing
+
+Scenario: the link was down for an hour (failure path)
+  Given three members were edited while the trigger failed
+  When the nightly check runs
+  Then all three are corrected and the run is logged</div>
+</div>
+
+<div class="phase" id="phase-f">
+<h3>Phase F — Spec Phase 1 (Book and check in): its own plan <span class="status-tag not-ready">not in this plan</span></h3>
+<p>After A, C, D and E, write <code>clayhub-members-phase1.html</code>. It's split so each piece can be tested and shipped to staff on its own:</p>
 <ol>
-  <li>sign-in, <code>claimMembership</code> and the directory projection;</li>
+  <li>member sign-in and <code>claimMembership</code>;</li>
+  <li>the staff sign-in exchange and a minimal <code>/staff</code> today view;</li>
   <li>settings and the Denver-time engine;</li>
   <li>booking with the weekly cap and occupancy counts;</li>
   <li>the check-in lifecycle and scheduled jobs;</li>
-  <li>the kiosk;</li>
-  <li>the staff today view.</li>
+  <li>the kiosk.</li>
 </ol>
 <p>Spec Phases 2–4 get separate plans later.</p>
 </div>
@@ -304,35 +356,48 @@ Scenario: a kiosk keeps clocking people in (failure path guarded)
 <h2 id="safety">Firebase safety checklist</h2>
 <table>
 <tr><th>Check</th><th>This plan</th></tr>
-<tr><td>Rules updated for every collection touched?</td><td>A removes the 5 Booking collections from the rules, so default deny applies. B tightens existing rules. No new collections until Phase E.</td></tr>
-<tr><td>Snapshot before bulk ops?</td><td>A2 runs before any deletion, and only Christie deletes, in the Console. No other bulk ops.</td></tr>
-<tr><td><code>updateDoc</code> not <code>setDoc</code>; empty fields stripped?</td><td>No data writes in A–C. The one app-code change (B4) <em>removes</em> a write.</td></tr>
-<tr><td>Tests first?</td><td>A3, B1–B5: each one starts with tests that fail against today's rules. The full <code>npm test</code> suite is green before each guarded deploy.</td></tr>
-<tr><td>Deploy path</td><td>Only <code>deploy-rules.sh --approved &lt;sha&gt;</code>, one sha phrase per deploy, the diff pasted verbatim, and a stop if it has hunks not from this plan.</td></tr>
-<tr><td>Credential safety</td><td>Never read <code>firebase-tools.json</code>. Never use <code>studio-hub/setup/service-account.json</code> for any snapshot or check.</td></tr>
-<tr><td>Payroll gate</td><td>Nothing in <code>tinker-timeclock/</code> is edited without Christie's written approval (B2b).</td></tr>
+<tr><td>Rules updated for every collection touched?</td><td><code>tinker-hq-apps</code>: A removes the 5 Booking collections (default deny). The members project starts deny-all (D-2), and each collection gets a rule in the Phase F plan before it's used.</td></tr>
+<tr><td>Snapshot before bulk ops?</td><td>A2 runs before any deletion, and only Christie deletes, in the Console. The E-5 initial fill writes only to a brand-new, empty project.</td></tr>
+<tr><td><code>updateDoc</code> not <code>setDoc</code>; empty fields stripped?</td><td>The link writes whole projection docs it fully owns. That's a deliberate <code>set</code> of the complete projection, never a partial update to a doc someone else writes. Empty fields are stripped or explicitly nulled, and tested (E-3).</td></tr>
+<tr><td>Tests first?</td><td>A3, D-2, D-3 and E-3 each start with failing emulator tests. The full suite is green before each guarded deploy.</td></tr>
+<tr><td>Deploy path</td><td>Only through a guard, per project, with one sha phrase per deploy. The diff is pasted verbatim, and work stops on any hunk that isn't from this plan.</td></tr>
+<tr><td>Cross-project access</td><td>One IAM grant, one way (D11). No key files. No member account in <code>tinker-hq-apps</code>.</td></tr>
+<tr><td>Credential safety</td><td>Never read <code>firebase-tools.json</code>. Never use <code>studio-hub/setup/service-account.json</code>.</td></tr>
+<tr><td>Payroll gate</td><td>Nothing in <code>tinker-timeclock/</code> is edited without Christie's written approval.</td></tr>
 </table>
 
 <h2 id="interruption">Completeness — what if this stops midway?</h2>
 <ul>
-  <li><strong>Between A3 and A4</strong> (merged, not deployed): production is unchanged. <code>--status</code> shows <code>origin/main</code> ahead of the last receipt. <strong>Nothing else may deploy rules until A4 ships or A3 is reverted</strong>, because the next deploy would carry it without anyone reviewing it.</li>
-  <li><strong>After A4, before A5:</strong> the data is sealed (unreadable) but still there. That's safe to leave indefinitely.</li>
-  <li><strong>Partway through B:</strong> each step is independent and deployed alone. Any prefix of B1–B5 is a safe state. A stopped step leaves the old, looser rule in place, which is today's state.</li>
-  <li><strong>Hard gate:</strong> no member-facing sign-in (Phase E step 1) is switched on until <strong>all of B1–B4</strong> is deployed and the B5 stranger test is green.</li>
+  <li><strong>Between A3 and A4</strong> (merged, not deployed): production is unchanged, but <code>origin/main</code> is ahead of the last receipt. <strong>Nothing else may deploy <code>tinker-hq-apps</code> rules until A4 ships or A3 is reverted.</strong></li>
+  <li><strong>After A4, before A5:</strong> the data is sealed but still there. That's safe indefinitely.</li>
+  <li><strong>Partway through D:</strong> the new project is empty and deny-all, so nothing depends on it. Safe to leave.</li>
+  <li><strong>Partway through E:</strong> before E-4 deploys, nothing changes anywhere. After it deploys but before E-5, the projection holds only recently edited members. The members app isn't live yet, so nothing reads it. Run E-5 before Phase F starts.</li>
+  <li><strong>Hard gate:</strong> no member-facing sign-in until E-5's spot-check passes and the members project's "stranger can do nothing" test is green.</li>
 </ul>
 
 <h2 id="resume">Resume instructions</h2>
 <ol>
   <li>Read this file, then <code>clay-hub-members/docs/clayhub-members/SPEC.md</code> and <code>DECISIONS.md</code>.</li>
-  <li><code>git -C /Users/christiehubley/studio-hub fetch origin &amp;&amp; /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --status</code> shows what shipped.</li>
-  <li>The Decisions log below records which D-answers are in and which step is done. Start at the first step without a ✅.</li>
+  <li><code>git -C /Users/christiehubley/studio-hub fetch origin &amp;&amp; /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --status</code> shows what shipped internally. After D-3, the members project's guard <code>--status</code> shows the same for it.</li>
+  <li>The Decisions log below records which answers are in and which step is done. Start at the first step without a ✅.</li>
 </ol>
 
 <h2 id="decisions-log">Decisions log (append-only)</h2>
 <ul>
   <li><strong>Sep 25, 2026:</strong> New private repo <code>Tinker-Art-Studio/clay-hub-members</code> created (handoff committed at <code>680b0d0</code>). Christie approved: a new repo rather than reusing <code>clay-hub-booking</code> or <code>clay-hub-membership</code>.</li>
   <li><strong>Sep 25, 2026:</strong> Christie: Clay Hub Booking is retired entirely and replaced by this app, with retirement first in the plan (Phase A).</li>
-  <li><strong>Sep 25, 2026:</strong> The <code>clayBookings</code> composite index stays in <code>firestore.indexes.json</code> for now (indexes-deploy hazard). Revisit whenever indexes are next deployed deliberately.</li>
+  <li><strong>Sep 25, 2026:</strong> The <code>clayBookings</code> composite index stays in <code>firestore.indexes.json</code> for now (indexes-deploy hazard).</li>
+  <li><strong>Sep 25, 2026:</strong> Membership Manager's two status bugs were split into their own session (not part of this plan).</li>
+  <li><strong>Sep 26, 2026:</strong> Christie (plan review): <strong>separate Firebase project</strong> for Clay Hub Members (D0). Consequences:
+    <ul>
+      <li>The first draft's Phase B ("make the shared project safe for non-staff accounts") is removed from this plan, and its findings are handed to the resilience plan's P2 item (A6).</li>
+      <li>Collection prefixes are dropped (D7).</li>
+      <li>D9 is resolved.</li>
+      <li>D11–D13 are added.</li>
+      <li>Phases D and E are rewritten for the new project and the live link.</li>
+    </ul>
+  </li>
+  <li><strong>Sep 26, 2026:</strong> Christie: the link to Membership Manager must be ongoing, not one-time. So Phase E is a live trigger plus a nightly check, one-way only.</li>
 </ul>
 
 </body>
