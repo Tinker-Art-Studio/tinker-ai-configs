@@ -1,0 +1,649 @@
+diff --git a/css/styles.css b/css/styles.css
+index 8301fcf..ec32380 100644
+--- a/css/styles.css
++++ b/css/styles.css
+@@ -7214,3 +7214,13 @@ label[for="ca-semester-select"] {
+ .sdoc-mat-table input, .sdoc-mat-table select { width: 100%; min-width: 70px; }
+ .sdoc-mat-table tr.sdoc-mat-ticked td { color: var(--text-medium); }
+ .sdoc-mat-total { font-weight: 800; color: var(--admin-color); }
++
++/* Phase 2A.1 — one materials checklist per event */
++.sdoc-event-mat-btn { padding: 6px 12px; font-size: 13px; }
++.sdoc-evmat-count { font-size: 14px; font-weight: 800; color: var(--admin-color); margin-bottom: 4px; }
++.sdoc-evmat-camp { border: 1px solid var(--border-color, #e5e7eb); border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
++.sdoc-evmat-camp-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
++.sdoc-evmat-project { margin: 8px 0 4px; }
++.sdoc-evmat-title { margin: 6px 0 4px; font-size: 14px; }
++.sdoc-evmat-complete-btn { padding: 6px 12px; font-size: 13px; }
++.sdoc-evmat-done { background: #E6F6F3; color: #00705F; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; }
+diff --git a/e2e/day-off-materials.spec.js b/e2e/day-off-materials.spec.js
+index 427c467..716d94b 100644
+--- a/e2e/day-off-materials.spec.js
++++ b/e2e/day-off-materials.spec.js
+@@ -412,3 +412,299 @@ test.describe('School Day Off Camps — Phase 2A: materials + prep check-off', (
+     expect(out.teacherSees).not.toContain(Y);
+   });
+ });
++
++// ── Phase 2A.1: one materials checklist per event ─────────────────────────
++// Plan: classbook-school-day-off-camps.html → Phase 2A.1. UI only over 2A's
++// reviewed writers (setDayOffMaterialCheck / setDayOffCampSignoff).
++test.describe('School Day Off Camps — Phase 2A.1: event materials checklist', () => {
++  // Thanksgiving with two camps: Clay (Clay Creatures + Glaze Day, headcount 24)
++  // and Paint Party (Canvas, one day, headcount 12).
++  async function eventWithTwoCamps() {
++    const ev = await makeEvent(planner);
++    const clay = await makeCamp(planner, ev.id);
++    const paint = await makeCamp(planner, ev.id, {
++      title: 'TEST Paint Party', timeSlot: 'PM', timeLabel: '1–3', teachers: ['TESTteacher1'],
++      placements: [{ studio: 'AG', ageRange: '5–7', capacity: 12 }],
++      dates: ['2026-11-23'], projects: { '2026-11-23': ['Canvas', 'Open Studio'] },
++    });
++    return { ev, clay, paint };
++  }
++  async function openChecklist(page, ev) {
++    await loadYear(page);
++    await page.evaluate(() => initGlobalSemesterSelector());
++    await page.selectOption('#global-semester-select', Y);
++    await page.click('.tab-btn[data-tab="curriculum-admin"]');
++    await page.click(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`);
++    await expect(page.locator('#sdoc-event-materials-modal')).toHaveClass(/open/);
++    await expect(page.locator('#sdoc-event-materials-body .sdoc-evmat-camp').first()).toBeVisible();
++  }
++  const section = (page, camp) => page.locator(`#sdoc-event-materials-body .sdoc-evmat-camp[data-camp-id="${camp.id}"]`);
++  const box = (page, camp, title, itemId) =>
++    section(page, camp).locator(`.sdoc-evmat-project[data-title="${title}"] tr[data-item-id="${itemId}"] input[type="checkbox"]`);
++
++  test('M16: the checklist lists every camp → project → item with totals, reads without writing, and is hidden when the event has no items', async () => {
++    const { ev, clay, paint } = await eventWithTwoCamps();
++    // No items yet: no button.
++    await loadYear(prep);
++    await prep.evaluate(() => initGlobalSemesterSelector());
++    await prep.selectOption('#global-semester-select', Y);
++    await prep.click('.tab-btn[data-tab="curriculum-admin"]');
++    await expect(prep.locator(`.sdoc-event-card[data-event-id="${ev.id}"]`)).toBeVisible();
++    await expect(prep.locator('.sdoc-event-mat-btn')).toHaveCount(0);
++
++    const clayItem = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST clay', qty: 2, scope: 'per camper', size: '1 lb' })).value;
++    await addItem(planner, clay, 'Clay Creatures', { name: 'TEST sponges', qty: 3, scope: 'per table' });
++    const canvas = (await addItem(planner, paint, 'Canvas', { name: 'TEST canvas', qty: 1, scope: 'per camper' })).value;
++
++    await prep.evaluate(() => { window.__spy = __sdocT.spyUpdates(); });
++    try {
++      await openChecklist(prep, ev);
++      await expect(prep.locator(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`)).toHaveText('Materials checklist · 0 of 3 ticked');
++      await expect(prep.locator('#sdoc-event-materials-modal-title')).toContainText('TEST Thanksgiving Break');
++      await expect(prep.locator('.sdoc-evmat-count')).toContainText('0 of 3 ticked');
++      // Camps in card order (AM before PM), projects in camp order.
++      expect(await prep.locator('.sdoc-evmat-camp').evaluateAll(els => els.map(e => e.dataset.campId))).toEqual([clay.id, paint.id]);
++      expect(await section(prep, clay).locator('.sdoc-evmat-project').evaluateAll(els => els.map(e => e.dataset.title))).toEqual(['Clay Creatures', 'Glaze Day']);
++      await expect(section(prep, clay).locator('.sdoc-evmat-project[data-title="Glaze Day"]')).toContainText('No materials listed');
++      await expect(section(prep, clay).locator(`tr[data-item-id="${clayItem}"] .sdoc-mat-total`)).toHaveText('48');   // 2 × 24
++      await expect(section(prep, paint).locator(`tr[data-item-id="${canvas}"] .sdoc-mat-total`)).toHaveText('12');   // 1 × 12
++      await expect(section(prep, clay)).toContainText('1 lb');
++      // A checklist, not an editor.
++      await expect(prep.locator('#sdoc-event-materials-body input.sdoc-mi-name')).toHaveCount(0);
++      expect(await prep.evaluate(() => window.__spy.calls.length)).toBe(0);
++    } finally { await prep.evaluate(() => window.__spy.restore()); }
++  });
++
++  test('M17: ticking from the checklist is a 2A tick (only materialChecks, no camp write); two quick ticks both land; the card and the project popup agree', async () => {
++    const { ev, clay, paint } = await eventWithTwoCamps();
++    const a = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST A', qty: 1, scope: 'class set' })).value;
++    const b = (await addItem(planner, clay, 'Glaze Day', { name: 'TEST B', qty: 1, scope: 'class set' })).value;
++    const c = (await addItem(planner, paint, 'Canvas', { name: 'TEST C', qty: 1, scope: 'class set' })).value;
++    await openChecklist(prep, ev);
++    await prep.evaluate(() => { window.__spy = __sdocT.spyUpdates(); });
++    try {
++      await box(prep, clay, 'Clay Creatures', a).check();
++      await box(prep, clay, 'Glaze Day', b).check();   // quickly, while the first may still be saving
++      await expect.poll(async () => !!(await readPlan(planner, clay, 'Clay Creatures'))?.materialChecks?.[a]).toBe(true);
++      await expect.poll(async () => !!(await readPlan(planner, clay, 'Glaze Day'))?.materialChecks?.[b]).toBe(true);
++      await expect(box(prep, clay, 'Clay Creatures', a)).toBeChecked();
++      await expect(box(prep, clay, 'Glaze Day', b)).toBeChecked();
++      await expect(box(prep, paint, 'Canvas', c)).not.toBeChecked();
++      await expect(prep.locator('.sdoc-evmat-count')).toContainText('2 of 3 ticked');
++      await expect(section(prep, clay).locator(`tr[data-item-id="${a}"]`)).toContainText('✓');
++      const calls = await prep.evaluate(() => window.__spy.calls);
++      expect(calls.filter(x => x.path.startsWith('dayOffCamps_camps/'))).toEqual([]);
++      const writes = calls;
++      expect(writes.map(w => [w.via, Object.keys(w.data || {})])).toEqual(expect.arrayContaining([['tx.update', [`materialChecks.${a}`]], ['tx.update', [`materialChecks.${b}`]]]));
++      expect(writes.every(w => w.via === 'tx.update' && Object.keys(w.data).every(k => k.startsWith('materialChecks.')))).toBe(true);
++    } finally { await prep.evaluate(() => window.__spy.restore()); }
++    // Untick works the same way.
++    await box(prep, clay, 'Clay Creatures', a).uncheck();
++    await expect.poll(async () => !!(await readPlan(planner, clay, 'Clay Creatures'))?.materialChecks?.[a]).toBe(false);
++    await box(prep, clay, 'Clay Creatures', a).check();
++    await expect.poll(async () => !!(await readPlan(planner, clay, 'Clay Creatures'))?.materialChecks?.[a]).toBe(true);
++
++    await prep.keyboard.press('Escape');   // Esc closes it
++    await expect(prep.locator('#sdoc-event-materials-modal')).not.toHaveClass(/open/);
++    await expect(prep.locator('#sdoc-event-materials-body')).toBeEmpty();
++    await expect(prep.locator(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`)).toHaveText('Materials checklist · 2 of 3 ticked');
++    await prep.click(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`);
++    await expect(section(prep, clay)).toBeVisible();
++    await prep.locator('#sdoc-event-materials-modal').click({ position: { x: 5, y: 5 } });   // so does the backdrop
++    await expect(prep.locator('#sdoc-event-materials-modal')).not.toHaveClass(/open/);
++    await expect(prep.locator(`tr[data-camp-id="${clay.id}"] .sdoc-mat-cell`)).toContainText('2 of 2 items ticked');
++    await prep.click(`tr[data-camp-id="${clay.id}"] .sdoc-mat-btn[data-title="Glaze Day"]`);
++    await expect(prep.locator(`#sdoc-materials-modal .sdoc-mat-table tr[data-id="${b}"] input[type="checkbox"]`)).toBeChecked();
++  });
++
++  test('M18: a tick on an item the planner removed after the checklist opened is refused, and the section redraws without it', async () => {
++    const { ev, clay } = await eventWithTwoCamps();
++    const keep = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST keep', qty: 1, scope: 'class set' })).value;
++    const gone = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST gone', qty: 1, scope: 'class set' })).value;
++    await openChecklist(prep, ev);
++    const r = await attempt(planner, ({ Y, c, id }) => removeDayOffMaterialItem(Y, c, 'Clay Creatures', id), { Y, c: clay.id, id: gone });
++    expect(r.ok, r.message).toBe(true);
++    await box(prep, clay, 'Clay Creatures', gone).check();
++    await expect(section(prep, clay).locator('.sdoc-errors')).not.toBeEmpty();
++    await expect(section(prep, clay).locator(`tr[data-item-id="${gone}"]`)).toHaveCount(0);
++    await expect(section(prep, clay).locator(`tr[data-item-id="${keep}"]`)).toHaveCount(1);
++    const plan = await readPlan(planner, clay, 'Clay Creatures');
++    expect(plan.materialChecks?.[gone]).toBeUndefined();
++  });
++
++  test('M19: Materials complete and Undo from a camp section behave exactly as from the card; a sign-off cleared since the page loaded is not shown as complete', async () => {
++    const { ev, clay, paint } = await eventWithTwoCamps();
++    const a = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST A', qty: 1, scope: 'class set' })).value;
++    await addItem(planner, clay, 'Clay Creatures', { name: 'TEST B', qty: 1, scope: 'class set' });
++    const p = (await addItem(planner, paint, 'Canvas', { name: 'TEST P', qty: 1, scope: 'per camper' })).value;
++    await openChecklist(prep, ev);
++    await box(prep, clay, 'Clay Creatures', a).check();
++    await expect.poll(async () => !!(await readPlan(planner, clay, 'Clay Creatures'))?.materialChecks?.[a]).toBe(true);
++
++    await prep.evaluate(() => { window.__spy = __sdocT.spyUpdates(); });
++    try {
++      prep.once('dialog', d => { expect(d.message()).toContain('1 item is not ticked'); d.accept(); });
++      await section(prep, clay).locator('.sdoc-evmat-complete-btn').click();
++      await expect(section(prep, clay).locator('.sdoc-evmat-done')).toContainText('Materials complete');
++      await expect(section(prep, clay).locator('.sdoc-evmat-done')).toContainText('1 unticked');
++      expect((await readSignoff(planner, clay)).complete).toBe(true);
++      await expect(section(prep, paint).locator('.sdoc-evmat-complete-btn')).toBeVisible();   // other camp untouched
++      await section(prep, clay).locator('.sdoc-evmat-done >> text=Undo').click();
++      await expect(section(prep, clay).locator('.sdoc-evmat-complete-btn')).toBeVisible();
++      expect((await readSignoff(planner, clay)).complete).toBe(false);
++      // Only the camp's sign-off doc was written — twice — nothing else.
++      const signoffPath = await prep.evaluate(({ Y, c }) => `dayOffCamps_lessonData/${dayOffSignoffDocId(Y, c)}`, { Y, c: clay.id });
++      const calls = await prep.evaluate(() => window.__spy.calls);
++      expect(calls.length).toBe(2);
++      expect(calls.every(c => c.path === signoffPath)).toBe(true);
++    } finally { await prep.evaluate(() => window.__spy.restore()); }
++
++    // Paint Party signed off, then the planner changes a quantity (clears the sign-off)
++    // after the prep page last loaded: the checklist must re-read it.
++    await box(prep, paint, 'Canvas', p).check();
++    await expect.poll(async () => !!(await readPlan(planner, paint, 'Canvas'))?.materialChecks?.[p]).toBe(true);
++    await section(prep, paint).locator('.sdoc-evmat-complete-btn').click();
++    await expect(section(prep, paint).locator('.sdoc-evmat-done')).toBeVisible();
++    await prep.click('#sdoc-event-materials-modal .simple-modal-close');
++    const r = await addItem(planner, paint, 'Canvas', { name: 'TEST P', qty: 2, scope: 'per camper' }, p);
++    expect(r.ok, r.message).toBe(true);
++    expect((await readSignoff(planner, paint))?.complete === true).toBe(false);
++    expect(await prep.evaluate(({ Y, c }) => isDayOffCampComplete(Y, c), { Y, c: paint.id })).toBe(true);   // the page's stale copy
++    await prep.click(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`);
++    await expect(section(prep, paint).locator('.sdoc-evmat-complete-btn')).toBeVisible();
++    await expect(section(prep, paint).locator('.sdoc-evmat-done')).toHaveCount(0);
++  });
++
++  test('M20: a record that fails to load shows its error in its own section; the rest still render', async () => {
++    const { ev, clay, paint } = await eventWithTwoCamps();
++    await addItem(planner, clay, 'Clay Creatures', { name: 'TEST A', qty: 1, scope: 'class set' });
++    const c = (await addItem(planner, paint, 'Canvas', { name: 'TEST C', qty: 1, scope: 'class set' })).value;
++    await prep.evaluate(({ Y, c }) => {
++      const real = window.readDayOffPlan;
++      window.readDayOffPlan = async (y, campId, title) => {
++        if (campId === c && title === 'Clay Creatures') throw new Error('TEST simulated read failure');
++        return real(y, campId, title);
++      };
++    }, { Y, c: clay.id });
++    await openChecklist(prep, ev);
++    await expect(section(prep, clay).locator('.sdoc-evmat-project[data-title="Clay Creatures"]')).toContainText('TEST simulated read failure');
++    await expect(box(prep, paint, 'Canvas', c)).toBeVisible();
++  });
++
++  test('M21: hostile project titles, item names and camp titles — quotes included — render as text and still tick', async () => {
++    const ev = await makeEvent(planner);
++    const evil = `it's "x" <img src=x onerror="window.__pwned=1"> ');window.__pwned=2;('`;
++    const camp = await makeCamp(planner, ev.id, { title: `TEST ${evil}`, projects: { '2026-11-23': [`TEST ${evil}`], '2026-11-24': ['Glaze Day'], '2026-11-25': ['Glaze Day'] } });
++    const id = (await addItem(planner, camp, `TEST ${evil}`, { name: `TEST ${evil}`, qty: 1, scope: 'class set', size: evil, notes: evil })).value;
++    const g = (await addItem(planner, camp, 'Glaze Day', { name: 'TEST g', qty: 1, scope: 'class set' })).value;
++    await openChecklist(prep, ev);
++    await expect(section(prep, camp)).toContainText(`TEST ${evil}`);
++    await section(prep, camp).locator(`tr[data-item-id="${id}"] input[type="checkbox"]`).check();
++    await expect.poll(async () => !!(await readPlan(planner, camp, `TEST ${evil}`))?.materialChecks?.[id]).toBe(true);
++    await section(prep, camp).locator(`tr[data-item-id="${g}"] input[type="checkbox"]`).check();
++    await expect.poll(async () => !!(await readPlan(planner, camp, 'Glaze Day'))?.materialChecks?.[g]).toBe(true);
++    prep.once('dialog', d => d.accept());
++    await section(prep, camp).locator('.sdoc-evmat-complete-btn').click();
++    await expect(section(prep, camp).locator('.sdoc-evmat-done')).toBeVisible();
++    expect(await prep.evaluate(() => window.__pwned || 0)).toBe(0);
++  });
++
++  test('M22: capability gate — a plain classbook teacher gets no checklist button even when items exist', async () => {
++    const { ev, clay } = await eventWithTwoCamps();
++    await addItem(planner, clay, 'Clay Creatures', { name: 'TEST A', qty: 1, scope: 'class set' });
++    await loadYear(prep);
++    await prep.evaluate(() => initGlobalSemesterSelector());
++    await prep.selectOption('#global-semester-select', Y);
++    await prep.click('.tab-btn[data-tab="curriculum-admin"]');
++    await expect(prep.locator('.sdoc-event-mat-btn')).toHaveCount(1);   // prep: yes
++    const n = await prep.evaluate((Y) => {
++      const realUser = window.getAuthUser;
++      window.getAuthUser = () => ({ ...realUser(), role: 'staff', appAccess: ['classbook'] });   // a plain teacher
++      try { renderDayOffAdmin(Y); return document.querySelectorAll('.sdoc-event-mat-btn').length; }
++      finally { window.getAuthUser = realUser; renderDayOffAdmin(Y); }
++    }, Y);
++    expect(n).toBe(0);
++  });
++
++  test('M23: two projects whose lists share an item id — quick ticks on both land (the pending guard is per project record)', async () => {
++    const { ev, clay } = await eventWithTwoCamps();
++    await addItem(planner, clay, 'Clay Creatures', { name: 'TEST seed', qty: 1, scope: 'class set' });
++    await addItem(planner, clay, 'Glaze Day', { name: 'TEST seed', qty: 1, scope: 'class set' });
++    const shared = 'msharedsharedx'.slice(0, 13);   // m + 12 chars, a valid item id
++    for (const t of ['Clay Creatures', 'Glaze Day']) {
++      await planner.evaluate(({ Y, c, t, id }) => curriculumDb.collection('dayOffCamps_lessonData').doc(dayOffPlanDocId(Y, c, t))
++        .update(new firebase.firestore.FieldPath('materialItems', id), { name: `TEST shared ${t}`, qty: 1, scope: 'class set', order: 9 }), { Y, c: clay.id, t, id: shared });
++    }
++    await openChecklist(prep, ev);
++    await box(prep, clay, 'Clay Creatures', shared).check();
++    await box(prep, clay, 'Glaze Day', shared).check();
++    await expect.poll(async () => !!(await readPlan(planner, clay, 'Clay Creatures'))?.materialChecks?.[shared]).toBe(true);
++    await expect.poll(async () => !!(await readPlan(planner, clay, 'Glaze Day'))?.materialChecks?.[shared]).toBe(true);
++  });
++
++  test('M24: a sign-off that fails to load is shown as an error, never as a stale "Materials complete"; a later tick does not hide it', async () => {
++    const { ev, clay } = await eventWithTwoCamps();
++    const a = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST A', qty: 1, scope: 'class set' })).value;
++    const b = (await addItem(planner, clay, 'Clay Creatures', { name: 'TEST B', qty: 1, scope: 'class set' })).value;
++    let r = await attempt(planner, ({ Y, c, id }) => setDayOffMaterialCheck(Y, c, 'Clay Creatures', id, true), { Y, c: clay.id, id: a });
++    expect(r.ok, r.message).toBe(true);
++    r = await attempt(planner, ({ Y, c }) => setDayOffCampSignoff(Y, c, true, null), { Y, c: clay.id });
++    expect(r.ok, r.message).toBe(true);
++    await loadYear(prep);   // the prep page now caches "complete"
++    await prep.evaluate(() => {
++      window.__realRefresh = window.refreshDayOffSignoff;
++      window.refreshDayOffSignoff = async () => { throw new Error('TEST simulated sign-off read failure'); };
++    });
++    try {
++      await openChecklist(prep, ev);
++      await expect(section(prep, clay).locator('.sdoc-errors')).toContainText('TEST simulated sign-off read failure');
++      await expect(section(prep, clay).locator('.sdoc-evmat-done')).toHaveCount(0);
++      await expect(section(prep, clay).locator('.sdoc-evmat-complete-btn')).toHaveCount(0);
++      await box(prep, clay, 'Clay Creatures', b).check();
++      await expect.poll(async () => !!(await readPlan(planner, clay, 'Clay Creatures'))?.materialChecks?.[b]).toBe(true);
++      await expect(section(prep, clay).locator('.sdoc-errors')).toContainText('TEST simulated sign-off read failure');
++      await expect(section(prep, clay).locator('.sdoc-evmat-done')).toHaveCount(0);
++    } finally { await prep.evaluate(() => { window.refreshDayOffSignoff = window.__realRefresh; }); }
++  });
++
++  test('M25: closing while the lists load, then reopening — the old load never draws; Materials complete started before a close writes nothing', async () => {
++    const { ev, clay } = await eventWithTwoCamps();
++    await addItem(planner, clay, 'Clay Creatures', { name: 'TEST A', qty: 1, scope: 'class set' });
++    await loadYear(prep);
++    await prep.evaluate(() => initGlobalSemesterSelector());
++    await prep.selectOption('#global-semester-select', Y);
++    await prep.click('.tab-btn[data-tab="curriculum-admin"]');
++    // Hold every list read until released.
++    await prep.evaluate(() => {
++      window.__realRead = window.readDayOffPlan;
++      window.__gate = []; window.__hold = true;
++      window.readDayOffPlan = (...args) => window.__hold
++        ? new Promise((res, rej) => window.__gate.push(() => window.__realRead(...args).then(res, rej)))
++        : window.__realRead(...args);
++    });
++    try {
++      await prep.click(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`);
++      await expect(prep.locator('#sdoc-event-materials-body')).toContainText('Loading');
++      await prep.click('#sdoc-event-materials-modal .simple-modal-close');
++      await prep.evaluate(() => { window.__hold = false; });
++      await prep.click(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-mat-btn`);
++      await expect(section(prep, clay)).toBeVisible();
++      const html = await prep.locator('#sdoc-event-materials-body').innerHTML();
++      await prep.evaluate(() => { window.__gate.splice(0).forEach(f => f()); });   // the first load finishes now
++      await prep.waitForTimeout(500);
++      expect(await prep.locator('#sdoc-event-materials-body').innerHTML()).toBe(html);   // not redrawn by it
++      expect(await prep.locator('#sdoc-event-materials-modal').getAttribute('class')).toContain('open');
++
++      // Materials complete: its pre-check reads are held; the checklist closes; then they finish.
++      await prep.evaluate(() => { window.__hold = true; });
++      let dialogs = 0;
++      prep.on('dialog', d => { dialogs++; d.accept(); });
++      await section(prep, clay).locator('.sdoc-evmat-complete-btn').click();
++      await prep.click('#sdoc-event-materials-modal .simple-modal-close');
++      await prep.evaluate(() => { window.__hold = false; window.__gate.splice(0).forEach(f => f()); });
++      await prep.waitForTimeout(1500);
++      expect(dialogs).toBe(0);
++      expect(await readSignoff(planner, clay)).toBeNull();
++    } finally { await prep.evaluate(() => { window.readDayOffPlan = window.__realRead; }); }
++  });
++});
+diff --git a/index.html b/index.html
+index 12f4813..1da5081 100644
+--- a/index.html
++++ b/index.html
+@@ -277,6 +277,18 @@
+         </div>
+       </div>
+ 
++      <!-- Phase 2A.1: one checklist per event. A checklist, nothing typed — so it
++           closes on the backdrop and Esc (its own handler, which also redraws the grid). -->
++      <div id="sdoc-event-materials-modal" class="simple-modal-overlay" data-sticky onclick="if (event.target === this) closeDayOffEventMaterials()">
++        <div class="simple-modal sdoc-materials-modal">
++          <div class="simple-modal-header">
++            <h3 id="sdoc-event-materials-modal-title">Materials</h3>
++            <button class="simple-modal-close" onclick="closeDayOffEventMaterials()">&times;</button>
++          </div>
++          <div class="simple-modal-body" id="sdoc-event-materials-body"></div>
++        </div>
++      </div>
++
+       <!-- Help Queue (above grid for quick access) -->
+       <section class="ca-section ca-help-queue-section">
+         <button class="ca-section-toggle" id="ca-help-toggle" onclick="toggleHelpQueue()">
+diff --git a/js/app.js b/js/app.js
+index 9c807cf..72abc75 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -12118,6 +12118,12 @@ function dayOffDateRuns(dates) {
+   return runs.map(r => r.start === r.end ? formatDayOffDate(r.start) : `${formatDayOffDate(r.start)} – ${formatDayOffDate(r.end)}`);
+ }
+ 
++// An event's camps in card order: AM, full day, PM, then by title.
++function dayOffEventCamps(yearKey, eventId) {
++  return (currentDayOffCamps[yearKey] || []).filter(c => c.eventId === eventId)
++    .sort((a, b) => ['AM', 'FULL', 'PM'].indexOf(a.timeSlot) - ['AM', 'FULL', 'PM'].indexOf(b.timeSlot) || String(a.title).localeCompare(String(b.title)));
++}
++
+ function renderDayOffAdmin(yearKey) {
+   const wrapper = document.getElementById('ca-grid-wrapper');
+   if (!wrapper) return;
+@@ -12146,7 +12152,13 @@ function renderDayOffAdmin(yearKey) {
+   for (const ev of events) {
+     const m = formatDayOffDate(ev.dates?.[0], { month: 'long', year: 'numeric' });
+     if (m !== month) { html += `<div class="sdoc-month">${sdocEsc(m)}</div>`; month = m; }
+-    const evCamps = camps.filter(c => c.eventId === ev.id).sort((a, b) => ['AM', 'FULL', 'PM'].indexOf(a.timeSlot) - ['AM', 'FULL', 'PM'].indexOf(b.timeSlot) || String(a.title).localeCompare(String(b.title)));
++    const evCamps = dayOffEventCamps(yearKey, ev.id);
++    // Phase 2A.1: one checklist for the whole event, for everyone who ticks —
++    // shown once any of its camps has an item.
++    const evMat = evCamps.reduce((t, c) => { const s = dayOffCampMaterialsSummary(yearKey, c); return { items: t.items + s.items, ticked: t.ticked + s.ticked }; }, { items: 0, ticked: 0 });
++    const evMatBtn = ticker && evMat.items
++      ? `<button class="btn-secondary sdoc-event-mat-btn" onclick="openDayOffEventMaterials(this.closest('.sdoc-event-card').dataset.eventId)">Materials checklist · ${evMat.ticked} of ${evMat.items} ticked</button>`
++      : '';
+     const rows = evCamps.map(c => `
+       <tr data-camp-id="${sdocEscA(c.id)}">
+         <td><strong>${sdocEsc(c.title)}</strong>${c.notes ? `<div class="settings-hint">${sdocEsc(c.notes)}</div>` : ''}</td>
+@@ -12172,7 +12184,7 @@ function renderDayOffAdmin(yearKey) {
+             <div class="sdoc-chips">${dayOffDateRuns(ev.dates).map(r => `<span class="sdoc-chip">${sdocEsc(r)}</span>`).join('')}${ev.district ? `<span class="sdoc-chip sdoc-district">${sdocEsc(ev.district)}</span>` : ''}</div>
+             ${ev.notes ? `<div class="sdoc-event-notes">${sdocEsc(ev.notes)}</div>` : ''}
+           </div>
+-          <div class="sdoc-actions">${planner ? `
++          <div class="sdoc-actions">${evMatBtn}${planner ? `
+             <button class="btn-secondary write-control" onclick="openDayOffCampEditor('${sdocEscA(ev.id)}', null)" ${dis}>+ Add camp</button>
+             <button class="btn-text write-control" onclick="openDayOffEventEditor('${sdocEscA(ev.id)}')" ${dis}>Edit</button>
+             <button class="btn-text write-control" onclick="removeDayOffEvent('${sdocEscA(ev.id)}')" ${dis}>Remove</button>` : ''}
+@@ -12676,7 +12688,7 @@ function renderDayOffMaterialsList(errorText = '') {
+     if (planner && v.editingId === it.id) return editRow(it);
+     const tick = checks[it.id];
+     return `<tr data-id="${sdocEscA(it.id)}" class="${tick ? 'sdoc-mat-ticked' : ''}">
+-      <td>${ticker ? `<input type="checkbox" ${tick ? 'checked' : ''} ${pendingDayOffTicks.has(it.id) ? 'disabled' : ''} title="${tick ? sdocEscA(`Ticked by ${tick.by}`) : 'Tick when prepped'}" onchange="tickDayOffMaterial(this.closest('tr').dataset.id, this.checked, this)">` : (tick ? '✓' : '')}</td>
++      <td>${ticker ? `<input type="checkbox" ${tick ? 'checked' : ''} ${pendingDayOffTicks.has(`${dayOffLessonKey(v.yearKey, v.campId, v.title)}|${it.id}`) ? 'disabled' : ''} title="${tick ? sdocEscA(`Ticked by ${tick.by}`) : 'Tick when prepped'}" onchange="tickDayOffMaterial(this.closest('tr').dataset.id, this.checked, this)">` : (tick ? '✓' : '')}</td>
+       <td>${sdocEsc(it.name)}${tick ? `<div class="settings-hint">✓ ${sdocEsc(tick.by)}, ${sdocEsc(formatDayOffDate(String(tick.at).slice(0, 10), { month: 'short', day: 'numeric' }))}</div>` : ''}</td>
+       <td>${sdocEsc(it.qty)}</td>
+       <td>${sdocEsc(it.scope)}</td>
+@@ -12745,12 +12757,14 @@ function moveDayOffMaterialRow(id, direction) {
+ }
+ 
+ // Ticks save independently — a second tick while the first is saving must
+-// not be dropped (review M-3), so they don't share dayOffSaving.
++// not be dropped (review M-3), so they don't share dayOffSaving. Keyed
++// `lessonKey|itemId`: the project popup and the event checklist (2A.1) share it.
+ const pendingDayOffTicks = new Set();
+ async function tickDayOffMaterial(id, checked, box) {
+   const v = dayOffMaterialsView;
+-  if (!v || pendingDayOffTicks.has(id)) return;
+-  pendingDayOffTicks.add(id);
++  const pending = v && `${dayOffLessonKey(v.yearKey, v.campId, v.title)}|${id}`;
++  if (!v || pendingDayOffTicks.has(pending)) return;
++  pendingDayOffTicks.add(pending);
+   if (box) box.disabled = true;
+   let error = '';
+   try {
+@@ -12759,36 +12773,228 @@ async function tickDayOffMaterial(id, checked, box) {
+     console.error('Tick failed:', err);
+     error = err.problems ? err.problems.join('\n') : err.message;
+   } finally {
+-    pendingDayOffTicks.delete(id);
++    pendingDayOffTicks.delete(pending);
+   }
+   if (dayOffMaterialsView !== v) return;   // closed or switched meanwhile
+   v.plan = currentDayOffPlans[v.yearKey]?.[dayOffLessonKey(v.yearKey, v.campId, v.title)] || null;
+   renderDayOffMaterialsList(error);
+ }
+ 
+-async function markDayOffCampComplete(campId, complete) {
+-  const yearKey = getAdminSemKey();
++// From the camp card (onclick, no options) or the event checklist, which
++// passes its own yearKey, an isCurrent() check (the checklist may be closed or
++// reopened while this awaits — then nothing more happens: no confirm, no write,
++// no redraw of it) and onDone({ reread }) to redraw itself (Phase 2A.1).
++async function markDayOffCampComplete(campId, complete, { yearKey = getAdminSemKey(), onDone = null, isCurrent = () => true } = {}) {
+   const camp = (currentDayOffCamps[yearKey] || []).find(c => c.id === campId);
+-  if (!camp) return;
++  if (!camp) { onDone?.({ reread: false }); return; }
+   let expected = null;
+   if (complete) {
+     // Refresh this camp's lists from the server first, so the warning is
+     // about the real list; the write then aborts if it changes again.
+     const titles = [...dayOffCampTitles(camp).keys()];
+-    for (const t of titles) await readDayOffPlan(yearKey, campId, t);
++    try {
++      for (const t of titles) await readDayOffPlan(yearKey, campId, t);
++    } catch (err) {
++      // Never a silent no-op (2A.1 review): say why nothing happened.
++      console.error('Sign-off pre-check read failed:', err);
++      if (!isCurrent()) return;
++      alert(`Couldn't check this camp's lists — nothing was changed. ${err.message}`);
++      renderAdminGrid();
++      onDone?.({ reread: false });
++      return;
++    }
++    if (!isCurrent()) return;
+     expected = { ...dayOffCampMaterialsSummary(yearKey, camp), titles };
+     const open = expected.items - expected.ticked;
+-    if (open > 0 && !confirm(`${open} item${open === 1 ? ' is' : 's are'} not ticked — mark "${camp.title}" materials complete anyway?`)) { renderAdminGrid(); return; }
++    if (open > 0 && !confirm(`${open} item${open === 1 ? ' is' : 's are'} not ticked — mark "${camp.title}" materials complete anyway?`)) { renderAdminGrid(); onDone?.({ reread: true }); return; }
++    if (!isCurrent()) return;
+   }
++  let failed = null;
+   try {
+     await setDayOffCampSignoff(yearKey, campId, complete, expected);
+   } catch (err) {
+     console.error('Sign-off failed:', err);
+-    alert(err.problems ? err.problems.join('\n') : err.message);
++    failed = err;
+   }
+   renderAdminGrid();
++  if (!isCurrent()) return;
++  if (failed) alert(failed.problems ? failed.problems.join('\n') : failed.message);
++  onDone?.({ reread: complete });
++}
++
++// ── Phase 2A.1: one materials checklist per event ──────────────────────────
++// Every camp of the event, each project under it, each item with its tick —
++// so the prep team ticks a whole break in one place. Reads fresh from the
++// server when it opens; writes only through 2A's tick and sign-off writers.
++// Grouped camp → project: the camp is what gets signed off, and the same
++// project title can run in two camps of one event (two different lists).
++//
++// One model: rows, counts and the sign-off badge all render from the shared
++// caches (currentDayOffPlans / currentDayOffSignoffs), which every fresh read,
++// tick and reload installs into — so the badge and the rows never disagree.
++// The view only remembers what FAILED to load, so a failure is shown instead
++// of a stale cached copy until a later read of that record succeeds.
++let dayOffEventMaterialsView = null;
++// { yearKey, eventId,
++//   readErrors: Map(lessonKey → text)   a list that failed to load,
++//   signoffErrors: Map(campId → text)   a sign-off that failed to load (its controls are withheld),
++//   tickErrors: Map(campId → text) }    the last refused tick / sign-off in that camp
++
++async function openDayOffEventMaterials(eventId) {
++  const yearKey = getAdminSemKey();
++  const ev = (currentDayOffEvents[yearKey] || []).find(e => e.id === eventId);
++  if (!ev) { alert('That event is no longer here — reload the page.'); return; }
++  const view = { yearKey, eventId, readErrors: new Map(), signoffErrors: new Map(), tickErrors: new Map() };
++  dayOffEventMaterialsView = view;
++  document.getElementById('sdoc-event-materials-modal-title').textContent = `${ev.label} — materials`;
++  document.getElementById('sdoc-event-materials-body').innerHTML = '<div class="settings-hint">Loading…</div>';
++  document.getElementById('sdoc-event-materials-modal').classList.add('open');
++  // Every project record and every camp's sign-off, fresh. The sign-off is
++  // re-read too: a planner's list change deletes it, and the cached copy
++  // would still say "Materials complete".
++  const jobs = [];
++  for (const camp of dayOffEventCamps(yearKey, eventId)) {
++    jobs.push(refreshDayOffSignoff(yearKey, camp.id).catch(err => { view.signoffErrors.set(camp.id, err.message); }));
++    for (const title of dayOffCampTitles(camp).keys()) {
++      const key = dayOffLessonKey(yearKey, camp.id, title);
++      jobs.push(readDayOffPlan(yearKey, camp.id, title).catch(err => { view.readErrors.set(key, err.message); }));
++    }
++  }
++  await Promise.allSettled(jobs);
++  if (dayOffEventMaterialsView !== view) return;   // closed or reopened meanwhile
++  renderDayOffEventMaterials();
++}
++
++function closeDayOffEventMaterials() {
++  document.getElementById('sdoc-event-materials-modal')?.classList.remove('open');
++  const body = document.getElementById('sdoc-event-materials-body');
++  if (body) body.innerHTML = '';
++  dayOffEventMaterialsView = null;
++  renderAdminGrid();
++}
++
++function renderDayOffEventMaterials() {
++  const v = dayOffEventMaterialsView;
++  const body = document.getElementById('sdoc-event-materials-body');
++  if (!v || !body) return;
++  const ticker = canTickDayOffMaterials() && lessonDataLoadedSuccessfully !== false;
++  const dis = ticker ? '' : 'disabled';
++  let items = 0, ticked = 0;
++  const sections = dayOffEventCamps(v.yearKey, v.eventId).map(camp => {
++    const headcount = dayOffHeadcount(camp);
++    const count = { items: 0, ticked: 0, failed: false };
++    const projects = [...dayOffCampTitles(camp).keys()].map(title => {
++      const key = dayOffLessonKey(v.yearKey, camp.id, title);
++      const head = `<h4 class="sdoc-evmat-title">${sdocEsc(title)}</h4>`;
++      if (v.readErrors.has(key)) {
++        count.failed = true;
++        return `<div class="sdoc-evmat-project" data-title="${sdocEscA(title)}">${head}<div class="sdoc-errors">Couldn't load this list: ${sdocEsc(v.readErrors.get(key))}</div></div>`;
++      }
++      const plan = currentDayOffPlans[v.yearKey]?.[key];
++      const list = dayOffSortedItems(plan);
++      const checks = plan?.materialChecks || {};
++      count.items += list.length;
++      count.ticked += list.filter(it => checks[it.id]).length;
++      const rows = list.map(it => {
++        const tick = checks[it.id];
++        return `<tr data-item-id="${sdocEscA(it.id)}" class="${tick ? 'sdoc-mat-ticked' : ''}">
++          <td><input type="checkbox" ${tick ? 'checked' : ''} ${dis} ${pendingDayOffTicks.has(`${key}|${it.id}`) ? 'disabled' : ''} title="${tick ? sdocEscA(`Ticked by ${tick.by}`) : 'Tick when prepped'}" onchange="tickDayOffEventMaterial(this)"></td>
++          <td>${sdocEsc(it.name)}${tick ? `<div class="settings-hint">✓ ${sdocEsc(tick.by)}, ${sdocEsc(formatDayOffDate(String(tick.at).slice(0, 10), { month: 'short', day: 'numeric' }))}</div>` : ''}</td>
++          <td class="sdoc-mat-total">${sdocEsc(dayOffItemTotal(it, headcount))}</td>
++          <td>${sdocEsc(it.scope)}</td>
++          <td>${sdocEsc(it.size)}</td>
++          <td>${sdocEsc(it.notes)}</td>
++        </tr>`;
++      }).join('');
++      return `<div class="sdoc-evmat-project" data-title="${sdocEscA(title)}">${head}${rows
++        ? `<div class="sdoc-table-scroll"><table class="sdoc-camps-table sdoc-mat-table"><thead><tr><th></th><th>Material</th><th>Total</th><th>Per</th><th>Size / specs</th><th>Notes</th></tr></thead><tbody>${rows}</tbody></table></div>`
++        : '<div class="settings-hint">No materials listed.</div>'}</div>`;
++    }).join('');
++    items += count.items;
++    ticked += count.ticked;
++    const errors = [v.signoffErrors.has(camp.id) ? `Couldn't load this camp's Materials complete status: ${v.signoffErrors.get(camp.id)}` : '', v.tickErrors.get(camp.id) || ''].filter(Boolean).join('\n');
++    return `<section class="sdoc-evmat-camp" data-camp-id="${sdocEscA(camp.id)}">
++      <div class="sdoc-evmat-camp-head">
++        <div><strong>${sdocEsc(camp.title)}</strong> <span class="settings-hint">${sdocEsc(camp.timeSlot === 'FULL' ? 'Full day' : camp.timeSlot)} · ${sdocEsc(camp.timeLabel)} · headcount ${headcount}</span></div>
++        ${v.signoffErrors.has(camp.id) ? '' : renderDayOffEventSignoff(v.yearKey, camp, count, ticker)}
++      </div>
++      <div class="sdoc-errors">${sdocEsc(errors)}</div>
++      ${projects || '<div class="settings-hint">No projects yet.</div>'}
++    </section>`;
++  }).join('');
++  body.innerHTML = `
++    <div class="sdoc-evmat-count">${ticked} of ${items} ticked</div>
++    <div class="settings-hint">"Per camper" totals are quantity × that camp's headcount. Items are edited from each project's Materials button on the camp list.</div>
++    ${sections || '<div class="settings-hint">No camps yet.</div>'}
++    <div class="settings-actions"><button class="btn-secondary" onclick="closeDayOffEventMaterials()">Done</button></div>`;
+ }
+ 
++// The same Materials complete / ✓ … Undo control as the camp card, counted
++// from the rows drawn beside it. Withheld while any of the camp's lists
++// failed to load (it would be a sign-off over a list nobody could see).
++function renderDayOffEventSignoff(yearKey, camp, count, ticker) {
++  const signoff = currentDayOffSignoffs[yearKey]?.[camp.id];
++  if (signoff?.complete === true) {
++    const when = signoff.completeAt ? formatDayOffDate(String(signoff.completeAt).slice(0, 10), { month: 'short', day: 'numeric' }) : '';
++    const open = count.items - count.ticked;
++    return `<div class="sdoc-evmat-done">✓ Materials complete — ${sdocEsc(signoff.completeBy || '')}${when ? `, ${sdocEsc(when)}` : ''}${open > 0 && !count.failed ? ` · ${open} unticked` : ''}
++      ${ticker ? `<button class="btn-text" onclick="markDayOffEventCampComplete(this.closest('.sdoc-evmat-camp').dataset.campId, false)">Undo</button>` : ''}</div>`;
++  }
++  return ticker && count.items && !count.failed ? `<button class="btn-primary sdoc-evmat-complete-btn" onclick="markDayOffEventCampComplete(this.closest('.sdoc-evmat-camp').dataset.campId, true)">Materials complete</button>` : '';
++}
++
++async function tickDayOffEventMaterial(box) {
++  const v = dayOffEventMaterialsView;
++  if (!v) return;
++  const campId = box.closest('.sdoc-evmat-camp').dataset.campId;
++  const title = box.closest('.sdoc-evmat-project').dataset.title;
++  const itemId = box.closest('tr').dataset.itemId;
++  const checked = box.checked;
++  const key = dayOffLessonKey(v.yearKey, campId, title);
++  const pending = `${key}|${itemId}`;
++  if (pendingDayOffTicks.has(pending)) return;
++  pendingDayOffTicks.add(pending);
++  box.disabled = true;
++  let error = '';
++  try {
++    await setDayOffMaterialCheck(v.yearKey, campId, title, itemId, checked);
++  } catch (err) {
++    console.error('Tick failed:', err);
++    error = err.problems ? err.problems.join('\n') : err.message;
++    // Refused (e.g. the item was removed): show the list as it is now.
++    try { await readDayOffPlan(v.yearKey, campId, title); } catch (e) { console.warn('Re-read after a refused tick failed:', e); }
++  } finally {
++    pendingDayOffTicks.delete(pending);
++  }
++  if (dayOffEventMaterialsView !== v) return;   // closed or reopened meanwhile
++  if (error) v.tickErrors.set(campId, error); else v.tickErrors.delete(campId);
++  renderDayOffEventMaterials();
++}
++
++function markDayOffEventCampComplete(campId, complete) {
++  const v = dayOffEventMaterialsView;
++  if (!v) return;
++  const isCurrent = () => dayOffEventMaterialsView === v;
++  return markDayOffCampComplete(campId, complete, {
++    yearKey: v.yearKey,
++    isCurrent,
++    onDone: ({ reread }) => {
++      if (!isCurrent()) return;
++      // Complete re-read every list of this camp from the server: a list that
++      // failed at open is now current. Undo re-reads nothing, so it clears nothing.
++      const camp = (currentDayOffCamps[v.yearKey] || []).find(c => c.id === campId);
++      if (reread && camp) for (const title of dayOffCampTitles(camp).keys()) v.readErrors.delete(dayOffLessonKey(v.yearKey, campId, title));
++      v.tickErrors.delete(campId);
++      renderDayOffEventMaterials();
++    },
++  });
++}
++
++document.addEventListener('keydown', (e) => {
++  if (e.key === 'Escape' && dayOffEventMaterialsView && document.getElementById('sdoc-event-materials-modal')?.classList.contains('open')) closeDayOffEventMaterials();
++});
++
++
+ 
+ // Lists left behind by projects that were removed from this camp. They keep a
+ // camp from being removed, so a planner can discard them here.
