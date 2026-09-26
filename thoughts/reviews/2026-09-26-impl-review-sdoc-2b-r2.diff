@@ -1,0 +1,1092 @@
+diff --git a/css/styles.css b/css/styles.css
+index ec32380..5d32d52 100644
+--- a/css/styles.css
++++ b/css/styles.css
+@@ -7224,3 +7224,25 @@ label[for="ca-semester-select"] {
+ .sdoc-evmat-title { margin: 6px 0 4px; font-size: 14px; }
+ .sdoc-evmat-complete-btn { padding: 6px 12px; font-size: 13px; }
+ .sdoc-evmat-done { background: #E6F6F3; color: #00705F; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; }
++
++/* Phase 2B — School Day Off Camps in Teacher View */
++.sdoc-tv-event { margin: 16px 0 24px; }
++.sdoc-tv-event-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
++.sdoc-tv-event-head h3 { margin: 0; }
++.sdoc-tv-camp { border: 1px solid var(--border-color, #e5e7eb); border-radius: 10px; padding: 10px 14px; margin: 10px 0; background: var(--bg-card, #fff); }
++.sdoc-tv-camp-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 6px; }
++.sdoc-tv-with { font-size: 12px; font-weight: 700; color: var(--tinker-purple, #6052C8); }
++.sdoc-tv-day { display: grid; grid-template-columns: 110px 1fr; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border-color, #eee); }
++.sdoc-tv-date { font-weight: 700; font-size: 13px; }
++.sdoc-tv-blocks { display: flex; flex-direction: column; gap: 4px; }
++.sdoc-tv-block { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
++.sdoc-tv-label { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text-medium); min-width: 76px; }
++.sdoc-tv-title { font-weight: 700; }
++.sdoc-tv-unassigned { color: var(--text-medium); font-style: italic; }
++.sdoc-tv-status { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: #F1F0F7; }
++.sdoc-tv-status.progress-complete { background: #E6F6F3; color: #00705F; }
++.sdoc-tv-status.progress-in-progress, .sdoc-tv-status.progress-ready { background: #FFF6DB; color: #7A5A00; }
++.sdoc-tv-pc { font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
++.sdoc-editor-materials .materials-table { margin-top: 4px; }
++@media (max-width: 600px) { .sdoc-tv-day { grid-template-columns: 1fr; } }
++.summer-lesson-modal textarea[readonly], .te-modal-overlay.view-only textarea { background: #F6F5FA; color: var(--text-medium); cursor: default; }
+diff --git a/e2e/data-safety.spec.js b/e2e/data-safety.spec.js
+index f68f448..58aaaf9 100644
+--- a/e2e/data-safety.spec.js
++++ b/e2e/data-safety.spec.js
+@@ -7482,7 +7482,10 @@ test.describe('Data Safety — camp seasons Phase 1: lesson routing follows seme
+ 
+       for (const site of Object.keys(r)) {
+         expect(r[site].threw, site).toBe(true);
+-        expect(r[site].message, site).toMatch(/day-off-camps|no lesson store/i);
++        // SDOC Phase 2B: saveSingleLesson now routes an SDOC key to its own
++        // plan branch, which refuses this call (no dayOffAuth, and a summer-
++        // shaped payload outside its allow-list) — still before any write.
++        expect(r[site].message, site).toMatch(site === 'saveSingleLesson' ? /dayOffAuth|may not write|renamed or removed/i : /day-off-camps|no lesson store/i);
+       }
+       // Nothing was written anywhere for the refused type.
+       expect(await readTestLesson(SDOC, LESSON_KEY)).toBeNull();
+diff --git a/e2e/day-off-camps.spec.js b/e2e/day-off-camps.spec.js
+index 5300f9f..8431402 100644
+--- a/e2e/day-off-camps.spec.js
++++ b/e2e/day-off-camps.spec.js
+@@ -65,7 +65,9 @@ test.describe('School Day Off Camps — Phase 1', () => {
+       await page.evaluate((k) => setGlobalSemester(k), KEY);
+       await page.evaluate(() => renderSemesterSelector());
+       expect(await page.locator('#ca-semester-select option').allTextContents()).toContain('SDOC 2090-91 [draft]');
+-      await expect(page.locator('#ca-semester-publish-group input[type="checkbox"]')).toHaveCount(0);
++      // Phase 2B: SDOC years can be published — the toggle is there, unticked (a draft).
++      await expect(page.locator('#ca-semester-publish-group input[type="checkbox"]')).toHaveCount(1);
++      await expect(page.locator('#ca-semester-publish-group input[type="checkbox"]')).not.toBeChecked();
+ 
+       // A duplicate key is refused before any write.
+       const dupAlert = [];
+@@ -670,35 +672,33 @@ test.describe('School Day Off Camps — Phase 1', () => {
+     }
+   });
+ 
+-  test('SDOC 16: deleting a year with events is refused; the Publish toggle cannot publish it', async ({ page }) => {
++  test('SDOC 16: deleting a year with events is refused (publishing is Phase 2B — see day-off-teacher.spec.js T13)', async ({ page }) => {
+     await makeEvent(page);
+     const dialogs = [];
+     page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+     await page.evaluate(() => { window.__appDataWrites = 0; const u = window.updateAppData; window.updateAppData = async (...a) => { window.__appDataWrites++; return u(...a); }; });
+     await page.evaluate((Y) => deleteSemester(Y), Y);
+     expect(dialogs.pop()).toContain('Remove its events first');
+-    await page.evaluate((Y) => toggleSemesterPublish(Y, true), Y);
+-    expect(dialogs.pop()).toContain("can't be published");
+     expect(await page.evaluate(() => window.__appDataWrites)).toBe(0);
+     expect(await page.evaluate((Y) => currentConfig.semesters[Y].published, Y)).toBe(false);
+   });
+ 
+   // ─── Routing: nothing else treats the type as weekly or summer ────────────
+ 
+-  test('SDOC 17: an SDOC year hides Prep + Publish, shows the Teacher View placeholder, and every weekly/summer writer refuses it', async ({ page }) => {
++  test('SDOC 17: an SDOC year hides Prep, offers Publish (Phase 2B), shows its Teacher View, and every weekly/summer writer refuses it', async ({ page }) => {
+     await page.evaluate((Y) => setGlobalSemester(Y), Y);
+     await expect(page.locator('.tab-btn[data-tab="prep-dashboard"]')).toBeHidden();
+-    await expect(page.locator('#ca-semester-publish-group input[type="checkbox"]')).toHaveCount(0);
++    await expect(page.locator('#ca-semester-publish-group input[type="checkbox"]')).toHaveCount(1);
+     await expect(page.locator('#ca-grid-wrapper')).toContainText('No day-off dates yet');
+     await page.click('.tab-btn[data-tab="teacher-view"]');
+-    await expect(page.locator('#tv-content')).toContainText('arrives in the next phase');
++    await expect(page.locator('#tv-content')).toContainText('Select a teacher to see their day-off camps');
+ 
+     const results = await page.evaluate(async (Y) => {
+       const out = {};
+       const tryIt = async (name, fn) => { try { await fn(); out[name] = 'ok'; } catch (e) { out[name] = e.message; } };
+       await tryIt('lessonStoreFor', () => lessonStoreFor(Y));
+       await tryIt('saveLessonData', () => saveLessonData(Y, { a: { introPitch: 'x' } }));
+-      await tryIt('saveSingleLesson', () => saveSingleLesson(Y, `${Y}|||c|||p`, { introPitch: 'x' }));
++      await tryIt('saveSingleLesson', () => saveSingleLesson(Y, `${Y}|||c|||p`, { introPitch: 'x' }));   // SDOC branch: no such project, no dayOffAuth
+       const beforeSlots = JSON.stringify(currentLessonData[Y]);
+       await tryIt('createLessonSlotsForRoster', () => createLessonSlotsForRoster(Y, { 'TEST Class': { teacher: 'TESTteacher1' } }, 16));
+       out.slotsUnchanged = JSON.stringify(currentLessonData[Y]) === beforeSlots;
+diff --git a/js/app.js b/js/app.js
+index 28dd822..a3613cc 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -573,6 +573,58 @@ function canEditLesson(lesson) {
+   return Array.isArray(lesson.sharedWith) && lesson.sharedWith.includes(user.uid);
+ }
+ 
++// ─── SDOC (Phase 2B): single teacher names and edit rights ───────────────────
++// SDOC slots carry the camp's teachers as an array and a joined display string
++// ("Mariah + Kaitlyn") in .teacher, so nothing SDOC matches against .teacher.
++function dayOffTeacherPool(yearKey) {
++  const pool = new Set(currentConfig?.semesters?.[yearKey]?.teacherNames || []);
++  for (const camp of currentDayOffCamps[yearKey] || []) for (const t of camp.teachers || []) pool.add(t);
++  return pool;
++}
++
++// Which single SDOC name is the signed-in user? A mapping (if that name is in
++// the year's pool — a stale one falls through), else an exact name match,
++// else a first-name match only when exactly one name has that first name:
++// the answer authorizes edits, so it never guesses between two "Alex"es.
++function getDayOffTeacherNameForCurrentUser(yearKey) {
++  const user = getAuthUser();
++  if (!user) return null;
++  const pool = [...dayOffTeacherPool(yearKey)];
++  const mapped = currentConfig?.teacherMappings?.[user.uid];
++  if (mapped && pool.includes(mapped)) return mapped;
++  const userName = (user.name || '').trim();
++  if (!userName) return null;
++  const exact = pool.filter(n => n.toLowerCase() === userName.toLowerCase());
++  if (exact.length === 1) return exact[0];
++  const first = userName.split(/\s+/)[0].toLowerCase();
++  if (first.length >= 2) {
++    const hits = pool.filter(n => n.split(/\s+/)[0].toLowerCase() === first);
++    if (hits.length === 1) return hits[0];
++  }
++  return null;
++}
++
++// What an SDOC plan save is authorized by — computed at save time and re-checked
++// against the fresh camp inside the save's transaction. The classbook key is
++// what the rules require for a teacher's write.
++function dayOffAuthFor(yearKey) {
++  return {
++    canEditAnywhere: canTickDayOffMaterials(),   // planners, and prep (Kathy/Allie) with classbook — Christie, Sep 25
++    hasClassbook: !!getAuthUser()?.appAccess?.includes('classbook'),
++    myTeacherName: getDayOffTeacherNameForCurrentUser(yearKey),
++  };
++}
++function canEditDayOffPlan(slot) {
++  const a = dayOffAuthFor(slot?.yearKey || getTvSemKey());
++  return a.canEditAnywhere || (a.hasClassbook && !!a.myTeacherName && (slot?.teachers || []).includes(a.myTeacherName));
++}
++
++// The dates of the camp on which this plan's title runs.
++function dayOffTitleDates(yearKey, slot) {
++  const camp = (currentDayOffCamps[yearKey] || []).find(c => c.id === slot?.campId);
++  return (camp?.dates || []).filter(d => Object.values(normaliseDayOffDayBlocks(camp.projects?.[d])).includes(slot.projectTitle));
++}
++
+ let tvInitialized = false;
+ let tvCurrentView = 'my-schedule';
+ let tvCurrentTeacher = '';
+@@ -596,7 +648,12 @@ function isCoTeacherForCurrentSemester() {
+ }
+ 
+ async function initTeacherView() {
+-  if (tvInitialized) return;
++  // Already built: the semester may have changed on another tab — refresh for
++  // it (renderTeacherView handles SDOC, and leaving SDOC, itself).
++  if (tvInitialized) {
++    if (isDayOffYear(getTvSemKey()) || tvTeacherListFor) { renderTvSemesterSelector(); renderQaActivityPanel(); renderTeacherView(); }
++    return;
++  }
+   tvInitialized = true;
+ 
+   // Load lesson data if not already loaded
+@@ -619,6 +676,14 @@ async function initTeacherView() {
+   setupLessonDataListener((data) => {
+     currentLessonData = data;
+     renderProgressDashboard();
++    // SDOC (Phase 2B): a camp with only empty blocks has no slots, and there is
++    // no sharedWith — so re-render on every reload while the year is showing
++    // (the list and the teacher picker are rebuilt from the camps each time).
++    if (isDayOffYear(getTvSemKey())) {
++      if (document.querySelector('.tab-btn.active')?.dataset.tab === 'teacher-view') renderTeacherView();
++      renderTeacherMappingTable();
++      return;
++    }
+     // If teacher view initialized early without data, reset so it re-runs with the now-loaded data
+     const semKey = getTvSemKey();
+     const lessons = currentLessonData?.[semKey];
+@@ -643,9 +708,12 @@ async function initTeacherView() {
+   const lessons = currentLessonData?.[semKey];
+ 
+   // Before the empty-map "Loading…" branch below — an SDOC year with no camps
+-  // is an empty map and would otherwise say "Loading" forever.
++  // (or only empty blocks) is an empty map and would otherwise say "Loading"
++  // forever. Initialized like any other type (Phase 2B): the listener above is
++  // subscribed once, and the controls are bound once; renderTeacherView()
++  // builds the SDOC teacher list itself.
+   if (isDayOffYear(semKey)) {
+-    tvInitialized = false;   // re-run when the admin switches to a weekly/camp semester
++    bindTeacherViewControlsOnce();
+     renderTeacherView();
+     return;
+   }
+@@ -683,6 +751,16 @@ async function initTeacherView() {
+     }
+   }
+ 
++  bindTeacherViewControlsOnce();
++}
++
++// The Teacher View's controls, bound exactly once however the view was first
++// initialized (a weekly/camp semester or an SDOC year).
++function bindTeacherViewControlsOnce() {
++  const teacherSelect = document.getElementById('tv-teacher-select');
++  if (!teacherSelect || teacherSelect.dataset.listenerAttached) return;
++  teacherSelect.dataset.listenerAttached = 'true';
++
+   // Teacher select handler
+   teacherSelect.addEventListener('change', () => {
+     tvCurrentTeacher = teacherSelect.value;
+@@ -746,7 +824,12 @@ function renderTvSemesterSelector() {
+   // Only attach listener once
+   if (!select.dataset.listenerAttached) {
+     select.addEventListener('change', () => {
+-      tvCurrentSemester = select.value;
++      // It switches the app's semester (it used to set a variable nothing read,
++      // so it only ever re-listed the header's semester — impl review, 2B).
++      const header = document.getElementById('global-semester-select');
++      if (header) header.value = select.value;
++      setGlobalSemester(select.value);
++      if (isDayOffYear(select.value)) return;   // renderTeacherView() built the SDOC list
+       tvCurrentTeacher = '';
+       tvCurrentClassFilter = 'all';
+       tvNavStack = [];
+@@ -1179,6 +1262,8 @@ function getCurrentWeekNum() {
+ function renderQaActivityPanel() {
+   const panel = document.getElementById('tv-qa-activity');
+   if (!panel) return;
++  // No Q&A for SDOC plans (Christie, Sep 25) — never a card, even for a stray qaThread.
++  if (isDayOffYear(getTvSemKey())) { panel.innerHTML = ''; return; }
+ 
+   const user = getAuthUser();
+   const isAdminOrManager = hasCurriculumAdminAccess();
+@@ -1505,18 +1590,43 @@ function printLesson(lessonKey) {
+   setTimeout(() => printWindow.print(), 250);
+ }
+ 
+-const DAY_OFF_TEACHER_PLACEHOLDER = '<div class="tv-placeholder">Teacher planning for School Day Off Camps arrives in the next phase. Events and camps are managed in Curriculum Admin.</div>';
++let tvTeacherListFor = null;   // the SDOC year whose single names the teacher picker holds (Phase 2B)
+ 
+ function renderTeacherView() {
+   const container = document.getElementById('tv-content');
+   const semKey = getTvSemKey();
++  const classGroup = document.getElementById('tv-class-filter')?.closest('.tv-control-group');
+   if (isDayOffYear(semKey)) {
+-    if (container) container.innerHTML = DAY_OFF_TEACHER_PLACEHOLDER;
+     document.getElementById('tv-progress-dashboard')?.replaceChildren();
++    for (const el of [document.querySelector('.tv-print-btn'), document.querySelector('.tv-view-toggle'), document.getElementById('tv-this-week-btn'), classGroup]) {
++      if (el) el.style.display = 'none';
++    }
++    syncDayOffTeacherPicker(semKey);
++    if (container) renderDayOffTeacherView(container, semKey);
+     return;
+   }
++  if (classGroup) classGroup.style.display = '';
+   const lessons = currentLessonData?.[semKey];
+   const semester = currentConfig?.semesters?.[semKey];
++  // Leaving an SDOC year: the picker holds its single names — rebuild it for
++  // this semester the way initTeacherView() does.
++  if (tvTeacherListFor && tvTeacherListFor !== semKey) {
++    tvTeacherListFor = null;
++    tvCurrentTeacher = '';
++    const picker = document.getElementById('tv-teacher-select');
++    if (picker) {
++      picker.innerHTML = '<option value="">Select a teacher...</option>';
++      const group = picker.closest('.tv-control-group');
++      if (group) group.style.display = '';
++    }
++    if (lessons) {
++      populateTvTeacherList(lessons);
++      const matched = getTeacherNameForCurrentUser();
++      const select = document.getElementById('tv-teacher-select');
++      if (matched && select && [...select.options].some(o => o.value === matched)) { select.value = matched; tvCurrentTeacher = matched; }
++      updateClassFilter();
++    }
++  }
+ 
+   const isSummer = semester?.semesterType === 'summer-camp';
+ 
+@@ -1576,6 +1686,136 @@ function renderTeacherView() {
+   injectSemesterUnreadBanner(container, semKey, tvCurrentTeacher);
+ }
+ 
++// ═══════════════════════════════════════════════════════
++// SCHOOL DAY OFF CAMPS — TEACHER VIEW (Phase 2B)
++// ═══════════════════════════════════════════════════════
++
++// The picker lists single names — every name on any of the year's camps —
++// never "Mariah + Lisa". Staff without curriculum-admin see only themselves
++// (the weekly/summer rule).
++function syncDayOffTeacherPicker(yearKey) {
++  const select = document.getElementById('tv-teacher-select');
++  if (!select) return;
++  const onCamps = new Set();
++  for (const camp of currentDayOffCamps[yearKey] || []) for (const t of camp.teachers || []) onCamps.add(t);
++  let names = [...onCamps].sort((a, b) => a.localeCompare(b));
++  const me = getDayOffTeacherNameForCurrentUser(yearKey);
++  const staffOnly = !hasCurriculumAdminAccess() && !canPlanDayOffCamps();
++  if (staffOnly) names = me && onCamps.has(me) ? [me] : [];
++  select.innerHTML = '<option value="">Select a teacher...</option>' + names.map(n => `<option value="${sdocEscA(n)}">${sdocEsc(n)}</option>`).join('');
++  if (tvTeacherListFor !== yearKey) { tvTeacherListFor = yearKey; tvCurrentTeacher = ''; }
++  if (!names.includes(tvCurrentTeacher)) tvCurrentTeacher = me && names.includes(me) ? me : '';
++  select.value = tvCurrentTeacher;
++  const group = select.closest('.tv-control-group');
++  if (group) group.style.display = staffOnly && names.length <= 1 ? 'none' : '';
++}
++
++function renderDayOffTeacherView(container, yearKey) {
++  const teacher = tvCurrentTeacher;
++  const staffOnly = !hasCurriculumAdminAccess() && !canPlanDayOffCamps();
++  if (!teacher) {
++    container.innerHTML = staffOnly
++      ? '<div class="tv-placeholder">You\'re not on any day-off camps yet.</div>'
++      : '<div class="tv-placeholder">Select a teacher to see their day-off camps.</div>';
++    return;
++  }
++  const camps = (currentDayOffCamps[yearKey] || []).filter(c => (c.teachers || []).includes(teacher));
++  if (!camps.length) {
++    container.innerHTML = `<div class="tv-placeholder">${staffOnly ? 'You\'re' : `${sdocEsc(teacher)} is`} not on any day-off camps yet.</div>`;
++    return;
++  }
++  // The slot map can be briefly swapped out by a reload; it is derived data,
++  // so rebuild it from the camps when it doesn't cover them.
++  if (camps.some(c => [...dayOffCampTitles(c).keys()].some(t => !currentLessonData?.[yearKey]?.[dayOffLessonKey(yearKey, c.id, t)]))) rebuildDayOffSlots(yearKey);
++  const slots = currentLessonData?.[yearKey] || {};
++  let html = '';
++  for (const ev of currentDayOffEvents[yearKey] || []) {
++    const evCamps = dayOffEventCamps(yearKey, ev.id).filter(c => camps.includes(c));
++    if (!evCamps.length) continue;
++    html += `<section class="sdoc-tv-event" data-event-id="${sdocEscA(ev.id)}">
++      <div class="sdoc-tv-event-head"><h3>${sdocEsc(ev.label)}</h3>
++        <div class="sdoc-chips">${dayOffDateRuns(ev.dates).map(r => `<span class="sdoc-chip">${sdocEsc(r)}</span>`).join('')}</div></div>`;
++    for (const camp of evCamps) {
++      const others = (camp.teachers || []).filter(t => t !== teacher);
++      html += `<div class="sdoc-tv-camp" data-camp-id="${sdocEscA(camp.id)}">
++        <div class="sdoc-tv-camp-head">
++          <strong>${sdocEsc(camp.title)}</strong>
++          <span class="settings-hint">${sdocEsc(camp.timeSlot === 'FULL' ? 'Full day' : camp.timeSlot)} · ${sdocEsc(camp.timeLabel)} · ${sdocEsc(camp.location)} · ${(camp.placements || []).map(p => `${sdocEsc(p.studio)} ${sdocEsc(p.ageRange)}`).join(', ')} · headcount ${dayOffHeadcount(camp)}</span>
++          ${others.length ? `<span class="sdoc-tv-with">with ${sdocEsc(others.join(', '))}</span>` : ''}
++        </div>`;
++      for (const date of camp.dates || []) {
++        const day = normaliseDayOffDayBlocks(camp.projects?.[date]);
++        const cells = SDOC_BLOCKS.map(({ key, label }) => {
++          const title = day[key];
++          if (title === '—') return '';   // deliberately unused
++          if (!title) {
++            return SDOC_PROJECT_BLOCK_KEYS.includes(key)
++              ? `<div class="sdoc-tv-block sdoc-tv-unassigned" data-block="${key}"><span class="sdoc-tv-label">${label}</span> project not assigned yet</div>`
++              : '';
++          }
++          if (isDayOffNoPlanTitle(title)) {
++            return `<div class="sdoc-tv-block sdoc-tv-noplan" data-block="${key}"><span class="sdoc-tv-label">${label}</span> ${sdocEsc(title)}</div>`;
++          }
++          const lessonKey = dayOffLessonKey(yearKey, camp.id, title);
++          const slot = slots[lessonKey];
++          if (!slot) return `<div class="sdoc-tv-block" data-block="${key}"><span class="sdoc-tv-label">${label}</span> ${sdocEsc(title)}</div>`;
++          const progress = calculateLessonProgress(slot);
++          const editable = canEditDayOffPlan(slot) && lessonDataLoadedSuccessfully !== false;
++          const pending = dayOffPlanCompleteInFlight.has(`${yearKey}|${lessonKey}`);
++          return `<div class="sdoc-tv-block" data-block="${key}">
++            <span class="sdoc-tv-label">${label}</span>
++            <span class="sdoc-tv-title">${sdocEsc(title)}</span>
++            <span class="sdoc-tv-status progress-${progress}">${getProgressLabel(progress)}</span>
++            <button class="btn-text sdoc-tv-open-btn" data-lesson-key="${sdocEscA(lessonKey)}" onclick="openDayOffPlanFromList(this.dataset.lessonKey)">Open plan</button>
++            <label class="sdoc-tv-pc"><input type="checkbox" class="sdoc-tv-pc-cb" data-lesson-key="${sdocEscA(lessonKey)}" ${slot.planComplete ? 'checked' : ''} ${editable && !pending ? '' : 'disabled'} onchange="toggleDayOffPlanComplete(this)"> Plan complete</label>
++          </div>`;
++        }).join('');
++        html += `<div class="sdoc-tv-day" data-date="${sdocEscA(date)}"><div class="sdoc-tv-date">${sdocEsc(formatDayOffDate(date))}</div><div class="sdoc-tv-blocks">${cells}</div></div>`;
++      }
++      html += '</div>';
++    }
++    html += '</section>';
++  }
++  container.innerHTML = `<div class="sdoc-tv">${html}</div>`;
++}
++
++function openDayOffPlanFromList(lessonKey) {
++  const yearKey = getTvSemKey();
++  return openPlanEditor(yearKey, lessonKey, {
++    onClosed: () => setTimeout(() => {
++      document.querySelector(`.sdoc-tv-open-btn[data-lesson-key="${CSS.escape(lessonKey)}"]`)?.scrollIntoView({ block: 'center' });
++    }, 50),
++  });
++}
++
++// Plan complete from the list: one narrow { planComplete } write through the
++// same save path, identified by its plan key (a title on two days is one plan,
++// so every checkbox with that key moves together, and rolls back together).
++const dayOffPlanCompleteInFlight = new Set();
++async function toggleDayOffPlanComplete(box) {
++  const yearKey = getTvSemKey();
++  const lessonKey = box.dataset.lessonKey;
++  const requested = box.checked;
++  const flight = `${yearKey}|${lessonKey}`;
++  const boxes = () => [...document.querySelectorAll('.sdoc-tv-pc-cb')].filter(b => b.dataset.lessonKey === lessonKey);
++  if (dayOffPlanCompleteInFlight.has(flight)) { box.checked = !requested; return; }
++  const slot = currentLessonData?.[yearKey]?.[lessonKey];
++  if (!slot || !canEditDayOffPlan(slot)) { box.checked = !requested; return; }
++  dayOffPlanCompleteInFlight.add(flight);
++  boxes().forEach(b => { b.checked = requested; b.disabled = true; });
++  try {
++    const result = await saveSingleLesson(yearKey, lessonKey, { planComplete: requested }, [], { dayOffAuth: dayOffAuthFor(yearKey) });
++    if (result?.status === 'savedSince') alert(`Saved — ${result.by} has edited this plan since.`);
++  } catch (err) {
++    console.error('Plan complete failed:', err);
++    boxes().forEach(b => { b.checked = !requested; });
++    alert(`Couldn't ${requested ? 'mark' : 'unmark'} the plan complete: ${err.message}`);
++  } finally {
++    dayOffPlanCompleteInFlight.delete(flight);
++  }
++  renderTeacherView();
++}
++
+ // ═══════════════════════════════════════════════════════
+ // SUMMER CAMP VIEW (Project-based, not week-based)
+ // ═══════════════════════════════════════════════════════
+@@ -4269,12 +4509,7 @@ function renderSemesterSelector() {
+ 
+   // Publish toggle for current semester
+   const sem = semesters[currentKey];
+-  if (sem && !isPublishableType(currentKey)) {
+-    publishGroup.innerHTML = `
+-      <span class="ca-sem-unpublished-badge">Draft</span>
+-      <small class="settings-hint" style="margin-left:6px">Stays hidden from teachers until teacher planning ships (next phase).</small>
+-      <button class="btn-text ca-delete-sem-btn" onclick="deleteSemester('${escAttr(currentKey)}')" title="Delete this school year">&#128465; Delete</button>`;
+-  } else if (sem) {
++  if (sem) {
+     const isPublished = sem.published !== false;
+     const isActive = currentKey === currentConfig.activeSemester;
+     publishGroup.innerHTML = `
+@@ -4368,7 +4603,13 @@ function switchAdminSemester(key) {
+ 
+ async function toggleSemesterPublish(key, published) {
+   if (!currentConfig?.semesters?.[key]) return;
+-  if (!isPublishableType(key)) { alert('This school year can\'t be published until teacher planning for School Day Off Camps ships.'); return; }
++  if (!isPublishableType(key)) { alert('This semester type can\'t be published.'); return; }
++  // SDOC (Phase 2B): publishing shows the year to every teacher on a camp —
++  // say so first if some camps have nobody to see them.
++  if (published && isDayOffYear(key)) {
++    const bare = (currentDayOffCamps[key] || []).filter(c => !(c.teachers || []).length).length;
++    if (bare && !confirm(`${bare} camp${bare === 1 ? ' has' : 's have'} no teacher yet — publish anyway?`)) { renderSemesterSelector(); return; }
++  }
+   const hadPublished = 'published' in currentConfig.semesters[key];
+   const previous = currentConfig.semesters[key].published;
+   currentConfig.semesters[key].published = published;
+@@ -4386,10 +4627,9 @@ async function toggleSemesterPublish(key, published) {
+   renderSemesterSelector();
+ }
+ 
+-// Which types may be published to teachers. SDOC years join in Phase 2, when
+-// teachers have something to see — until then an SDOC year cannot be exposed
+-// with an empty teacher view.
+-const PUBLISHABLE_SEMESTER_TYPES = new Set([SEMESTER_TYPES.weekly, SEMESTER_TYPES.camp]);
++// Which types may be published to teachers. SDOC years joined in Phase 2B,
++// when teachers got their day-off plans to build.
++const PUBLISHABLE_SEMESTER_TYPES = new Set([SEMESTER_TYPES.weekly, SEMESTER_TYPES.camp, SEMESTER_TYPES.dayOff]);
+ function isPublishableType(semKey) { return PUBLISHABLE_SEMESTER_TYPES.has(semesterTypeOf(semKey)); }
+ 
+ function openNewSemesterModal() {
+@@ -10411,8 +10651,6 @@ function loadSettingsForm() {
+     const isPublished = semester.published !== false;
+     if (isActive) {
+       publishGroup.innerHTML = '<span class="ca-sem-active-badge">Active Semester — always visible to teachers</span>';
+-    } else if (!isPublishableType(semKey)) {
+-      publishGroup.innerHTML = '<span class="ca-sem-unpublished-badge">Draft</span> <small class="settings-hint">School Day Off Camps stay hidden from teachers until teacher planning ships (next phase).</small>';
+     } else {
+       publishGroup.innerHTML = `
+         <label class="ca-publish-toggle">
+@@ -11189,6 +11427,27 @@ function openLessonModal(campName, projectTitle, block) {
+   }
+ 
+   markQaAsRead(lessonKey);
++  return openPlanEditor(semKey, lessonKey, { onClosed: () => restoreSummerCampExpansion(campName, projectTitle, block) });
++}
++
++// The plan editor's shared body (SDOC Phase 2B split): the summer entry point
++// above resolves a lessonKey from camp/project/block; the SDOC list calls this
++// directly with the plan key. For an SDOC year the plan is read fresh from the
++// server first (a co-teacher may have saved since this page loaded), and a
++// handful of pieces differ — materials from the planner's list, no Q&A, no
++// Print, no reference section, no backdrop close, and a read-only mode for
++// people who can see but not edit. The save chain, dirty-diff, close-wait
++// and failure revert are the same code for both.
++async function openPlanEditor(semKey, lessonKey, { onClosed = null } = {}) {
++  const sdoc = isDayOffYear(semKey);
++  if (sdoc) {
++    try { await readDayOffPlanForEditor(semKey, lessonKey); }
++    catch (err) { alert(`Couldn't open this plan — ${err.message}`); return; }
++  }
++  let lesson = currentLessonData?.[semKey]?.[lessonKey];
++  if (!lesson) { alert(sdoc ? DAY_OFF_RENAMED_MESSAGE : 'Lesson not found'); return; }
++  const { campName, projectTitle, block } = lesson;
++  const canEdit = sdoc ? canEditDayOffPlan(lesson) : true;   // summer: canEditLesson() gates each save, as before
+ 
+   // Remove existing modal
+   document.getElementById('summer-lesson-modal')?.remove();
+@@ -11214,19 +11473,35 @@ function openLessonModal(campName, projectTitle, block) {
+     materialsHtml += '</tbody></table>';
+   }
+ 
++  const headcount = Number(lesson.classSize) || 0;
++  const sdocItems = sdoc ? dayOffSortedItems(lesson) : [];
++  const sdocMaterialsHtml = !sdoc ? '' : `
++        <div class="field-group sdoc-editor-materials">
++          <label>Materials (from the planner — headcount ${headcount})</label>
++          ${sdocItems.length ? `<table class="materials-table">
++            <thead><tr><th>Material</th><th>Total</th><th>Per</th><th>Size / specs</th><th>Notes</th></tr></thead>
++            <tbody>${sdocItems.map(it => `<tr><td>${sdocEsc(it.name)}</td><td>${sdocEsc(dayOffItemTotal(it, headcount))}</td><td>${sdocEsc(it.scope)}</td><td>${sdocEsc(it.size)}</td><td>${sdocEsc(it.notes)}</td></tr>`).join('')}</tbody>
++          </table>` : '<p class="settings-hint">No materials listed yet.</p>'}
++        </div>`;
++  const metaHtml = sdoc ? `
++        <span><strong>Camp:</strong> ${escHtml(campName)}</span>
++        <span><strong>Project:</strong> ${escHtml(projectTitle)}</span>
++        <span>${escHtml(lesson.eventLabel || '')} — ${escHtml(dayOffTitleDates(semKey, lesson).map(d => formatDayOffDate(d)).join(', '))}</span>
++        <span><strong>Headcount:</strong> ${headcount}${(lesson.placements || []).length ? ` (${escHtml(lesson.placements.map(p => `${p.studio} ${p.ageRange}`).join(', '))})` : ''}</span>` : `
++        <span><strong>Camp:</strong> ${escHtml(campName)}</span>
++        <span><strong>Day:</strong> ${escHtml(lesson.dayName)}</span>
++        <span><strong>Block:</strong> ${escHtml(block)}</span>`;
++
+   modal.innerHTML = `
+     <div class="te-modal summer-lesson-modal">
+       <div class="te-modal-header">
+-        <h3>Edit Lesson Plan: ${escHtml(projectTitle)}</h3>
++        <h3>${canEdit ? 'Edit Lesson Plan' : 'Lesson Plan'}: ${escHtml(projectTitle)}</h3>
+         <button class="simple-modal-close" id="summer-lesson-close">&times;</button>
+       </div>
+-      <div class="te-modal-meta">
+-        <span><strong>Camp:</strong> ${escHtml(campName)}</span>
+-        <span><strong>Day:</strong> ${escHtml(lesson.dayName)}</span>
+-        <span><strong>Block:</strong> ${escHtml(block)}</span>
++      <div class="te-modal-meta">${metaHtml}
+       </div>
+       <div class="te-modal-body">
+-
++${sdoc ? sdocMaterialsHtml : `
+         <!-- Reference Section (Collapsible) -->
+         <div class="summer-reference-section">
+           <h4 class="collapsible" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('hidden');">
+@@ -11239,7 +11514,7 @@ function openLessonModal(campName, projectTitle, block) {
+             ${lesson.projectAdminNotes ? `<div class="field-group"><label>Admin Notes</label><div class="field-text">${linkifyText(lesson.projectAdminNotes)}</div></div>` : ''}
+             ${materialsHtml ? `<div class="field-group"><label>Materials to Prep</label>${materialsHtml}</div>` : ''}
+           </div>
+-        </div>
++        </div>`}
+ 
+         <!-- Lesson Plan Fields -->
+         <div class="summer-lesson-fields">
+@@ -11299,7 +11574,7 @@ function openLessonModal(campName, projectTitle, block) {
+           </div>
+         </div>
+ 
+-        <!-- Q&A with Admin Section -->
++        ${sdoc ? '' : `<!-- Q&A with Admin Section -->
+         <div class="te-qa-section" id="summer-qa-section">
+           <div class="te-section-title">Questions for Admin</div>
+           <div id="summer-qa-thread-container">
+@@ -11309,13 +11584,13 @@ function openLessonModal(campName, projectTitle, block) {
+             <input type="text" class="te-qa-input" id="summer-qa-input" placeholder="Ask admin a question about this lesson...">
+             <button class="te-qa-send-btn" id="summer-qa-send-btn">Send</button>
+           </div>
+-        </div>
++        </div>`}
+       </div>
+       <div class="te-modal-footer">
+         <div class="auto-save-status" id="summer-autosave-status"></div>
+         <div class="modal-buttons">
+           <button class="te-save-btn" id="summer-lesson-save">Save</button>
+-          <button class="te-save-btn" id="summer-lesson-print">&#128438; Print</button>
++          ${sdoc ? '' : '<button class="te-save-btn" id="summer-lesson-print">&#128438; Print</button>'}
+           <button class="te-cancel-btn" id="summer-lesson-cancel">Close</button>
+         </div>
+       </div>
+@@ -11324,6 +11599,16 @@ function openLessonModal(campName, projectTitle, block) {
+ 
+   document.body.appendChild(modal);
+ 
++  // Read-only: someone who can see this plan but may not edit it (SDOC).
++  if (!canEdit) {
++    modal.classList.add('view-only');
++    modal.querySelectorAll('textarea').forEach(ta => { ta.readOnly = true; });
++    modal.querySelector('#summer-lesson-save').style.display = 'none';
++    modal.querySelector('#summer-photo-upload-area')?.style.setProperty('display', 'none');
++    modal.querySelectorAll('.te-photo-remove-btn').forEach(b => { b.style.display = 'none'; });
++    modal.querySelector('#summer-autosave-status').textContent = 'View only';
++  }
++
+   // Snapshot content fields at open time (Data Safety Plan Stage 3) — a field
+   // that's non-empty here but empty at save time is an intentional clear, not
+   // an accidental stale-empty save. Reset after each successful save so a
+@@ -11339,8 +11624,8 @@ function openLessonModal(campName, projectTitle, block) {
+     dayOfMaterials: lesson.dayOfMaterials || '',
+   };
+ 
+-  // Load Q&A thread and wire up send button
+-  loadSummerLessonQa(semKey, lessonKey, lesson);
++  // Load Q&A thread and wire up send button (summer only — no SDOC Q&A, Christie Sep 25)
++  if (!sdoc) loadSummerLessonQa(semKey, lessonKey, lesson);
+   document.getElementById('summer-qa-send-btn')?.addEventListener('click', () => sendSummerQaMessage(semKey, lessonKey, lesson));
+   document.getElementById('summer-qa-input')?.addEventListener('keydown', (e) => {
+     if (e.key === 'Enter') sendSummerQaMessage(semKey, lessonKey, lesson);
+@@ -11432,7 +11717,7 @@ function openLessonModal(campName, projectTitle, block) {
+   const saveBtn = () => modal.querySelector('#summer-lesson-save');
+ 
+   const saveLesson = (showStatus = true) => {
+-    if (!canEditLesson(lesson)) {
++    if (!(sdoc ? canEditDayOffPlan(lesson) : canEditLesson(lesson))) {
+       console.warn('⛔ Save blocked — no edit permission for this lesson');
+       return Promise.resolve();
+     }
+@@ -11544,7 +11829,9 @@ function openLessonModal(campName, projectTitle, block) {
+ 
+       if (hasNewPhoto) {
+         if (showStatus && !closing) autoSaveStatus.textContent = 'Uploading photo...';
+-        const result = await uploadSummerCampPhoto(semKey, lessonKey, photoInput.files[0]);
++        const result = sdoc
++          ? await uploadDayOffPlanPhoto(semKey, lesson.campId, lesson.projectTitle, photoInput.files[0])
++          : await uploadSummerCampPhoto(semKey, lessonKey, photoInput.files[0]);
+         updatedLesson.photoUrl = result.url;
+         updatedLesson.photoPath = result.path;
+         if (showStatus && !closing) autoSaveStatus.textContent = 'Saving...';
+@@ -11575,11 +11862,15 @@ function openLessonModal(campName, projectTitle, block) {
+         // (idempotent), and a doc this save CREATES must carry them — the
+         // Summer Camp App's orphan check queries this collection by
+         // campName/teacher, and the wipe monitor tallies docs by teacher.
+-        teacher: lesson.teacher,
+-        campName: lesson.campName,
+-        block: lesson.block,
+-        projectTitle: lesson.projectTitle,
+-        className: lesson.className,
++        // SDOC sends none: the save stamps identity from the camp, and
++        // anything outside its allow-list is refused.
++        ...(sdoc ? {} : {
++          teacher: lesson.teacher,
++          campName: lesson.campName,
++          block: lesson.block,
++          projectTitle: lesson.projectTitle,
++          className: lesson.className,
++        }),
+         ...contentUpdates,
+         lastEditedBy: updatedLesson.lastEditedBy,
+         lastEditedAt: updatedLesson.lastEditedAt,
+@@ -11592,19 +11883,35 @@ function openLessonModal(campName, projectTitle, block) {
+       optimisticLesson = savedLesson;
+       if (currentLessonData[semKey]) currentLessonData[semKey][lessonKey] = savedLesson;
+       lesson = savedLesson;
+-      await saveSingleLesson(semKey, lessonKey, payload, fieldsToClear);
++      const result = await saveSingleLesson(semKey, lessonKey, payload, fieldsToClear, sdoc ? { dayOffAuth: dayOffAuthFor(semKey) } : undefined);
+       // saveSingleLesson() stamps lastEditedBy/At onto the object it is given;
+       // keep the cache copy identical to what was written.
+       savedLesson.lastEditedBy = payload.lastEditedBy;
+       savedLesson.lastEditedAt = payload.lastEditedAt;
+ 
+-      // Save confirmed. If the listener swapped the summer cache out from
+-      // under this save with a read taken BEFORE the write landed, the cache
+-      // now shows pre-save content — put the confirmed copy back, unless
+-      // what's there is at least as new.
+-      const semCache = currentLessonData[semKey];
+-      if (semCache && semCache[lessonKey] !== savedLesson && editedAtOf(semCache[lessonKey]) < editedAtOf(savedLesson)) {
+-        semCache[lessonKey] = savedLesson;
++      let sdocNote = '';
++      if (sdoc) {
++        // The SDOC save installed the server's own copy (read back and
++        // verified) — no clock-based re-install here: it could put my copy
++        // back over a co-teacher's newer text, or re-create a renamed-away
++        // slot (plan, round 4).
++        lesson = currentLessonData[semKey]?.[lessonKey] || lesson;
++        if (result?.status === 'savedSince') {
++          sdocNote = result.own
++            ? '✓ Saved — this plan was saved again just after, from another window or the Plan complete box; reopen to see the latest.'
++            : `✓ Saved — ${result.by} has edited this plan since; reopen to see their changes.`;
++        } else if (result?.status === 'renamed') {
++          sdocNote = '✓ Saved — but this project was just renamed by the planner; reopen the camp.';
++        }
++      } else {
++        // Save confirmed. If the listener swapped the summer cache out from
++        // under this save with a read taken BEFORE the write landed, the cache
++        // now shows pre-save content — put the confirmed copy back, unless
++        // what's there is at least as new.
++        const semCache = currentLessonData[semKey];
++        if (semCache && semCache[lessonKey] !== savedLesson && editedAtOf(semCache[lessonKey]) < editedAtOf(savedLesson)) {
++          semCache[lessonKey] = savedLesson;
++        }
+       }
+       displacedSummerServerCopies.delete(displacedKey(semKey, lessonKey)); // this save is now the confirmed state; nothing parked applies
+ 
+@@ -11643,9 +11950,9 @@ function openLessonModal(campName, projectTitle, block) {
+       if (showStatus) {
+         const btn = saveBtn(); // this modal's button, never a newer modal's
+         autoSaveStatus.style.color = '';
+-        autoSaveStatus.textContent = fieldsToClear.length > 0
++        autoSaveStatus.textContent = sdocNote || (fieldsToClear.length > 0
+           ? `✓ Saved (${fieldsToClear.join(', ')} cleared)`
+-          : '✓ Saved';
++          : '✓ Saved');
+         if (btn) {
+           btn.textContent = 'Saved!';
+           btn.disabled = true;
+@@ -11658,8 +11965,9 @@ function openLessonModal(campName, projectTitle, block) {
+             btn.textContent = 'Save';
+             btn.disabled = false;
+           }
+-          // The status line belongs to whichever save is newest.
+-          if (myInvocation === saveInvocationCounter) autoSaveStatus.textContent = '';
++          // The status line belongs to whichever save is newest. An SDOC
++          // "edited since" note stays until the next save replaces it.
++          if (myInvocation === saveInvocationCounter && !sdocNote) autoSaveStatus.textContent = '';
+         }, 2000);
+       }
+       return true;
+@@ -11794,14 +12102,29 @@ function openLessonModal(campName, projectTitle, block) {
+ 
+   const finishClose = () => {
+     modal.remove();
++    renderTeacherView(); // Refresh view when closing
++    onClosed?.();
++  };
+ 
+-    // Store camp and project info to restore state after re-render
+-    const restoreCampName = campName;
+-    const restoreProjectTitle = projectTitle;
+-    const restoreBlock = block;
++  // Save button - trigger manual save
++  document.getElementById('summer-lesson-save').addEventListener('click', async () => {
++    await saveLesson(true);
++  });
+ 
+-    renderTeacherView(); // Refresh view when closing
++  // Print is summer-only; the binding is conditional so its absence never
++  // stops the close handlers below from being bound.
++  document.getElementById('summer-lesson-print')?.addEventListener('click', () => {
++    printProject(campName, projectTitle);
++  });
++
++  document.getElementById('summer-lesson-close').addEventListener('click', () => closeModal(true));
++  document.getElementById('summer-lesson-cancel').addEventListener('click', () => closeModal(true));
++  // SDOC editors never close on a stray backdrop click (Christie, Sep 24).
++  if (!sdoc) modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(false); });
++}
+ 
++// After the summer editor closes: re-expand the camp and the project it came from.
++function restoreSummerCampExpansion(restoreCampName, restoreProjectTitle, restoreBlock) {
+     // Restore expanded state after render completes
+     setTimeout(() => {
+       // Find and expand the camp section
+@@ -11832,20 +12155,6 @@ function openLessonModal(campName, projectTitle, block) {
+         });
+       }
+     }, 50);
+-  };
+-
+-  // Save button - trigger manual save
+-  document.getElementById('summer-lesson-save').addEventListener('click', async () => {
+-    await saveLesson(true);
+-  });
+-
+-  document.getElementById('summer-lesson-print').addEventListener('click', () => {
+-    printProject(campName, projectTitle);
+-  });
+-
+-  document.getElementById('summer-lesson-close').addEventListener('click', () => closeModal(true));
+-  document.getElementById('summer-lesson-cancel').addEventListener('click', () => closeModal(true));
+-  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(false); });
+ }
+ 
+ function printCamp(campName) {
+diff --git a/js/firebase-data.js b/js/firebase-data.js
+index a7cd2d6..854d4eb 100644
+--- a/js/firebase-data.js
++++ b/js/firebase-data.js
+@@ -1035,7 +1035,12 @@ const displacedKey = (semKey, lessonKey) => `${semKey}|${lessonKey}`;
+ // fields, keep the in-memory copy when it is strictly newer — recently — than
+ // the freshly read one. The in-memory OBJECT is kept (updated in place), so
+ // the editor's identity checks on its optimistic entry still hold.
+-function mergeSummerReload(semKey, previous, fresh) {
++// protectedKeys (SDOC, Phase 2B): lessons whose fresh copy is a VERIFIED save
++// newer than this reload's query — taken whole, never overridden by the
++// clock-based keepMine below and never parked (a faster clock on an older
++// in-memory copy must not put old text back). Defaults to the set
++// loadDayOffCampData() attached to its result; summer results carry none.
++function mergeSummerReload(semKey, previous, fresh, protectedKeys = fresh?.[DAY_OFF_PROTECTED] || null) {
+   // A lesson the fresh scaffold no longer has is gone — nothing parked for it
+   // may be resurrected by an editor fallback later. Only THIS semester's
+   // parked copies are considered: pruning globally would evict the other
+@@ -1048,6 +1053,7 @@ function mergeSummerReload(semKey, previous, fresh) {
+   if (!previous) return fresh;
+   const now = Date.now();
+   for (const key of Object.keys(fresh)) {
++    if (protectedKeys?.has(key)) { displacedSummerServerCopies.delete(displacedKey(semKey, key)); continue; }
+     const mine = previous[key];
+     const mineAt = lessonEditedAtMs(mine);
+     const keepMine = mine && mineAt > lessonEditedAtMs(fresh[key]) && Math.abs(now - mineAt) < SUMMER_KEEP_MINE_WINDOW_MS;
+@@ -1125,6 +1131,7 @@ function setupLessonDataListener(callback) {
+       if (!isCurrent()) { console.log('📚 Camp season reload superseded by a newer snapshot — ignoring its result'); return 'stale'; }
+       for (const yearKey of dayOffKeys) {
+         currentLessonData[yearKey] = mergeSummerReload(yearKey, previousSummer?.[yearKey], fresh[yearKey]);
++        healDayOffYearAfterReload(yearKey, fresh[yearKey]);
+       }
+       for (const plan of plans) {
+         // Each season merges against ITS OWN previous map — mergeSummerReload
+@@ -1354,7 +1361,7 @@ async function verifySummerLessonWrite(docRef, writtenContentFields) {
+ // authoritative: it overrides whatever (possibly stale) value lessonData
+ // happens to carry for that key, since callers may still send the pre-edit
+ // value alongside a separate clear signal (see saveLesson()'s contentUpdates).
+-async function saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClear = []) {
++async function saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClear = [], opts = {}) {
+   if (lessonDataLoadedSuccessfully === false) {
+     throw new Error('Lesson data failed to load — refusing to save to avoid writing over unconfirmed server state. Reload and try again.');
+   }
+@@ -1363,6 +1370,13 @@ async function saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClea
+   lessonData.lastEditedBy = user?.name || 'Unknown';
+   lessonData.lastEditedAt = new Date().toISOString();
+ 
++  // SDOC plans (Phase 2B) branch here — after the stamp, so every SDOC write
++  // (the narrow Plan complete one included) carries lastEditedBy/At — and
++  // BEFORE lessonStoreFor(), which keeps throwing for the type: its other six
++  // callers fall through to curriculum/lessonData on anything that isn't
++  // 'camp', and that throw is what keeps an SDOC key out of it.
++  if (isDayOffYear(semesterKey)) return saveDayOffPlan(semesterKey, lessonKey, lessonData, fieldsToClear, opts.dayOffAuth);
++
+   console.log('💾 Attempting to save lesson:', { semesterKey, lessonKey, user: user?.email });
+ 
+   const hasContent = lessonHasContent(lessonData);
+@@ -1557,6 +1571,22 @@ async function uploadSummerCampPhoto(semKey, lessonKey, file) {
+   return { url, path };
+ }
+ 
++// SDOC plan photos (Phase 2B): the summer upload's guards, under the
++// curriculum/ prefix storage.rules already allows — no Storage rules change.
++async function uploadDayOffPlanPhoto(yearKey, campId, projectTitle, file) {
++  if (lessonDataLoadedSuccessfully === false) {
++    throw new Error('Lesson data failed to load — refusing to upload a photo for a save that would be refused. Reload and try again.');
++  }
++  if (typeof firebase.storage !== 'function') {
++    throw new Error('Firebase Storage SDK not loaded. Hard refresh and try again.');
++  }
++  const storage = getFirebaseStorage();
++  const path = `curriculum/${yearKey}/${dayOffPlanDocId(yearKey, campId, projectTitle)}/demo-${uniquePhotoSuffix()}.jpg`;
++  const resized = await resizeImage(file, 1200, 0.8);
++  const snapshot = await storage.ref(path).put(resized, { contentType: 'image/jpeg' });
++  return { url: await snapshot.ref.getDownloadURL(), path };
++}
++
+ async function deleteLessonPhoto(storagePath) {
+   const storage = getFirebaseStorage();
+   try {
+@@ -2034,6 +2064,7 @@ function buildDayOffSlots(yearKey, events, camps, plans = {}) {
+       const lessonKey = dayOffLessonKey(yearKey, camp.id, projectTitle);
+       slots[lessonKey] = {
+         ...(plans[lessonKey] || {}),
++        yearKey,
+         eventId: camp.eventId,
+         eventLabel: event.label || '',
+         dates: camp.dates || [],
+@@ -2072,6 +2103,9 @@ async function dayOffServerDocs(coll, field, value) {
+ // (or any failure) throws, so the caller trips the app-wide load guard.
+ async function loadDayOffCampData({ yearKey, isCurrent = () => true } = {}) {
+   if (!curriculumDb) initCurriculumFirestore();
++  // Read BEFORE the queries: any plan verified after this point is newer than
++  // what they return (Phase 2B — a reload must not undo a verified save).
++  const startSeq = dayOffInstallSeq;
+   const [eventSnap, campSnap, planSnap] = await Promise.all([
+     dayOffQuery('events', 'yearKey', yearKey).get(),
+     dayOffQuery('camps', 'yearKey', yearKey).get(),
+@@ -2086,13 +2120,21 @@ async function loadDayOffCampData({ yearKey, isCurrent = () => true } = {}) {
+     if (isDayOffSignoffDoc(p)) { signoffs[p.campId] = p; return; }   // never a plan, never a slot
+     plans[dayOffLessonKey(yearKey, p.campId, p.projectTitle)] = p;
+   });
++  const protectedKeys = new Set();
++  for (const [key, seq] of Object.entries(dayOffVerifiedAt[yearKey] || {})) {
++    const verified = currentDayOffPlans[yearKey]?.[key];
++    if (seq > startSeq && verified) { plans[key] = verified; protectedKeys.add(key); }
++  }
+   if (isCurrent()) {
+     currentDayOffEvents[yearKey] = events;
+     currentDayOffCamps[yearKey] = camps;
+     currentDayOffPlans[yearKey] = plans;
+     currentDayOffSignoffs[yearKey] = signoffs;
+   }
+-  return buildDayOffSlots(yearKey, events, camps, plans);
++  const slots = buildDayOffSlots(yearKey, events, camps, plans);
++  Object.defineProperty(slots, DAY_OFF_PROTECTED, { value: protectedKeys, enumerable: false });
++  Object.defineProperty(slots, DAY_OFF_LOAD_START, { value: startSeq, enumerable: false });
++  return slots;
+ }
+ 
+ function rebuildDayOffSlots(yearKey) {
+@@ -2511,6 +2553,189 @@ async function deleteDayOffCamp(yearKey, campId) {
+   scheduleDayOffReload();
+ }
+ 
++// ─── Phase 2B: teacher plans ────────────────────────────────────────────────
++// A teacher's plan is the camp-project's record in dayOffCamps_lessonData (the
++// same doc 2A's materials live on). The deployed rules let any classbook user
++// write any field there, so these allow-lists are what keep a plan save off
++// materialItems / materialChecks / identity (plan, round 1).
++const DAY_OFF_PLAN_WRITABLE = [...CONTENT_FIELDS, 'photoUrl', 'photoPath', 'planComplete', 'lastEditedBy', 'lastEditedAt'];
++const DAY_OFF_PLAN_CLEARABLE = [...CONTENT_FIELDS, 'photoUrl', 'photoPath'];
++const DAY_OFF_PROTECTED = Symbol('dayOffProtectedKeys');
++const DAY_OFF_LOAD_START = Symbol('dayOffLoadStartSeq');
++// After a reload merged an SDOC year: if any plan was verified after THIS
++// year's queries began — including while a later year was still loading, when
++// its protected set was already frozen (impl review) — rebuild the year's
++// slots from the plan map, which holds every verified copy.
++function healDayOffYearAfterReload(yearKey, loaded) {
++  const startSeq = loaded?.[DAY_OFF_LOAD_START];
++  if (startSeq == null) return;
++  if (Object.values(dayOffVerifiedAt[yearKey] || {}).some(seq => seq > startSeq)) rebuildDayOffSlots(yearKey);
++}
++// Clock-free ordering of verified installs (plan, round 6): a reload keeps any
++// plan verified after its queries started.
++let dayOffInstallSeq = 0;
++const dayOffVerifiedAt = {};   // yearKey → { lessonKey: seq }
++
++function newDayOffEditId() {
++  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
++  const buf = (typeof crypto !== 'undefined' && crypto.getRandomValues) ? crypto.getRandomValues(new Uint8Array(15)) : Array.from({ length: 15 }, () => Math.floor(Math.random() * 256));
++  let id = 'e';
++  for (const b of buf) id += chars[b % chars.length];
++  return id;
++}
++
++// A server copy of a plan this tab has verified (opened fresh, or saved and
++// read back): installed, marked newer than any reload already in flight, slots
++// rebuilt — no reload scheduled (a teacher's autosaves must not each cost
++// three queries; plan, round 2).
++function dayOffInstallVerified(yearKey, lessonKey, data) {
++  const map = currentDayOffPlans[yearKey] = currentDayOffPlans[yearKey] || {};
++  if (data) map[lessonKey] = data; else delete map[lessonKey];
++  (dayOffVerifiedAt[yearKey] = dayOffVerifiedAt[yearKey] || {})[lessonKey] = ++dayOffInstallSeq;
++  rebuildDayOffSlots(yearKey);
++}
++
++// Which camp and project a plan key names — from the camp list itself, not the
++// slot map (a reload can briefly swap currentLessonData out from under a save).
++function dayOffFindProject(yearKey, lessonKey) {
++  for (const camp of currentDayOffCamps[yearKey] || []) {
++    for (const title of dayOffCampTitles(camp).keys()) {
++      if (dayOffLessonKey(yearKey, camp.id, title) === lessonKey) return { campId: camp.id, projectTitle: title };
++    }
++  }
++  return null;
++}
++
++// Fresh server copy of one plan, for the editor to open from (shared plans:
++// a co-teacher may have saved since this page loaded).
++async function readDayOffPlanForEditor(yearKey, lessonKey) {
++  const slot = dayOffFindProject(yearKey, lessonKey);
++  if (!slot) return null;
++  if (!curriculumDb) initCurriculumFirestore();
++  const snap = await curriculumDb.collection(DAY_OFF_COLLECTIONS.plans).doc(dayOffPlanDocId(yearKey, slot.campId, slot.projectTitle)).get({ source: 'server' });
++  dayOffInstallVerified(yearKey, lessonKey, snap.exists ? snap.data() : null);
++  return currentLessonData[yearKey]?.[lessonKey] || null;
++}
++
++const DAY_OFF_RENAMED_MESSAGE = 'This project was renamed or removed by the planner — copy your text, close, and reopen the camp.';
++
++// saveSingleLesson()'s SDOC branch. Returns { status, doc, by, own }:
++//   'saved'      — my write is what the server holds;
++//   'savedSince' — my write landed, then someone saved over it (last write
++//                  wins; `by` names them, `own` = it was my own name);
++//   'renamed'    — landed, then the planner renamed the project (the rename
++//                  move carried the text to the new title);
++//   'noop'       — nothing changed, nothing written.
++// Throws on anything else (refusals, a real failed write).
++async function saveDayOffPlan(yearKey, lessonKey, lessonData, fieldsToClear = [], auth) {
++  assertDayOffWritable();
++  if (!auth || typeof auth !== 'object') throw new Error('An SDOC plan save needs dayOffAuth — refusing to save without the permission check.');
++  const found = dayOffFindProject(yearKey, lessonKey);
++  if (!found) throw new DayOffValidationError([DAY_OFF_RENAMED_MESSAGE]);
++  const { campId, projectTitle } = found;
++  if (lessonKey !== dayOffLessonKey(yearKey, campId, projectTitle)) throw new Error('This plan key does not match its camp and project — refusing to save.');
++  if (isDayOffNoPlanTitle(projectTitle) || projectTitle === DAY_OFF_SIGNOFF_TITLE) throw new Error(`"${projectTitle}" has no plan — refusing to save.`);
++
++  const extra = Object.keys(lessonData).filter(k => !DAY_OFF_PLAN_WRITABLE.includes(k));
++  if (extra.length) throw new Error(`An SDOC plan save may not write ${extra.join(', ')} — refused.`);
++  const badClears = fieldsToClear.filter(f => !DAY_OFF_PLAN_CLEARABLE.includes(f));
++  if (badClears.length) throw new Error(`An SDOC plan save may not clear ${badClears.join(', ')} — refused.`);
++  if (!lessonData.lastEditedBy || !lessonData.lastEditedAt) throw new Error('An SDOC plan save must carry its edit stamp — refused.');
++
++  const payload = { ...lessonData };
++  const clears = new Set(fieldsToClear);
++  // The photo's URL and Storage path only ever change together — across the
++  // payload AND the clears (a one-sided clear would leave a shown photo whose
++  // object can never be cleaned up, or a dangling path; impl review). The
++  // shared editor sends a removal as an empty pair; that becomes a real delete
++  // of both fields, never two empty strings.
++  const hasUrl = 'photoUrl' in payload, hasPath = 'photoPath' in payload;
++  if (hasUrl !== hasPath || (hasUrl && !payload.photoUrl !== !payload.photoPath)
++      || clears.has('photoUrl') !== clears.has('photoPath') || (hasUrl && clears.has('photoUrl'))) {
++    throw new Error('photoUrl and photoPath must change together — refused.');
++  }
++  if (hasUrl && !payload.photoUrl) { delete payload.photoUrl; delete payload.photoPath; clears.add('photoUrl'); clears.add('photoPath'); }
++
++  // Nothing changed → nothing written, nothing read back.
++  if (!lessonHasContent(payload) && !('photoUrl' in payload) && !('planComplete' in payload) && clears.size === 0) return { status: 'noop' };
++
++  CONTENT_FIELDS.forEach(f => { if (!payload[f] || !String(payload[f]).trim()) delete payload[f]; });
++  const clean = JSON.parse(JSON.stringify(payload));
++  for (const f of clears) delete clean[f];   // a clear wins over a value
++  const editId = newDayOffEditId();          // once, before the transaction: a retry must not regenerate it
++  const plansColl = curriculumDb.collection(DAY_OFF_COLLECTIONS.plans);
++  const planRef = plansColl.doc(dayOffPlanDocId(yearKey, campId, projectTitle));
++  const campRef = curriculumDb.collection(DAY_OFF_COLLECTIONS.camps).doc(campId);
++  let identity;
++  try {
++    await curriculumDb.runTransaction(async (tx) => {
++      // The camp read is the lock: a rename move or a removal writes the camp,
++      // so a concurrent one forces this to retry, and the retry fails here.
++      const campSnap = await tx.get(campRef);
++      await tx.get(planRef);
++      const camp = dayOffAssertCampHasTitle(campSnap, projectTitle);
++      if (camp.yearKey !== yearKey) throw new Error('This camp belongs to a different school year — refused.');
++      const onCamp = auth.hasClassbook && !!auth.myTeacherName && (camp.teachers || []).includes(auth.myTeacherName);
++      if (!auth.canEditAnywhere && !onCamp) throw new DayOffValidationError(["You're no longer on this camp — your text is still in the form; copy it and reload."]);
++      identity = { yearKey, eventId: camp.eventId, campId, projectTitle };
++      const data = { ...clean };
++      for (const f of clears) data[f] = firebase.firestore.FieldValue.delete();
++      Object.assign(data, identity, { lastEditId: editId });
++      tx.set(planRef, data, { merge: true });
++    });
++  } catch (err) {
++    if (err instanceof DayOffValidationError && /no longer a project|was removed in another tab/.test(err.message)) {
++      scheduleDayOffReload(0);   // so reopening the camp shows the new title
++      throw new DayOffValidationError([DAY_OFF_RENAMED_MESSAGE]);
++    }
++    throw err;
++  }
++
++  const written = Object.fromEntries(Object.entries(clean).filter(([f]) => f !== 'lastEditedBy' && f !== 'lastEditedAt'));
++  const server = await verifyDayOffPlanWrite(planRef, editId, written, [...clears], identity);
++  if (!server) {
++    // Committed, then the planner renamed the project before the read-back.
++    dayOffInstallVerified(yearKey, lessonKey, null);
++    scheduleDayOffReload(0);
++    return { status: 'renamed' };
++  }
++  dayOffInstallVerified(yearKey, lessonKey, server);
++  if (server.lastEditId === editId) return { status: 'saved', doc: server };
++  return { status: 'savedSince', doc: server, by: server.lastEditedBy || 'someone', own: server.lastEditedBy === lessonData.lastEditedBy };
++}
++
++// The SDOC read-back (plan, rounds 1–4): identity always strict; if the server
++// still carries MY save id, every written value and every clear must be as I
++// sent them — anything else is a real failure. A different id means someone
++// saved after me, and any difference is their save winning. Returns the
++// server document (null if it is gone).
++async function verifyDayOffPlanWrite(ref, editId, written, cleared, identity) {
++  let snap;
++  try {
++    snap = await ref.get({ source: 'server' });
++  } catch (err) {
++    console.warn('⚠️ Save verification read failed, retrying once:', err);
++    try { snap = await ref.get({ source: 'server' }); } catch (err2) {
++      throw new Error("Couldn't confirm your save — check your connection and reload to verify your work saved.");
++    }
++  }
++  if (!snap.exists) return null;
++  const saved = snap.data();
++  const wrongIdentity = Object.entries(identity || {}).filter(([f, v]) => saved[f] !== v).map(([f]) => f);
++  if (wrongIdentity.length) throw new Error(`Save may not have completed — please reload and check (${wrongIdentity.join(', ')}).`);
++  if (saved.lastEditId !== editId) return saved;
++  const failed = [
++    ...Object.entries(written).filter(([f, v]) => JSON.stringify(saved[f]) !== JSON.stringify(v)).map(([f]) => f),
++    ...cleared.filter(f => f in saved),
++  ];
++  if (failed.length) {
++    console.error('⚠️ Save verification failed — these fields did not land:', failed);
++    throw new Error(`Save may not have completed — please reload and check: ${failed.join(', ')}`);
++  }
++  console.log('✅ SDOC plan save verified on server:', Object.keys(written));
++  return saved;
++}
++
+ // ─── Phase 2A writers: materials, ticks, sign-off ────────────────────────────
+ 
+ // One generation-gated reload a few seconds after the last 2A write in a
