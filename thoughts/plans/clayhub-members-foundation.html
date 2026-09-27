@@ -50,7 +50,7 @@
   <ul>
     <li>Sep 25: created.</li>
     <li>Sep 26: separate project.</li>
-    <li>Sep 27: every decision answered by Christie. Reviews: round 1 (Codex + Claude), then round 2 (Codex + Claude, the same day). This version is the round-2 rewrite: all findings addressed, superseded options removed. See <a href="#reviews">Reviews</a>.</li>
+    <li>Sep 27: every product decision answered by Christie. Two facts are read at setup time: the project ID Google accepts (D12) and <code>tinker-hq-apps</code>' Firestore location (D23). Reviews: round 1 (Codex + Claude), then round 2 (Codex + Claude, the same day). This version is the round-2 rewrite: all findings addressed, superseded options removed. See <a href="#reviews">Reviews</a>.</li>
   </ul>
   <strong>Risk:</strong> MEDIUM-HIGH.
   <ul>
@@ -58,7 +58,7 @@
     <li>Phase E puts the first Cloud Functions in <code>tinker-hq-apps</code>. They sit outside the rules model, so they're contained by IAM.</li>
     <li>Phase D2 designs a functions deploy guard from scratch.</li>
   </ul>
-  <span class="status-tag not-ready">execution-ready: false</span> — every phase. Next: review round 3, focused on Phases A and C, which are closest to ready. <strong>Phase B is on hold</strong> until Christie's separate Membership Manager session is finished and merged.
+  <span class="status-tag not-ready">execution-ready: false</span> — every phase. Round 3 (Codex + Claude) done; its fixes are applied below. Next: a short round 4 on Phases A and C only. <strong>Phase B is on hold</strong> until Christie's separate Membership Manager session is finished and merged.
 </div>
 
 <h2 id="architecture">The shape: two projects, one narrow one-way link</h2>
@@ -192,9 +192,10 @@
   <ol>
     <li>No live source record (tombstoned) → <code>removed</code> (no access)</li>
     <li><code>stage</code> is <code>onboarding</code> or <code>touring</code> → <code>not_yet</code> (no access)</li>
-    <li><code>stage</code> isn't one of the six known values → <code>review</code></li>
+    <li><code>stage</code> is missing, or isn't one of the six known values → <code>review</code></li>
     <li><code>finalAccessDate</code> is present but malformed → <code>review</code>. If valid and <strong>today is after it</strong> → <code>offboarded</code>. <em>The last day itself still has access.</em></li>
     <li><code>stage:'cancelled'</code> with no <code>finalAccessDate</code> → <code>offboarded</code></li>
+    <li><code>stage:'offboarding'</code> with no <code>finalAccessDate</code> → <code>review</code></li>
     <li>Any pause window (in <code>scheduledPause</code> or <em>any</em> <code>pauseHistory</code> entry, either spelling) with a missing or malformed date → <code>review</code></li>
     <li>Any valid pause window with <strong>start ≤ today ≤ end</strong> (both days included; D4a) → <code>paused</code></li>
     <li><code>stage:'paused'</code> with no pause windows at all → <code>review</code></li>
@@ -207,7 +208,7 @@
 <tr><td>D7</td><td>Collection names</td><td>Plain names in <code>my-clay-hub</code>: <code>members</code>, <code>staffRoster</code>, <code>bookings</code>, <code>activityLog</code>, <code>inbox</code>, <code>settings</code>, ….</td></tr>
 <tr><td>D8</td><td>Front-door tablet account</td><td>A dedicated <code>my-clay-hub</code> account with the claim <code>kiosk:true</code>, unrelated to the timeclock kiosks.</td></tr>
 <tr><td>D9</td><td>Staff who are also members</td><td>Two identities: a member account and a staff session. Leave the Manage Team box unticked for staff who don't need the staff side. Managers and admins get it by role.</td></tr>
-<tr><td>D10</td><td>Booking's leftover data and accounts</td><td>Seal it by removing the rules, then Christie deletes the collections in the Console after the A2 snapshot. Disable only Auth accounts that have no <code>users</code> doc and aren't hers, the kiosk's or the bot's.</td></tr>
+<tr><td>D10</td><td>Booking's leftover data and accounts</td><td>Seal it by removing the rules, then Christie deletes the collections in the Console after the A4 snapshot (taken once the data is sealed). Disable only Auth accounts that have no <code>users</code> doc and aren't hers, the kiosk's or the bot's.</td></tr>
 <tr><td>D11</td><td>Permissions inventory (copied into the resilience plan's IAM inventory)</td><td>See <a href="#iam">the IAM inventory</a> below. Every grant runs one way, uses dedicated service accounts, and needs no key files.</td></tr>
 <tr><td>D12</td><td>Name</td><td><strong>My Clay Hub</strong> (Christie, Sep 27). Project ID <code>my-clay-hub</code> (fallbacks as above; Christie confirms which one Google accepts). The repo was renamed to <code>my-clay-hub</code> on Sep 27 ✅. The Manage Team key is <code>my-clay-hub</code>.</td></tr>
 <tr><td>D13</td><td>Backups</td><td><strong>Server-side only</strong> for <code>my-clay-hub</code>: PITR, delete protection, a managed daily backup schedule, the <code>tinker-hq-vault</code> export under a dedicated service identity, and the same alert email. Not <code>backup.js</code> (finding 7).</td></tr>
@@ -247,7 +248,7 @@
 <tr><td>D22</td><td>How the link delivers changes</td><td>Approved (Christie, Sep 27). <strong>"Re-read, then send a snapshot."</strong>
   <ul>
     <li>A trigger on <code>clayHub_members/{id}</code> collects the <code>memberId</code> from both the before and after versions.</li>
-    <li>For each one, it reads <em>all</em> source docs with that <code>memberId</code> in a single read, and uses that read's server time as the snapshot time.</li>
+    <li>For each one, it reads <em>all</em> source docs with that <code>memberId</code> in a single query, filtering <strong>on <code>memberId</code> only</strong>. "Live" is decided in memory as <code>retired !== true</code>, because live docs usually have no <code>retired</code> field. The query's <code>QuerySnapshot.readTime</code> is the snapshot time.</li>
     <li>It works out the member's current truth:
       <ul>
         <li>exactly one live doc → that doc's fields;</li>
@@ -256,9 +257,11 @@
       </ul>
     </li>
     <li>It POSTs <code>{memberId, snapshot, readTime}</code> to <code>ingestMemberUpdate</code>.</li>
-    <li>That function, in a transaction, <strong>drops anything whose <code>readTime</code> isn't later than the stored one</strong>, checks the payload strictly, runs <code>deriveStatus</code>, and writes. It never deletes.</li>
+    <li>That function, in a transaction, <strong>drops anything whose <code>readTime</code> isn't later than the stored <code>sourceReadTime</code></strong>. A member with no stored time accepts any snapshot. It checks the payload strictly, runs <code>deriveStatus</code>, and writes. It never deletes.</li>
+    <li><code>sourceReadTime</code> is a <code>tinker-hq-apps</code> timestamp, kept in its own field. It's only ever compared with other <code>tinker-hq-apps</code> read times, never with <code>my-clay-hub</code> clocks or <code>updatedAt</code>.</li>
+    <li><strong>The reconcile uses the same envelope and the same gate.</strong> It reads the whole source in <strong>one read-only transaction pinned to a single <code>readTime</code></strong>, and stamps every member (and tombstone) with that time. So a trigger snapshot taken during a reconcile can never be overwritten by older reconcile data.</li>
   </ul>
-  Because every message is the whole truth as of its read time, arrival order, retries, deletes and email changes (the new doc and the retired old doc in one batch) all end in the right state. <code>users/{uid}</code> works the same way, into <code>staffRoster/staff_{uid}</code>. Docs without a <code>memberId</code> are skipped with an alert (Phase E requires Phase B).</td></tr>
+  Because every message is the whole truth as of its read time, arrival order, retries, deletes and email changes (the new doc and the retired old doc in one batch) all end in the right state. <code>users/{uid}</code> works the same way, into <code>staffRoster/staff_{uid}</code>, using that document read's <code>DocumentSnapshot.readTime</code>. There's no <code>memberId</code> and no conflict case on that path. Docs without a <code>memberId</code> are skipped with an alert (Phase E requires Phase B).</td></tr>
 <tr><td>D23</td><td>Functions generation and locations</td><td><strong>2nd gen everywhere.</strong> Each project records <em>three</em> separate values:
   <ul>
     <li>(1) the Firestore location (Christie reads <code>tinker-hq-apps</code>' in the Console; <code>my-clay-hub</code> matches it, permanently);</li>
@@ -339,34 +342,40 @@
 <h3>Phase A — Retire Clay Hub Booking and close its escalation hole <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li><strong>An ordinary signed-in account can no longer make itself a Booking admin.</strong> The self-create of <code>clayMembers/{uid}</code> with <code>isAdmin:true</code> is denied, and so is every get, list, create, update and delete on all five collections, for every kind of account.</li>
+  <li><strong>An ordinary signed-in account can no longer make itself a Booking admin.</strong> Every get, list, create, update and delete on all five collections is denied, for every kind of account.</li>
   <li><code>isClayAdmin</code>, <code>isActiveMember</code> and <code>isBookingOwner</code> no longer exist in the rules file.</li>
-  <li>A <strong>kept, current</strong> snapshot of all five collections exists outside the backup rotation, and its document IDs match what Christie saw in the Console, before anything is deleted.</li>
+  <li>A <strong>kept</strong> snapshot of all five collections, taken <strong>after</strong> they're sealed (so nothing can change underneath it), exists outside the backup rotation. Its doc IDs are compared with what Christie listed in A1 before anything is deleted.</li>
   <li>Every other app works as before, and the full rules suite passes.</li>
   <li>Nothing still presents Clay Hub Booking as live, and the repo is archived.</li>
   <li>Findings 6 and 7 are recorded in the resilience plan.</li>
 </ul>
+<p><strong>Order (round 3):</strong> seal first, then snapshot. Removing the rules deletes nothing; it only stops anyone changing the data. While the hole is open, anyone could change the data, so a snapshot taken <em>before</em> sealing wouldn't be the final state.</p>
 <ol>
-  <li><strong>A1 (Christie, Console, read-only, same day as A2–A4):</strong> for each of the five collections, note the doc count and the <strong>doc IDs</strong> (they're small, about 20 docs in total). List the uids in <code>clayMembers</code>. Note the Auth accounts that aren't staff.</li>
-  <li><strong>A2 (Christie, before A3 merges):</strong>
+  <li><strong>A1 (Christie, Console, read-only):</strong> for each of the five collections, note the doc count and the <strong>doc IDs</strong> (about 20 docs in total). List the uids in <code>clayMembers</code>. Note the Auth accounts that aren't staff.</li>
+  <li><strong>A2 (studio-hub, on a branch): tests, then removal.</strong>
     <ul>
-      <li><strong>Preferred:</strong> in the Firestore Console, run a managed <strong>export</strong> of the five collections to the <code>tinker-hq-vault</code> bucket. It's server-side, time-stamped and complete.</li>
-      <li><strong>Also:</strong> copy that day's newest <code>tinker-backups/tinker-backup-*.json</code> to <code>~/tinker-backups/manual-snapshots/clay-hub-booking-retired-2026-09.json</code>, and confirm its doc IDs match A1.</li>
-      <li>Nothing writes to these collections (Booking was never deployed), so IDs from the same day plus the export are sufficient.</li>
-      <li>If anything doesn't match, stop.</li>
+      <li><strong>Escalation tests: all must be red on <code>HEAD</code> first.</strong> They use one new dedicated uid (for example <code>clay-escalation-uid</code>; <code>brand-new-uid</code> to <code>-4</code> are already taken). A <code>clayBookings</code> fixture is seeded with <code>withSecurityRulesDisabled</code>.
+        <ul>
+          <li><strong>Test (a), placed first:</strong> through the client SDK, this uid creates <code>clayMembers/{its uid}</code> with <code>{isAdmin:true, active:true}</code>. Expected: denied.</li>
+          <li><strong>Separate tests (b)–(d):</strong> (b) list <code>clayBookings</code>; (c) create a <code>claySpots</code> doc; (d) update, then delete, the seeded booking. Each is its own test. On <code>HEAD</code> they rely on (a)'s document persisting (<code>rules.test.js</code> never clears between tests); after the fix they're denied regardless.</li>
+          <li><strong>If any of (a)–(d) is already denied on <code>HEAD</code>, stop.</strong> Finding 1 would be wrong, and A2's criteria must be worked out again. (Both reviewers checked the rules and expect all four to be red on <code>HEAD</code>.)</li>
+        </ul>
+      </li>
+      <li><strong>Regression cover:</strong> get, list, create, update and delete are denied on all five collections for an unauthenticated user, an account with no <code>users</code> doc, and an admin. <strong>Every <code>create</code> in this set targets a doc ID that is <em>not</em> the caller's uid.</strong> Self-creating your own <code>clayMembers</code> doc is <em>allowed</em> on <code>HEAD</code> for any signed-in account, including those two, and a self-create would also make that account a Booking admin for every later test in the run. Apart from that, these already pass on <code>HEAD</code>, so they aren't evidence of the fix.</li>
+      <li><strong>File assertion:</strong> the three helper names don't appear in <code>firestore.rules</code>.</li>
+      <li>Then remove the block <strong>by its banner</strong>, through the closing brace of <code>match /claySettings</code>.</li>
+      <li>Leave <code>firestore.indexes.json</code> untouched. Merge to <code>main</code> and deploy in the same sitting.</li>
+    </ul>
+  </li>
+  <li><strong>A3:</strong> run <code>--status</code> and <code>--diff</code>. <strong>The removed hunk must be exactly the Booking banner comment, its three helper functions and its five <code>match</code> blocks. Stop on any hunk outside that range.</strong> Deploy only after <em>"approved to change firebase &lt;sha&gt;"</em>.</li>
+  <li><strong>A4 (Christie, right after A3): snapshot the sealed data.</strong>
+    <ul>
+      <li>In the Firestore Console, run a managed <strong>export</strong> of the five collections to the <code>tinker-hq-vault</code> bucket. It's server-side, time-stamped and complete, and it's the primary snapshot.</li>
+      <li>Optionally, copy a <code>tinker-backups</code> file dated after A3 to <code>~/tinker-backups/manual-snapshots/clay-hub-booking-retired-2026-09.json</code>. That needs a backup to have run; Christie runs one or skips this.</li>
+      <li>Compare the export's doc IDs with A1. Any difference means something changed while the hole was open: stop and look before deleting.</li>
       <li>Claude doesn't run or read <code>backup.js</code>, or the contents of the backup files.</li>
     </ul>
   </li>
-  <li><strong>A3 (studio-hub, on a branch; merge and deploy in the same sitting):</strong>
-    <ul>
-      <li><strong>Tests that must fail against today's rules (confirm they're red on <code>HEAD</code> first):</strong> an ordinary signed-in account, using the client SDK, (a) creates <code>clayMembers/{own uid}</code> with <code>{isAdmin:true, active:true}</code>; then (b) lists <code>clayBookings</code>; (c) creates a <code>claySpots</code> doc; (d) updates and deletes a seeded <code>clayBookings</code> doc. Each of these must be denied.</li>
-      <li><strong>Regression cover:</strong> get, list, create, update and delete denied on all five collections for an unauthenticated user, an account with no <code>users</code> doc, and an admin. These already pass today, so they aren't evidence of the fix.</li>
-      <li><strong>File assertion:</strong> the three helper names don't appear in <code>firestore.rules</code>.</li>
-      <li>Then remove the block <strong>by its banner</strong>, through the closing brace of <code>match /claySettings</code>.</li>
-      <li>Leave <code>firestore.indexes.json</code> untouched.</li>
-    </ul>
-  </li>
-  <li><strong>A4:</strong> run <code>--status</code> and <code>--diff</code>. The diff must show exactly five <code>match</code> blocks and three functions removed, and nothing else; stop on any other hunk. Deploy only after <em>"approved to change firebase &lt;sha&gt;"</em>.</li>
   <li><strong>A5 (Christie, Console):</strong> delete the five collections if she wants to. Disable Auth accounts only if they have no <code>users/{uid}</code> doc and aren't hers, the kiosk's or the bot's.</li>
   <li><strong>A6 (docs):</strong>
     <ul>
@@ -382,54 +391,92 @@
 <div class="bdd">Scenario: the escalation is closed (red before, green after)
   Given an ordinary signed-in account in tinker-hq-apps
   When it creates clayMembers/{its uid} = {isAdmin: true, active: true} with the client SDK
-  Then the write is denied — and before A4 the same test succeeds (proving the hole existed)
+  Then the write is denied — and on HEAD the same test fails (proving the hole existed)
 
 Scenario: other Clay Hub collections untouched
   Given a staff user with appAccess 'clay-membership' in studio clayhub
   When they use clayHub_members, clayHub_waitlist, clayHub_appData
   Then everything that passed before still passes
 
-Scenario: snapshot doesn't match (failure path)
-  Given A1 listed 19 claySpots IDs but the kept file has 18
-  When the plan reaches A3
-  Then work stops until a matching snapshot exists</div>
+Scenario: data changed while the hole was open (failure path)
+  Given A1 listed 19 claySpots IDs but the post-seal export has 20
+  When the plan reaches A5
+  Then nothing is deleted until Christie has looked at the extra document</div>
 </div>
 
 <div class="phase" id="phase-c">
 <h3>Phase C — Spec Phase 0: rewrite the repo docs (docs only) <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance criteria:</strong> <code>my-clay-hub/docs/my-clay-hub/</code> records every decision <strong>D0–D23 and D4a</strong>, one by one, with the settings defaults and the brand. <code>DATA-MODEL.md</code> describes the two projects, the real source fields, the link, the projections and <code>deriveStatus</code>. No <code>SPEC.md</code> section contradicts them. It touches <strong>files in the <code>my-clay-hub</code> repo only</strong>; the settings and hook edits belong to D-3.</p>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+  <li><strong>No file in the <code>my-clay-hub</code> repo contradicts D0–D23 and D4a</strong>, the settings defaults or the brand. That covers every doc in <code>docs/my-clay-hub/</code> plus the repo's <code>CLAUDE.md</code> and <code>AGENTS.md</code>.</li>
+  <li>The repo's instruction files send future sessions to <strong>this app's own project and rules</strong>, never to studio-hub's.</li>
+  <li>Earlier decisions that the new ones reverse are <strong>marked superseded</strong>, not left standing.</li>
+  <li>It touches files in the <code>my-clay-hub</code> repo only. The <code>~/.claude</code> settings and hook edits belong to D-3.</li>
+  <li>Afterwards, Christie gets a short "old rule → new rule" list to skim.</li>
+</ul>
 <ol>
-  <li><strong><code>DATA-MODEL.md</code>:</strong>
+  <li><strong>Repo <code>CLAUDE.md</code> and <code>AGENTS.md</code>: first, because they steer every future session.</strong> Replace, line by line:
     <ul>
-      <li>the two projects and the "re-read, then send a snapshot" link (D22);</li>
-      <li>the source fields, including both pause spellings;</li>
-      <li><code>members/{memberId}</code>: the projection fields, <code>readTime</code>, <code>tombstone</code>, and the derived <code>status</code>;</li>
-      <li><code>staffRoster/staff_{uid}</code>;</li>
-      <li><code>claimMembership</code>, <code>exchangeStaffSession</code>, <code>enforceMemberStatus</code>;</li>
-      <li>the D4 table, verbatim;</li>
-      <li>all history keyed by <code>memberId</code>.</li>
-    </ul>
-  </li>
-  <li><strong><code>DECISIONS.md</code>:</strong> D0–D23 and D4a as dated rows (#30 onward), plus D14's exception to #9.</li>
-  <li><strong><code>SPEC.md</code>:</strong>
-    <ul>
-      <li>§2: staff screens per D1 and D19;</li>
-      <li>§3: retitle it (it currently says "same Firebase project"), and add the link, D4 and D4a;</li>
-      <li>§4: capacities;</li>
-      <li>§5: D17, D18;</li>
-      <li>§6: D15, D16;</li>
-      <li>§7 and §13: D14;</li>
-      <li>§14: Blaze and locations;</li>
+      <li><em>What this app does</em>: staff screens are a <code>/staff</code> section of My Clay Hub (D1);</li>
+      <li>"Never duplicate member data" becomes the one-way projection rule (D22: the only copy is <code>members/*</code>, written only by <code>ingestMemberUpdate</code>, and nothing ever writes back);</li>
+      <li><em>Local development</em>, <em>Firestore collections</em>, and <strong>the whole Firebase-safety block</strong>: this app's own project <code>my-clay-hub</code>, its own <code>firestore.rules</code> in this repo, its own guard and sha phrase. Until Phase D exists, say it plainly: <strong>"This app has no Firebase project yet. Never add its collections to studio-hub's rules file."</strong>;</li>
       <li>the app name.</li>
     </ul>
+    <code>docs/my-clay-hub/CLAUDE-md-snippet.md</code> is deleted (its content lives in <code>CLAUDE.md</code>). <code>README.md</code>'s build process is rewritten to point at this plan's phase letters.</li>
+  <li><strong><code>DECISIONS.md</code>:</strong>
+    <ul>
+      <li><strong>Mark superseded:</strong> #12 (push later) → partly, by D15 (staff push in Phase 1); #23 ("syncing a separate copy" rejected) → by D22; #24 (phones) → by D22/D5; #25 (staff screens in Tinker HQ, separate staff accounts rejected) → by D1.</li>
+      <li><strong>Amend #9</strong> with D14's kiosk exception.</li>
+      <li>Then add D0–D23 and D4a as dated rows, from #30.</li>
+    </ul>
   </li>
-  <li><strong><code>OPEN-ITEMS.md</code></strong> → everything moved to "Confirmed, Sep 27". <strong><code>DESIGN.md</code></strong> → the Brand section above.</li>
-  <li>Repo <code>CLAUDE.md</code> / <code>AGENTS.md</code>: the app name, and "this repo will hold <code>my-clay-hub</code>'s rules and functions".</li>
+  <li><strong><code>DATA-MODEL.md</code> is replaced, not added to.</strong> The new version covers:
+    <ul>
+      <li>the two projects and the D22 link;</li>
+      <li>the source fields (both pause spellings);</li>
+      <li><code>members/{memberId}</code> (projection fields, <code>sourceReadTime</code>, <code>tombstone</code>, derived <code>status</code>);</li>
+      <li><code>staffRoster/staff_{uid}</code>;</li>
+      <li>plain collection names (<code>settings</code>, not <code>settings/clayhubMembers</code>);</li>
+      <li>capacities 4/10/6;</li>
+      <li>the D4 table, verbatim;</li>
+      <li>a <strong>Server functions</strong> section with <code>ingestMemberUpdate</code>, <code>claimMembership</code>, <code>exchangeStaffSession</code>, <code>enforceMemberStatus</code>, the reconcile and the recompute. <code>beforeSignIn</code>, <code>onMemberStatusChange</code> and <code>memberDirectory</code> are removed.</li>
+    </ul>
+  </li>
+  <li><strong><code>SPEC.md</code>: every section is checked against D0–D23, including at least:</strong>
+    <ul>
+      <li>§2: staff screens (D1, D19), sign-in eligibility (<code>review</code>, D3/D4) and the not-a-member message;</li>
+      <li>§3: retitle it (it currently says "same Firebase project"), and <strong>correct</strong> the pause wording ("Booking opens back up the day after your pause ends", D4a);</li>
+      <li>§4: capacities, and closing time (the settings table);</li>
+      <li>§5: D17, D18, and the cancellation cutoff (none);</li>
+      <li>§6: D15 and D16, and early check-out rounding <strong>up</strong> (D17);</li>
+      <li>§7: the kiosk list (D14) and Office Hours (the settings table);</li>
+      <li>§8 and §11: "inside Tinker HQ" → <code>/staff</code> (D1);</li>
+      <li>§10: staff push in Phase 1 (D15);</li>
+      <li>§13: the kiosk exception (D14);</li>
+      <li>§14: Blaze and locations (D23);</li>
+      <li><strong>§15 (build phases): rewritten</strong> to map onto this plan: Spec Phase 0 = plan Phase C; Spec Phase 1 = plan Phase F; staff view in <code>/staff</code>;</li>
+      <li>§16: the kiosk-name exception.</li>
+    </ul>
+  </li>
+  <li><strong><code>OPEN-ITEMS.md</code>:</strong> three buckets:
+    <ul>
+      <li><em>Confirmed, Sep 27</em>;</li>
+      <li><em>Reversed</em>: "one shared Firebase project" → D0;</li>
+      <li><em>Still open</em>: Happy Hour dates (staff enter them), <code>my-clay-hub</code>'s Blaze and D23 locations (set in D-1), and the project ID Google accepts (D12).</li>
+    </ul>
+  </li>
+  <li><strong><code>DESIGN.md</code>:</strong>
+    <ul>
+      <li>replace Brand with D20;</li>
+      <li>update Patterns: Jost instead of Poppins, the new accent bar, the wordmark and logo SVG, the active tab in deep rust, and the status tints from the role table;</li>
+      <li>update the mockup index's Phase column to the phase mapping.</li>
+    </ul>
+  </li>
 </ol>
-<div class="bdd">Scenario: a future session reads the docs cold
+<div class="bdd">Scenario: a future session reads the repo cold
   Given only the my-clay-hub repo
   When it plans Phase 1
-  Then it finds the two projects, the link, the real member fields, deriveStatus, every setting default and the brand — without re-running this research</div>
+  Then CLAUDE.md sends it to my-clay-hub's own rules (never studio-hub's), and it finds the two projects, the link, the real member fields, deriveStatus, every setting and the brand — with no superseded rule left standing</div>
 </div>
 
 <div class="phase" id="phase-b">
@@ -490,7 +537,7 @@ Scenario: email change keeps identity
     <ul>
       <li>generalize the four <code>autoMode</code> entries in <code>~/.claude/settings.json</code> to "the guard for that project", listing both paths;</li>
       <li>update the hook message to name both guards;</li>
-      <li>replace the project section of <code>~/.claude/CLAUDE.md</code> with the "exactly TWO projects" table (drafted below).</li>
+      <li>replace the project section of <code>~/.claude/CLAUDE.md</code> with the "exactly TWO projects" table (drafted below, filled in with whichever project ID Google actually accepted).</li>
     </ul>
     These must land before the guard is first used.</li>
   <li><strong>D-4:</strong> the managed backup schedule and vault export (D13).</li>
@@ -534,7 +581,7 @@ Scenario: email change keeps identity
   <li><strong>An unauthenticated request to <code>ingestMemberUpdate</code> gets a 403.</strong> The link can invoke it, and can't write to either database.</li>
 </ul>
 <ol>
-  <li><strong>E-0 (studio-hub):</strong> a comment on the <code>users</code> rules naming the My Clay Hub dependency, and tests pinning the self-create and self-update restrictions. (The Tinker HQ tile and the <code>MANAGER_ONLY_APPS</code> entry move to Phase F.)</li>
+  <li><strong>E-0 (studio-hub):</strong> a comment on the <code>users</code> rules naming the My Clay Hub dependency. <code>rules.test.js:790-845</code> already covers most of the pins, so add only what's missing: role self-promotion on create, and <code>active</code> on self-update. (The Tinker HQ tile and the <code>MANAGER_ONLY_APPS</code> entry move to Phase F.)</li>
   <li><strong>E-1:</strong> the <code>clayhub-link</code> codebase, deployed only via D2. 2nd gen, retries on, <code>maxInstances</code> set.</li>
   <li><strong>E-2 (Christie, IAM):</strong> the inventory rows, then a probe proving three things: the link can invoke; an unauthenticated call gets 403; the link can't write to either database.</li>
   <li><strong>E-3 (tests first):</strong>
@@ -542,6 +589,7 @@ Scenario: email change keeps identity
       <li>field mapping;</li>
       <li>snapshot ordering: late and duplicate deliveries; delete and recreate; <strong>email change with the retired-old event arriving before and after the new one</strong>; two live docs → conflict;</li>
       <li>a partial source read;</li>
+      <li><strong>reconcile vs trigger in both arrival orders</strong> (a trigger during a reconcile keeps its value); <code>memberId</code> changing A→B and A→B→C; a live doc with no <code>retired</code> field stays live;</li>
       <li>the blast-radius stop;</li>
       <li>strict payload rejection;</li>
       <li>every row of the D4 table;</li>
@@ -588,9 +636,9 @@ Scenario: reconcile can't read everything (failure path)
 <tr><th>Check</th><th>This plan</th></tr>
 <tr><td>Rules for every collection touched</td><td>A removes the Booking block, with red-before and green-after tests. <code>my-clay-hub</code> starts deny-all, and each collection gets a rule in the Phase F plan.</td></tr>
 <tr><td><strong>Functions are outside the rules model</strong></td><td>Contained by IAM: dedicated service accounts; the default service account has no Editor; read-only on <code>tinker-hq-apps</code>; invoke-only across projects on a private function; no delete on the ingest identity; strict payload checks; the E-2 probes; D2's invoker read-back.</td></tr>
-<tr><td>Snapshot before bulk operations</td><td>A2 (Console export plus a kept backup copy, with IDs matching). Phase B snapshots <code>clayHub_members</code> before the <code>memberId</code> backfill.</td></tr>
+<tr><td>Snapshot before bulk operations</td><td>A4 (a managed export after sealing, with IDs compared to A1) before any deletion in A5. Phase B snapshots <code>clayHub_members</code> before the <code>memberId</code> backfill.</td></tr>
 <tr><td><code>updateDoc</code> vs <code>setDoc</code>; empty fields</td><td>The projection is a whole doc that only <code>ingestMemberUpdate</code> writes, so a deliberate <code>set</code> inside a transaction, with fields cleaned. Phase B makes Membership Manager's writes awaited, error-surfacing and change-only.</td></tr>
-<tr><td>Tests first</td><td>A3 (red on <code>HEAD</code> first), B, D-2/D-3, D2, E-3. Every "writes nothing" test comes with a positive pair.</td></tr>
+<tr><td>Tests first</td><td>A2 (red on <code>HEAD</code> first), B, D-2/D-3, D2, E-3. Every "writes nothing" test comes with a positive pair.</td></tr>
 <tr><td>Deploy path</td><td>Rules: the existing guard, and the adapted <code>my-clay-hub</code> guard. Functions: D2's guard, with the predeploy backstop. One sha phrase per deploy.</td></tr>
 <tr><td>Credentials</td><td>Never read <code>firebase-tools.json</code> or <code>setup/service-account.json</code>. Never edit or run <code>backup.js</code>, or read backup file contents.</td></tr>
 <tr><td>Payroll gate</td><td>Nothing in <code>tinker-timeclock/</code> is edited without written approval.</td></tr>
@@ -598,8 +646,8 @@ Scenario: reconcile can't read everything (failure path)
 
 <h2 id="interruption">Completeness — what if this stops midway?</h2>
 <ul>
-  <li><strong>A3 merged, A4 not deployed:</strong> avoid this by doing both in one sitting. If it does happen, nothing else deploys <code>tinker-hq-apps</code> rules until A4 ships or A3 is reverted.</li>
-  <li><strong>After A4:</strong> the data is sealed but still there. Safe indefinitely.</li>
+  <li><strong>A2 merged, A3 not deployed:</strong> avoid this by doing both in one sitting. If it does happen, nothing else deploys <code>tinker-hq-apps</code> rules until A3 ships or A2 is reverted.</li>
+  <li><strong>After A3, before A4/A5:</strong> the data is sealed but still there (safe indefinitely). Snapshot (A4) before deleting anything (A5).</li>
   <li><strong>Phase C:</strong> docs only. Any partial state is just an unfinished doc edit in one repo.</li>
   <li><strong>Phase B:</strong> its own plan. The backfill is resumable and never overwrites an existing <code>memberId</code>.</li>
   <li><strong>Phase D:</strong> an empty deny-all project with no sign-in providers. Safe.</li>
@@ -629,6 +677,20 @@ Scenario: reconcile can't read everything (failure path)
 <tr><td>The Tinker HQ tile would ship two phases early (Claude)</td><td>Moved to Phase F.</td></tr>
 </table>
 
+<h3>Round 3 (Sep 27): Codex "A and C ready after fixes"; Claude "A ready after fixes, C not ready"</h3>
+<table>
+<tr><th style="width:40%">Finding (who)</th><th>Disposition</th></tr>
+<tr><td>A snapshot taken before sealing races the open hole (Codex); a same-day backup isn't guaranteed (Claude)</td><td><strong>Reordered:</strong> seal (A2/A3) → managed export after sealing (A4), with IDs compared to A1 → delete (A5).</td></tr>
+<tr><td>A3's "already pass" claim is wrong for self-create; tests leak state; (b)–(d) depend on (a); no exit if already denied (both)</td><td>A2 rewritten: a dedicated uid; (a) first and on its own; (b)–(d) as separate tests; regression creates target non-self IDs; a stop if anything is already denied on <code>HEAD</code>.</td></tr>
+<tr><td>The reconcile's read time is undefined; a paged reconcile could overwrite fresher trigger data (both)</td><td>D22: a read-only transaction pinned to one <code>readTime</code>, through the same ingest gate. Tests for both orders.</td></tr>
+<tr><td>The query must filter on <code>memberId</code> only (Claude); gate details (Claude)</td><td>D22: in-memory <code>retired !== true</code>; a missing stored time accepts; <code>sourceReadTime</code> in its own field; <code>users</code> uses its document read time.</td></tr>
+<tr><td>D4 not total: <code>offboarding</code> without a last day, and a missing stage (Claude)</td><td>Added → <code>review</code>.</td></tr>
+<tr><td><strong>The repo's own <code>CLAUDE.md</code> sends sessions to studio-hub's rules</strong> (Claude, blocker)</td><td>Phase C step 1 rewrites <code>CLAUDE.md</code> and <code>AGENTS.md</code> first, with an explicit "no project yet — never use studio-hub's rules" line.</td></tr>
+<tr><td>DECISIONS #23, #24 and #25 (and #12) contradict the new decisions (both)</td><td>Phase C marks them superseded and amends #9.</td></tr>
+<tr><td>Phase C's section lists are incomplete (SPEC §8, §10, §11, §15, §16, §2 eligibility, §6 rounding, §3 wording; DATA-MODEL additive; OPEN-ITEMS buckets; DESIGN patterns) (both)</td><td>Phase C rewritten with "every section" scope, and each named.</td></tr>
+<tr><td>E-0's tests largely exist; the A4 diff wording; meta overclaims; the D-3 table ID (Claude)</td><td>Fixed.</td></tr>
+</table>
+
 <h2 id="resume">Resume instructions</h2>
 <ol>
   <li>Read this file, then <code>my-clay-hub/docs/my-clay-hub/SPEC.md</code> and <code>DECISIONS.md</code>.</li>
@@ -649,6 +711,7 @@ Scenario: reconcile can't read everything (failure path)
     </ul>
   </li>
   <li><strong>Sep 27:</strong> review round 1 → revision. Review round 2 → this rewrite: D22 redesigned as re-read snapshots; D1 fixed; D4 made a total table; the IAM inventory added; A2 and A3 strengthened; C made docs-only; providers moved to F; rename corruption fixed. <strong>New confirmed finding:</strong> Membership Manager's dates are a day early in Denver (finding 3); flagged to Christie.</li>
+  <li><strong>Sep 27:</strong> review round 3 (Codex + Claude) → fixes applied: Phase A reordered to seal before snapshot, with rebuilt tests; D22's reconcile pinned to one read time; D4 made total; Phase C expanded (repo instruction files first, superseded decisions marked, every doc section in scope). Christie asked what the Phase C go-ahead involves: it's permission to edit her source-of-truth docs, and she gets an old → new list afterwards.</li>
 </ul>
 
 </body>
