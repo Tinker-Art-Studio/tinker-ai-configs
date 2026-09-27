@@ -136,7 +136,7 @@
 <table>
 <tr><th style="width:5%">#</th><th style="width:28%">Question</th><th>Recommendation (and why)</th></tr>
 <tr><td>D0</td><td>Same Firebase project, or separate?</td><td><strong>✅ Decided Sep 26 (Christie): separate project.</strong> Members get accounts only in their own project, so no internal rule can ever trust them by mistake. The internal rules file and its tests stay staff-only.</td></tr>
-<tr><td>D1</td><td>Where do the staff screens live, and how do staff sign in?</td><td><strong>A <code>/staff</code> section of the members app, opened from a Tinker HQ tile.</strong>
+<tr><td>D1</td><td>Where do the staff screens live, and how do staff sign in?</td><td><strong>✅ Agreed Sep 27.</strong> <strong>A <code>/staff</code> section of the members app, opened from a Tinker HQ tile.</strong>
   <ul>
     <li>Staff sign in there with their <strong>Tinker HQ email and password</strong>, handled by <code>tinker-hq-apps</code> Auth exactly as today.</li>
     <li>The page then calls <code>exchangeStaffSession</code> in the members project. It verifies that login and looks the person up in the pushed <code>staffRoster</code> (active; manager or admin, or <code>appAccess</code> containing the new key <code>clayhub-members</code>).</li>
@@ -144,7 +144,7 @@
     <li>Access changes made in Manage Team flow through the link. Removing someone's access ends their staff session at the next token refresh (≤1 hour), or immediately if the link revokes it.</li>
   </ul>
   This keeps the intent of DECISIONS #25 (same login, same roles). It changes SPEC §2 wording from "inside Tinker HQ" to "opened from Tinker HQ".</td></tr>
-<tr><td>D2</td><td>Where does the server code live, and how is it deployed?</td><td><strong>Two small codebases, both deployed only through a guard:</strong>
+<tr><td>D2</td><td>Where does the server code live, and how is it deployed?</td><td><strong>✅ Agreed Sep 27.</strong> <strong>Two small codebases, both deployed only through a guard:</strong>
   <ul>
     <li>(a) <code>studio-hub/functions/</code>, codebase <code>clayhub-link</code>: the outbound link only (Phase E). The guard gains <code>--target functions:clayhub-link</code>.</li>
     <li>(b) <code>clay-hub-members/functions/</code>: everything else, deployed to the members project.</li>
@@ -158,7 +158,7 @@
     <li>its own tests run first.</li>
   </ul>
   The raw-deploy hook already covers every project.</td></tr>
-<tr><td>D3</td><td>How is sign-in limited to real members?</td><td><strong>Magic link and Google are switched on only in the members project. No paid <code>beforeSignIn</code>.</strong> After sign-in the app calls <code>claimMembership</code>, which:
+<tr><td>D3</td><td>How is sign-in limited to real members?</td><td><strong>✅ Agreed Sep 27.</strong> <strong>Magic link and Google are switched on only in the members project. No paid <code>beforeSignIn</code>.</strong> After sign-in the app calls <code>claimMembership</code>, which:
   <ul>
     <li>requires a verified email;</li>
     <li>finds the member in the local <code>members</code> projection by the doc-ID rule;</li>
@@ -173,19 +173,68 @@
     <li><strong>Active</strong> if <code>stage</code> is <code>active</code>, <code>paused</code> (outside any window) or <code>offboarding</code> (before the last day).</li>
     <li><strong>No access</strong> for <code>onboarding</code> or <code>touring</code>.</li>
   </ul>
-  The link sends raw fields. The members project computes the status, and recomputes it for everyone nightly.</td></tr>
-<tr><td>D5</td><td>Missing data: no member-since date, and no phone for Sawyer-imported members.</td><td><strong>Member since:</strong> add a <code>memberSince</code> field to Membership Manager (edited there), shown as blank until filled. Or drop it from Profile and Reports. <strong>Phone:</strong> kiosk last-4 lookup only works for members with a phone on file. QR and in-app check-in work for everyone. <em>Christie: roughly how many members have phones on file?</em></td></tr>
-<tr><td>D6</td><td>Does anything ever write back to Membership Manager?</td><td><strong>Never.</strong> The link is strictly one-way. Membership Manager's full overwrite would wipe anything written to its docs. Nothing in the spec needs data to flow back, since pause and cancel requests go by email. <em>Please confirm.</em></td></tr>
+  The link sends raw fields. The members project computes the status, and recomputes it for everyone nightly.<br>
+  <strong>✅ Agreed Sep 27.</strong> <em>What "nightly" means (Christie asked):</em>
+  <ul>
+    <li>A <strong>scheduled Cloud Function</strong>: Google's own scheduler runs it at a fixed time, e.g. 2:00 AM Denver.</li>
+    <li>It runs on Google's servers as the project's own service identity, <strong>not as Christie</strong>. So it needs no sign-in or re-auth, and it keeps running when her laptop is closed.</li>
+    <li>That's the difference from <code>backup.js</code>, which today runs on her Mac under her login (the <code>invalid_rapt</code> expiry problem).</li>
+    <li>If a run fails, it retries, and the failure is logged and alerts. The same applies to the other scheduled jobs (reminders, release, auto check-out).</li>
+  </ul></td></tr>
+<tr><td>D5</td><td>Missing data: no member-since date, and no phone for Sawyer-imported members.</td><td><strong>✅ Decided Sep 27:</strong> add a real <code>memberSince</code> date field to Membership Manager. Christie keeps it accurate, and fills in phones for the members who lack one (over half already have one). The members app shows only what's there, so a blank shows as blank, never a guess. <em>Where member-since is used:</em> the member's <strong>Profile</strong> ("Member since [date]", screen 09) and the staff <strong>Reports</strong> member detail panel (member since and lifetime context, screen 14). Nothing else, and no rule depends on it.
+<ul>
+  <li>Adding the field is a small change in <code>clay-hub-membership</code>: a date input, saved with the member. It's its own item, with its own review.</li>
+  <li><strong>Important:</strong> Membership Manager's full re-save and the Sawyer import must carry the field through. The import currently drops any field it doesn't know (research finding 2), so that has to be checked.</li>
+</ul>
+<strong>Phone:</strong> kiosk last-4 lookup works for any member with a phone on file. QR and in-app check-in work for everyone.</td></tr>
+<tr><td>D6</td><td>Does anything ever write back to Membership Manager?</td><td><strong>✅ Confirmed Sep 27</strong> ("might be something we change later"; any write-back would be a new, separately reviewed decision). <strong>Never.</strong> The link is strictly one-way. Membership Manager's full overwrite would wipe anything written to its docs. Nothing in the spec needs data to flow back, since pause and cancel requests go by email. <em>Please confirm.</em></td></tr>
 <tr><td>D7</td><td>Collection names in the members project</td><td><strong>Plain names</strong> (<code>members</code>, <code>staffRoster</code>, <code>bookings</code>, <code>activityLog</code>, <code>inbox</code>, <code>settings</code>, …). The project holds only this app, so no prefix is needed, and nothing can be confused with <code>clayHub_members</code> or the retired <code>clay*</code>.</td></tr>
 <tr><td>D8</td><td>Who is the front-door tablet signed in as?</td><td><strong>A dedicated account in the members project with the claim <code>kiosk:true</code></strong>, set by an admin-only function. It has no relation to the timeclock kiosks.</td></tr>
-<tr><td>D9</td><td>A staff member who is also a Clay Hub member</td><td><strong>Resolved by D0/D1:</strong> they have a member account (their membership email, via magic link or Google) and a separate staff session (<code>staff_{uid}</code>, via their Tinker HQ login). They're two identities that never merge. No action needed.</td></tr>
+<tr><td>D9</td><td>A staff member who is also a Clay Hub member</td><td><strong>Resolved by D0/D1:</strong> they have a member account (their membership email, via magic link or Google) and a separate staff session (<code>staff_{uid}</code>, via their Tinker HQ login). They're two identities that never merge. No action needed.<br><em>Christie asked (Sep 27):</em> "If a staff member who is also a member doesn't need the staff side, I just don't give them access in Manage Team?" <strong>Correct</strong>, with one exception: <strong>managers and admins get the staff side automatically by role</strong>, as they do in every Tinker app. For a regular staff member, leaving the <code>clayhub-members</code> box unticked means they only ever see the member side.</td></tr>
 <tr><td>D10</td><td>Clay Hub Booking's leftover production data</td><td><strong>Remove its rules first</strong>, so nobody can read or write it. Then <strong>Christie deletes the 5 collections in the Firebase Console</strong> after looking at them, and disables any Auth accounts Booking created for non-staff. Snapshot first if anything looks real (A2).</td></tr>
-<tr><td>D11</td><td>How does the link get permission to write into the members project?</td><td><strong>Christie grants <code>tinker-hq-apps</code>' functions service account the <em>Cloud Datastore User</em> role on the members project only</strong> (Google Cloud Console → IAM). No key files. The grant runs one way: the members project gets no role on <code>tinker-hq-apps</code>. The link writes only <code>members/*</code> and <code>staffRoster/*</code>. That's enforced by code and tests, since IAM can't scope to a collection. Changing IAM is a security setting, so Christie makes the change.</td></tr>
-<tr><td>D12</td><td>Name of the new project</td><td><strong><code>tinker-clayhub-members</code></strong>, if available (project IDs are permanent). Christie creates it in the Console, links the same billing account (Blaze), and sets a budget alert (suggest $20, like <code>tinker-hq-apps</code>).</td></tr>
-<tr><td>D13</td><td>Backups for the new project</td><td><strong>From day one:</strong> PITR and delete protection on; the project added to the vault's daily managed backups and to <code>backup.js</code>; Storage versioning on. The activity log is "keep forever", so it can't wait.</td></tr>
+<tr><td>D11</td><td>How does the link get permission to write into the members project?</td><td><strong>Christie grants <code>tinker-hq-apps</code>' functions service account the <em>Cloud Datastore User</em> role on the members project only</strong> (Google Cloud Console → IAM). No key files. The grant runs one way: the members project gets no role on <code>tinker-hq-apps</code>. The link writes only <code>members/*</code> and <code>staffRoster/*</code>. That's enforced by code and tests, since IAM can't scope to a collection. Changing IAM is a security setting, so Christie makes the change.<br><em>Christie asked (Sep 27): will pending IAM work from the resilience and hardening plans interfere?</em> <strong>No.</strong>
+<ul>
+  <li>The open IAM item there is the parked rework to stop backups depending on her <em>personal</em> login. This grant is to a <em>service identity</em> in the new project, which is a different thing, and doesn't touch her login.</li>
+  <li><strong>Two things to do:</strong> (1) add this grant to the resilience plan's IAM inventory, so a later clean-up doesn't remove it by mistake. If it were removed, the link would stop writing, the nightly check would alert, and no data would be lost. (2) Make the grant in <code>tinker-clayhub-members</code>'s IAM page, not <code>tinker-hq-apps</code>'s.</li>
+</ul></td></tr>
+<tr><td>D12</td><td>Name of the new project</td><td><strong>⏳ Open.</strong> Christie wants the project named after the app, so the app's final name comes first (she may brainstorm names in Claude chat).
+<ul>
+  <li><strong>The project ID is permanent</strong> and globally unique: 6–30 characters, lowercase letters, digits and hyphens.</li>
+  <li><strong>The display name can change any time.</strong></li>
+  <li><strong>Members will see the ID</strong> in their sign-in links (<code>&lt;id&gt;.firebaseapp.com</code>) unless the app later uses a custom domain.</li>
+  <li>So pick an ID that still reads fine if the app is renamed. <code>clayhub-&lt;appname&gt;</code> ties it to Clay Hub and survives most renames.</li>
+</ul>
+Christie then creates the project in the Console, links the same billing account (Blaze), and sets a budget alert (suggest $20, like <code>tinker-hq-apps</code>). <em>Everywhere this plan says <code>tinker-clayhub-members</code>, read "the members project".</em></td></tr>
+<tr><td>D13</td><td>Backups for the new project</td><td><em>Christie asked (Sep 27): can it be bundled with the regular backups?</em> <strong>Yes: same system, one more source.</strong>
+<ul>
+  <li>The same <code>tinker-hq-vault</code> locked bucket, the same retention, the same email alerts, and one <code>backup.js</code> run that exports both projects into clearly separated files.</li>
+  <li>Setup is still per project (the database schedule, PITR, and a vault write grant for the new project), because Google configures those per database.</li>
+  <li><code>backup.js</code> currently hard-codes <code>tinker-hq-apps</code> (<code>PROJECT_ID</code>, line 15), so it gains a small list of projects. That's a data-safety script change, so it's tested and reviewed.</li>
+</ul>
+<strong>From day one:</strong> PITR and delete protection on; the project added to the vault's daily managed backups and to <code>backup.js</code>; Storage versioning on. The activity log is "keep forever", so it can't wait.</td></tr>
 </table>
 
-<p><strong>Still open from <code>OPEN-ITEMS.md</code></strong>, needed before the Phase 1 plan, not this one: wheel and handbuilding counts; how far ahead booking opens; lengths; check-in window; cancellation cutoff; early-checkout rounding; extending when the area is full; the kiosk "Expected around now" list; the appAccess split; midnight closing. The real brand tokens come from Tinker HQ and Classbook CSS, which Claude pulls itself.</p>
+<h3 id="open-items">Open items from <code>OPEN-ITEMS.md</code>: suggested answers (needed before the Phase 1 plan, not this one)</h3>
+<p>Every number here is a <strong>setting</strong> managers can change later without code, so a wrong guess costs nothing permanent. The exceptions are items 9 and 10, which are behaviour choices.</p>
+<table>
+<tr><th style="width:4%">#</th><th style="width:34%">Question</th><th>Suggested answer</th></tr>
+<tr><td>1</td><td>How many wheels (including the 2 standing)?</td><td><strong>12</strong>, if that's what's on the floor. Only Christie can confirm this; it's a count of real equipment.</td></tr>
+<tr><td>2</td><td>How many handbuilding tables?</td><td><strong>6</strong>, same as above. The number is "people who can comfortably work there", not tables.</td></tr>
+<tr><td>3</td><td>How far ahead can members book?</td><td><strong>7 days (today + 6).</strong> The weekly cap then only ever involves "this week" and "next week", which keeps the meter simple. It also stops people holding prime slots weeks out.</td></tr>
+<tr><td>4</td><td>Start times and lengths</td><td><strong>On the hour, 1–6 whole hours.</strong> Half-hour starts double the choices on a phone screen for little gain. Extensions already come in 30-minute steps.</td></tr>
+<tr><td>5</td><td>When does the check-in window open?</td><td><strong>15 minutes before start.</strong> That covers arriving a little early without letting someone check in from home an hour ahead.</td></tr>
+<tr><td>6</td><td>Reminder, last call, release timing</td><td><strong>+10 / +20 / +30 minutes.</strong> Keep the handoff's timing: 30 minutes of grace is generous without letting a no-show block a busy slot.</td></tr>
+<tr><td>7</td><td>Cancellation cutoff</td><td><strong>None.</strong> Cancelling gives the hours back and frees the spot, and the studio <em>wants</em> people to cancel, even late. A cutoff just turns late cancels into no-shows, which release at +30 anyway.</td></tr>
+<tr><td>8</td><td>Early check-out: how are unused hours returned?</td><td><strong>Rounded down to the nearest 15 minutes.</strong> Simple, easy to explain, and it can't be gamed with one-minute sessions.</td></tr>
+<tr><td>9</td><td>"Still here?" when the area is full: can they stay in the same area?</td><td><strong>Yes, allow it.</strong> Show the real count ("5 people booked for 4 glaze stations") and <em>suggest</em> moving, but don't force it. That's consistent with DECISIONS #6 (capacity is a guideline). Forcing a move mid-glaze would feel bad, and the over-count data is useful.</td></tr>
+<tr><td>10</td><td>Kiosk "Expected around now" list (first name + last initial)</td><td><strong>Drop it.</strong> It puts member names on a public tablet, which works against DECISIONS #9 (members see counts, never names), and check-in doesn't need it: QR and last-4 already work. Names still appear in the rare same-last-4 tie, where they're needed.</td></tr>
+<tr><td>11</td><td>Who can do what on the staff side?</td><td><strong>Staff (with the <code>clayhub-members</code> box ticked):</strong> today's bookings and who's checked in, posts, changes, events. <strong>Managers and admins (automatically, by role):</strong> all of that plus reports, CSV downloads and settings. This matches how every other Tinker app splits it.</td></tr>
+<tr><td>12</td><td>Midnight closing on nights other than Tuesday?</td><td><strong>Launch at 11 PM every night.</strong> It's a per-night setting, so turn midnight on later if the Phase 3 late-night usage report (10–11 PM) shows demand.</td></tr>
+<tr><td>13</td><td>Real Office Hours days and times</td><td>Christie provides them. Only needed for Phase 2 (What's on).</td></tr>
+<tr><td>14</td><td>Member Happy Hour dates</td><td>Not needed in advance: staff add them as events in the app (Phase 2).</td></tr>
+<tr><td>15</td><td>Real brand colour tokens</td><td>Claude pulls them from the Tinker HQ and Classbook CSS in Phase C. Nothing for Christie to do.</td></tr>
+<tr><td>16</td><td>Blaze plan?</td><td><strong>Answered:</strong> <code>tinker-hq-apps</code> is on Blaze, and the new project will be too (D12).</td></tr>
+</table>
 
 <h2 id="phases">Phases</h2>
 
@@ -264,7 +313,19 @@ Scenario: unexpected real data (failure path)
   <li><strong><code>SPEC.md</code>:</strong> §2 (staff screens, per D1), §3 (the live link, status per D4, member-since per D5), §13 (the kiosk claim, and "no member account exists in the internal project"), §14 (Blaze: the new project needs it too).</li>
   <li><strong><code>OPEN-ITEMS.md</code>:</strong> move each answered item to "Confirmed", with the date.</li>
   <li><strong><code>DESIGN.md</code>:</strong> the real brand tokens.</li>
-  <li><strong>Repo <code>CLAUDE.md</code> / <code>AGENTS.md</code>:</strong> this repo holds the members project's rules. <strong>Proposed wording change for <code>~/.claude/CLAUDE.md</code></strong> ("All Firestore security rules live in ONE file" becomes "one file <em>per project</em>", naming both). That's Christie's file, so it's shown to her before any edit.</li>
+  <li><strong>Repo <code>CLAUDE.md</code> / <code>AGENTS.md</code>:</strong> this repo holds the members project's rules.</li>
+  <li><strong><code>~/.claude/CLAUDE.md</code> wording (Christie agreed Sep 27 to the change; the exact text is below for her OK).</strong> The goal is that nobody reads it as "one project per app". There are <strong>exactly two</strong> projects: one for <em>all</em> staff apps, and one that exists <em>only</em> because Clay Hub Members serves customers. The "Single source of truth" block becomes:
+<div class="bdd">### Firebase projects — exactly TWO, and which one an app belongs in
+| Project | Who uses it | What lives there | Rules source (the ONLY place to edit) |
+|---|---|---|---|
+| `tinker-hq-apps` | Staff only | EVERY internal app — Tinker HQ, Classbook, Summer Camp, Ticker, Membership Manager, Recap, … — and every NEW staff app | `/Users/christiehubley/studio-hub/firestore.rules` (+ `storage.rules`) |
+| `&lt;members project&gt;` | Clay Hub members (customers) + staff via /staff | ONLY the Clay Hub Members app. Nothing else, ever. | `/Users/christiehubley/clay-hub-members/firestore.rules` (+ `storage.rules`) |
+
+- It is ONE project for ALL staff apps — NOT one project per app. A new staff app goes into `tinker-hq-apps` and adds its rules to the studio-hub file.
+- The members project exists only because customers sign in there; keeping their accounts out of `tinker-hq-apps` is the whole point. Never create another Firebase project without Christie's explicit decision.
+- The only link between the two is the one-way `clayhub-link` functions in `tinker-hq-apps` (Membership Manager → members project). No other app reads or writes across projects.
+- Each project deploys only through its own guard (`studio-hub/scripts/deploy-rules.sh`, `clay-hub-members/scripts/deploy-rules.sh`), after "approved to change firebase &lt;full sha&gt;".</div>
+  The other lines that say "one file" or "shared project" (Project Structure, "All apps share one Firebase project", the Classbook-style repo stamps) are updated to point at this table instead of restating it.</li>
 </ol>
 <div class="bdd">Scenario: a future session reads the docs cold
   Given only the clay-hub-members repo
@@ -398,6 +459,18 @@ Scenario: the link was down for an hour (failure path)
     </ul>
   </li>
   <li><strong>Sep 26, 2026:</strong> Christie: the link to Membership Manager must be ongoing, not one-time. So Phase E is a live trigger plus a nightly check, one-way only.</li>
+  <li><strong>Sep 27, 2026:</strong> Christie (plan review):
+    <ul>
+      <li>Agreed D1, D2, D3 and D4 (and asked what "nightly" means; see D4). Confirmed D6.</li>
+      <li>D5: add an accurate <code>memberSince</code> field to Membership Manager. She'll fill in the missing phones (over half already have one).</li>
+      <li>D9 question answered.</li>
+      <li>D11: pending resilience IAM work doesn't conflict; add the grant to that plan's inventory.</li>
+      <li>D12: open until the app's final name is chosen.</li>
+      <li>D13: bundle with the existing backup system.</li>
+      <li>Asked for the open items as a list with suggested answers (added).</li>
+      <li>Agreed to reword <code>~/.claude/CLAUDE.md</code>, and asked that it be unmistakable that there's one project for all staff apps, not one per app (draft wording in Phase C).</li>
+    </ul>
+  </li>
 </ul>
 
 </body>
