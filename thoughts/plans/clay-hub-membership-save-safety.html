@@ -50,10 +50,11 @@
     <li>B3 backfills a field onto every member doc.</li>
     <li>B4 moves a member between two docs in one transaction.</li>
   </ul>
-  <span class="status-tag not-ready">execution-ready: false</span> — waiting on review round 2.
+  <span class="status-tag not-ready">execution-ready: false</span>. Review round 2 is done and its fixes are applied below. <strong>B4 (change email) is recommended to be deferred to its own plan</strong> (see B4). Next: a short round 3 on B1, B0, B3, B5 and B2.
 </div>
 
-<h2 id="today">What exists today (verified at <code>b0f4180</code>)</h2>
+<h2 id="today">What exists today (verified at <code>b0f4180</code>; line numbers in the phases below are re-anchored to <code>ac8afac</code>)</h2>
+<p class="note"><strong>Since this plan was written, three more commits landed:</strong> <code>c0477ad</code> (capacity 42), <code>442ccb0</code> (onboarding counts toward spots) and <code>ac8afac</code> (paused cards show their pause dates, via a new <code>currentPauseDates()</code> that calls <code>getLatestPauseIndex</code>). <code>app.js</code> moved about +9 lines from around line 1137 onwards. There are now <strong>74</strong> unit tests.</p>
 <ul>
   <li><strong>The data layer</strong> (<code>js/firebase-data.js</code>) is a classic browser script with <strong>no exports</strong>, so tests can't import it today.
     <ul>
@@ -93,67 +94,71 @@
 </ul>
 
 <h2 id="phases">Phases</h2>
-<p><strong>Order:</strong> B1 → B0 → B3 → B4 → B5 → B2. B2 and B5 are independent and can move. Each step is its own commit; data-write steps get an independent review of the diff before the push; each is checked in the live app afterwards.</p>
+<p><strong>Order:</strong> B1 → B0 → B3 → B5 → B2. <strong>B4 is deferred</strong> (see B4). B2 and B5 are independent and can move. Each step is its own commit; data-write steps get an independent review of the diff before the push; each is checked in the live app afterwards.</p>
 
 <div class="phase" id="b1">
 <h3>B1 — Honest saves <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li><strong>Every</strong> Firestore-backed confirmation appears <strong>only after</strong> the write succeeds. On failure, the control reads "Not saved — try again", the banner shows, the window stays open, and the edits stay on screen.</li>
-  <li>A failed load or <strong>Refresh</strong> leaves <strong>both</strong> collections marked not-loaded before anything can save. It also <strong>keeps the good on-screen data</strong> instead of swapping in the localStorage copy.</li>
-  <li>"Firebase unavailable" raises the banner too.</li>
-  <li>The page renders first, and <em>then</em> the page-load save is awaited, with any failure reported.</li>
-  <li><strong>From now on, no confirmation text may be added to <code>app.js</code> without awaiting its save.</strong> This goes into the repo's <code>AGENTS.md</code>.</li>
+  <li><strong>Every user-triggered</strong> Firestore-backed save shows success <strong>only after</strong> every write it needs has succeeded. On failure, the control reads "Not saved — try again", the banner explains, the window stays open and the edits stay on screen. Saves that touch two docs (member and waitlist) report failure if either fails.</li>
+  <li>A failed or partial load or <strong>Refresh</strong> leaves <strong>both</strong> collections not-loaded unless <strong>both</strong> loaded, and keeps the good on-screen data rather than swapping in the localStorage copy. The sheet-rebuilt waitlist can't be written until the waitlist loaded.</li>
+  <li>The banner handles every kind of problem: <code>failed</code>, <code>not-loaded</code>, <code>load-failed</code>, <code>unavailable</code> ("The database isn't available — nothing is being saved") and <code>no-email</code>.</li>
+  <li>The page renders first. The page-load save is <strong>moved</strong> into <code>loadData</code> after <code>checkAlerts()</code>, then awaited, and any failure is reported.</li>
+  <li>The tour-checklist debounce (<code>scheduleTourSave</code>, 800 ms) is <strong>flushed and awaited</strong> when the window closes, not cancelled.</li>
+  <li><strong>From now on, no confirmation text may be added to <code>app.js</code> without awaiting its save.</strong> This goes into <code>AGENTS.md</code>. <code>clayHub_appData</code> saves (<code>saveAppDataToFirestore</code>) are out of scope and noted as such.</li>
 </ul>
 <ol>
-  <li><strong>B1.0: make the data layer testable.</strong> Add a guarded CommonJS export block to <code>firebase-data.js</code> (like <code>member-status.js:429</code>). Add an <code>initDataLayer({db, FieldValue})</code> seam so tests can pass in the emulator's <strong>compat</strong> Firestore; <code>@firebase/rules-unit-testing</code>'s <code>context.firestore()</code> is compat, matching the app's compat 10.7.1. The emulator tests then call the <em>real</em> <code>saveRecordChanges</code> and <code>loadCollection</code>.</li>
-  <li><strong>Tests first</strong>, against the real functions on the emulator with studio-hub's rules:
+  <li><strong>B1.0: make the real data layer runnable in Node.</strong> Add <code>initDataLayer({db, FieldValue, planDocWrite, onProblem})</code>, which sets <code>firebaseReady</code> explicitly and stores the injected values. <code>firebase-data.js:89</code> uses the injected <code>FieldValue</code>, not the global <code>firebase</code>. Add a guarded CommonJS export, plus <code>resetDataLayer()</code> to clear <code>storedCopies</code>, <code>docIdByEmail</code> and <code>collectionLoaded</code> between tests. Tests pass the emulator's <strong>compat</strong> Firestore (<code>@firebase/rules-unit-testing</code> 5.0.0's <code>context.firestore()</code> is compat; take it <strong>once per context</strong>), the compat <code>FieldValue</code> (<code>firebase/compat/app</code>), and <code>planDocWrite</code> from <code>member-status.js</code>.</li>
+  <li><strong>Tests first</strong> (emulator, real functions, studio-hub rules):
     <ul>
-      <li>a rules-rejected save returns <code>false</code> and reports "failed";</li>
-      <li>a reload that throws leaves the collection not-loaded, and a following save is refused;</li>
-      <li>members and waitlist are each tested independently;</li>
-      <li>the not-found fallback now writes with <code>{merge:true}</code>.</li>
+      <li>a rules-rejected save returns false, and <code>onProblem('failed')</code> is called;</li>
+      <li>members load OK then waitlist fails → both are not-loaded, and a save of either is refused;</li>
+      <li>members fail then waitlist OK → both are not-loaded;</li>
+      <li>the not-found fallback uses <code>{merge:true}</code>;</li>
+      <li><code>saveChangedRecords</code> reports failure (not <code>{saved:0, failed:0}</code>) when unavailable.</li>
     </ul>
-    Unit tests: <code>saveOutcomeLabel(ok)</code>.</li>
+    Unit tests: <code>saveOutcomeLabel</code>, and the banner text for each kind.</li>
   <li><strong>The data layer:</strong>
     <ul>
-      <li><code>collectionLoaded[c] = false</code> at the start of <code>loadCollection</code>;</li>
-      <li>the waitlist empty-collection reset;</li>
-      <li><code>reportSaveProblem('unavailable')</code> when Firebase isn't ready;</li>
-      <li><code>{merge:true}</code> at <code>:104</code>.</li>
+      <li>Each loader returns an explicit <code>{ok, records}</code> and never swallows an error into <code>null</code>.</li>
+      <li><code>loadLocalData</code> sets both flags false at the start, and leaves them true only if <strong>both</strong> loads succeed.</li>
+      <li><code>:82</code> is split into three cases: <code>unavailable</code>, a missing record, and <code>no-email</code>.</li>
+      <li>An empty waitlist collection <strong>counts as loaded</strong>, so the sheet can still seed it. The members load keeps its empty → not-loaded rule, because members fall back to localStorage.</li>
+      <li><code>storedCopies</code> is kept honest (see B3's protected fields).</li>
     </ul>
   </li>
-  <li><strong>The load path:</strong> set <strong>both</strong> flags false at the top of <code>loadLocalData</code>. If a load fails when data was already on screen (a Refresh), keep it, show the banner, and don't read localStorage.</li>
-  <li><strong>Callers:</strong>
+  <li><strong>Callers.</strong> Every one of these follows <strong>await all → if any failed, show "Not saved — try again" and return (the window stays open) → then close and confirm</strong>:
     <ul>
-      <li><code>saveMemberChanges</code> becomes <code>async</code> and returns the result.</li>
-      <li><code>saveLocalData</code> returns <code>{members: ok, waitlist: ok}</code>.</li>
-      <li>Each confirmation below follows <strong>await → if not ok, show "Not saved — try again" and return → then close and confirm</strong>:
-        <ul>
-          <li>the member card Save (<code>:2437</code>) and the waitlist card (<code>:2405</code>);</li>
-          <li>Save Progress (<code>:3150</code>);</li>
-          <li><code>completeWorkflow</code> (<code>:3268</code>/<code>:3277</code>);</li>
-          <li><code>saveQuickLog</code> (<code>:3372</code>/<code>:3379</code>);</li>
-          <li><code>saveNewMember</code> (<code>:2286</code>/<code>:2295</code>);</li>
-          <li><code>markInvitationSent</code> (<code>:4030</code>);</li>
-          <li>waitlist Declined / No Response / Stay (<code>:330</code>, <code>:332</code>, <code>:359</code>, <code>:361</code>, <code>:396</code>);</li>
-          <li>cancelling a scheduled pause or cancellation (around <code>:2940</code>);</li>
-          <li>shelf assign / vacate / seed (<code>showShelfStatus</code>, <code>:4489</code>, <code>:4523</code>, <code>:4545</code>).</li>
-        </ul>
-      </li>
-      <li>The silent paths (<code>addAction</code> <code>:2471</code>, <code>saveCustomAlert</code> <code>:2550</code>, <code>:4737</code>, and the auto-transitions) rely on the banner.</li>
-      <li>The executor first re-greps for every other confirmation string, and lists any extras in the log.</li>
+      <li>the member card Save (around <code>:2446</code>) and the waitlist card (around <code>:2414</code>);</li>
+      <li>Save Progress (around <code>:3159</code>);</li>
+      <li><code>completeWorkflow</code>: capture the workflow type <em>before</em> <code>closeWorkflowModal()</code> (around <code>:3277</code>–<code>:3286</code>);</li>
+      <li><code>saveQuickLog</code> (around <code>:3381</code>–<code>:3388</code>);</li>
+      <li><code>saveNewMember</code> (member + waitlist, around <code>:2295</code>–<code>:2304</code>);</li>
+      <li><code>moveToOnboarding</code> (member + waitlist, around <code>:2152</code>);</li>
+      <li><code>markInvitationSent</code> (around <code>:4039</code>);</li>
+      <li>waitlist Declined / No Response / Stay (around <code>:330</code>–<code>:396</code>);</li>
+      <li><code>cancelScheduledPause</code> (<code>:2979</code>) and <code>cancelScheduledCancellation</code> (<code>:3065</code>);</li>
+      <li>the stage-move dropdown (member + waitlist, <code>:3887</code>–<code>:3950</code>);</li>
+      <li><code>moveToTouring</code>, <code>moveBackToWaitlist</code>, <code>moveMemberToTouring</code> and <code>moveMemberFromTouringToOnboarding</code>;</li>
+      <li>orientation actions;</li>
+      <li>the trade-status auto-save (<code>:3994</code>–<code>:3997</code>);</li>
+      <li>shelf assign and vacate (<code>showShelfStatus</code> at <code>:4534</code>, <code>:4556</code>) and seed (<code>:4748</code>). <strong>Not</strong> the localStorage-only write-in paths (<code>saveShelfWriteIn</code> <code>:4559</code>, <code>vacateShelfWriteIn</code> <code>:4572</code>).</li>
     </ul>
-  </li>
+    The silent paths (<code>addAction</code>, <code>saveCustomAlert</code>, the auto-transitions) rely on the banner. <strong>Before coding, the executor re-greps</strong> <code>app.js</code> for every save call and confirmation string, and records the final inventory in this plan's log.</li>
 </ol>
 <div class="bdd">Scenario: save fails
   Given Firestore rejects the write
-  When staff click Save on a member card (or complete a workflow, or log a quick log)
+  When staff click Save on a member card (or complete a workflow, log a quick log, move a stage)
   Then the control reads "Not saved — try again", the banner shows, the window stays open with the edits
 
-Scenario: failed refresh keeps good data
-  Given members and waitlist loaded fine, then Refresh's members load throws
-  Then both collections are marked not-loaded, nothing is written (including the sheet-rebuilt waitlist), and the on-screen members are unchanged
+Scenario: partial refresh failure
+  Given members load fine on Refresh but the waitlist load fails
+  Then both collections are marked not-loaded, nothing is written (including the sheet-rebuilt waitlist), and on-screen data is unchanged
+
+Scenario: two-document save
+  Given moving a waitlist person to Onboarding writes a member doc and a waitlist doc
+  When the waitlist write fails
+  Then the move reports "Not saved — try again"
 
 Scenario: happy path
   Given a normal save
@@ -161,24 +166,25 @@ Scenario: happy path
 </div>
 
 <div class="phase" id="b0">
-<h3>B0 — Rules: the database protects <code>memberId</code> and retirement <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance criteria:</strong> in the <code>clayHub_members</code> rules, an existing <code>memberId</code> can't be changed or removed, and a doc with <code>retired == true</code> can't be un-retired. Everything Membership Manager does today still works. This is a safety net under the app code; it doesn't replace it.</p>
+<h3>B0 — Rules: the database protects <code>memberId</code> and freezes retired records <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+  <li>In <code>clayHub_members</code>, a <code>memberId</code> that is already set can't be changed or removed. The first-time set is allowed.</li>
+  <li><strong>A doc that already has <code>retired == true</code> can't be updated at all</strong>, so a stale browser tab can't save into it. The live → retired update itself is allowed.</li>
+  <li>Everything Membership Manager does today still works.</li>
+  <li>This is a safety net under the app code, and it's inert on deploy: nothing writes <code>memberId</code> or <code>retired</code> today.</li>
+</ul>
 <ol>
-  <li><strong>Tests first</strong> (studio-hub <code>rules.test.js</code>, which must fail on the current rules):
+  <li><strong>Preflight</strong> (read-only, by Christie in the Console, or by the B3 tool's read-only mode): confirm that <strong>no</strong> <code>clayHub_members</code> doc already has a <code>memberId</code> or <code>retired</code> field. If any does, stop and decide what to do with it before this rule ships.</li>
+  <li><strong>Tests first</strong> (<code>rules.test.js</code>, red on the current rules): changing <code>memberId</code> is denied; deleting <code>memberId</code> is denied; <strong>any update to a retired doc is denied</strong>, including from a stale second context. Regression cover: other updates are allowed; a first-time <code>memberId</code> is allowed; live → retired is allowed; create is unchanged.</li>
+  <li><strong>The rule</strong>, using named helpers, as <code>firestore.rules:9</code> requires ("Never repeat logic inline"):
     <ul>
-      <li>an update that changes <code>memberId</code> is denied;</li>
-      <li>an update that deletes <code>memberId</code> is denied;</li>
-      <li>an update that sets <code>retired:false</code> on a retired doc, or removes <code>retired</code>, is denied;</li>
-      <li>regression cover: an update that doesn't touch these fields is allowed; the first-time set of <code>memberId</code> on a doc without one is allowed; setting <code>retired:true</code> is allowed; create is allowed as today.</li>
+      <li><code>canWriteClayHubMembers()</code> is the current <code>(isManagerOrAbove() || hasAppAccess('clay-membership')) &amp;&amp; belongsToStudio('clayhub')</code>, so read, create and update can be split without repeating it.</li>
+      <li><code>fieldUnchangedOnceSet(f)</code>: <code>!(f in resource.data) || request.resource.data.get(f, null) == resource.data[f]</code>.</li>
+      <li><code>allow update: if canWriteClayHubMembers() &amp;&amp; fieldUnchangedOnceSet('memberId') &amp;&amp; resource.data.get('retired', false) != true;</code></li>
     </ul>
   </li>
-  <li><strong>The rule:</strong> split <code>allow read, create, update</code> and add to <code>update</code>:
-    <ul>
-      <li><code>(!('memberId' in resource.data) || request.resource.data.get('memberId', null) == resource.data.memberId)</code></li>
-      <li><code>&amp;&amp; (resource.data.get('retired', false) != true || request.resource.data.get('retired', false) == true)</code></li>
-    </ul>
-  </li>
-  <li>The full studio-hub suite goes green. It's merged to <code>main</code>, then run through the guard (<code>--status</code>, <code>--diff</code> pasted verbatim, stop on any hunk not written here). It's deployed only after <em>"approved to change firebase &lt;full sha&gt;"</em>.</li>
+  <li>The full studio-hub suite goes green. Merge, run <code>--status</code> and <code>--diff</code> (pasted verbatim), and deploy only after <em>"approved to change firebase &lt;full sha&gt;"</em>.</li>
 </ol>
 </div>
 
@@ -219,6 +225,8 @@ Scenario: happy path
     </ul>
   </li>
   <li><strong>After the backfill:</strong> creating or re-creating a member doc without a valid <code>memberId</code> is refused by the app.</li>
+  <li><strong><code>storedCopies</code> stays honest:</strong> when <code>planDocWrite</code> skips a protected field, <code>saveRecordChanges</code> carries that field over from <code>before</code> into the cached copy.</li>
+  <li><strong>Backups:</strong> the tool's snapshot is a <em>new</em> raw <code>{docId, data}</code> export read straight from Firestore. <code>downloadMembersBackup()</code> (the header button and the imports) is left as it is, and relabelled "Download what's on screen (JSON)" so nobody mistakes it for a raw backup.</li>
 </ol>
 <div class="bdd">Scenario: backfill runs twice at once
   Given two staff run "Assign member IDs" in two browsers at the same moment
@@ -236,7 +244,15 @@ Scenario: an ordinary save
 </div>
 
 <div class="phase" id="b4">
-<h3>B4 — Change a member's email (redesigned) <span class="status-tag not-ready">execution-ready: false (after B3)</span></h3>
+<h3>B4 — Change a member's email <span class="status-tag not-ready">⏸ recommended: DEFER to its own plan</span></h3>
+<div class="note"><strong>Why defer (round 2):</strong> email can't be changed in Membership Manager today (the field is read-only), so no duplicate or orphan records can appear in the meantime. My Clay Hub's link already handles retired docs whenever they start to exist. Doing B4 right needs more than the member docs:
+<ul>
+  <li>the <strong>Google-Sheet waitlist sync matches by email</strong> (<code>fetchWaitlist</code>, <code>app.js:114-151</code>), so a Refresh after a change would put the person back on the waitlist;</li>
+  <li>the waitlist cross-checks (<code>isCurrentMemberEmail</code>, <code>renderPipeline</code>, <code>computeWaitlistPositions</code>, <code>isOverdueInvitation</code>) all compare email strings;</li>
+  <li>a Firestore web transaction can't query, and has to do all its reads before any writes;</li>
+  <li>there's no defined way to change an email back to one used before.</li>
+</ul>
+The findings and the design direction are recorded below for that future plan: <code>previousEmails[]</code> on the member doc, cross-checks matching any of a member's emails, all reads before writes, waitlist doc IDs resolved before the transaction, and B0's retired-doc freeze as the stale-tab backstop. <strong>Christie to confirm the deferral.</strong></div>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
   <li>"Change email" on the member card asks for the new address (checked for format), confirms, and then runs <strong>one Firestore transaction</strong> that:
@@ -301,7 +317,9 @@ Scenario: same doc id
     <ul>
       <li><code>returningMemberRecord</code> keeps old pauses marked <code>priorTerm</code>;</li>
       <li><code>pauseEligibility</code> and <code>noticeDates</code> ignore them;</li>
-      <li><code>getLatestPauseIndex</code> and the resume and auto-start checks ignore <code>priorTerm</code> entries, so an old pause can't wrongly affect the new term.</li>
+      <li><code>getLatestPauseIndex</code> and the resume and auto-start checks ignore <code>priorTerm</code> entries, so an old pause can't wrongly affect the new term. <strong>The index returned must still point into the <em>original</em> array</strong>, because <code>checkExpiredPauses</code> splices by it (<code>app.js:492</code>) and <code>markPauseProcessedInSawyer</code> edits by it. Test this with a <code>priorTerm</code> entry placed <em>before</em> a current one.</li>
+      <li><code>currentPauseDates()</code> (from <code>ac8afac</code>, used by the paused card) ignores <code>priorTerm</code> too.</li>
+      <li>A pure <code>partitionPauses(history)</code> → <code>{current, prior}</code> helper, tested with a mixed history, drives the card's "Previous membership" list.</li>
     </ul>
   </li>
   <li>Change the helpers in <code>member-status.js</code>, and the card's pause list.</li>
@@ -318,6 +336,8 @@ Scenario: same doc id
   <li><strong>Blank</strong> clears the phone (the field is removed), and counts as missing.</li>
   <li>Stored as the formatted <code>(303) 555-1234</code>, and shown the same way. Existing phones are shown formatted, but not rewritten until they're edited.</li>
   <li>A <strong>"Phones missing"</strong> count and filter on the Active list.</li>
+  <li>An existing phone that can't be formatted (for example, a 7-digit legacy number) is shown <strong>as stored</strong>, with a small "check number" tag.</li>
+  <li>The phone editor appears only on <strong>member</strong> cards. <code>#modal-phone</code> is shared with the waitlist card, so the editor is hidden there, the same way <code>member-details-section</code> is.</li>
 </ul>
 <ol>
   <li>Tests first: <code>phoneDigits</code> / <code>formatPhone</code> / <code>validatePhone</code> for every case above.</li>
@@ -387,6 +407,23 @@ Scenario: filling in the gaps
 <tr><td>Citation drift, and "~30 callers" was really 48 (Claude)</td><td>Fixed.</td></tr>
 </table>
 
+<h3>Round 2 (Sep 27): Codex "B1/B5 after fixes, B2 ready, B0/B3/B4 not ready"; Claude "all after fixes except B4 not ready"</h3>
+<table>
+<tr><th style="width:42%">Finding</th><th>Disposition</th></tr>
+<tr><td><code>retiredDocIds</code> is per-tab, so a stale tab still saves into a retired doc; B0 allowed it (both)</td><td><strong>B0 now denies any update to a retired doc.</strong></td></tr>
+<tr><td>B0 freezes pre-existing bad IDs (Codex); check no doc already has <code>memberId</code> (Claude)</td><td>B0 step 1 preflight: stop if any doc has <code>memberId</code> or <code>retired</code>.</td></tr>
+<tr><td>Named helpers, not inline (Claude)</td><td><code>canWriteClayHubMembers()</code> and <code>fieldUnchangedOnceSet()</code>.</td></tr>
+<tr><td>B4: reads after writes; no queries in transactions; waitlist resolution; the sheet sync re-adds the person; in-memory waitlist email; a second waitlist doc; changing an email back; loaded check; the D22 invariant (both)</td><td><strong>B4 recommended for deferral</strong> to its own plan, with a recorded design direction. Nothing creates retired docs until then.</td></tr>
+<tr><td>Load flags: asymmetric failures; loaders swallow errors (both)</td><td>Loaders return <code>{ok}</code>; both flags stay true only if both loads succeed; both orders tested.</td></tr>
+<tr><td>The B1.0 seam is incomplete: globals, the global <code>FieldValue</code>, <code>onProblem</code>, no state reset (both)</td><td>The <code>initDataLayer</code> injection list plus <code>resetDataLayer</code>.</td></tr>
+<tr><td>The B1 inventory is incomplete or has wrong lines; multi-doc saves; the workflow-type dereference after close (both)</td><td>The inventory is expanded and re-anchored, outcomes are aggregated, the type is captured before close, and the re-grep is recorded.</td></tr>
+<tr><td>Move the page-load save; <code>saveChangedRecords</code> signals unavailable; banner kinds; split <code>:82</code>; waitlist empty stays loaded; tour-save debounce; appData out of scope (Claude)</td><td>All in B1.</td></tr>
+<tr><td>Protected fields leave <code>storedCopies</code> wrong; the backup helper claim (Claude)</td><td>In B3.</td></tr>
+<tr><td>B5: original-array index; <code>currentPauseDates</code>; the partition helper test (both)</td><td>In B5.</td></tr>
+<tr><td>B2: unformattable legacy numbers; the modal shared with the waitlist (Claude)</td><td>In B2.</td></tr>
+<tr><td>Stale baseline and line drift (Claude)</td><td>Re-anchor note; phase line references moved to <code>ac8afac</code>.</td></tr>
+</table>
+
 <h2 id="resume">Resume</h2>
 <ol>
   <li>Read this file and the repo's <code>CLAUDE.md</code>.</li>
@@ -400,6 +437,7 @@ Scenario: filling in the gaps
   <li><strong>Sep 27, 2026:</strong> ✅ <code>b0f4180</code>: returning members no longer wiped; their cancellation is cleared; their action log is kept; <code>sameEmail</code>. 72/72 unit tests, 4/4 emulator tests, Codex ×2 "safe to ship". Pushed.</li>
   <li><strong>Sep 27, 2026:</strong> Christie answered Q1 (keep past pauses as <code>priorTerm</code>; B5), Q2 (10-digit phone, formatted) and Q3 (anyone with access, with confirmation and a log entry).</li>
   <li><strong>Sep 27, 2026:</strong> review round 1 → this rewrite (a B4 transaction redesign, the new B0 rules step, a testable data layer, the full B1 inventory, B3 hardening, B2 spec, the new order).</li>
+  <li><strong>Sep 27, 2026:</strong> review round 2 → fixes applied to B1, B0, B3, B5 and B2. <strong>B4 is recommended for deferral</strong> (Christie to confirm). Unrelated small Membership Manager changes, at Christie's request, landed meanwhile: <code>c0477ad</code> (capacity 42), <code>442ccb0</code> (onboarding counts, with helper text) and <code>ac8afac</code> (paused-card dates; "Member since").</li>
 </ul>
 
 </body>
