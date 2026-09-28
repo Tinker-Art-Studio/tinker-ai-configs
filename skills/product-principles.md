@@ -99,7 +99,8 @@ CSS custom properties (add to `:root` in new Tinker apps):
 
 ### Clay Hub palette
 
-Use for: Clay Hub Inventory, Clay Hub Booking, Clay Hub Membership.
+Use for: Clay Hub Inventory, Clay Hub Membership, My Clay Hub. (Clay Hub Booking was retired Sep 2026.)
+Official values: Christie's Clay Hub brand sheet in `~/my-clay-hub/docs/my-clay-hub/brand/`; My Clay Hub's readable colour roles are in `~/my-clay-hub/docs/my-clay-hub/DESIGN.md`. The hexes below are approximate.
 
 | Name | Hex (approx) | Use |
 |------|-------------|-----|
@@ -174,7 +175,8 @@ CSS custom properties for Clay Hub apps:
 | KPI Dashboard | `~/tinker-kpi/` | 8089 | Netlify |
 | Clay Inventory | `~/clay-inventory-tracker/` | — | Netlify |
 | Supply Low List | `~/tinker-supply-list/` | 8085 | Netlify |
-| Clay Hub Booking | `~/clay-hub-booking/` | 8096 | — |
+| ~~Clay Hub Booking~~ | `~/clay-hub-booking/` | — | **Retired Sep 27, 2026** (replaced by My Clay Hub; repo archived) |
+| My Clay Hub | `~/my-clay-hub/` | — | Netlify (planned); own Firebase project `my-clay-hub` |
 | Schedule Viewer | `~/schedule-viewer/` | 8090 | Netlify |
 | Recap | `~/recap/` | 8091 | Render |
 | Clay Hub Membership | `~/clay-hub-membership/` | 8083 | Render |
