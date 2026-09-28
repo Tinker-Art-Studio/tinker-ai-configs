@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Copied Camp Review</title>
+<style>
+:root { --bg:#fff; --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --accent:#0969da; --warn:#9a6700; --warnbg:#fff8c5; --ok:#1a7f37; --code:#f6f8fa; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --accent:#4493f8; --warn:#d29922; --warnbg:#2b2111; --ok:#3fb950; --code:#151b23; } }
+:root[data-theme="dark"] { --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --line:#3d444d; --accent:#4493f8; --warn:#d29922; --warnbg:#2b2111; --ok:#3fb950; --code:#151b23; }
+body { background:var(--bg); color:var(--fg); font:16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin:0; padding:0 16px; }
+main { max-width:860px; margin:2rem auto 4rem; }
+h1 { font-size:1.7rem; margin-bottom:.2rem; } h2 { margin-top:2.2rem; border-bottom:1px solid var(--line); padding-bottom:.3rem; } h3 { margin-top:1.5rem; }
+.sub { color:var(--muted); margin-top:0; }
+.status { background:var(--warnbg); border-left:4px solid var(--warn); padding:.8rem 1rem; border-radius:6px; }
+code { background:var(--code); padding:.1rem .3rem; border-radius:4px; font-size:.9em; }
+table { border-collapse:collapse; width:100%; margin:.8rem 0; font-size:.95rem; } th, td { border:1px solid var(--line); padding:.45rem .6rem; text-align:left; vertical-align:top; }
+.pill { display:inline-block; font-size:.8rem; padding:.05rem .5rem; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+.bdd { border-left:3px solid var(--line); padding-left:.8rem; margin:.6rem 0; }
+.bdd b { color:var(--accent); }
+ul li { margin:.2rem 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Copied Camp Review</h1>
+<p class="sub">Summer Camp App · plan slug <code>summer-camp-copied-camp-review</code> · follows <code>summer-camp-app-seasons</code> Phase 3A · created Sep 27, 2026</p>
+
+<div class="status" id="status">
+<p><strong>Status (Sep 27, 2026 — RESUME HERE):</strong> DESIGNED, not execution-ready. Next: two-model plan review → fold findings in → Christie's go → build Phase 1 then Phase 2 red-first → implementation review → "okay to deploy?" → <code>npm run deploy</code>. Context: Phase 3A shipped Sep 26 (<code>dcb7777</code>, Netlify <code>6ab846fc</code>) and Christie copied all 23 Summer 2026 camps into 2027 the same evening. She wants copies visibly marked as "not yet reviewed / not updated for 2027".</p>
+</div>
+
+<h2>Goal</h2>
+<p>Every camp copied from an earlier summer says plainly <em>"Not yet reviewed for Summer 2027"</em> — on its Curriculum card, its Lesson Plans entry, and in Project Details and Materials — until a manager deliberately marks it reviewed.</p>
+
+<h2>Decisions already made (Christie, Sep 27)</h2>
+<table>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td>What is reviewed?</td><td><strong>The whole camp</strong> — one mark per camp, not per project.</td></tr>
+<tr><td>Does editing count as reviewing?</td><td><strong>No.</strong> Only the explicit "Mark reviewed for Summer 2027" button clears it (with an undo).</td></tr>
+<tr><td>Who can mark it?</td><td><strong>Managers and admins</strong> — the people who can already edit curriculum. No rules change.</td></tr>
+</table>
+
+<h2>Research (current state)</h2>
+<ul>
+<li>Every doc Phase 3A copies — curriculum, Lesson Plans topic, project detail, material — carries <code>carriedForwardFrom: { season, id }</code> (<code>js/carry-forward.js:159-195</code>). The Curriculum card already shows a small grey "Copied from Summer 2026" line (<code>js/app.js:206</code>); nowhere else shows it.</li>
+<li>The Curriculum card's status badge is <code>calculateCurriculumStatus(blocks, completeOverride)</code> — derived from the grid, which was copied whole, so an untouched copy can read "Complete". That is the misleading part.</li>
+<li><code>summerCamps_curriculum</code> rule (<code>studio-hub/firestore.rules:827-830</code>): read for app users, <code>create, update, delete: if isManagerOrAbove()</code>, no field allow-list → two new fields need <strong>no rules change</strong>.</li>
+<li>Every curriculum writer uses <code>.update(Season.patch(…))</code> with only the fields it owns (editor auto-save <code>app.js:9235</code>, bins <code>2137</code>, <code>camp-admin.js:180/217</code>), so nothing rewrites the whole doc and wipes a new field. Only creates use <code>set</code> (a new camp — correct to start without it).</li>
+<li><strong>The Classbook</strong> only reads <code>summerCamps_curriculum</code> (<code>tinker-spring-curriculum/js/firebase-data.js:1664</code>) — no writes, so it can't clobber the field and needs no change.</li>
+<li>Carry-forward classifies every curriculum field (<code>FIELDS.curriculum</code>, <code>carry-forward.js:39-46</code>); an unlisted field is reported "Not copied (fields this version doesn't know)". The new fields must go in <code>dropped</code>, so a 2027→2028 copy starts <em>unreviewed</em> and doesn't raise a false alarm.</li>
+<li>Project Details (<code>app.js:694</code>) and Materials (<code>app.js:652</code>) already read <code>summerCampsCurriculum</code>; Lesson Plans (<code>app.js:2823</code>) does not — it needs one more <code>Season.query('summerCampsCurriculum')</code> read.</li>
+<li>Tests: <code>e2e/copy-camps.spec.js</code> (emulator; seeds a 2026 camp and copies it), <code>test/carry-forward.emulator.test.js</code>, <code>test/season-completeness.test.js</code> (every season-scoped writer must go through <code>Season.writeRef</code>).</li>
+</ul>
+
+<h2>Design</h2>
+<h3>The data</h3>
+<ul>
+<li>Two optional fields on the camp's <code>summerCamps_curriculum</code> doc: <code>reviewedAt</code> (Firestore Timestamp) and <code>reviewedBy</code> (email via <code>seasonActor()</code>).</li>
+<li><strong>Not reviewed</strong> ⇔ <code>carriedForwardFrom</code> is set <em>and</em> <code>reviewedAt</code> is absent. Derived — so the 23 camps already in production need <strong>no backfill</strong>, and a camp created fresh in 2027 never shows the marker.</li>
+<li>One helper, <code>campReviewState(curriculumDoc)</code> → <code>'unreviewed' | 'reviewed' | 'new'</code>, used by all four tabs, so the rule lives in one place.</li>
+<li>Mark reviewed: <code>Season.writeRef('summerCampsCurriculum').doc(id).update(Season.patch({ reviewedAt: now, reviewedBy }))</code>, awaited. Undo: same, with both fields <code>FieldValue.delete()</code> (pattern already used by <code>saveBinInfo</code>).</li>
+<li>The label names the viewed season from the registry (<code>seasonLabel(Season.viewing)</code>) — nothing hard-codes "2027", so it works unchanged for 2028.</li>
+</ul>
+<h3>What people see</h3>
+<ul>
+<li><strong>Curriculum card</strong>: while unreviewed, an amber <span class="pill">Not yet reviewed for Summer 2027</span> badge <em>replaces</em> the grid status badge; the grey "Copied from Summer 2026" line stays. Once reviewed, the normal status badge returns and the grey line reads "Copied from Summer 2026 · reviewed Sep 28 by Christie".</li>
+<li><strong>Curriculum header</strong>: a count line when any copies exist — "23 camps copied from Summer 2026 · 23 not yet reviewed" — hidden when there are none.</li>
+<li><strong>Curriculum editor</strong> (a copied camp, current season, manager/admin): a band at the top — "Copied from Summer 2026 and not yet reviewed for Summer 2027. [Mark reviewed for Summer 2027]". After clicking: "Reviewed for Summer 2027 · Sep 28 by Christie · [Undo]". Read-only past-season view: the band shows the state but no button.</li>
+<li><strong>Lesson Plans, Project Details, Materials</strong>: the same amber badge next to the camp name in each tab's camp list/header. Display only — the button lives in one place (the editor).</li>
+</ul>
+
+<h2>Phases</h2>
+
+<h3>Phase 1 — Curriculum: badge, count, mark reviewed / undo, carry-forward drops the fields <span class="pill">execution-ready: false</span></h3>
+<p><strong>Acceptance (user terms):</strong></p>
+<ul>
+<li>Christie opens Curriculum in 2027 and every copied camp shows "Not yet reviewed for Summer 2027" instead of a status like "Complete"; the header counts them.</li>
+<li>She opens a copied camp, clicks "Mark reviewed for Summer 2027", and on closing the editor that card shows its normal status and who reviewed it; the count drops by one. Undo puts it back.</li>
+<li>Editing a copied camp's grid, notes or teacher does <em>not</em> clear the marker.</li>
+<li>A camp she creates fresh in 2027 never shows the marker or the button.</li>
+<li>Viewing Summer 2026 (read-only) shows no button and no count.</li>
+<li>Copying a reviewed 2027 camp into 2028 later produces an <em>unreviewed</em> 2028 copy, with no "fields this version doesn't know" warning.</li>
+</ul>
+<div class="bdd"><b>Given</b> a 2026 camp copied into 2027 (2027 current, manager) <b>When</b> Curriculum loads <b>Then</b> its card shows the amber not-reviewed badge, not the grid status, and the header reads "1 camp copied from Summer 2026 · 1 not yet reviewed".</div>
+<div class="bdd"><b>Given</b> that camp open in the editor <b>When</b> the manager clicks Mark reviewed <b>Then</b> the doc gains <code>reviewedAt</code>/<code>reviewedBy</code>, every other field is unchanged, the band shows Undo, and after closing the card shows its grid status and "reviewed … by …".</div>
+<div class="bdd"><b>Edge</b> — <b>Given</b> a reviewed camp <b>When</b> Undo is clicked <b>Then</b> both fields are deleted and the badge returns. <b>Given</b> an unreviewed copy <b>When</b> its grid is edited and auto-saved <b>Then</b> it is still unreviewed.</div>
+<div class="bdd"><b>Edge</b> — <b>Given</b> a hand-made 2027 camp <b>Then</b> no badge, no band, not counted. <b>Given</b> viewing 2026 <b>Then</b> no button; a direct call is refused by <code>Season.writeRef</code> as read-only.</div>
+<div class="bdd"><b>Failure</b> — <b>Given</b> the write fails (offline / permission) <b>When</b> Mark reviewed is clicked <b>Then</b> an error is shown, the band still says not reviewed, and nothing claims success.</div>
+<div class="bdd"><b>Carry-forward</b> (emulator) — <b>Given</b> a 2027 curriculum with <code>reviewedAt</code>/<code>reviewedBy</code> <b>When</b> it is planned and copied into 2028 <b>Then</b> the 2028 doc has neither field and <code>unknownFields</code> is empty.</div>
+<p><strong>Tests (red first):</strong> <code>e2e/copy-camps.spec.js</code> extended (badge, count, mark, undo, edit-doesn't-clear, fresh camp, past view, no page errors); <code>test/carry-forward.emulator.test.js</code> (fields dropped). Completeness checker must stay clean.</p>
+
+<h3>Phase 2 — The badge on Lesson Plans, Project Details and Materials <span class="pill">execution-ready: false</span></h3>
+<p><strong>Acceptance:</strong> anyone preparing a copied camp in those three tabs sees "Not yet reviewed for Summer 2027" beside its name until it is reviewed; after review the badge is gone on next load. Fresh camps never show it.</p>
+<div class="bdd"><b>Given</b> an unreviewed copy <b>When</b> Lesson Plans / Project Details / Materials loads <b>Then</b> the camp's entry carries the badge.</div>
+<div class="bdd"><b>Edge</b> — <b>Given</b> the camp was renamed after copying <b>Then</b> the badge still follows it (the lookup is by the curriculum doc's current <code>campTopic</code>, the same key those tabs already use).</div>
+<div class="bdd"><b>Failure</b> — <b>Given</b> the extra curriculum read in Lesson Plans fails <b>Then</b> Lesson Plans still loads without badges (logged), rather than failing the tab.</div>
+<p><strong>Tests:</strong> <code>e2e/copy-camps.spec.js</code> — badge visible in each of the three tabs before review, gone after.</p>
+
+<h2>Firebase safety checklist</h2>
+<table>
+<tr><td>Rules updated?</td><td>Not needed — existing <code>summerCamps_curriculum</code> rule, no field allow-list; manager-only matches the decision. No new collection.</td></tr>
+<tr><td><code>updateDoc</code>, not <code>setDoc</code>?</td><td>Yes — <code>.update(Season.patch(…))</code> for mark and undo.</td></tr>
+<tr><td>Empty fields stripped?</td><td>Only two defined values written; undo uses <code>FieldValue.delete()</code>.</td></tr>
+<tr><td>Writes awaited?</td><td>Yes; UI changes only after the write resolves.</td></tr>
+<tr><td>Snapshot before bulk ops?</td><td>No bulk op — one doc per click. No migration or backfill.</td></tr>
+<tr><td>Season gate</td><td>Through <code>Season.writeRef</code> (refuses past-season views); completeness checker covers it.</td></tr>
+<tr><td>Shared with the Classbook?</td><td>Yes, read-only there — two extra fields are ignored.</td></tr>
+<tr><td>Console spot-check</td><td>After deploy: one real 2027 curriculum doc gains <code>reviewedAt</code>/<code>reviewedBy</code> and nothing else changes.</td></tr>
+</table>
+
+<h2>Completeness — what if it's interrupted?</h2>
+<ul>
+<li>Each click is one single-doc update: it either lands or it doesn't. No partial state across docs.</li>
+<li>Stopping between Phase 1 and 2 leaves a working app (Curriculum marked, other tabs as today) — but ship both together unless Christie asks otherwise.</li>
+<li>Nothing is backfilled, so there's nothing to resume on the data side.</li>
+</ul>
+
+<h2>Resume instructions</h2>
+<ol>
+<li>Read the Status box above and the Decisions log below.</li>
+<li><code>cd ~/summer-camp-app && git log --oneline -5</code>; tests: <code>npm run test:e2e</code> (emulators, never production); data suites need <code>firebase emulators:start --only firestore</code> from studio-hub on 8080.</li>
+<li>Bump <code>app.js?v=</code> (and <code>carry-forward.js?v=</code> if it changes) in <code>index.html</code> before deploying.</li>
+<li>Deploy only after Christie says yes: <code>npm run deploy</code>.</li>
+</ol>
+
+<h2>Decisions log</h2>
+<ul>
+<li><strong>Sep 27</strong> — Christie: whole-camp granularity; only the button clears it (with undo); managers/admins only. Derived from <code>carriedForwardFrom</code> + absent <code>reviewedAt</code>, so no backfill of the 23 production copies.</li>
+</ul>
+</main>
+</body>
+</html>
