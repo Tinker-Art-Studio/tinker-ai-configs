@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Plan: Membership Manager — honest saves, permanent member ID, change email, phone (My Clay Hub Phase B)</title>
+<title>Plan: Membership Manager — honest saves, permanent member ID, change email, past pauses, phone (My Clay Hub Phase B)</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
   h1 { font-size: 1.55rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
   h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
   h3 { font-size: 1rem; margin-top: 1.2rem; }
@@ -13,7 +13,7 @@
   .phase h3 { margin-top: 0; }
   .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
   .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
-  .decision { background: #eff6ff; border-left: 4px solid #2563eb; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
   code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
   table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
   th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
@@ -24,242 +24,382 @@
 </head>
 <body>
 
-<h1 id="plan-title">Plan: Membership Manager — honest saves, permanent member ID, change email, phone (My Clay Hub Phase B)</h1>
+<h1 id="plan-title">Plan: Membership Manager — honest saves, permanent member ID, change email, past pauses, phone (My Clay Hub Phase B)</h1>
 
 <div class="meta">
-  <strong>Goal:</strong> In Membership Manager, staff only ever see "Saved!" when the save really happened; every member has a permanent ID; staff can change a member's email without leaving a stale duplicate; and each member's phone can be kept up to date. That's what My Clay Hub's one-way link needs from the source.<br>
-  <strong>App:</strong> <code>/Users/christiehubley/clay-hub-membership</code> (Membership Manager). It's on Render, which redeploys on every push to <code>main</code>. The collection is <code>clayHub_members</code> in <code>tinker-hq-apps</code>.<br>
-  <strong>Parent plan:</strong> <code>clayhub-members-foundation.html</code>, Phase B (the D21 permanent ID; Phase B's criteria).<br>
-  <strong>Context (Sep 27, 2026):</strong> Christie's own session (commits <code>65ee6a6</code>…<code>17edab3</code>) already did much of the parent plan's Phase B:
+  <strong>Goal:</strong> In Membership Manager:
   <ul>
-    <li>calendar-day dates, fixing the one-day shift;</li>
-    <li>never saving an unloaded copy;</li>
-    <li>change-only saves compared against the loaded copy, so automatic transitions still persist;</li>
-    <li><code>memberSince</code>;</li>
-    <li>the two status fixes;</li>
-    <li>the Sawyer import removed.</li>
+    <li>staff only see "Saved!" when the save really happened;</li>
+    <li>every member has a permanent ID that the database itself protects;</li>
+    <li>staff can change a member's email without any risk to another member's record;</li>
+    <li>a rejoining member keeps their past pauses;</li>
+    <li>phones can be kept up to date.</li>
   </ul>
-  A read-only audit then found a live data-loss bug. <strong>It was fixed first, in <code>b0f4180</code></strong>: re-activating a cancelled member had wiped their stored fields. That fix was reviewed twice by Codex ("safe to ship") and pushed. <strong>This plan covers only what's left.</strong><br>
-  <strong>Risk:</strong> MEDIUM. B3 writes a new field to every member doc once (a backfill). B4 writes two docs in one atomic batch. Both touch live member records.<br>
-  <span class="status-tag not-ready">execution-ready: false</span> — waiting on the second-model review, plus Christie's answers to Q1–Q3.
+  That's what My Clay Hub's one-way link needs from the source.<br>
+  <strong>App:</strong> <code>/Users/christiehubley/clay-hub-membership</code>, on Render, which redeploys on each push to <code>main</code>. The collection is <code>clayHub_members</code> in <code>tinker-hq-apps</code>. The rules are in <code>/Users/christiehubley/studio-hub/firestore.rules</code>.<br>
+  <strong>Parent plan:</strong> <code>clayhub-members-foundation.html</code>, Phase B.<br>
+  <strong>History:</strong>
+  <ul>
+    <li>Sep 27: created after an audit of Christie's own session, which had already done the dates, never saving an unloaded copy, change-only saves, <code>memberSince</code>, the status fixes, and removing the Sawyer import. The live data-loss bug was fixed first (<code>b0f4180</code>).</li>
+    <li>Q1–Q3 answered.</li>
+    <li><strong>Review round 1 (Codex + Claude): "not ready"</strong>, with B4 needing a redesign. This version is the round-1 rewrite. See <a href="#reviews">Reviews</a>.</li>
+  </ul>
+  <strong>Risk:</strong> MEDIUM.
+  <ul>
+    <li>B0 changes the shared rules file. It's deployed only through the guard, after Christie's sha sentence.</li>
+    <li>B3 backfills a field onto every member doc.</li>
+    <li>B4 moves a member between two docs in one transaction.</li>
+  </ul>
+  <span class="status-tag not-ready">execution-ready: false</span> — waiting on review round 2.
 </div>
 
-<h2 id="today">What exists today (verified in code at <code>b0f4180</code>)</h2>
+<h2 id="today">What exists today (verified at <code>b0f4180</code>)</h2>
 <ul>
-  <li><strong>The data layer is sound.</strong>
+  <li><strong>The data layer</strong> (<code>js/firebase-data.js</code>) is a classic browser script with <strong>no exports</strong>, so tests can't import it today.
     <ul>
-      <li><code>saveRecordChanges</code> (<code>js/firebase-data.js:81-122</code>) diffs each record against <code>storedCopies</code>, using <code>planDocWrite</code> (<code>js/member-status.js</code>). It writes with <code>update()</code>, or <code>set(…,{merge:true})</code> for a new doc.</li>
-      <li>It refuses to write a collection that didn't load (<code>:83-86</code>).</li>
-      <li>It returns true or false, and raises a red banner on failure (<code>reportSaveProblem</code>).</li>
+      <li><code>saveRecordChanges</code> (<code>:81-122</code>) diffs each record against <code>storedCopies</code> using <code>planDocWrite</code>. It writes with <code>update()</code>; on <code>not-found</code> it does a <strong>whole <code>set()</code> with no merge</strong> (<code>:104</code>); for a new doc it does <code>set(…,{merge:true})</code>.</li>
+      <li>It refuses a collection that isn't loaded (<code>:83-86</code>), and returns true or false.</li>
+      <li>It raises the red banner (<code>reportSaveProblem</code>) on "not-loaded" or a failed write, but <strong>not</strong> when Firebase itself is unavailable (<code>:82</code> returns <code>false</code> silently).</li>
     </ul>
   </li>
-  <li><strong>Callers don't wait for the result.</strong>
+  <li><strong>Loading:</strong>
     <ul>
-      <li><code>saveMemberChanges</code> (<code>js/app.js:912-918</code>) fires and forgets, and so do the page-load <code>saveLocalData()</code> (<code>:697</code>, <code>:701-712</code>) and about 30 other callers.</li>
-      <li>The success messages don't depend on the result:
-        <ul>
-          <li>"Saved!" on the member card (<code>:2437</code>, and the waitlist card at <code>:2405</code>);</li>
-          <li>workflow "Save Progress" (<code>:3150</code>);</li>
-          <li>"…completed" (<code>:3277</code>);</li>
-          <li>"…logged" (quick log, around <code>:3375</code>).</li>
-        </ul>
-      </li>
+      <li><code>loadCollection</code> (<code>:56-74</code>) sets <code>collectionLoaded[c] = true</code> only after a successful <code>get()</code> (<code>:72</code>), and never sets it back to false.</li>
+      <li><code>loadLocalData</code> (<code>js/app.js:647-699</code>) wraps the members <em>and</em> waitlist loads in one <code>try</code>. If the members load throws on a <strong>Refresh</strong>, the waitlist is never reloaded and both flags stay <code>true</code>. The Google-Sheet waitlist rebuild is then written back (<code>app.js:90</code>), and on-screen members are replaced by the localStorage copy (<code>:681-689</code>).</li>
+      <li><code>loadWaitlistFromFirestore</code> (<code>:165-177</code>) doesn't clear its flag on an empty collection, unlike the members load (<code>:141</code>).</li>
     </ul>
   </li>
-  <li><strong>The Refresh gap:</strong> "↻ Refresh Waitlist" re-runs <code>loadData</code>. <code>collectionLoaded</code> is only reset <em>after</em> a successful <code>get()</code> (<code>firebase-data.js:59</code>), so a failed reload leaves the old "loaded" flag in place, and the page-load save can then write the localStorage copy.</li>
-  <li><strong>No permanent ID.</strong>
+  <li><strong>Callers:</strong> there are <strong>48 save call sites</strong> in <code>app.js</code>. <code>saveMemberChanges</code> (<code>:912-918</code>) and the page-load <code>saveLocalData()</code> (<code>:697</code>) aren't awaited. Messages that claim success regardless of the result (the full inventory is in B1) include some that close the window <em>before</em> the confirmation (<code>completeWorkflow</code> <code>:3268</code>→<code>:3277</code>; <code>saveQuickLog</code> <code>:3372</code>→<code>:3379</code>; <code>saveNewMember</code> <code>:2286</code>→<code>:2295</code>).</li>
+  <li><strong>IDs:</strong>
     <ul>
-      <li>The in-app <code>id</code> is <code>member-${Date.now()}</code> for new members (<code>:2156</code>, <code>:2227</code>), or backfilled from the email for legacy docs (<code>:658</code>, <code>:687</code>).</li>
-      <li>The doc ID is the email, lowercased, with <code>.</code> and <code>/</code> → <code>_</code> (<code>firebase-data.js:41-43</code>).</li>
-      <li><code>id</code> is used everywhere as the in-app lookup key (<code>members.find(m =&gt; m.id === …)</code>), and in <code>workflows.*.memberId</code>.</li>
+      <li>The in-app <code>id</code> is <code>member-${Date.now()}</code> (<code>:2156</code>, <code>:2231</code>), or backfilled from the email (<code>:658</code>, <code>:687</code>). It's the lookup key everywhere.</li>
+      <li><strong>In-memory</strong> variables are already called <code>memberId</code> but mean that in-app <code>id</code>: <code>currentWorkflow.memberId</code>, <code>openMemberModal(memberId)</code>, and <code>:2591</code>, <code>:2646</code>, <code>:2917</code>, <code>:2985</code>, <code>:3107</code>, <code>:3163</code>, <code>:4479</code>.</li>
+      <li>The doc ID is the email lowercased with <code>.</code> and <code>/</code> → <code>_</code> (<code>firebase-data.js:41-43</code>), so <code>a.b@x.com</code> and <code>a_b@x.com</code> collide.</li>
+      <li><code>docIdByEmail</code> (<code>:38</code>, <code>:65-78</code>) records each doc's real ID.</li>
     </ul>
   </li>
-  <li><strong>Email can't be changed.</strong> The card shows it read-only (<code>:1709</code>). There's no doc-delete path anywhere. <code>docIdByEmail</code> (<code>firebase-data.js:38</code>, <code>:65-78</code>) maps emails to real doc IDs and warns on duplicates.</li>
-  <li><strong>Phone</strong> is entered once, in Add Member (<code>:2207</code>), or copied from the waitlist or sheet. It's read-only afterwards (<code>:1710</code>) and never tidied. The door keypad code is the "last 4 of cell" (<code>keypadCode</code>).</li>
-  <li><strong>Tests:</strong> <code>node --test tests/</code> runs 72 unit tests. <code>tests/emulator/member-saves.emulator.cjs</code> runs 4 emulator tests against studio-hub's real rules (the command is in the repo's <code>CLAUDE.md</code>).</li>
+  <li><strong>Email</strong> is shown read-only (<code>:1709</code>). The waitlist cross-checks match on the email string (<code>app.js:948</code>, <code>:954</code>; <code>member-status.js:100</code>). There's no doc-delete path.</li>
+  <li><strong>Phone:</strong> entered only in Add Member (<code>:2211</code>), then read-only (<code>:1710</code>), and never tidied.</li>
+  <li><strong>Backup helper:</strong> <code>downloadMembersBackup()</code> (<code>:748-757</code>) saves the <strong>in-memory</strong> array, not the raw Firestore docs.</li>
+  <li><strong>Rules</strong> (<code>studio-hub/firestore.rules:920-925</code>): read, create and update are allowed for manager+ or <code>clay-membership</code> in <code>clayhub</code>; delete is manager+. Nothing protects any particular field.</li>
+  <li><strong>Tests:</strong> <code>node --test tests/</code> runs 72 unit tests. <code>tests/emulator/member-saves.emulator.cjs</code> has 4 tests, but it <em>re-implements</em> the write rather than calling the app's code.</li>
 </ul>
 
-<h2 id="questions">Questions for Christie</h2>
-<table>
-<tr><th style="width:5%">#</th><th style="width:35%">Question</th><th>Recommendation</th></tr>
-<tr><td>Q1</td><td>When a cancelled member <strong>rejoins</strong>, should their past <strong>pause history</strong> be kept?</td><td><strong>Keep it</strong>, but mark each old entry <code>priorTerm: true</code>, and have pause eligibility count only the current term. Nothing is lost, and eligibility still starts fresh. The alternative is today's behaviour, which wipes the history. (It isn't needed for this plan; it can be its own small change.)</td></tr>
-<tr><td>Q2</td><td>Phone format</td><td>Store it <strong>as typed, trimmed</strong>, but require it to contain <strong>10 digits</strong> (or 11 starting with 1), and show it formatted as (303) 555-1234. My Clay Hub's link works out the last 4 from the digits, so the stored format doesn't matter to it.</td></tr>
-<tr><td>Q3</td><td>Who can change a member's email?</td><td>Anyone who can use Membership Manager today (managers, admins, and staff with <code>clay-membership</code>). It always asks for confirmation and writes an action-log entry.</td></tr>
-</table>
+<h2 id="answers">Christie's answers (Sep 27)</h2>
+<ul>
+  <li><strong>Q1:</strong> keep a rejoining member's past pauses, marked <code>priorTerm</code>, and count only current-term pauses for eligibility (B5).</li>
+  <li><strong>Q2:</strong> phone must contain 10 digits (or 11 starting with 1), shown as (303) 555-1234 (B2).</li>
+  <li><strong>Q3:</strong> anyone with Membership Manager access can change an email, with a confirmation and a log entry (B4).</li>
+</ul>
 
 <h2 id="phases">Phases</h2>
+<p><strong>Order:</strong> B1 → B0 → B3 → B4 → B5 → B2. B2 and B5 are independent and can move. Each step is its own commit; data-write steps get an independent review of the diff before the push; each is checked in the live app afterwards.</p>
 
 <div class="phase" id="b1">
 <h3>B1 — Honest saves <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li>Every button that says a save worked ("Saved!", "…completed", "…logged", Save Progress) says so <strong>only after</strong> Firestore confirms it.</li>
-  <li>If a save fails, the button shows <strong>"Not saved — try again"</strong>, the red banner appears, and the change stays on screen so staff can retry.</li>
-  <li>Automatic page-load transitions are awaited too, so a failure shows up.</li>
-  <li><strong>The Refresh gap is closed:</strong> a failed reload marks the collection "not loaded" before anything can save.</li>
+  <li><strong>Every</strong> Firestore-backed confirmation appears <strong>only after</strong> the write succeeds. On failure, the control reads "Not saved — try again", the banner shows, the window stays open, and the edits stay on screen.</li>
+  <li>A failed load or <strong>Refresh</strong> leaves <strong>both</strong> collections marked not-loaded before anything can save. It also <strong>keeps the good on-screen data</strong> instead of swapping in the localStorage copy.</li>
+  <li>"Firebase unavailable" raises the banner too.</li>
+  <li>The page renders first, and <em>then</em> the page-load save is awaited, with any failure reported.</li>
+  <li><strong>From now on, no confirmation text may be added to <code>app.js</code> without awaiting its save.</strong> This goes into the repo's <code>AGENTS.md</code>.</li>
 </ul>
 <ol>
-  <li><strong>Tests first</strong> (emulator, extending <code>member-saves.emulator.cjs</code>):
+  <li><strong>B1.0: make the data layer testable.</strong> Add a guarded CommonJS export block to <code>firebase-data.js</code> (like <code>member-status.js:429</code>). Add an <code>initDataLayer({db, FieldValue})</code> seam so tests can pass in the emulator's <strong>compat</strong> Firestore; <code>@firebase/rules-unit-testing</code>'s <code>context.firestore()</code> is compat, matching the app's compat 10.7.1. The emulator tests then call the <em>real</em> <code>saveRecordChanges</code> and <code>loadCollection</code>.</li>
+  <li><strong>Tests first</strong>, against the real functions on the emulator with studio-hub's rules:
     <ul>
-      <li>a save rejected by the rules returns <code>false</code>;</li>
-      <li>after a failed <em>re</em>load, a save of that collection is refused and nothing is written;</li>
-      <li>a successful save returns <code>true</code>.</li>
+      <li>a rules-rejected save returns <code>false</code> and reports "failed";</li>
+      <li>a reload that throws leaves the collection not-loaded, and a following save is refused;</li>
+      <li>members and waitlist are each tested independently;</li>
+      <li>the not-found fallback now writes with <code>{merge:true}</code>.</li>
     </ul>
-    Unit tests: a small <code>saveOutcomeLabel(ok)</code> helper, so the button text can't drift.</li>
-  <li><code>saveMemberChanges</code> becomes <code>async</code> and returns the result of <code>saveMemberToFirestore</code>. <code>saveLocalData</code> returns <code>Promise.all</code> of both saves.</li>
-  <li>The five user-facing success paths <code>await</code> the save and set their text from the result. The page-load <code>saveLocalData()</code> is awaited.</li>
-  <li>The other callers (auto-transitions, checklists, alerts) keep going on failure, because the banner already reports it. <code>await</code> is added where the next step depends on the save.</li>
-  <li>In <code>loadCollection</code> (<code>firebase-data.js</code>), set <code>collectionLoaded[collection] = false</code> <em>before</em> the <code>get()</code>.</li>
+    Unit tests: <code>saveOutcomeLabel(ok)</code>.</li>
+  <li><strong>The data layer:</strong>
+    <ul>
+      <li><code>collectionLoaded[c] = false</code> at the start of <code>loadCollection</code>;</li>
+      <li>the waitlist empty-collection reset;</li>
+      <li><code>reportSaveProblem('unavailable')</code> when Firebase isn't ready;</li>
+      <li><code>{merge:true}</code> at <code>:104</code>.</li>
+    </ul>
+  </li>
+  <li><strong>The load path:</strong> set <strong>both</strong> flags false at the top of <code>loadLocalData</code>. If a load fails when data was already on screen (a Refresh), keep it, show the banner, and don't read localStorage.</li>
+  <li><strong>Callers:</strong>
+    <ul>
+      <li><code>saveMemberChanges</code> becomes <code>async</code> and returns the result.</li>
+      <li><code>saveLocalData</code> returns <code>{members: ok, waitlist: ok}</code>.</li>
+      <li>Each confirmation below follows <strong>await → if not ok, show "Not saved — try again" and return → then close and confirm</strong>:
+        <ul>
+          <li>the member card Save (<code>:2437</code>) and the waitlist card (<code>:2405</code>);</li>
+          <li>Save Progress (<code>:3150</code>);</li>
+          <li><code>completeWorkflow</code> (<code>:3268</code>/<code>:3277</code>);</li>
+          <li><code>saveQuickLog</code> (<code>:3372</code>/<code>:3379</code>);</li>
+          <li><code>saveNewMember</code> (<code>:2286</code>/<code>:2295</code>);</li>
+          <li><code>markInvitationSent</code> (<code>:4030</code>);</li>
+          <li>waitlist Declined / No Response / Stay (<code>:330</code>, <code>:332</code>, <code>:359</code>, <code>:361</code>, <code>:396</code>);</li>
+          <li>cancelling a scheduled pause or cancellation (around <code>:2940</code>);</li>
+          <li>shelf assign / vacate / seed (<code>showShelfStatus</code>, <code>:4489</code>, <code>:4523</code>, <code>:4545</code>).</li>
+        </ul>
+      </li>
+      <li>The silent paths (<code>addAction</code> <code>:2471</code>, <code>saveCustomAlert</code> <code>:2550</code>, <code>:4737</code>, and the auto-transitions) rely on the banner.</li>
+      <li>The executor first re-greps for every other confirmation string, and lists any extras in the log.</li>
+    </ul>
+  </li>
 </ol>
 <div class="bdd">Scenario: save fails
-  Given Firestore rejects the write (rules or network)
-  When staff click Save on a member card
-  Then the button reads "Not saved — try again", the banner shows, and the edits remain on screen
+  Given Firestore rejects the write
+  When staff click Save on a member card (or complete a workflow, or log a quick log)
+  Then the control reads "Not saved — try again", the banner shows, the window stays open with the edits
 
-Scenario: failed refresh
-  Given members loaded fine, then "Refresh" fails to load them
-  When anything tries to save a member
-  Then nothing is written and the "not being saved" banner is shown
+Scenario: failed refresh keeps good data
+  Given members and waitlist loaded fine, then Refresh's members load throws
+  Then both collections are marked not-loaded, nothing is written (including the sheet-rebuilt waitlist), and the on-screen members are unchanged
 
 Scenario: happy path
   Given a normal save
-  Then "Saved!" appears only after Firestore confirms</div>
+  Then the confirmation appears only after Firestore confirms</div>
 </div>
 
-<div class="phase" id="b2">
-<h3>B2 — Editable, tidy phone <span class="status-tag not-ready">execution-ready: false (needs Q2)</span></h3>
-<p><strong>Acceptance criteria:</strong></p>
-<ul>
-  <li>Staff can edit a member's phone in Member Details.</li>
-  <li>A phone with fewer or more than 10 digits (or 11 starting with 1) is refused, with a clear message.</li>
-  <li>Phones display as (303) 555-1234.</li>
-  <li>A <strong>"Phones missing"</strong> filter or count shows who still needs one. Christie fills these in (parent plan D5).</li>
-</ul>
+<div class="phase" id="b0">
+<h3>B0 — Rules: the database protects <code>memberId</code> and retirement <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria:</strong> in the <code>clayHub_members</code> rules, an existing <code>memberId</code> can't be changed or removed, and a doc with <code>retired == true</code> can't be un-retired. Everything Membership Manager does today still works. This is a safety net under the app code; it doesn't replace it.</p>
 <ol>
-  <li>Tests first: <code>phoneDigits()</code> and <code>formatPhone()</code> (valid, 11-digit, too short, letters, blank).</li>
-  <li>A phone input on the Member Details section, saved through the normal change-only save. A blank phone is allowed and means "none on file", but it's counted as missing.</li>
-  <li>Existing phones are <strong>not</strong> rewritten in bulk. They're tidied only when staff next edit them. The display formats them without saving.</li>
+  <li><strong>Tests first</strong> (studio-hub <code>rules.test.js</code>, which must fail on the current rules):
+    <ul>
+      <li>an update that changes <code>memberId</code> is denied;</li>
+      <li>an update that deletes <code>memberId</code> is denied;</li>
+      <li>an update that sets <code>retired:false</code> on a retired doc, or removes <code>retired</code>, is denied;</li>
+      <li>regression cover: an update that doesn't touch these fields is allowed; the first-time set of <code>memberId</code> on a doc without one is allowed; setting <code>retired:true</code> is allowed; create is allowed as today.</li>
+    </ul>
+  </li>
+  <li><strong>The rule:</strong> split <code>allow read, create, update</code> and add to <code>update</code>:
+    <ul>
+      <li><code>(!('memberId' in resource.data) || request.resource.data.get('memberId', null) == resource.data.memberId)</code></li>
+      <li><code>&amp;&amp; (resource.data.get('retired', false) != true || request.resource.data.get('retired', false) == true)</code></li>
+    </ul>
+  </li>
+  <li>The full studio-hub suite goes green. It's merged to <code>main</code>, then run through the guard (<code>--status</code>, <code>--diff</code> pasted verbatim, stop on any hunk not written here). It's deployed only after <em>"approved to change firebase &lt;full sha&gt;"</em>.</li>
 </ol>
 </div>
 
 <div class="phase" id="b3">
-<h3>B3 — Permanent member ID (<code>memberId</code>) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>B3 — Permanent member ID (<code>memberId</code>) <span class="status-tag not-ready">execution-ready: false (after B1, B0)</span></h3>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li>Every member doc has a <code>memberId</code>: random (<code>crypto.randomUUID()</code>, prefixed <code>m_</code>), <strong>never changed once set</strong>, and never derived from the email.</li>
+  <li>Every member doc has a <code>memberId</code>: <code>m_</code> plus a random UUID. It's never derived from the email, and it's never changed once set (enforced by B0 and by the app).</li>
   <li>New members get one when they're created.</li>
-  <li>Existing members get one from a one-time <strong>"Assign member IDs"</strong> tool, run by Christie. It downloads a JSON snapshot of every member doc first.</li>
-  <li><strong>Nothing assigns a <code>memberId</code> on page load.</strong> Two open browsers must never give one member two different IDs.</li>
-  <li>The existing in-app <code>id</code> stays as it is. It's the app's internal lookup key, and <code>memberId</code> is the cross-app identity.</li>
+  <li>Existing members get one from a one-time <strong>"Assign member IDs"</strong> tool, which:
+    <ul>
+      <li>reads the <strong>raw</strong> <code>clayHub_members</code> docs;</li>
+      <li>downloads a snapshot of <code>{docId, data}</code> for every doc first;</li>
+      <li>assigns each ID in a <strong>transaction against that exact doc ID</strong>, which re-reads and skips the doc if an ID is already there;</li>
+      <li>reports how many were assigned, how many were already set, and any failures;</li>
+      <li>is safe to run again.</li>
+    </ul>
+  </li>
+  <li><strong>Nothing assigns an ID on page load.</strong></li>
+  <li>The tool refuses to run unless members loaded from Firestore. It's shown only to admins; that's a UI courtesy, and B0 is the real protection.</li>
+  <li>The in-app <code>id</code> is unchanged. <strong>The in-memory variables that were called <code>memberId</code> are renamed to <code>recordId</code></strong>, so the two meanings can't be confused.</li>
 </ul>
 <ol>
   <li><strong>Tests first:</strong>
     <ul>
-      <li><code>newMemberId()</code> has the right format, and two calls give two different values.</li>
-      <li><code>planMemberIdBackfill(members)</code> lists only members without a <code>memberId</code>, and never includes one that already has one.</li>
-      <li><strong>Emulator:</strong> the backfill writes each doc in a <strong>transaction</strong> that re-reads the doc and skips it if a <code>memberId</code> appeared meanwhile, so two concurrent runs end with one ID per member.</li>
-      <li><strong>Emulator:</strong> a normal change-only save never changes or deletes an existing <code>memberId</code>, even when the in-memory record lacks it.</li>
+      <li>Unit: <code>newMemberId()</code> has the right format, gives two different values on two calls, falls back to <code>crypto.getRandomValues</code>, and <strong>throws</strong> if neither source exists (it must never quietly give <code>undefined</code>).</li>
+      <li>Unit: <code>planMemberIdBackfill(rawDocs)</code> picks only docs without a <code>memberId</code>; a malformed or duplicate existing ID is <strong>reported</strong>, not overwritten.</li>
+      <li>Unit: <code>planDocWrite(snapshot, current, del, {protectedFields:['memberId']})</code> never deletes or changes a protected field, and warns when one is dropped. Waitlist saves pass no protected fields.</li>
+      <li>Emulator, real functions: two concurrent backfills end with one ID per member; an ordinary save from a record that lacks <code>memberId</code> leaves it untouched; the not-found fallback preserves it; a returning member keeps it; both imports and a console-script-style save keep it.</li>
     </ul>
   </li>
-  <li><code>memberId</code> is added to both creation paths (Add Member, Move to Onboarding). A returning member keeps theirs; <code>returningMemberRecord</code> already keeps stored fields.</li>
-  <li><strong>Guard:</strong> <code>planDocWrite</code> never deletes or changes <code>memberId</code>. That's written as an explicit rule in the helper, with its own test.</li>
-  <li><strong>The tool:</strong>
+  <li><strong>Code:</strong>
     <ul>
-      <li>Admin-only, under Settings or Tools, alongside "Import Member Since".</li>
-      <li>It shows the count, downloads the snapshot, runs the transactions, and reports how many IDs were assigned, how many were skipped as already set, and any failures.</li>
-      <li>It's safe to run again: a second run assigns nothing.</li>
+      <li><code>memberId</code> is added on both creation paths. A returning member keeps theirs.</li>
+      <li><code>protectedFields</code> for members lands <strong>in the same commit as the tool</strong>, because it's what holds the design together.</li>
+      <li>After each transaction, update <code>members[i].memberId</code>, <code>storedCopies</code> and localStorage, and count results outside the retryable callback.</li>
+      <li>The <code>recordId</code> rename is a mechanical pass.</li>
     </ul>
   </li>
+  <li><strong>After the backfill:</strong> creating or re-creating a member doc without a valid <code>memberId</code> is refused by the app.</li>
 </ol>
 <div class="bdd">Scenario: backfill runs twice at once
   Given two staff run "Assign member IDs" in two browsers at the same moment
-  When both finish
-  Then every member has exactly one memberId, and the second run reports "already set"
+  Then every member ends with exactly one memberId; the second run reports "already set"
+
+Scenario: collection didn't load
+  Given the members load failed
+  When staff open "Assign member IDs"
+  Then it refuses with "Members didn't load — reload first"
 
 Scenario: an ordinary save
   Given Jane has memberId m_7Q… in Firestore but an older in-memory copy lacks it
   When staff edit her notes and save
-  Then m_7Q… is untouched</div>
+  Then m_7Q… is untouched (the app skips it; B0 would refuse a change anyway)</div>
 </div>
 
 <div class="phase" id="b4">
-<h3>B4 — Change a member's email <span class="status-tag not-ready">execution-ready: false (needs B3, Q3)</span></h3>
+<h3>B4 — Change a member's email (redesigned) <span class="status-tag not-ready">execution-ready: false (after B3)</span></h3>
 <p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li>On the member card, "Change email" asks for the new address (checked for format) and confirms.</li>
-  <li>It then, in <strong>one atomic batch</strong>:
+  <li>"Change email" on the member card asks for the new address (checked for format), confirms, and then runs <strong>one Firestore transaction</strong> that:
+    <ol>
+      <li>reads the <strong>old doc</strong> (the server copy) and the <strong>target doc</strong> (<code>docIdForEmail(new)</code>);</li>
+      <li><strong>aborts</strong> if:
+        <ul>
+          <li>the old doc is missing, retired, or has no <code>memberId</code>;</li>
+          <li>the target doc <strong>exists in any state</strong> (live, retired, or a <code>.</code>/<code>_</code> collision);</li>
+          <li>the target ID equals the old ID;</li>
+        </ul>
+      </li>
+      <li>writes the new doc built from the <strong>server copy</strong>, with the new email, the same <code>memberId</code>, and no retirement fields;</li>
+      <li>updates the old doc with <code>{retired:true, retiredAt, replacedBy}</code>;</li>
+      <li>updates the member's matching <code>clayHub_waitlist</code> doc's email if one exists, so they don't reappear on the waitlist.</li>
+    </ol>
+  </li>
+  <li>If it aborts, nothing changes and staff see why ("That email already belongs to <em>name</em>", "Try again", and so on).</li>
+  <li><strong>Retired docs</strong> are dropped in <code>loadCollection</code> <em>before</em> they reach <code>records</code> and <code>docIdByEmail</code>, and their doc IDs go into <code>retiredDocIds</code>. <code>saveRecordChanges</code> <strong>refuses any write to a retired doc ID</strong> (<code>reportSaveProblem('retired')</code>), so a stale tab can't quietly save into it. Because lists, counts, alerts and the shelf map all read <code>members</code>, dropping retired docs there covers all of them.</li>
+  <li>After a successful commit, update the in-memory member, <code>currentMember</code>, any open workflow, <code>storedCopies</code> (new doc from what was written; old ID removed), <code>docIdByEmail</code>, <code>retiredDocIds</code> and localStorage. If it fails, change none of them.</li>
+  <li>An action-log entry records "Email changed from X to Y by <em>staff</em>".</li>
+</ul>
+<ol>
+  <li><strong>Before B4 ships:</strong> confirm in the Console (or with a read-only query from the tool) that no doc already has <code>retired</code> set. Then land the loader filter and the <code>retiredDocIds</code> guard, in the same commit as the change-email flow.</li>
+  <li><strong>Tests first:</strong>
     <ul>
-      <li>writes the member's full record under the new email's doc ID, with the <strong>same <code>memberId</code></strong>;</li>
-      <li>marks the old doc <code>retired: true</code>, with <code>retiredAt</code> and <code>replacedBy: &lt;new email&gt;</code>. It isn't deleted.</li>
+      <li>Unit: <code>planEmailChange</code> refuses a bad format, the same address, a known duplicate, and a missing <code>memberId</code>.</li>
+      <li>Emulator, real functions: two staff moving two different members to the same new email at once → exactly one wins, and the other aborts with no damage; the target exists retired → abort; <code>a.b@</code> → <code>a_b@</code> (same doc ID) → abort; the target is a <code>.</code>/<code>_</code> collision with another member → abort; a stale tab saving the old record after the change → refused; the waitlist email is updated; a failure part-way → no doc and no cache changed; the new doc carries the server copy's latest fields.</li>
     </ul>
   </li>
-  <li>It <strong>refuses</strong> if a live (not retired) doc already exists for the new email, or if the member has no <code>memberId</code> yet.</li>
-  <li>After it runs, Membership Manager shows the member once, under the new email. <strong>Retired docs are skipped on load</strong> everywhere: lists, counts, alerts and the shelf map.</li>
-  <li>An action-log entry records "Email changed from X to Y". localStorage is updated to match.</li>
+</ol>
+<div class="bdd">Scenario: change email
+  Given Jane (m_7Q…) at jane@old.com
+  When staff change it to jane@new.com
+  Then one transaction leaves jane@new.com live with m_7Q… and jane@old.com retired; Jane appears once; her waitlist entry (if any) shows jane@new.com
+
+Scenario: two staff, same new address
+  Given Ann and Bo are both being changed to shared@x.com at the same moment
+  Then exactly one change succeeds; the other aborts with "That email already belongs to …"; neither record is damaged
+
+Scenario: stale tab
+  Given a second browser still has Jane under jane@old.com
+  When it saves Jane
+  Then the save is refused with "This record was moved — reload", and nothing is written
+
+Scenario: same doc id
+  Given jane.doe@x.com → jane_doe@x.com (both map to jane_doe@x_com)
+  Then the change is refused</div>
+</div>
+
+<div class="phase" id="b5">
+<h3>B5 — Rejoining members keep their past pauses (Q1) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria:</strong></p>
+<ul>
+  <li>When a cancelled member rejoins (Add Member or Move to Onboarding), their earlier <code>pauseHistory</code> entries are kept, each marked <code>priorTerm: true</code>.</li>
+  <li>Pause eligibility and Notice &amp; Dates count only current-term pauses. The card lists earlier pauses under "Previous membership".</li>
+  <li><code>workflows</code> still reset.</li>
+  <li>A member with no <code>priorTerm</code> entries behaves exactly as before.</li>
 </ul>
 <ol>
   <li><strong>Tests first:</strong>
     <ul>
-      <li>Unit: <code>planEmailChange(member, newEmail, liveEmails)</code> refuses a duplicate, a bad format, a missing <code>memberId</code>, and "same as current".</li>
-      <li>Emulator: the batch creates the new doc and retires the old one, or does neither; a retired doc is skipped by the loader; after a change, the old email's doc can't come back live through a later save.</li>
+      <li><code>returningMemberRecord</code> keeps old pauses marked <code>priorTerm</code>;</li>
+      <li><code>pauseEligibility</code> and <code>noticeDates</code> ignore them;</li>
+      <li><code>getLatestPauseIndex</code> and the resume and auto-start checks ignore <code>priorTerm</code> entries, so an old pause can't wrongly affect the new term.</li>
     </ul>
   </li>
-  <li><strong>The loader</strong> skips <code>retired === true</code> (<code>loadMembersFromFirestore</code>) and keeps retired docs out of <code>docIdByEmail</code>'s duplicate warnings. <strong>This lands first, on its own</strong>, because it's harmless while no doc is retired.</li>
-  <li><strong>The batch write</strong> uses the web SDK's <code>db.batch()</code> with <code>set(newRef, fullRecord)</code> and <code>update(oldRef, {retired:true, retiredAt, replacedBy})</code>. Afterwards, <code>storedCopies</code> and <code>docIdByEmail</code> are updated from the result.</li>
+  <li>Change the helpers in <code>member-status.js</code>, and the card's pause list.</li>
 </ol>
-<div class="bdd">Scenario: change email
-  Given Jane (memberId m_7Q…) at jane@old.com
-  When staff change her email to jane@new.com
-  Then one batch leaves jane@new.com live with m_7Q… and jane@old.com retired; the list shows Jane once
-
-Scenario: duplicate
-  Given a live member already uses bob@x.com
-  When staff try to change Jane's email to bob@x.com
-  Then nothing is written and the message names the other member
-
-Scenario: failure mid-way
-  Given the batch fails (network)
-  Then neither doc changes and staff see "Email not changed — try again"</div>
 </div>
 
-<h2 id="order">Order, and what My Clay Hub needs</h2>
+<div class="phase" id="b2">
+<h3>B2 — Editable, tidy phone (Q2) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria:</strong></p>
 <ul>
-  <li><strong>Order:</strong> B1 → B2 → B3 → B4, one commit per step, each deployed by push and tested in the live app before the next. B4's "skip retired docs" loader change can ship early.</li>
-  <li><strong>For the parent plan's Phase E link:</strong> it needs B3 (<code>memberId</code>) and B4 (<code>retired</code>). It already has: calendar-day dates, <code>memberSince</code>, and change-only saves (which fire far fewer triggers).</li>
-  <li><strong>Fields the link must never copy</strong>, noted in My Clay Hub's <code>DATA-MODEL.md</code> allowlist: <code>keypadCode</code> and <code>keypadUserId</code> (the door code), <code>staffNotes</code>, <code>notes</code>, <code>application</code>, <code>actions</code>, the full <code>phone</code>, the shelf fields, and any leftover billing fields.</li>
+  <li>Staff can edit a member's phone in Member Details.</li>
+  <li><strong>Accepted:</strong> any input whose digits number 10, or 11 starting with 1 (the leading 1 is dropped). Spaces, dashes, dots, parentheses and a leading + are ignored.</li>
+  <li><strong>Refused, with a message:</strong> letters, fewer than 10 digits, or 11 digits not starting with 1, or 12 or more.</li>
+  <li><strong>Blank</strong> clears the phone (the field is removed), and counts as missing.</li>
+  <li>Stored as the formatted <code>(303) 555-1234</code>, and shown the same way. Existing phones are shown formatted, but not rewritten until they're edited.</li>
+  <li>A <strong>"Phones missing"</strong> count and filter on the Active list.</li>
+</ul>
+<ol>
+  <li>Tests first: <code>phoneDigits</code> / <code>formatPhone</code> / <code>validatePhone</code> for every case above.</li>
+  <li>The input, the save (awaited, per B1), the display, and the filter.</li>
+</ol>
+<div class="bdd">Scenario: tidy entry
+  Given staff type "303.555.1234"
+  Then it saves as "(303) 555-1234"
+
+Scenario: bad entry
+  Given staff type "555-1234"
+  Then it's refused with "Phone needs 10 digits" and nothing is saved
+
+Scenario: filling in the gaps
+  Given 12 active members have no phone
+  Then the Active list shows "Phones missing: 12" and the filter lists them</div>
+</div>
+
+<h2 id="link">What My Clay Hub's link needs</h2>
+<ul>
+  <li><strong>It needs:</strong> B3 (<code>memberId</code>) and B4 (<code>retired</code>, plus the stale-tab guard). It already has: calendar-day dates, <code>memberSince</code>, and change-only saves.</li>
+  <li><strong>It must never copy</strong> (to be added to My Clay Hub's <code>DATA-MODEL.md</code> as an explicit exclusion list):
+    <ul>
+      <li><code>keypadCode</code> and <code>keypadUserId</code> (the door code);</li>
+      <li><code>staffNotes</code>, <code>notes</code>, <code>application</code>, <code>actions</code>;</li>
+      <li>the full <code>phone</code>;</li>
+      <li>the shelf fields;</li>
+      <li>any leftover billing fields.</li>
+    </ul>
+  </li>
 </ul>
 
 <h2 id="safety">Firebase safety checklist</h2>
 <table>
 <tr><th>Check</th><th>This plan</th></tr>
-<tr><td>Rules</td><td>No new collection, and no rules change: <code>clayHub_members</code>' existing rule covers every write here. The emulator tests run against studio-hub's real rules.</td></tr>
-<tr><td>Snapshot before bulk operations</td><td>B3's tool downloads a JSON of every member doc before assigning IDs. B4 is a single-member operation.</td></tr>
-<tr><td><code>updateDoc</code> vs <code>setDoc</code></td><td>The existing change-only saver (<code>update()</code>) is kept. The B3 backfill updates one field inside a transaction. B4 writes a full <code>set</code> of the new doc (it's a new doc), plus an <code>update</code> of the old doc.</td></tr>
-<tr><td>Empty fields</td><td><code>planDocWrite</code> already strips blanks. <code>memberId</code> is protected from deletion.</td></tr>
-<tr><td>Awaited writes</td><td>B1 is exactly this.</td></tr>
-<tr><td>Tests first; implementation review</td><td>Every step starts with tests that fail. Each data-write step (B1, B3, B4) gets an independent second-model review of its diff before it's pushed.</td></tr>
-<tr><td>Deploy</td><td>A push to <code>main</code> redeploys on Render. It's free, and Christie has already approved pushing for this app. Each step is checked live afterwards.</td></tr>
+<tr><td>Rules</td><td><strong>B0 changes <code>clayHub_members</code>'s update rule</strong>, with red-then-green tests. It's deployed only through the guard, after Christie's sha sentence. No new collections.</td></tr>
+<tr><td>Snapshot before bulk operations</td><td>B3 saves a raw <code>{docId, data}</code> snapshot of every doc before the backfill. B4 changes one member per transaction.</td></tr>
+<tr><td><code>updateDoc</code> vs <code>setDoc</code></td><td>The change-only <code>update()</code> is kept. The not-found fallback gains <code>{merge:true}</code>. The backfill updates one field in a transaction. B4 <code>set</code>s a <em>new</em> doc built from the server copy, plus an <code>update</code> of the old one.</td></tr>
+<tr><td>Empty fields</td><td><code>planDocWrite</code> strips blanks, and protected fields are never deleted.</td></tr>
+<tr><td>Awaited writes</td><td>B1.</td></tr>
+<tr><td>Tests</td><td>B1.0 makes the real data layer testable. Every step starts with failing tests. Each data-write step (B1, B0, B3, B4) gets a second-model review of its diff before the push.</td></tr>
+<tr><td>Deploy</td><td>Membership Manager: a push to <code>main</code> redeploys on Render (free, and pushing is approved). Rules (B0): the guard, with the sha sentence.</td></tr>
 </table>
 
 <h2 id="interruption">If this stops midway</h2>
 <ul>
-  <li><strong>B1 or B2</strong> stopped part-way: each is a self-contained commit, and nothing half-written is left in Firestore.</li>
-  <li><strong>B3's backfill interrupted:</strong> some members have a <code>memberId</code> and some don't. Re-running the tool fills in the rest and never changes an existing one.</li>
-  <li><strong>B4:</strong> the batch is atomic, so a change either fully happens or doesn't happen at all.</li>
+  <li><strong>B1, B2 or B5:</strong> each is a self-contained commit, with nothing half-written in Firestore.</li>
+  <li><strong>B0:</strong> the rules only reject bad changes, and no app code depends on them.</li>
+  <li><strong>B3:</strong> an interrupted backfill leaves some members without IDs. Re-running fills in the rest.</li>
+  <li><strong>B4:</strong> a transaction either fully happens or doesn't happen at all.</li>
 </ul>
+
+<h2 id="reviews">Reviews</h2>
+<h3>Round 1 (Sep 27): Codex "B1/B3 after fixes, B2/B4 no"; Claude "B1/B3 after fixes, B2/B4 no"</h3>
+<table>
+<tr><th style="width:42%">Finding</th><th>Disposition</th></tr>
+<tr><td>B4 <code>db.batch()</code> can't check a precondition. Concurrent changes to the same address overwrite another member; <code>.</code>/<code>_</code> collisions; same-ID; a retired target (both)</td><td><strong>Redesigned as a transaction</strong> that reads the old and target docs and aborts on any existing target or the same ID.</td></tr>
+<tr><td>A stale tab saves into the retired doc and the edit vanishes (Claude)</td><td><code>retiredDocIds</code>, and <code>saveRecordChanges</code> refuses those IDs.</td></tr>
+<tr><td>B4 wrote a stale in-memory record (Claude)</td><td>The new doc is built from the server copy read in the transaction.</td></tr>
+<tr><td>The waitlist entry keeps the old email (Claude)</td><td>Updated in the same transaction.</td></tr>
+<tr><td>Rules don't protect <code>memberId</code> or retirement (Codex)</td><td>New <strong>B0</strong> rules step. (Claude confirmed the current rules <em>allow</em> the writes; both views are addressed.)</td></tr>
+<tr><td>The data layer isn't testable; the emulator test re-implements it (Claude)</td><td>B1.0: exports plus <code>initDataLayer</code> for compat <code>db</code>.</td></tr>
+<tr><td>B1 missed several success paths; windows close before confirming (both)</td><td>Full inventory, the await → branch → close pattern, and an <code>AGENTS.md</code> rule.</td></tr>
+<tr><td>The Refresh fix is insufficient: both flags, the waitlist sheet rebuild, keeping on-screen data (Claude); a silent unavailable path; an aggregate result (Codex)</td><td>Both flags reset at the top; the waitlist empty reset; good data kept; <code>unavailable</code> reported; <code>{members, waitlist}</code> result.</td></tr>
+<tr><td>The B3 snapshot wasn't raw; exact doc IDs (Codex); refuse when unloaded; cache updates; <code>protectedFields</code>; <code>set</code> without merge; <code>randomUUID</code> fallback; the <code>memberId</code> naming clash; the backup helper (Claude)</td><td>All folded into B3 and B1.</td></tr>
+<tr><td>Missing BDD and phone details; ordering (both)</td><td>B2 is fully specified with BDD; the order is now B1 → B0 → B3 → B4 → B5 → B2.</td></tr>
+<tr><td>Citation drift, and "~30 callers" was really 48 (Claude)</td><td>Fixed.</td></tr>
+</table>
 
 <h2 id="resume">Resume</h2>
 <ol>
   <li>Read this file and the repo's <code>CLAUDE.md</code>.</li>
-  <li>Run <code>git -C ~/clay-hub-membership log --oneline -10</code>.</li>
-  <li>Start from the first step in the log below that isn't marked ✅.</li>
+  <li>Run <code>git -C ~/clay-hub-membership log --oneline -10</code>, and <code>…/studio-hub/scripts/deploy-rules.sh --status</code> for B0.</li>
+  <li>Start from the first step in the log below without a ✅.</li>
 </ol>
 
 <h2 id="log">Decisions log</h2>
 <ul>
-  <li><strong>Sep 27, 2026:</strong> Christie finished her Membership Manager session and asked that this plan build on it. A read-only audit mapped what's done and what isn't.</li>
-  <li><strong>Sep 27, 2026:</strong> ✅ <code>b0f4180</code> (Christie: "okay for the bug fix"). Moving a cancelled member back from the waitlist no longer wipes their record. Returning members, in both paths, now have their old cancellation cleared and keep their action log. Email lookups ignore case and spaces. 72/72 unit tests and 4/4 emulator tests pass. Codex reviewed it twice ("safe to ship"). Pushed, so Render deployed it.</li>
-  <li><strong>Sep 27, 2026:</strong> the returning member's pause history is still reset, as before. That's Q1, left for Christie.</li>
+  <li><strong>Sep 27, 2026:</strong> the audit of Christie's Membership Manager session found most of the parent Phase B already done.</li>
+  <li><strong>Sep 27, 2026:</strong> ✅ <code>b0f4180</code>: returning members no longer wiped; their cancellation is cleared; their action log is kept; <code>sameEmail</code>. 72/72 unit tests, 4/4 emulator tests, Codex ×2 "safe to ship". Pushed.</li>
+  <li><strong>Sep 27, 2026:</strong> Christie answered Q1 (keep past pauses as <code>priorTerm</code>; B5), Q2 (10-digit phone, formatted) and Q3 (anyone with access, with confirmation and a log entry).</li>
+  <li><strong>Sep 27, 2026:</strong> review round 1 → this rewrite (a B4 transaction redesign, the new B0 rules step, a testable data layer, the full B1 inventory, B3 hardening, B2 spec, the new order).</li>
 </ul>
 
 </body>
