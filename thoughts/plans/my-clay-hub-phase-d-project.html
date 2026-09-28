@@ -30,8 +30,8 @@
 <div class="meta">
   <strong>Goal:</strong> My Clay Hub has its own Firebase project that nobody can read or write yet, that is protected by Google-side recovery, that only deploys through its own guard, and whose tests prove a signed-in stranger can do nothing. The one piece of app logic every later phase needs — Denver dates and a member's status — is built and tested.<br>
   <strong>Repo:</strong> <code>/Users/christiehubley/my-clay-hub</code> (<code>Tinker-Art-Studio/my-clay-hub</code>, <code>main</code>). Today it holds only docs, <code>CLAUDE.md</code> and <code>AGENTS.md</code>.<br>
-  <strong>Parent plan:</strong> <code>clayhub-members-foundation.html</code>, Phase D (D-1 … D-5). This plan expands that outline. Two things move out of Phase D, with reasons (<a href="#choices">C3, C5</a>): the vault export and the build account's roles, both to right after D2.<br>
-  <strong>Not in this plan:</strong> sign-in providers and any registered web app (Phase F); any Cloud Functions and the functions guard (D2, its own plan); the vault export (C3 — after D2); <code>build@</code>'s roles and the deployer's <code>actAs</code> on it (C5 — D2); function identities <code>ingest@</code> / <code>auth-admin@</code> and the cross-project invoker grant (E/F); the Artifact Registry cleanup policy (created on the first functions deploy, so D2/F); app screens.<br>
+  <strong>Parent plan:</strong> <code>clayhub-members-foundation.html</code>, Phase D (D-1 … D-5). This plan expands that outline. Two things move out of Phase D, with reasons (<a href="#choices">C3, C5</a>): the vault export and the build account's roles, both to right after Phase D2.<br>
+  <strong>Not in this plan:</strong> sign-in providers and any registered web app (Phase F); any Cloud Functions and <strong>Phase D2 (the functions deploy guard, its own plan — not this plan's step D-2)</strong>; the vault export (C3 — after Phase D2); <code>build@</code>'s roles and the deployer's <code>actAs</code> on it (C5 — Phase D2); function identities <code>ingest@</code> / <code>auth-admin@</code> and the cross-project invoker grant (E/F); the Artifact Registry cleanup policy (created on the first functions deploy, so Phase D2/F); app screens.<br>
   <strong>Risk:</strong> LOW for the project itself (empty, denies everything). MEDIUM for D-3, because it edits files every Claude session depends on: <code>~/.claude/settings.json</code>, <code>~/.claude/CLAUDE.md</code> and the raw-deploy hook, which fails closed (a broken hook blocks every Bash command) — and a mis-keyed <code>settings.json</code> fails <em>open</em> (the hook stops being registered).<br>
   <strong>History:</strong> Sep 28 written; review round 1 — Claude "ready after fixes", Codex "not ready" (three blockers, all in the vault export, plus a spec gap). This version is the round-1 rewrite. See <a href="#reviews">Reviews</a>.<br>
   <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — waiting on review round 2, and on Christie's OK for <a href="#appendix-b">Appendix B</a>.
@@ -55,15 +55,16 @@
 <tr><th>#</th><th>Choice</th><th>Why</th></tr>
 <tr><td>C1</td><td><strong>Storage bucket in <code>us-central1</code></strong>, versioning on, noncurrent versions deleted after 90 days.</td><td>Same region as the functions; a no-cost-tier location; the lifecycle rule mirrors <code>tinker-hq-apps</code>' bucket.</td></tr>
 <tr><td>C2</td><td>The vault export, when built, goes to <strong>its own bucket</strong> in <code>tinker-hq-vault</code>, never a folder in <code>tinker-hq-vault-backups</code>.</td><td>Bucket-level permissions: a folder would let this project's export writer touch staff-app backups.</td></tr>
-<tr><td>C3</td><td><strong>The vault export moves out of Phase D to right after D2</strong>, built as a small scheduled function in <code>my-clay-hub/functions</code> and deployed through D2's guard. It must be running, with one successful export, <strong>before Phase E loads any real member data</strong> (added to Phase E's gate). Its requirements, from both reviews, are kept in <a href="#d4">D-4</a> so nothing is lost.</td><td>Round 1 showed a Console-only setup can't do the job honestly: Google's export call returns "started" immediately, so a scheduler reports success even when the export later fails, and alerting on that gives false comfort. Doing it right needs code that waits for the export to finish — which belongs behind the functions guard D2 is building. Meanwhile the database is empty and already protected by PITR, delete protection and the daily managed backup (D-1).</td></tr>
+<tr><td>C3</td><td><strong>The vault export moves out of Phase D to right after Phase D2</strong>, built as a small scheduled function in <code>my-clay-hub/functions</code> and deployed through Phase D2's guard. It must be running, with one successful export, <strong>before Phase E loads any real member data</strong> (added to Phase E's gate). Its requirements, from both reviews, are kept in <a href="#d4">D-4</a> so nothing is lost.</td><td>Round 1 showed a Console-only setup can't do the job honestly: Google's export call returns "started" immediately, so a scheduler reports success even when the export later fails, and alerting on that gives false comfort. Doing it right needs code that waits for the export to finish — which belongs behind the functions guard Phase D2 is building. Meanwhile the database is empty and already protected by PITR, delete protection and the daily managed backup (D-1).</td></tr>
 <tr><td>C4</td><td><strong>The new guard is its own copy of studio-hub's</strong>, with its pinned values changed and the differences below, and its own copy of the test suite — not one script serving both repos.</td><td>"Pinned to this repo and project" (parent D-3). A shared script puts both projects' deploys behind one file; a mistake there hits both.</td></tr>
-<tr><td>C5</td><td><strong><code>build@</code> is created in D-1 with no roles.</strong> D2 grants its roles, scoped to the build buckets and function repository, and the deployer's <code>actAs</code> on it.</td><td>Those buckets and the repository only exist after the first functions deploy, so resource-scoped grants can't be made yet, and project-wide grants are broader than the parent inventory allows.</td></tr>
-<tr><td>C6</td><td><strong>A booking never crosses midnight, so it belongs wholly to its start date's week.</strong> Recorded in DATA-MODEL.md as a clarification; SPEC §15's example "a Sunday-night booking that crosses into Monday" becomes "a Sunday booking ending at 12:00 AM counts in that Sunday's week".</td><td>Codex found the data model gives each booking one <code>weekKey</code> but never says what a Monday-crossing booking does. SPEC §5 already answers it: closing is 11 PM, at most 12:00 AM, and opening is 5 AM, so no booking can cross into Monday. The test pins the one real edge — a booking ending exactly at midnight.</td></tr>
+<tr><td>C5</td><td><strong><code>build@</code> is created in D-1 with no roles.</strong> <strong>Before any function is deployed</strong>, Phase D2 gives it exactly: Logs Writer on the project; Artifact Registry Writer on the pre-created function repository only; Storage Object Viewer under an IAM condition limited to the <code>gcf-v2-sources-*</code>, <code>gcf-v2-uploads-*</code> and <code>run-sources-*</code> buckets — plus Christie's <code>actAs</code> (Service Account User) on <code>build@</code> only. No deploy ever runs under a default service account.</td><td>These permissions exist only to build functions, so they belong with Phase D2's functions guard, which checks and reads them back. (A name-prefix condition works for buckets that don't exist yet, so there's no chicken-and-egg problem.)</td></tr>
+<tr><td>C6</td><td><strong>Every booking belongs wholly to its start date's week.</strong> A booking is the half-open span <code>[start, end)</code>; no booked minute is at or after that day's closing time; an end of 12:00 AM is stored as the next day's 00:00 but adds no minutes to that day. Recorded in DATA-MODEL.md as an <strong>invariant</strong>, held up two ways: <code>shared/denver-time.js</code> treats a booking with any minute in the next day as malformed (no <code>weekKey</code>, flagged — never silently given the start week), and a note that Phase F's settings must reject a closing time later than 12:00 AM. SPEC §14's example "a Sunday-night booking that crosses into Monday" becomes "a Sunday booking ending at 12:00 AM counts in that Sunday's week".</td><td>Codex found the data model gives each booking one <code>weekKey</code> but never says what a Monday-crossing booking does. SPEC §4 (opens 5 AM; closes 11 PM, at most 12:00 AM) and §5 (nothing may run past closing) already rule it out. Nothing in SPEC offers an overnight booking.</td></tr>
 <tr><td>C7</td><td><strong><code>weekKey</code> is ISO-8601</strong>, with the ISO week-year and a two-digit week (<code>2026-W09</code>). Recorded in DATA-MODEL.md.</td><td>The example <code>2026-W39</code> is ISO but the rule wasn't written down; at a year boundary two readings give different keys.</td></tr>
+<tr><td>C8</td><td><strong>A pause whose end is before its start counts as malformed</strong>, so it gives <code>review</code> under rule 7. Recorded in DATA-MODEL.md as "missing, malformed, or reversed".</td><td>Both reviewers: otherwise it falls through to "active" silently. <code>review</code> is how DECISIONS #34 handles every other data gap — booking locked, feed visible, staff flagged.</td></tr>
 </table>
 
 <h2 id="phases">Phases</h2>
-<p>Order: <strong>D-1 → D-2 → D-3</strong>. D-5 has no dependency on the project and can run any time. D-4 happens after D2. Each Claude phase is its own branch and PR, reviewed, merged to <code>main</code>, then the next starts.</p>
+<p>Order: <strong>D-1 → D-2 → D-3</strong>. D-5 has no dependency on the project and can run any time. D-4 happens after Phase D2. Each Claude phase is its own branch and PR, reviewed, merged to <code>main</code>, then the next starts.</p>
 
 <!-- D-1 -->
 <div class="phase" id="d1">
@@ -84,17 +85,17 @@
   <li>Firebase Console → Add project → try <code>my-clay-hub</code>, then the fallbacks. <strong>Google Analytics: off.</strong></li>
   <li>Upgrade to <strong>Blaze</strong> on the same billing account as <code>tinker-hq-apps</code>.</li>
   <li>Billing → Budgets &amp; alerts → budget for this project only, <strong>$20/month</strong>, alerts at 50%, 90%, 100% to billing admins.</li>
-  <li><strong>If there is an organization:</strong> Organization policies → set <code>iam.automaticIamGrantsForDefaultServiceAccounts</code> to <em>Enforced</em> on this project <strong>now, before step 9</strong> (it only affects service accounts created after it is set).</li>
+  <li><strong>If there is an organization:</strong> Organization policies → set <code>iam.automaticIamGrantsForDefaultServiceAccounts</code> to <em>Enforced</em> on this project <strong>now, before step 9</strong> (it only affects service accounts created after it is set). Record whether it could be enforced, or why not (it needs an org-policy admin role).</li>
   <li>Firestore → Create database → <code>(default)</code>, <strong>location <code>nam5</code></strong>, <strong>production mode</strong>. <em>Stop here until Claude reads the location back.</em></li>
   <li>Firestore → Disaster recovery: <strong>delete protection on</strong>, <strong>point-in-time recovery on</strong>, <strong>daily backup schedule, 98-day retention</strong>.</li>
-  <li>Storage → Get started → production mode, location <strong><code>us-central1</code></strong>. Then Cloud Console → that bucket → <strong>Object versioning on</strong>; Lifecycle → delete noncurrent versions after 90 days.</li>
-  <li>APIs &amp; Services → enable: Cloud Run, Eventarc, Cloud Functions, Cloud Build, Artifact Registry, Pub/Sub, Cloud Scheduler, IAM Service Account Credentials.</li>
+  <li>Storage → Get started → production mode. <strong>Read what the location list offers before choosing.</strong> Take <strong><code>us-central1</code></strong> if offered (C1); if the location is fixed by the Firestore choice, take what it gives and record it (nothing in Phase D depends on the bucket's region; it's permanent either way). Then Cloud Console → that bucket → <strong>Object versioning on</strong>; Lifecycle → delete noncurrent versions after 90 days.</li>
+  <li>APIs &amp; Services → enable: Cloud Run, Eventarc, Cloud Functions, Cloud Build, Artifact Registry, Pub/Sub, Cloud Scheduler, IAM Service Account Credentials. (All eight now, as the parent baseline says, so Google's background accounts have finished setting up before Phase D2. Step 10 is what makes this safe.)</li>
   <li>IAM → <strong>whatever happened in step 5</strong>, look through the principal list: if <code>&lt;number&gt;-compute@developer.gserviceaccount.com</code> or <code>&lt;PROJECT_ID&gt;@appspot.gserviceaccount.com</code> holds <strong>Editor</strong>, remove that role. Leave Google-managed service agents (<code>service-…@gcp-sa-…</code>) alone. Read the list out or screenshot it — that list is the evidence.</li>
   <li>IAM → Service accounts → create <strong><code>build@&lt;PROJECT_ID&gt;</code></strong> ("Functions build"). <strong>Grant it nothing</strong> on the "grant access" screen (C5).</li>
   <li><strong>Do not</strong> open Authentication → Sign-in method, and do not add a web app.</li>
 </ol>
 
-<p><strong>Claude's read-back</strong> (read-only Firebase CLI commands under Christie's normal login; no hand-made API requests; the credential file is never touched): <code>firebase projects:list</code>; <code>firebase firestore:databases:get "(default)" --project &lt;PROJECT_ID&gt;</code> (location, delete protection, PITR); <code>firebase firestore:backups:schedules:list --project &lt;PROJECT_ID&gt;</code>. Budget, IAM, bucket settings and providers: Christie reads them out or screenshots them.</p>
+<p><strong>Claude's read-back</strong> (read-only Firebase CLI commands under Christie's normal login; no hand-made API requests; the credential file is never touched): <code>firebase projects:list</code>; <code>firebase firestore:databases:get "(default)" --project &lt;PROJECT_ID&gt;</code> (location, delete protection, PITR); <code>firebase firestore:backups:schedules:list --project &lt;PROJECT_ID&gt;</code>. Budget, IAM, the bucket's actual location and settings, and providers: Christie reads them out or screenshots them; the bucket location is logged next to C1.</p>
 
 <div class="bdd">Scenario: the project is created as intended
   Given Christie has completed steps 1–12
@@ -171,7 +172,7 @@ Scenario: one changed byte
 <p><strong>Acceptance criteria</strong></p>
 <ul>
   <li><code>/Users/christiehubley/my-clay-hub/scripts/deploy-rules.sh</code> exists with the differences in the table below, and its adapted test suite passes as part of <code>npm test</code>.</li>
-  <li>With <strong>no receipt tags at all</strong> (the first-deploy case), <code>--status</code> says so and still prints the project ID, the exact approval sentence and the runnable command; <code>--diff</code> prints the whole target file; no spurious ordering notice appears. All asserted in the suite.</li>
+  <li>With <strong>no receipt tags at all</strong> (the first-deploy case), and with a receipt for one target but none for the other (between the two first deploys), <code>--status</code> says so and still prints the project ID, the exact approval sentence and the runnable command; <code>--diff</code> prints the whole target file; no spurious ordering notice appears. All asserted in the suite.</li>
   <li>The approved wording (Appendix A, plus Appendix B once Christie OKs it) is applied, with the checks in step 3 below all passing.</li>
   <li>The first guarded deploy happens <strong>in a fresh session started after the wording landed</strong>, and leaves two receipts (<code>firestore:rules</code> and <code>storage</code>, same sha). The Console shows deny-all for both.</li>
 </ul>
@@ -180,8 +181,8 @@ Scenario: one changed byte
 <table>
 <tr><th>studio-hub guard</th><th>my-clay-hub guard</th></tr>
 <tr><td><code>REPO</code>, <code>PROJECT</code>, <code>TAG_ROOT</code> (lines 42–46)</td><td>This repo, <code>&lt;PROJECT_ID&gt;</code>, <code>deployed/&lt;PROJECT_ID&gt;</code></td></tr>
-<tr><td><code>storage</code> target runs no tests (<code>RUN_TESTS=0</code>, line 67; asserted at test line 457)</td><td><strong><code>storage</code> runs <code>npm test</code> too</strong> (this repo has a Storage suite). The adapted test asserts a failing Storage suite stops the deploy before the Firebase CLI runs. <code>firestore:indexes</code> still has none, and <code>--status</code> says so.</td></tr>
-<tr><td><code>CONTROL_FILES</code> = <code>firebase.json package.json scripts/deploy-rules.sh scripts/predeploy-check.sh</code> (line 204)</td><td>Adds <code>package-lock.json</code>, <code>scripts/deploy-rules.test.sh</code>, <code>scripts/emulator-safety.js</code> and <code>tests/rules/</code> — so an older approved commit can't bring older tests along. Rollback stays "restore the rules file onto a new commit on main".</td></tr>
+<tr><td><code>storage</code> and <code>firestore:indexes</code> run no tests (<code>RUN_TESTS=0</code>, lines 67–68; asserted at test line 457)</td><td><strong>All three targets run <code>npm test</code></strong> (this repo has a Storage suite, and one rule is simpler than three). The adapted test asserts a failing suite stops a <code>storage</code> deploy before the Firebase CLI runs.</td></tr>
+<tr><td><code>CONTROL_FILES</code> = <code>firebase.json package.json scripts/deploy-rules.sh scripts/predeploy-check.sh</code> (line 204), compared with <code>git rev-parse "$sha:$f"</code> (line 207)</td><td>Adds <code>.firebaserc</code>, <code>package-lock.json</code>, <code>scripts/deploy-rules.test.sh</code>, <code>scripts/emulator-safety.js</code> and <code>tests/rules</code> — so an older approved commit can't bring older tests or another default project along. <code>rev-parse</code> on a folder gives its tree id, which changes when any byte inside changes (checked in the script, Sep 28); the adapted suite asserts <strong>one changed byte inside one test file is refused</strong>. The guard also refuses unless <code>.firebaserc</code>'s default is <code>&lt;PROJECT_ID&gt;</code>. Rollback stays "restore the rules file onto a new commit on main".</td></tr>
 <tr><td><code>predeploy-check.sh</code>: its own repo path and guard name (line 30), its per-target file list (21–25)</td><td>This repo's path, files and guard</td></tr>
 <tr><td>Header, plan link, "21 apps" comment</td><td>My Clay Hub wording, this plan's link</td></tr>
 <tr><td><code>RULES-ROLLBACK.md</code> reference</td><td>A short <code>RULES-ROLLBACK.md</code> in this repo</td></tr>
@@ -192,7 +193,7 @@ Scenario: one changed byte
 
 <p><strong>Order inside D-3</strong></p>
 <ol>
-  <li>Guard + tests on a branch; review (Codex + Claude); merge.</li>
+  <li>Guard + tests on a branch; drop "(arrives in D-3)" from <code>predeploy-check.sh</code>'s refusal; review (Codex + Claude); merge.</li>
   <li>Update this repo's <code>CLAUDE.md</code> and <code>AGENTS.md</code> (project ID, guard, <code>npm test</code>, locations, "no web app until Phase F"); merge. Done before the global wording so the repo never contradicts it.</li>
   <li>Apply the global wording, one file at a time, each backed up first (<code>*.bak-2026-MM-DD-before-d3</code>):
     <ul>
@@ -203,8 +204,8 @@ Scenario: one changed byte
     </ul>
     <em>These are edits to Claude's own settings: the auto-mode check may ask Christie to confirm each one. Approve only the text in Appendices A and B.</em></li>
   <li><strong>Start a fresh Claude session</strong> (the edits only bind sessions that start after them). In it, confirm: the loaded CLAUDE.md shows the "exactly TWO" table; studio-hub's <code>--status</code> still works unchanged; a Bash command containing the raw-deploy phrase is denied with the <strong>new</strong> message — proof the hook is still wired after the settings edit.</li>
-  <li>In that fresh session: <code>npm ci</code>; fetch; <code>--status</code>; <code>--diff</code> pasted verbatim; the ask names both targets — "This ships <strong>firestore:rules and storage</strong> from sha S: two guard runs, two receipts, one approval." Christie says the sentence; then <code>--approved S</code> and <code>--approved S --target storage</code>.</li>
-  <li>Record the new project, guard and first receipts in <code>firebase-backend-resilience-report.html</code>'s inventory and the <code>firebase-backend-resilience-plan</code> memory.</li>
+  <li>In that fresh session: <code>npm ci</code>; fetch; <code>--status</code> and <code>--status --target storage</code>; <strong>both</strong> diffs pasted verbatim (<code>--diff</code> and <code>--diff --target storage</code>); the ask — "This ships <strong>firestore:rules and storage</strong> from sha S: two guard runs, two receipts, one approval, both diffs above." Christie says the sentence; then <code>--approved S</code> and <code>--approved S --target storage</code>.</li>
+  <li>Record the new project, guard and first receipts in <code>firebase-backend-resilience-report.html</code>'s inventory and the <code>firebase-backend-resilience-plan</code> memory. Correct <code>firebase-deploy-guard.html</code>'s line saying the lock also covers "an emulator run" (only the guard takes it).</li>
 </ol>
 <div class="note"><strong>No live check after the first deploy, on purpose.</strong> The only proof available is the Console showing the deny-all rules, because there is no sign-in provider and no web app. Don't register a web app to "test" it — that is Phase F, behind its own gate.</div>
 
@@ -218,7 +219,7 @@ Scenario: one changed byte
 Scenario: the other project's sha (mechanical)
   Given a sha that is on studio-hub's origin/main
   When the my-clay-hub guard runs --approved with it
-  Then it refuses at the "is this on my origin/main" check — no judgement involved
+  Then it refuses at the "does this sha exist here / is it on my origin/main" checks — no judgement involved
   And the reverse holds for studio-hub's guard with a my-clay-hub sha
 
 Scenario: a failing Storage suite
@@ -239,17 +240,19 @@ Scenario: settings.json edited under the wrong key
 
 <!-- D-4 -->
 <div class="phase" id="d4">
-<h3>D-4 — The vault export: moved to right after D2 (C3) <span class="status-tag not-ready">outline — own short plan after D2</span></h3>
-<p>Kept here so its requirements aren't lost. Built as a scheduled function in <code>my-clay-hub/functions</code>, deployed through D2's guard. <strong>Gate:</strong> Phase E loads no real member data until D-4's first export has completed successfully.</p>
+<h3>D-4 — The vault export: moved to right after Phase D2 (C3) <span class="status-tag not-ready">outline — own short plan after Phase D2</span></h3>
+<p>Kept here so its requirements aren't lost. Built as a scheduled function in <code>my-clay-hub/functions</code>, deployed through Phase D2's guard. <strong>Gate:</strong> Phase E loads no real member data until D-4's first export has completed successfully.</p>
 <ul>
   <li><strong>Correct success signal:</strong> the function starts <code>exportDocuments</code>, then waits for the operation to finish; it fails loudly unless the operation completes without error. A second, independent alert fires if no new export has landed in the vault bucket for 8 days (catches everything, including the scheduler never running).</li>
-  <li><strong>Schedule in UTC</strong> (e.g. Sundays 09:00 UTC), never a Denver wall-clock time in the 1–3 AM DST window. Retries set explicitly (D23). Each run writes to its own dated folder (<code>weekly/&lt;timestamp&gt;</code>), so a retry never overwrites another run.</li>
-  <li><strong>Two identities, each minimal:</strong> the function's runtime account gets a <strong>custom role</strong> with <code>datastore.databases.export</code> and <code>datastore.operations.get</code> only — <strong>not</strong> "Import Export Admin", which could also import (overwrite) into production. The project's Firestore service agent (created on demand, address read from Google, not assembled by hand) gets a <strong>custom write-only role on the vault bucket only</strong> — create (and bucket-get), no read, no delete — validated by the first export.</li>
-  <li><strong>The bucket (C2):</strong> in <code>tinker-hq-vault</code>, name <code>my-clay-hub-vault-exports</code>, else <code>&lt;PROJECT_ID&gt;-vault-exports</code>; location confirmed against Google's nam5-compatibility rule <strong>before</strong> creating it (location is permanent); lifecycle delete after 56 days (about 8 kept); soft delete left on.</li>
+  <li><strong>Schedule in UTC</strong> (e.g. Sundays 09:00 UTC), never a Denver wall-clock time in the 1–3 AM DST window. Retries set explicitly (D23).</li>
+  <li><strong>Retries never make a second export.</strong> Each scheduled week has one stable ID, and its state is saved: output folder (<code>weekly/&lt;scheduled time&gt;</code>), Firestore operation name, and result. A retry first looks for that saved operation and resumes waiting on it; only a new week starts a new export. Test: "the export succeeded but the function failed before recording it" → the retry finds the existing export and doesn't start another.</li>
+  <li><strong>Two identities, each minimal:</strong> the function's runtime account gets a <strong>custom role</strong> with <code>datastore.databases.export</code> and <code>datastore.operations.get</code> only — <strong>not</strong> "Import Export Admin", which could also import (overwrite) into production. The project's Firestore service agent (created on demand, address read from Google, not assembled by hand) writes the files: Google currently documents <strong>Storage Admin on the destination bucket</strong> for it. D-4's plan checks the current docs first; a narrower custom role is used only if the docs allow it and a real export proves it works. If it has to be Storage Admin, the residual is written down — it can read, overwrite and delete inside <strong>that one bucket</strong> — and contained by the bucket being separate (C2) and soft delete. It gets nothing on <code>tinker-hq-vault-backups</code>.</li>
+  <li><strong>The bucket (C2):</strong> in <code>tinker-hq-vault</code>, name tried in order <code>my-clay-hub-vault-exports</code>, <code>&lt;PROJECT_ID&gt;-vault-exports</code>, <code>&lt;PROJECT_ID&gt;-vault-exports-&lt;short suffix&gt;</code>, recorded before any permission or schedule uses it; location confirmed against Google's nam5-compatibility rule <strong>before</strong> creating it (location is permanent); lifecycle delete after 56 days (about 8 kept); soft delete left on.</li>
   <li><strong>Protect the staff backups:</strong> before and after every change in <code>tinker-hq-vault</code>, read back <code>tinker-hq-vault-backups</code>' lifecycle, IAM and soft-delete settings; they must be identical before and after.</li>
   <li><strong>Failure test that ends green:</strong> break it on purpose, see the alert email, restore the exact binding, run again, confirm a successful export.</li>
   <li><strong>Restore instructions</strong> (<code>DATA-RESTORE.md</code>): picking an export, the temporary read grant a restore needs, and that an import overwrites matching documents but deletes nothing else — a restore into a non-empty database is a merge, not a rollback.</li>
   <li>The vault bucket's cost lands on <code>tinker-hq-vault</code>'s bill, not under this project's $20 budget.</li>
+  <li>Closing step: the vault bucket, both identities and the first export go into the resilience report's inventory and memory.</li>
 </ul>
 </div>
 
@@ -258,10 +261,10 @@ Scenario: settings.json edited under the wrong key
 <h3>D-5 — The stack, and the shared Denver date + status module <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance criteria</strong></p>
 <ul>
-  <li><code>CLAUDE.md</code> records the stack (vanilla JS, Firebase v12 modular, PWA manifest, Netlify) and the three locations (Firestore <code>nam5</code> / trigger <code>nam5</code> / functions <code>us-central1</code>). DATA-MODEL.md records C6 and C7; SPEC §15's example is corrected.</li>
+  <li><code>CLAUDE.md</code> records the stack (vanilla JS, Firebase v12 modular, PWA manifest, Netlify) and the three locations (Firestore <code>nam5</code> / trigger <code>nam5</code> / functions <code>us-central1</code>). DATA-MODEL.md records C6 (as an invariant), C7 and C8; SPEC §14's example is corrected.</li>
   <li><code>shared/denver-time.js</code> and <code>shared/derive-status.js</code>: plain ES modules, no Firebase import, usable by the browser app and by functions. Phase E's <code>ingestMemberUpdate</code> and the 3:30 AM recompute import this module; nothing re-derives status elsewhere.</li>
   <li><strong>Dates:</strong> <code>YYYY-MM-DD</code> strings are parsed by taking the fields apart, never through <code>new Date(string)</code> (which reads a bare date as UTC midnight — a day early in Denver; the bug Phase B fixed in Membership Manager). Strict format: impossible dates (<code>2026-02-30</code>), a leap day, and wrong shapes are "malformed".</li>
-  <li><strong>Weeks (C6, C7):</strong> ISO week keys with the ISO week-year — <code>2026-12-28</code> (Mon) → <code>2026-W53</code>; <code>2027-01-01</code> (Fri) → <code>2026-W53</code>; <code>2027-01-04</code> (Mon) → <code>2027-W01</code>; single-digit weeks padded. A Sunday booking ending at 12:00 AM counts in that Sunday's week. A week containing a DST change is still Mon–Sun (the March 2026 Denver week is 167 hours, November's 169) — the test that catches millisecond arithmetic.</li>
+  <li><strong>Weeks (C6, C7):</strong> ISO week keys with the ISO week-year — <code>2026-12-28</code> (Mon) → <code>2026-W53</code>; <code>2027-01-01</code> (Fri) → <code>2026-W53</code>; <code>2027-01-04</code> (Mon) → <code>2027-W01</code>; single-digit weeks padded. A Sunday 10 PM–12:00 AM booking is 120 minutes in that Sunday's week and none in Monday's; a booking with any minute in the next day is reported malformed (no <code>weekKey</code>), never quietly given the start week. A week containing a DST change is still Mon–Sun (the March 2026 Denver week is 167 hours, November's 169) — the test that catches millisecond arithmetic.</li>
   <li><strong>DST:</strong> "now in Denver" and slot times are right across spring-forward (the missing 2 AM hour) and fall-back (the repeated 1 AM hour).</li>
   <li><strong><code>deriveStatus(source, todayDenver)</code></strong> — today is passed in, never read from the clock inside. It returns exactly the statuses in DATA-MODEL.md (<code>active</code>, <code>paused</code>, <code>review</code>, <code>offboarded</code>, <code>not_yet</code>, <code>removed</code>). Tests:
     <ul>
@@ -269,7 +272,8 @@ Scenario: settings.json edited under the wrong key
       <li><strong>order, by conflicts</strong> — for each rule, a case that also matches a later rule, asserting the earlier one wins: tombstone over everything; <code>onboarding</code> over a malformed last day; unknown stage over a current pause; a malformed last day over <code>cancelled</code>; a past last day over a current pause; <code>cancelled</code> with no last day over a malformed pause; <code>offboarding</code> with no last day over a current pause; a malformed pause entry over a different, valid current pause;</li>
       <li>boundaries: a pause's last day is paused and the next day active (#35); the last access day has access and the next day is offboarded;</li>
       <li>pause windows from <code>scheduledPause</code> and every <code>pauseHistory</code> entry, in <strong>both field spellings</strong>; multiple windows; ended and future windows; the four "otherwise active" cases from rule 10;</li>
-      <li><strong>totality:</strong> every combination of {the six stages, missing, unknown} × {last day absent / past / future / malformed} × {no pause / past / current / malformed} returns one of the six statuses and never throws.</li>
+      <li>a <strong>reversed</strong> pause (end before start) is <code>review</code> (C8) — in <code>scheduledPause</code>, in each spelling of <code>pauseHistory</code>, and next to a different valid current pause;</li>
+      <li><strong>totality:</strong> every combination of {the six stages, missing, unknown} × {last day absent / past / future / malformed} × {no pause / past / current / malformed / reversed} returns one of the six statuses and never throws.</li>
     </ul></li>
   <li><strong>Machine time zone doesn't matter:</strong> the whole suite passes with <code>TZ=UTC</code>, <code>TZ=America/Denver</code> and <code>TZ=Pacific/Auckland</code>, with identical results.</li>
 </ul>
@@ -314,14 +318,15 @@ Scenario: a laptop in another time zone
   <li><strong>Mid D-3:</strong> see D-3's note. The real hazards — a half-edited hook, a mis-keyed settings file — each have their own check and recovery, and step 4 proves the result in a fresh session before any deploy.</li>
   <li><strong>D-4 or D-5 not done:</strong> nothing in Phase D breaks. D-4 gates Phase E's real data; D-5 gates Phase E's code.</li>
 </ul>
+<div class="danger"><strong>Phase D is complete when D-1, D-2, D-3 and D-5 are done. D-4 is not part of it.</strong> Until D-4 ships, <code>my-clay-hub</code> has <strong>no backup outside the project</strong> — PITR and the daily managed backup live inside it. That is acceptable only while the database is empty, which is what the gate enforces. So the gate is written where Phase E's executor will read it — <strong>done Sep 28, with this revision</strong>: the parent plan's Phase E status and Phase D text, and <code>~/my-clay-hub/docs/my-clay-hub/OPEN-ITEMS.md</code> (in D-2's first commit, since that repo's docs change there).</div>
 
 <h2 id="reviews">Reviews</h2>
 <h3>Round 1 (Sep 28): Claude "ready after fixes" (36 findings, 1 blocking); Codex "not ready" (11 findings, 4 blocking)</h3>
 <table>
 <tr><th>Finding</th><th>Disposition</th></tr>
-<tr><td>Vault: the scheduler reports success when an export fails later; the caller role can also import; the writer role can read/delete; 2 AM Denver is in the DST gap; fixed output path; no fallback bucket name; alert test not restored; no restore doc (both)</td><td>C3: the vault export moves to after D2 as a function that waits for completion; every requirement kept in D-4.</td></tr>
+<tr><td>Vault: the scheduler reports success when an export fails later; the caller role can also import; the writer role can read/delete; 2 AM Denver is in the DST gap; fixed output path; no fallback bucket name; alert test not restored; no restore doc (both)</td><td>C3: the vault export moves to after Phase D2 as a function that waits for completion; every requirement kept in D-4.</td></tr>
 <tr><td>A Monday-crossing booking has no defined week (Codex, blocking)</td><td>C6: no booking can cross midnight (closing ≤ 12 AM, opening 5 AM); recorded in DATA-MODEL, SPEC example corrected.</td></tr>
-<tr><td>The org policy set after the APIs does nothing (Claude, blocking); enforcing and checking are both needed; build roles too broad; <code>actAs</code> missing (Codex)</td><td>D-1 steps 5 and 10 reordered; the principal list is the evidence; C5 moves <code>build@</code>'s roles and <code>actAs</code> to D2.</td></tr>
+<tr><td>The org policy set after the APIs does nothing (Claude, blocking); enforcing and checking are both needed; build roles too broad; <code>actAs</code> missing (Codex)</td><td>D-1 steps 5 and 10 reordered; the principal list is the evidence; C5 moves <code>build@</code>'s roles and <code>actAs</code> to Phase D2.</td></tr>
 <tr><td>A deleted project's ID can never be reused (Claude)</td><td>D-1 scenario reworded.</td></tr>
 <tr><td>Storage runs no tests under a straight copy; the test machinery isn't a control file; predeploy's own repo path; the first-deploy (no receipts) case (both)</td><td>D-3 table rows added; zero-receipt acceptance added.</td></tr>
 <tr><td>A studio-hub emulator on the default ports could answer my-clay-hub's tests; the production check needs its own tests; matrices instead of examples; the allow-fixture pair; recursive and collection-group denials; rules loaded from disk (both)</td><td>D-2 acceptance rewritten.</td></tr>
@@ -330,6 +335,22 @@ Scenario: a laptop in another time zone
 <tr><td>deriveStatus: the date-parsing rule, conflict cases for order, totality, both spellings, today injected; ISO week-year; DST-week length (both)</td><td>D-5 acceptance rewritten; C7.</td></tr>
 <tr><td>Global CLAUDE.md: two more single-project lines; two lines lost by the section replacement; Storage rules not mentioned (Claude)</td><td>Appendix B — needs Christie's OK before D-3.</td></tr>
 <tr><td>The backup schedule moved from D-4 to D-1 unflagged; resilience record not updated; D-2's predeploy names a guard that arrives in D-3 (Claude)</td><td>Noted in D-1; D-3 step 6; D-2's refusal wording.</td></tr>
+</table>
+
+<h3>Round 2 (Sep 28): Claude "ready after fixes" (19 findings, 1 blocking); Codex "ready after fixes" (9 findings, none blocking)</h3>
+<table>
+<tr><th>Finding</th><th>Disposition</th></tr>
+<tr><td><code>tests/rules/</code> is a folder; would the control-file check compare only file names? (Claude, blocking)</td><td>Checked: the guard compares with <code>git rev-parse "$sha:$path"</code> (<code>deploy-rules.sh:207</code>), which for a folder gives a tree id that changes with any byte. Kept, plus a test asserting a one-byte change in a test file is refused.</td></tr>
+<tr><td>Parent plan not amended for C3/C5/C6; D-4's gate lives only here (both)</td><td>Parent plan's Phase D and Phase E updated in this revision; OPEN-ITEMS entry in D-2's first commit; "Phase D is complete without D-4" box added.</td></tr>
+<tr><td>C5: the first functions deploy needs the build roles, and Logs Writer was missing (both)</td><td>C5 rewritten: Phase D2 grants all three before any deploy, the bucket one via a name-prefix condition.</td></tr>
+<tr><td>The Firestore service agent is documented as needing Storage Admin (Codex); retries could start a second export (both)</td><td>D-4 rewritten for both.</td></tr>
+<tr><td>C6 wording (an end of 12:00 AM is on Monday), section numbers, nothing enforcing the invariant; reversed pauses undefined (both)</td><td>C6 rewritten (half-open span, invariant, malformed check, Phase F settings note, SPEC §4/§5/§14); C8 added.</td></tr>
+<tr><td>One approval after one diff for two targets (Claude)</td><td>D-3 step 5 shows both diffs.</td></tr>
+<tr><td>Enable only two APIs in D-1 (Claude, round 1 #2 and round 2)</td><td>Not adopted: the parent baseline enables all eight so Google's background accounts are ready for Phase D2; the reordered policy step and the principal-list check (step 10) control the Editor risk. Recorded in step 9.</td></tr>
+<tr><td>Storage bucket location may be fixed by Firestore's (Claude)</td><td>D-1 step 8 reads what's offered first and records it.</td></tr>
+<tr><td><code>.firebaserc</code> not protected (Codex)</td><td>Added to the control files; guard checks its default project.</td></tr>
+<tr><td>Appendix B: the lead sentence and the rollback line (Claude); "first reads or writes" wording (Codex)</td><td>B1 extended, B4 added, B3's column change flagged.</td></tr>
+<tr><td>Nits: "D2" vs "D-2"; record whether the policy could be enforced; drop "(arrives in D-3)"; refusal happens at the rev-parse step; correct the guard design doc's lock line; D-4 record step; one-target receipt state; indexes run tests too; third bucket name</td><td>All applied.</td></tr>
 </table>
 
 <h2 id="resume">Resume instructions</h2>
@@ -348,11 +369,13 @@ Scenario: a laptop in another time zone
   <li><strong>Hook message</strong> — points to each project's <code>--status</code>; "an approval counts only for that project's guard, never the other one". Matching logic unchanged.</li>
 </ul>
 
-<h2 id="appendix-b">Appendix B — three small additions to the global CLAUDE.md (need Christie's OK)</h2>
-<p>Found by the plan review. They are outside the approved wording, so they are shown here rather than slipped in.</p>
+<h2 id="appendix-b">Appendix B — four small additions to the global CLAUDE.md (need Christie's OK)</h2>
+<p>Found by the plan reviews (rounds 1 and 2). They are outside the approved wording, so they are shown here rather than slipped in. Round 2 (both reviewers): with these, nothing in the global CLAUDE.md still assumes one project.</p>
 <ol>
-  <li><strong>"Every new Firestore collection requires a rule"</strong> — first bullet becomes:<br>
-  <code>- Add the rule to <strong>that project's</strong> rules file (see PROJECT STRUCTURE) in the <strong>same phase/commit</strong> as the collection, and release it through that project's guard — never add a My Clay Hub collection to studio-hub's file, or the reverse</code><br>
+  <li><strong>"Every new Firestore collection requires a rule"</strong> — the lead sentence becomes:<br>
+  <code><strong>Any time a new Firestore collection is added to any app</strong>, a matching rule block must be added to <strong>that project's</strong> rules file (see PROJECT STRUCTURE) and deployed <strong>through that project's guard</strong> before that collection will work. There is no default allow — Firestore denies everything not explicitly listed.</code><br>
+  and its first bullet becomes:<br>
+  <code>- Add the rule in the <strong>same phase/commit</strong> as the code that first reads or writes the collection — never add a My Clay Hub collection to studio-hub's file, or the reverse</code><br>
   Why: today it just says "<code>firestore.rules</code>", which is exactly the mix-up the two-project split exists to prevent.</li>
   <li><strong>"What 'data disappeared' usually means"</strong>, step 2 becomes:<br>
   <code>2. Follow that project's rollback runbook: <code>/Users/christiehubley/studio-hub/RULES-ROLLBACK.md</code> or <code>/Users/christiehubley/my-clay-hub/RULES-ROLLBACK.md</code></code></li>
@@ -360,14 +383,18 @@ Scenario: a laptop in another time zone
     <ul>
       <li>add bullet: <code>- Run <code>firebase</code> CLI commands (emulators etc.) from the project's own folder — <code>/Users/christiehubley/studio-hub/</code> or <code>/Users/christiehubley/my-clay-hub/</code>; each guard works from any cwd</code></li>
       <li>keep the last line: <code>See <code>/Users/christiehubley/.claude/projects/-Users-christiehubley/memory/MEMORY.md</code> for full project status and details.</code></li>
-      <li>table column header <code>Firestore rules source</code> → <code>Rules source (the only place to edit)</code>, and each cell gets "(+ <code>storage.rules</code> beside it)".</li>
+      <li>table column header <code>Firestore rules source</code> → <code>Rules source (the only place to edit)</code>, and each cell names both files: "<code>…/firestore.rules</code> (+ <code>storage.rules</code> beside it)". <em>Flagged: this changes a column name Codex set in the wording review; naming both files in each cell keeps the precision that change was for.</em></li>
     </ul></li>
+  <li><strong>The rollback line under the SAFE DEPLOY PATTERNS table</strong> becomes:<br>
+  <code>Rollback = restore the FILE from an older receipt tag for that project (<code>deployed/tinker-hq-apps/&lt;target&gt;/…</code> or <code>deployed/&lt;PROJECT_ID&gt;/&lt;target&gt;/…</code>) onto a new commit on that repo's main, then that project's guard — see <code>studio-hub/RULES-ROLLBACK.md</code> or <code>my-clay-hub/RULES-ROLLBACK.md</code>.</code><br>
+  Why: it's the line a session reads while recovering from a bad deploy, and today it names only the staff project's receipts and runbook.</li>
 </ol>
 
 <h2 id="log">Decisions log (append-only)</h2>
 <ul>
   <li><strong>Sep 28:</strong> plan written. D-3 wording approved by Christie (Codex round 2 "ready"; a Claude reviewer couldn't run because pasting settings/CLAUDE.md text into another process was refused by the auto-mode check — Christie chose Codex's review). Guard path <code>my-clay-hub/scripts/deploy-rules.sh</code>; "Single source of truth" reworded rather than given an exception line.</li>
-  <li><strong>Sep 28:</strong> review round 1 (Claude "ready after fixes", Codex "not ready") → this rewrite. New choices C3 (vault export after D2), C5 (<code>build@</code> roles in D2), C6 (bookings never cross midnight), C7 (ISO week keys). Appendix B raised for Christie.</li>
+  <li><strong>Sep 28:</strong> review round 1 (Claude "ready after fixes", Codex "not ready") → this rewrite. New choices C3 (vault export after Phase D2), C5 (<code>build@</code> roles in Phase D2), C6 (bookings never cross midnight), C7 (ISO week keys). Appendix B raised for Christie.</li>
+  <li><strong>Sep 28:</strong> review round 2 — both "ready after fixes"; all fixes applied (see Reviews). C8 added (reversed pause → review). Parent plan amended: Phase D creates <code>build@</code> with no roles; the managed backup schedule is in D-1; the vault export is after Phase D2 and gates Phase E's real data; the Monday-crossing test becomes the midnight-end test.</li>
 </ul>
 
 </body>
