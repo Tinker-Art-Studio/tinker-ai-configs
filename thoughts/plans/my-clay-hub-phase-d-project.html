@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Stand up the my-clay-hub Firebase project, empty and locked down (My Clay Hub Phase D)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #d1fae5; color: #065f46; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Stand up the <code>my-clay-hub</code> Firebase project, empty and locked down (My Clay Hub Phase D)</h1>
+
+<div class="meta">
+  <strong>Goal:</strong> My Clay Hub has its own Firebase project that nobody can read or write yet, that is backed up on Google's side, that only deploys through its own guard, and whose tests prove a signed-in stranger can do nothing. The one piece of app logic every later phase needs — Denver dates and a member's status — is built and tested.<br>
+  <strong>Repo:</strong> <code>/Users/christiehubley/my-clay-hub</code> (<code>Tinker-Art-Studio/my-clay-hub</code>, <code>main</code>). Today it holds only docs, <code>CLAUDE.md</code> and <code>AGENTS.md</code>.<br>
+  <strong>Parent plan:</strong> <code>clayhub-members-foundation.html</code>, Phase D (D-1 … D-5). This plan expands that outline; it adds no new decisions beyond the four in <a href="#choices">Choices made here</a>.<br>
+  <strong>Not in this plan:</strong> sign-in providers (Phase F), any Cloud Functions or the functions guard (Phase D2, its own plan), dedicated function identities <code>ingest@</code> / <code>auth-admin@</code> and the cross-project invoker grant (Phases E/F), the Artifact Registry cleanup policy (created on the first functions deploy, so D2/F), any app screens.<br>
+  <strong>Risk:</strong> LOW for the project itself (it is empty and denies everything). MEDIUM for D-3, because it edits files every Claude session depends on: <code>~/.claude/settings.json</code>, <code>~/.claude/CLAUDE.md</code> and the raw-deploy hook, which fails closed (a broken hook blocks every Bash command).<br>
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — waiting on review.
+</div>
+
+<h2 id="already">Already decided (not reopened here)</h2>
+<table>
+<tr><th>What</th><th>Value</th><th>Source</th></tr>
+<tr><td>Project ID</td><td><code>my-clay-hub</code>, else <code>myclayhub</code>, else <code>my-clay-hub-app</code>. Every <code>&lt;PROJECT_ID&gt;</code> below means the one Google accepts.</td><td>D12 / DECISIONS #43</td></tr>
+<tr><td>Firestore location</td><td><code>nam5</code> (matches <code>tinker-hq-apps</code>, read Sep 27). Permanent.</td><td>D23 resolved, Sep 27 log</td></tr>
+<tr><td>Function region / trigger location (recorded now, used later)</td><td><code>us-central1</code> / <code>nam5</code></td><td>D23 / #54</td></tr>
+<tr><td>Plan and budget</td><td>Blaze, budget alert $20/month</td><td>OPEN-ITEMS; parent plan D-1</td></tr>
+<tr><td>Backups</td><td>Server-side only: PITR, delete protection, managed daily backup, vault export. Not <code>backup.js</code>.</td><td>D13 / #44</td></tr>
+<tr><td>Sign-in providers</td><td>None switched on in Phase D</td><td>Parent plan, round-2 finding</td></tr>
+<tr><td>Stack</td><td>Vanilla JS, Firebase v12 modular SDK, PWA manifest, Netlify</td><td>Parent plan D-5</td></tr>
+<tr><td>D-3 wording (CLAUDE.md, settings.json, hook message)</td><td>Approved by Christie Sep 28, after Codex review round 2 "ready". Text is in <a href="#appendix-a">Appendix A</a>.</td><td>This session</td></tr>
+</table>
+
+<h2 id="choices">Choices made here (Christie can overrule any)</h2>
+<table>
+<tr><th>#</th><th>Choice</th><th>Why</th></tr>
+<tr><td>C1</td><td><strong>Storage bucket in <code>us-central1</code></strong>, versioning on, noncurrent versions deleted after 90 days.</td><td>Same region as the functions and the vault bucket; a no-cost-tier location; the lifecycle rule mirrors <code>tinker-hq-apps</code>' bucket.</td></tr>
+<tr><td>C2</td><td><strong>Vault export goes to its own bucket</strong>, <code>my-clay-hub-vault-exports</code>, in the existing <code>tinker-hq-vault</code> project — not a folder inside <code>tinker-hq-vault-backups</code>.</td><td>Bucket-level permissions: a folder would let <code>my-clay-hub</code>'s export identity write next to (and potentially over) staff-app backups. A separate bucket keeps the two apart, as the two projects are.</td></tr>
+<tr><td>C3</td><td><strong>Vault export runs on Google's side</strong>: a weekly Cloud Scheduler job starts a Firestore managed export, as a dedicated <code>vault-export@</code> service account. Keeps 8 weeks (lifecycle: delete after 56 days). A Cloud Monitoring alert emails Christie if the job fails.</td><td>D13 forbids <code>backup.js</code> (it depends on Christie's personal login, the cause of the <code>invalid_rapt</code> outages). Scheduler calls Google's API with its own identity: no code, no key files. Weekly and 8 kept matches <code>tinker-hq-apps</code>' vault.</td></tr>
+<tr><td>C4</td><td><strong>The new guard is adapted from studio-hub's by copying it and changing its pinned values</strong>, then running its own copy of the test suite — not by making studio-hub's script serve both repos.</td><td>"Pinned to this repo and project" (parent plan D-3). A shared script would put both projects' deploys behind one file and one set of control-file checks; a mistake there hits both.</td></tr>
+</table>
+
+<h2 id="phases">Phases</h2>
+<p>Order: <strong>D-1 → D-2 → D-3 → D-4</strong>. D-5 has no dependency on the project and can run any time. Each Claude phase is its own branch and PR, reviewed, merged to <code>main</code>, then the next starts.</p>
+
+<!-- D-1 -->
+<div class="phase" id="d1">
+<h3>D-1 — Christie creates the project in the Console (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>The project exists on Blaze, with a $20 budget alert, and Christie knows the project ID Google accepted.</li>
+  <li>Firestore <code>(default)</code> is in <code>nam5</code>, production mode (denies everything), with PITR, delete protection and a daily managed backup kept 98 days — the same as <code>tinker-hq-apps</code>.</li>
+  <li>The Storage bucket exists (C1), versioned, with the 90-day rule.</li>
+  <li>The IAM baseline is in place: the default service accounts have no Editor, the eight APIs are on, and a build service account exists.</li>
+  <li>No sign-in provider is switched on, and no web app is registered.</li>
+</ul>
+
+<p><strong>Christie's checklist</strong> (Claude walks through it live, one step at a time, and records each result in the Decisions log):</p>
+<ol>
+  <li><strong>Before starting:</strong> in Google Cloud Console → IAM &amp; Admin → Manage resources, note whether <code>tinker-hq-apps</code> sits under an organization (e.g. <code>tinkerartstudio.com</code>). If yes, check for the "domain restricted sharing" policy. (Needed later for Phase E's cross-project grant; recorded now.)</li>
+  <li>Firebase Console → Add project → try <code>my-clay-hub</code>, then the fallbacks. <strong>Google Analytics: off.</strong></li>
+  <li>Upgrade to <strong>Blaze</strong> on the same billing account as <code>tinker-hq-apps</code>.</li>
+  <li>Cloud Console → Billing → Budgets &amp; alerts → new budget, scoped to this project only, <strong>$20/month</strong>, alerts at 50%, 90%, 100% to billing admins.</li>
+  <li>Firestore → Create database → <code>(default)</code>, <strong>location <code>nam5</code></strong>, <strong>production mode</strong>. Location can never be changed; Claude reads it back before moving on.</li>
+  <li>Firestore → Disaster recovery (or ask Claude for the CLI commands to run yourself): <strong>delete protection on</strong>, <strong>point-in-time recovery on</strong>, <strong>daily backup schedule, 98-day retention</strong>.</li>
+  <li>Storage → Get started → production mode, location <strong><code>us-central1</code></strong>. Then Cloud Console → that bucket → Protection → <strong>Object versioning on</strong>; Lifecycle → delete noncurrent versions after 90 days.</li>
+  <li>APIs &amp; Services → enable: Cloud Run, Eventarc, Cloud Functions, Cloud Build, Artifact Registry, Pub/Sub, Cloud Scheduler, IAM Service Account Credentials.</li>
+  <li>IAM → if an organization exists, enforce <code>iam.automaticIamGrantsForDefaultServiceAccounts</code> on the project; otherwise <strong>remove the Editor role</strong> from the default Compute service account (<code>&lt;number&gt;-compute@developer.gserviceaccount.com</code>) and from the App Engine default account if present. (These accounts appear once the APIs above are on.)</li>
+  <li>IAM → Service accounts → create <strong><code>build@&lt;PROJECT_ID&gt;</code></strong> ("Functions build"), with only: Logs Writer, Artifact Registry Writer, Storage Object Viewer. (D2 passes it as the build account; D2's plan re-checks these roles against Google's current docs.)</li>
+  <li><strong>Do not</strong> open Authentication → Sign-in method, and do not add a web app.</li>
+</ol>
+
+<p><strong>Claude's read-back</strong> (read-only Firebase CLI commands with Christie's normal login; no raw REST calls; the credential file is never touched): <code>firebase projects:list</code>; <code>firebase firestore:databases:get "(default)" --project &lt;PROJECT_ID&gt;</code> (location, delete protection, PITR); <code>firebase firestore:backups:schedules:list --project &lt;PROJECT_ID&gt;</code>. Anything the CLI cannot show (budget, IAM, bucket settings, providers) Christie confirms by screenshot or by reading it out.</p>
+
+<div class="bdd">Scenario: the project is created as intended
+  Given Christie has completed steps 1–11
+  When Claude reads back the database
+  Then it reports location nam5, delete protection ENABLED, PITR ENABLED
+  And one daily backup schedule with 98-day retention
+
+Scenario: Google refuses my-clay-hub
+  Given "my-clay-hub" is taken
+  When Christie tries the fallbacks in order
+  Then the accepted ID is recorded in the Decisions log
+  And every &lt;PROJECT_ID&gt; in D-2, D-3 and Appendix A uses it
+
+Scenario: the wrong database location was picked
+  Given the read-back shows a location other than nam5
+  Then Phase D stops before D-2
+  And Christie decides whether to delete and recreate the project (possible only while it is empty)</div>
+<div class="note"><strong>If interrupted:</strong> every step is visible in the Console, so a new session re-runs the read-back and continues from the first step that isn't done. Nothing in D-1 touches <code>tinker-hq-apps</code>.</div>
+</div>
+
+<!-- D-2 -->
+<div class="phase" id="d2">
+<h3>D-2 — Repo setup: deny-all rules, a predeploy check, and emulator tests <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li><code>npm test</code> in <code>my-clay-hub</code> starts the Firestore and Storage emulators under the project <code>demo-my-clay-hub</code> and runs the rules suite. It refuses to run if the project ID doesn't start with <code>demo-</code> or if an emulator host variable is missing (so a test can never reach production).</li>
+  <li>The first tests: <strong>a signed-in stranger can do nothing</strong> — can't read, list, create, update or delete in <code>members</code>, <code>bookings</code>, <code>settings</code> or an arbitrary collection, and can't read or write any Storage path. The same for a signed-out visitor. Each "denied" test has a positive pair proving the harness can see an allowed action (an admin-context seed write succeeds), so a broken harness can't pass by denying everything.</li>
+  <li><code>firebase.json</code> wires a predeploy check for <code>firestore</code> and <code>storage</code> that refuses any deploy not started by this repo's guard with a matching approved commit (adapted from studio-hub's <code>predeploy-check.sh</code>; it names this repo's guard).</li>
+</ul>
+<p><strong>Files:</strong> <code>package.json</code> (devDeps <code>@firebase/rules-unit-testing</code>, a test runner — <code>node --test</code> to match the Membership Manager repo, no Jest), <code>package-lock.json</code>, <code>firebase.json</code>, <code>.firebaserc</code> (default <code>&lt;PROJECT_ID&gt;</code>), <code>firestore.rules</code> and <code>storage.rules</code> (both <code>allow read, write: if false</code> on everything), <code>firestore.indexes.json</code> (empty), <code>scripts/predeploy-check.sh</code>, <code>tests/rules/*.test.js</code>.</p>
+<div class="bdd">Scenario: a signed-in stranger
+  Given a user signed in with no claims and no member doc
+  When they try to read members/anyone, list bookings, or write settings/app
+  Then every request is denied
+
+Scenario: the harness can see an allow
+  Given the test seeds a doc with rules disabled
+  When it reads the doc back with rules disabled
+  Then it gets the doc (so "denied" really means the rules denied it)
+
+Scenario: tests aimed at production
+  Given the project ID is set to "my-clay-hub" or an emulator host is unset
+  When npm test starts
+  Then it exits non-zero before any Firebase call
+
+Scenario: a raw deploy
+  Given no approved sha in the environment
+  When the Firebase CLI runs this repo's predeploy check
+  Then it refuses and names this repo's guard</div>
+<div class="note"><strong>If interrupted:</strong> a branch with no deploy — nothing reaches Firebase. Resume from the branch's last commit.</div>
+</div>
+
+<!-- D-3 -->
+<div class="phase" id="d3">
+<h3>D-3 — Its own deploy guard, the approved wording, then the first guarded deploy <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li><code>/Users/christiehubley/my-clay-hub/scripts/deploy-rules.sh</code> exists, pinned to <code>REPO=/Users/christiehubley/my-clay-hub</code> and <code>PROJECT=&lt;PROJECT_ID&gt;</code>, with receipt tags under <code>deployed/&lt;PROJECT_ID&gt;/…</code>, targets <code>firestore:rules</code>, <code>storage</code>, <code>firestore:indexes</code>, and its own test suite (adapted from <code>studio-hub/scripts/deploy-rules.test.sh</code>) passing in <code>npm test</code>.</li>
+  <li>Its <code>--status</code> prints the project ID, the exact approval sentence and the runnable command (Codex round-2 condition for the shorter hook message).</li>
+  <li>The three approved wording changes (<a href="#appendix-a">Appendix A</a>) are applied, <strong>before the new guard is first used</strong>: <code>settings.json</code> still parses; the hook still denies a raw deploy and allows ordinary commands; every <code>&lt;PROJECT_ID&gt;</code> is filled in.</li>
+  <li>The repo's own <code>CLAUDE.md</code> and <code>AGENTS.md</code> replace "no Firebase project yet" with the project ID, the guard, <code>npm test</code>, and the locations.</li>
+  <li>After Christie's "approved to change firebase &lt;full sha&gt;" for that commit, the guard deploys <code>firestore:rules</code> and <code>storage</code> (two runs, same sha), leaving two receipts; the Console shows the deny-all rules.</li>
+</ul>
+
+<p><strong>What changes when adapting (C4)</strong> — every studio-hub assumption the research found:</p>
+<table>
+<tr><th>studio-hub guard</th><th>my-clay-hub guard</th></tr>
+<tr><td><code>REPO</code>, <code>PROJECT</code>, <code>TAG_ROOT</code> (lines 42–46)</td><td>This repo, <code>&lt;PROJECT_ID&gt;</code>, <code>deployed/&lt;PROJECT_ID&gt;</code></td></tr>
+<tr><td>Header, plan link, "21 apps" comment</td><td>My Clay Hub wording, this plan's link</td></tr>
+<tr><td><code>CONTROL_FILES</code> (<code>firebase.json package.json scripts/deploy-rules.sh scripts/predeploy-check.sh</code>)</td><td>Same list, this repo's copies</td></tr>
+<tr><td>Rules suite = <code>npm test</code> in the worktree</td><td>Same (runs D-2's suite and the guard tests)</td></tr>
+<tr><td><code>RULES-ROLLBACK.md</code> reference</td><td>A short <code>RULES-ROLLBACK.md</code> in this repo (restore from a receipt tag onto a new commit)</td></tr>
+<tr><td>Test file: hard-coded namespace, <code>.firebaserc</code>, argv assertion, tag globs, and the stale <code>DEPLOY_GUARD_REPO</code> comment</td><td>All renamed; the stale comment is not carried over</td></tr>
+<tr><td>Lock / pending-receipt files in <code>$GIT_DIR</code></td><td>Same mechanism, in this repo's <code>.git</code></td></tr>
+</table>
+
+<p><strong>Order inside D-3</strong></p>
+<ol>
+  <li>Guard + tests on a branch; review (Codex + Claude where possible); merge.</li>
+  <li>Apply Appendix A, one file at a time, with backups first (<code>*.bak-2026-MM-DD-before-d3</code>):
+    <ul>
+      <li><strong>Hook first</strong> (it fails closed): edit the message only; then <code>bash -n</code>; then feed it a sample raw-deploy command (expect deny, naming both guards) and a sample <code>ls</code> (expect allow). If the edit breaks it, every Bash call is blocked — fix with the Edit tool from the backup, which needs no Bash.</li>
+      <li><code>settings.json</code>: the four entries; then <code>python3 -m json.tool</code> must succeed.</li>
+      <li><code>~/.claude/CLAUDE.md</code>: the six edits.</li>
+      <li>Commit the hook change in <code>tinker-ai-configs</code>. (<code>~/.claude/</code> is not a repo; the backups are its record.)</li>
+    </ul>
+    <em>These are edits to Claude's own permission settings: the auto-mode check may ask Christie to confirm each one. That is expected — approve only the text in Appendix A.</em></li>
+  <li>Update this repo's <code>CLAUDE.md</code> and <code>AGENTS.md</code>; merge.</li>
+  <li>Fetch, <code>--status</code>, <code>--diff</code> pasted verbatim, Christie says the sentence, then <code>--approved &lt;sha&gt;</code> and <code>--approved &lt;sha&gt; --target storage</code>.</li>
+</ol>
+
+<div class="bdd">Scenario: the first deploy
+  Given the deny-all rules are on origin/main at sha S and Christie said "approved to change firebase S"
+  When the my-clay-hub guard runs --approved S, then --approved S --target storage
+  Then two receipt tags exist under deployed/&lt;PROJECT_ID&gt;/
+  And the Console shows allow read, write: if false for Firestore and Storage
+
+Scenario: the wrong guard
+  Given a my-clay-hub commit
+  When a session runs studio-hub's guard with that sha
+  Then studio-hub's guard refuses (the sha is not on studio-hub's origin/main)
+  And the approved wording tells the session an approval never crosses projects
+
+Scenario: an approval for the other project
+  Given Christie approved a tinker-hq-apps sha today
+  When a session considers the my-clay-hub guard
+  Then the soft_deny entry requires a fresh phrase naming a my-clay-hub sha
+
+Scenario: the hook edit breaks the script
+  Given bash -n fails, or the sample ls is denied
+  Then the backup is restored with the Edit tool before anything else
+  And D-3 stops until the hook passes both samples</div>
+<div class="note"><strong>If interrupted:</strong> between steps 2 and 4 the wording names a guard that already exists (step 1 is merged first), so nothing points at a missing script. If only some of the three files are changed, the backups show which: finish the rest before any deploy. A guard run interrupted mid-deploy is handled by the guard itself (pending-receipt file, re-run with the same sha).</div>
+</div>
+
+<!-- D-4 -->
+<div class="phase" id="d4">
+<h3>D-4 — The weekly vault export (C2, C3) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>Once a week, a full Firestore export of <code>&lt;PROJECT_ID&gt;</code> lands in <code>gs://my-clay-hub-vault-exports/weekly/…</code> in the <code>tinker-hq-vault</code> project, with no laptop and no personal login involved.</li>
+  <li>Exports older than 56 days are removed automatically, so about 8 are kept.</li>
+  <li>If the weekly job fails, Christie gets an email.</li>
+  <li>The export identity can start exports and nothing else; it cannot read or delete anything in the vault, and nothing in <code>my-clay-hub</code> can touch <code>tinker-hq-vault-backups</code>.</li>
+</ul>
+<p><strong>Christie's Console steps</strong> (Claude writes the exact values live, then records them):</p>
+<ol>
+  <li><code>tinker-hq-vault</code> → Cloud Storage → create bucket <code>my-clay-hub-vault-exports</code> — location to be confirmed against Google's "export bucket must be compatible with a <code>nam5</code> database" rule at execution time (<code>us-central1</code> or multi-region <code>US</code>); Standard; uniform access; lifecycle: delete objects older than 56 days.</li>
+  <li>On that bucket only: grant the <code>my-clay-hub</code> Firestore service agent (<code>service-&lt;number&gt;@gcp-sa-firestore.iam.gserviceaccount.com</code>) the <strong>minimum role Google's export docs require</strong> — confirmed at execution time; nothing on <code>tinker-hq-vault-backups</code>.</li>
+  <li><code>&lt;PROJECT_ID&gt;</code> → IAM → create <code>vault-export@&lt;PROJECT_ID&gt;</code> with only <strong>Cloud Datastore Import Export Admin</strong> on this project.</li>
+  <li>Cloud Scheduler (region <code>us-central1</code>) → job "weekly vault export", Sundays 2:00 AM America/Denver, HTTP POST to the Firestore Admin <code>exportDocuments</code> method for <code>(default)</code>, output <code>gs://my-clay-hub-vault-exports/weekly</code>, auth as <code>vault-export@</code> (OAuth). This is Google's scheduler calling Google's API under that identity — set up in the Console by Christie, never a request sent from this laptop.</li>
+  <li>Cloud Monitoring → alert policy on that job's failed runs → email Christie.</li>
+  <li>Run the job once now; confirm a dated export folder appears.</li>
+</ol>
+<div class="bdd">Scenario: the first run
+  Given the job and permissions are set up
+  When Christie clicks "Force run"
+  Then a new folder appears under weekly/ within a few minutes
+  And the Scheduler run shows success
+
+Scenario: the export identity overreaches
+  Given vault-export@ tries to list or delete objects in the vault
+  Then it is denied (it holds no Storage role at all)
+
+Scenario: the job fails
+  Given the Firestore agent's bucket permission is removed
+  When the job runs
+  Then the run fails and Christie receives the alert email</div>
+<div class="note"><strong>Why now, with an empty database:</strong> the export and its alert are proven while nothing depends on them; the first real data (Phase E's initial fill) then lands already backed up. <strong>If interrupted:</strong> each step is independent and visible in the Console; nothing here can change <code>my-clay-hub</code>'s data.</div>
+</div>
+
+<!-- D-5 -->
+<div class="phase" id="d5">
+<h3>D-5 — The stack, and the shared Denver date + status module <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li><code>CLAUDE.md</code> records the stack (vanilla JS, Firebase v12 modular, PWA manifest, Netlify) and the three locations (<code>nam5</code> / trigger <code>nam5</code> / functions <code>us-central1</code>).</li>
+  <li><code>shared/denver-time.js</code> and <code>shared/derive-status.js</code> (plain ES modules, no Firebase import, usable by the browser app and by functions) pass their tests:
+    <ul>
+      <li>today's date in Denver and week keys (<code>2026-W39</code>, Mon 00:00 – Sun 23:59 America/Denver, DATA-MODEL §weekKey), including a year boundary;</li>
+      <li>both DST changes (spring-forward's missing hour, fall-back's repeated hour);</li>
+      <li>a Sunday-night booking that crosses into Monday counts toward the right weeks;</li>
+      <li><code>deriveStatus</code>'s full ordered table from DATA-MODEL.md:55–79, one test per rule, plus the boundaries: a pause's last day is still paused, the day after is active; the last access day still has access, the day after is offboarded; every "review" gap from DECISIONS #34.</li>
+    </ul></li>
+  <li>The tests pass with the process time zone set to <code>UTC</code>, <code>America/Denver</code> and <code>Pacific/Auckland</code> — proving the code uses <code>America/Denver</code> explicitly, never the machine's zone (Membership Manager's <code>member-status.js</code> depends on the machine's zone; this module must not).</li>
+</ul>
+<p>Written fresh from DATA-MODEL.md. Tinker Ticker's <code>denverNow()</code> is a reference for the <code>Intl.DateTimeFormat</code> approach only — nothing in <code>tinker-timeclock</code> is edited.</p>
+<div class="bdd">Scenario: a pause's last day
+  Given a member paused Jan 2 – Feb 1 (DECISIONS #35)
+  When deriveStatus runs for Feb 1, then Feb 2
+  Then Feb 1 is paused and Feb 2 is active
+
+Scenario: a laptop in another time zone
+  Given TZ=Pacific/Auckland
+  When the suite runs
+  Then every result equals the TZ=America/Denver run
+
+Scenario: an unknown stage
+  Given a member whose stage is "somethingNew"
+  Then deriveStatus returns review, never a lockout</div>
+<div class="note"><strong>If interrupted:</strong> pure code on a branch; nothing touches Firebase.</div>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<table>
+<tr><th>Check</th><th>This plan</th></tr>
+<tr><td>Rules for every collection touched</td><td>No collections are created. Both rules files deny everything; each collection gets a rule in the Phase F plan, in the same commit that introduces it.</td></tr>
+<tr><td>Tests first</td><td>D-2's "stranger can do nothing" suite (with positive pairs) and D-3's guard suite pass before the first deploy; the guard re-runs them in its worktree.</td></tr>
+<tr><td>Deploy path</td><td>Only the new guard, only after "approved to change firebase &lt;full sha&gt;" for that sha. No raw <code>firebase deploy</code>.</td></tr>
+<tr><td>Snapshot before bulk operations; <code>updateDoc</code> vs <code>setDoc</code>; empty fields</td><td>Not applicable: Phase D writes no documents.</td></tr>
+<tr><td><code>tinker-hq-apps</code> untouched</td><td>Nothing in this plan changes its rules, data, IAM or backups. <code>tinker-hq-vault</code> gains one new bucket; the existing bucket's permissions don't change.</td></tr>
+<tr><td>Credentials</td><td>Never read <code>~/.config/configstore/firebase-tools.json</code>; no hand-rolled requests to <code>firestore.googleapis.com</code> from this laptop; no key files are created — every identity is a Google-side service account.</td></tr>
+<tr><td>Sign-in stays off</td><td>No providers, no registered web app, until Phase F's hard gate.</td></tr>
+</table>
+
+<h2 id="completeness">Completeness check — what if this stops partway?</h2>
+<ul>
+  <li><strong>After D-1 only:</strong> an empty, deny-all, backed-up project. Safe to leave indefinitely (cost: effectively $0 under the budget alert).</li>
+  <li><strong>After D-2 only:</strong> the repo has tests and rules but nothing deployed; the project still runs on the Console's own production-mode deny-all.</li>
+  <li><strong>Mid D-3:</strong> see D-3's note. The one real hazard is a half-edited hook; it has its own check and recovery.</li>
+  <li><strong>D-4 or D-5 not done:</strong> nothing later breaks, but Phase E must not load real member data until D-4's first export has succeeded (added to Phase E's gate).</li>
+</ul>
+
+<h2 id="reviews">Reviews</h2>
+<p>Pending: round 1 (Codex, and Claude if its access allows).</p>
+
+<h2 id="resume">Resume instructions</h2>
+<ol>
+  <li>Read this file, then <code>clayhub-members-foundation.html</code> (Resume + last log entry) and <code>~/my-clay-hub/docs/my-clay-hub/SPEC.md</code>, <code>DECISIONS.md</code>, <code>DATA-MODEL.md</code>.</li>
+  <li>Check the Decisions log below for the last completed step and the accepted project ID.</li>
+  <li><code>git -C ~/my-clay-hub fetch origin &amp;&amp; git -C ~/my-clay-hub status</code>; once D-3 exists, <code>~/my-clay-hub/scripts/deploy-rules.sh --status</code>.</li>
+  <li>For D-1, re-run the read-back before asking Christie for anything.</li>
+</ol>
+
+<h2 id="appendix-a">Appendix A — the approved D-3 wording</h2>
+<p>Approved by Christie Sep 28, 2026, after Codex round 1 ("ready after fixes", all applied) and round 2 ("ready"). Kept verbatim in <code>~/tinker-ai-configs/thoughts/plans/my-clay-hub-phase-d-wording.md</code> (copied from the session scratchpad when this plan was written). Summary:</p>
+<ul>
+  <li><strong><code>~/.claude/CLAUDE.md</code></strong> — six edits: "Single source of truth" names one rules file per project; the Deploy and Approval sections say each project has its own guard and an approval counts only for that sha and that project; tests run in the project being deployed; one line above the Safe Deploy Patterns table; the "PROJECT STRUCTURE" section becomes the "exactly TWO" table (project, what it's for — including My Clay Hub's <code>/staff</code> — rules source, guard).</li>
+  <li><strong><code>~/.claude/settings.json</code></strong> — the four autoMode entries (soft_deny, hard_deny, two environment lines) name both guards and bind approval to one project.</li>
+  <li><strong>Hook message</strong> — points to each project's <code>--status</code>; adds "an approval counts only for that project's guard, never the other one". Matching logic unchanged.</li>
+</ul>
+
+<h2 id="log">Decisions log (append-only)</h2>
+<ul>
+  <li><strong>Sep 28:</strong> plan written. D-3 wording approved by Christie (Codex round 2 "ready"; a Claude reviewer couldn't run because pasting settings/CLAUDE.md text into another process was refused by the auto-mode check — Christie chose Codex's review). Guard path <code>my-clay-hub/scripts/deploy-rules.sh</code>; "Single source of truth" reworded rather than given an exception line. Choices C1–C4 made here.</li>
+</ul>
+
+</body>
+</html>
