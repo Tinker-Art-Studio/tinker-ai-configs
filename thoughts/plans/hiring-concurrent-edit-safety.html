@@ -88,6 +88,39 @@ Interview answers show up on the other person's screen as they're saved, and a c
   <li><b>Cache busting:</b> bump <code>app.js?v=8→9</code> and add <code>?v=2</code> to <code>firebase-data.js</code> and <code>sync-logic.js</code>, so no browser
     runs new <code>app.js</code> with an old data layer.</li>
 </ul>
+<h3>Design additions from review round 1 (2026-09-28, verified against the code)</h3>
+<ul>
+  <li><b>R1. Sheet-only applicants must survive the live listener.</b> Today the listener replaces the whole map (<code>candidateData = data.candidateData</code>,
+    <code>app.js:1897</code>), so any applicant not yet in Firestore disappears from <code>candidateData</code> on the first snapshot. After that, interview
+    answers (<code>app.js:802</code>) and the Considering change (<code>app.js:1691</code>) <b>throw</b>, and reference notes silently don't save.
+    Fix: extract <code>defaultRecordFor(candidate)</code> from <code>mergeCandidateData</code> into <code>sync-logic.js</code>. The listener rebuilds defaults
+    for every sheet candidate missing from the incoming data. The first-save path takes its record from that helper, stripped of empty values, with only the
+    dirty answers.</li>
+  <li><b>R2. Unsaved answers outlive the card.</b> Pending writes live in a queue keyed by <code>candidateKey + position + index</code>, holding the values
+    in memory, and are captured synchronously when the card closes or the position changes. The queue retries on its own timer, independent of the modal, and a
+    <code>beforeunload</code> warning shows while it is non-empty. Flushes are single-flight, so a tick never overlaps an in-flight save. DOM ids
+    (<code>iq-N</code>) are never used as keys.</li>
+  <li><b>R3. The whole-document import runs only when the document provably doesn't exist.</b> <code>loadDataFromFirestore</code> returns
+    <code>{exists:false}</code> vs <code>{error}</code>. On an error the app shows "Couldn't load — reload", and nothing that writes is enabled. Settings →
+    "Re-import from Sheet" is listed as a whole-document writer (see open question 2).</li>
+  <li><b>R4. Never refill the box with focus.</b> Keep a "last value written" per box until a snapshot confirms it. Transaction writes show up in the listener only
+    after commit, so an older snapshot must not overwrite fresher local text.</li>
+  <li><b>R5. Fix the Save Answers button.</b> Today it's wired as <code>addEventListener('click', saveInterviewAnswers)</code> (<code>app.js:1673</code>), so the
+    click event arrives as the position and the save throws. Wrap it: <code>() =&gt; saveInterviewAnswers()</code>.</li>
+  <li><b>R6. No position selected.</b> The answer boxes are disabled and show "Pick a position under 'Considering for' first" (AGENTS.md invariant), so there is
+    never a dirty box stuck under an empty key.</li>
+  <li><b>R7. Save Changes baseline rules.</b> The baseline comes from <code>localData</code>, not the form, because hireDate auto-fills today
+    (<code>app.js:648</code>). <code>''</code>, <code>null</code> and missing count as equal. The baseline resets after a successful save and after a Considering
+    change. Fields the old code dropped (<code>declineDismissed</code>, <code>interviewNotes</code>) are no longer touched.</li>
+  <li><b>R8. Dismiss All goes through the first-save path</b>, so sheet-only rejected candidates stop alerting.</li>
+  <li><b>R9. Mechanics:</b> use the varargs <code>transaction.update(ref, fieldPath, value, …)</code> form, because the object form splits dotted keys. The
+    existence check for a candidate happens inside the same transaction. The merge logic skips the legacy flat <code>{'0':'text'}</code> string values and never
+    deletes them. No new top-level fields are added during the rollout: old tabs' whole-document <code>set</code> would drop them. <code>lastUpdated</code> is
+    still written. <code>sanitizeCandidateData</code> is deleted once it has no callers.</li>
+  <li><b>R10. Push-button removal:</b> the HTML section and the JS listener are removed <b>in the same commit</b>. A leftover
+    <code>getElementById(...).addEventListener</code> would throw during start-up and the app would never load.</li>
+</ul>
+<div class="note"><b>Known limit:</b> job templates stay last-write-wins on the whole list (rarely edited).</div>
 <div class="note"><b>Known limit:</b> if both people edit <i>the same</i> answer box at the same time, the last write wins for that box. Different boxes, different
 fields, and different candidates never collide.</div>
 <div class="warn"><b>Rollout hazard:</b> a tab still running the <i>old</i> code keeps rewriting the whole document every 5 s while a card is open. After deploying,
@@ -167,6 +200,36 @@ Then K's stage stays "interview" and the notes are the GM's</div>
 Given the network is off
 When someone types in an answer box
 Then the status line shows "⚠ Not saved — check your connection" and the box stays dirty; when the network returns, the next tick saves it</div>
+<div class="bdd">Scenario (R1): new applicant after the live update
+Given N is in the Google Sheet but not in Firestore, and the first snapshot has arrived
+When someone types an interview answer for N, changes Considering, or saves reference notes
+Then each saves, and N's record also carries the sheet-derived stage/notes</div>
+<div class="bdd">Scenario (R2): offline, then close the card
+Given the network is off and answers are typed
+When the card is closed
+Then the answers stay queued, leaving the page warns, and they save when the network returns</div>
+<div class="bdd">Scenario (R4): focused box during an incoming update
+Given A has focus in Q3 but hasn't typed
+When B's answer for Q3 arrives
+Then A's box is not changed while focused; it refreshes once A leaves it (if A didn't type)</div>
+<div class="bdd">Scenario (R2): position switch with unsaved boxes
+When A types in Q1 for "Lead Teacher" and immediately switches Considering to "Camp Teacher"
+Then the Q1 answer is saved under "Lead Teacher"</div>
+<div class="bdd">Scenario (R5): the Save Answers button
+When A clicks Save Answers
+Then the dirty answers save and the button says "Saved!" (today it throws)</div>
+<div class="bdd">Scenario (R6): no position chosen
+Given K has no "Considering for"
+Then the answer boxes are disabled with the "pick a position" message</div>
+<div class="bdd">Scenario (R7): two Save Changes in a row
+When A changes stage and saves, then changes notes and saves
+Then the second save writes only notes</div>
+<div class="bdd">Scenario (R3, failure): Firestore unreachable, no import flag
+Given the Firestore read errors and this browser has no import flag
+Then the app shows "Couldn't load" and writes nothing</div>
+<div class="bdd">Scenario: two first-saves of the same new applicant at once
+When A and B both save different fields for N at the same moment
+Then both fields are in N's record (the transaction retries; the second sees N exists)</div>
 <p><b>Then:</b> commit, run all tests, and a second-model <b>implementation</b> review of the diff before Phase 3.</p>
 </div>
 
@@ -200,7 +263,7 @@ Then the app ignores the switch and uses the live project as normal</div>
 <table>
   <tr><th>Check</th><th>Status</th></tr>
   <tr><td>Rules updated?</td><td>Not needed: same document, and the existing <code>hiring/{docId}</code> rule covers read+write. The emulator tests run against the real rules.</td></tr>
-  <tr><td>Partial updates use update, not set?</td><td>Yes: <code>transaction.update</code> with field paths. The only full writes left are the first-import path (never runs in prod) and the Settings seed button (see open question 1).</td></tr>
+  <tr><td>Partial updates use update, not set?</td><td>Yes: <code>transaction.update</code> with field paths. The seed button is removed. The only full write left is the first import, allowed only when Firestore confirms the document doesn't exist (R3). Re-import from Sheet: see open question 2.</td></tr>
   <tr><td>Empty strings / undefined stripped?</td><td>Yes: cleared values become <code>FieldValue.delete()</code>, undefined is never sent, and empty keys are refused.</td></tr>
   <tr><td>Critical writes awaited?</td><td>Yes, with the result shown on screen.</td></tr>
   <tr><td>Snapshot before bulk ops?</td><td>No bulk operation. The nightly backup includes <code>hiring</code>, and it is checked in Phase 4 before deploying.</td></tr>
@@ -257,6 +320,13 @@ Then the app ignores the switch and uses the live project as normal</div>
   The button only overwrote the shared document with one browser's local copy, so removing it deletes no data. While checking that, found that
   "Re-import from Sheet" can wipe everyone's pipeline data if the Firestore read fails. Asked Christie about it (open question 2), and added a guard to the design
   either way.</p>
+</div>
+<div class="decision">
+  <h3>2026-09-28 — Review round 1 (Claude subagent) folded in</h3>
+  <p>The diagnosis was confirmed. Ten findings were added to the design as R1–R10, plus nine BDD scenarios in Phase 2. I checked the two headline findings against
+  the code myself: <b>R1</b> (sheet-only applicants vanish on the first snapshot; answer and Considering saves then throw) and <b>R5</b> (the Save Answers button
+  throws on every click; only the autosave has ever saved). R1 is also a candidate cause of the GM's report. Codex was not available (out of credits), so this is a
+  single-reviewer pass. Recommendation: one more short Claude round on the revised design before marking phases execution-ready.</p>
 </div>
 
 </body>
