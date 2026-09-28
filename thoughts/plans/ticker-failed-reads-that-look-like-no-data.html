@@ -84,17 +84,46 @@ already half-applied across this file; this plan finishes it.</p>
   record of a completed payroll run. Nothing about this is visible at the time.
 </div>
 
-<h2>One decision for Christie</h2>
+<h2>REVISED after the two-model plan review (Sep 28) &mdash; the money fix is smaller than Tier 1</h2>
+<div class="trap">
+  <strong>Path A: locking a period can store the WRONG totals, with every read on screen perfectly healthy.</strong>
+  Both reviewers found this independently and it is more reachable than this plan's original headline.
+  <br><br>
+  <code>handleLockPeriod</code> (<code>app.js:2811</code>) does its OWN second read of the period's entries
+  &mdash; separate from the one that drew the screen &mdash; and <strong>never checks whether it succeeded</strong>:
+  <br><code>const allEntries = await getEntriesByDateRange(&hellip;);</code>
+  <br><code>const employeeTotals = calcPeriodTotals(allEntries, employeeRoster);</code>
+  <br><br>
+  On failure that read returns <code>[]</code>, <code>calcPeriodTotals</code> returns <code>{}</code>,
+  <code>lockPayPeriod</code> writes it, returns <strong><code>true</code></strong>, and the UI re-renders as
+  &ldquo;Locked&rdquo;. <strong>What the manager sees is not what gets locked</strong>, and the Payroll Tool
+  reads the stored totals as authoritative hours.
+  <br><br>
+  <strong>The merge behaviour makes it worse, and this repo has already measured it</strong>
+  (<code>empty-map-guard.emulator.test.js</code>): a merge-set unions nested maps, <em>except</em> that an
+  explicitly-written EMPTY map replaces the target. So a non-empty bad snapshot <em>deep-merges</em> &mdash;
+  uids present overwrite, uids absent <strong>survive with stale values</strong>, producing a hybrid that looks
+  entirely plausible &mdash; while an empty one <strong>erases the stored snapshot outright</strong>. And
+  <code>lockPayPeriod</code> writes <code>employeeTotals: employeeTotals || {}</code> raw, without
+  <code>omitEmptyMaps</code> &mdash; this repo's own guard for exactly this hazard, applied to schedule writes
+  (<code>app.js:3865</code>) and not to the payroll snapshot.
+</div>
+
 <div class="decision-needed">
-  <strong>How far do we go &mdash; Tier 1 only, or all three?</strong>
+  <strong>The fix is now SMALLER than the original Tier 1, and stronger.</strong> Both reviewers independently
+  rejected this plan's first instinct &mdash; gating the write on a successful read. That makes the manager's
+  ability to lock payroll depend on a read that can fail, and it does not close Path A anyway.
   <br><br>
-  <strong>Tier 1 (3 reads)</strong> is where money is. It is small, and it removes the one case that can destroy
-  a payroll record. <strong>Tiers 2&ndash;3 (8 more)</strong> are the same mechanical change and mostly prevent
-  confusion and duplicate data entry rather than wrong numbers.
+  Instead, make <strong>the write itself</strong> safe: a transaction that reads <code>lockedPeriods</code>
+  inside itself and REFUSES when the period is already locked, plus a guard that refuses an empty
+  <code>employeeTotals</code> unless the manager confirms a genuinely empty period. Then a failed read never
+  blocks a lock, and no read failure can silently overwrite or erase a snapshot. This is the idiom the repo
+  already uses for this exact class of race &mdash; <code>updateTimeOffRequestIfStatus</code>,
+  <code>confirmTimeOffSub</code>, <code>applyScheduleEditsTransaction</code>,
+  <code>toggleShiftRemindersTransaction</code>.
   <br><br>
-  <strong>Recommendation: Tier 1 now as its own release, then Tiers 2 and 3 together when convenient.</strong>
-  Tier 1 is worth interrupting other work for. The rest is worth doing, but not urgently, and shipping it
-  separately keeps the payroll-critical change small enough to review properly.
+  <strong>It does change a write path</strong>, so it needs an emulator test first and an implementation review
+  &mdash; but it needs no rules change, and it is perhaps a third of the original Phase 1.
 </div>
 
 <h2>The shape of the fix</h2>
@@ -108,35 +137,69 @@ that it could not be loaded, and <strong>that the data is not lost</strong>.</p>
 <h2>Phases</h2>
 
 <div class="phase">
-<h3>Phase 1 &mdash; the payroll tier <em>(no Firestore write; one write path gains a guard)</em></h3>
+<h3>Phase 1 &mdash; the lock cannot store totals nobody saw <em>(Firestore write: one transaction)</em></h3>
 <p><strong>Acceptance criteria, as user outcomes:</strong></p>
 <ul class="checklist">
-  <li>If the lock status cannot be read, the timesheet says so and the <strong>Lock Period button is
-  disabled</strong> &mdash; never enabled on a period that might already be locked.</li>
-  <li>If timesheet entries cannot be read, the period shows &ldquo;could not be loaded&rdquo; rather than
-  &ldquo;No timesheet data for this period&rdquo; and zero hours.</li>
-  <li>If settings cannot be read, the app says so rather than silently running on default grace rules.</li>
-  <li>Nothing changes when the reads succeed, including a genuinely empty period.</li>
+  <li>Locking a period either stores the totals the manager was looking at, or refuses and says why. It can
+  never store empty or partial ones silently.</li>
+  <li>Locking a period that is already locked is refused, naming who locked it and when &mdash; the existing
+  Unlock button stays the only way to redo it.</li>
+  <li>A failed lock-status read never blocks a manager from locking; the transaction decides, not the screen.</li>
+  <li>Nothing changes on the happy path, including locking a genuinely empty period after confirming it.</li>
 </ul>
+<p><strong>Also in Phase 1</strong> (both reviewers): the roster read at <code>app.js:2856</code> uses the
+swallowing <code>loadEmployeeRoster()</code>, and a failed roster read makes <code>calcPeriodTotals</code> skip
+the deliberate <code>emp_</code>&rarr;<code>claimedBy</code> merge &mdash; locking a snapshot that splits one
+person into two rows. It is a third read feeding <code>employeeTotals</code>.</p>
 
-<div class="bdd"><strong>Given</strong> the lock-status read fails, <strong>when</strong> a manager opens
-Timesheets, <strong>then</strong> the lock area says the status could not be read, the Lock button is disabled,
-and <strong>no lock can be written</strong> &mdash; so an existing <code>employeeTotals</code> snapshot cannot be
-overwritten.</div>
+<div class="bdd"><strong>Path A. Given</strong> the timesheet rendered real hours but the lock-time entries read
+fails, <strong>when</strong> the manager clicks Lock Period, <strong>then</strong> no lock document is written
+and the failure is reported &mdash; never a lock whose <code>employeeTotals</code> is <code>{}</code>.</div>
 
-<div class="bdd"><strong>Given</strong> the lock read fails, <strong>when</strong> a staff member views their
-entries, <strong>then</strong> change requests on possibly-locked dates are refused rather than allowed by a
-default-open <code>isDateInLockedPeriod</code>.</div>
+<div class="bdd"><strong>Path B. Given</strong> a period already locked with totals for 9 people,
+<strong>when</strong> a second lock is attempted, <strong>then</strong> <code>lockedAt</code>,
+<code>lockedBy</code> and <code>employeeTotals</code> are byte-identical afterwards, and the manager is told it
+is already locked. <em>Assert the stored document, not the UI.</em></div>
 
-<div class="bdd"><strong>Given</strong> the entries read fails for a pay period, <strong>then</strong> the
-timesheet reports the failure and shows no totals at all &mdash; never 0.00 hours, which a manager could
-reasonably act on.</div>
+<div class="bdd"><strong>The measured merge hazard. Given</strong> a stored snapshot and a write carrying an
+empty <code>employeeTotals</code>, <strong>then</strong> the stored one is NOT erased &mdash; an emulator test
+shaped like <code>empty-map-guard.emulator.test.js</code>, which already measures this exact behaviour.</div>
 
-<div class="bdd"><strong>Given</strong> a pay period that genuinely has no entries, <strong>then</strong> it still
-says &ldquo;no entries&rdquo; exactly as today.</div>
+<div class="bdd"><strong>Given</strong> a write carrying a PARTIAL snapshot (some uids missing),
+<strong>then</strong> it is refused rather than deep-merged into a hybrid where absent uids survive with stale
+values.</div>
 
-<div class="bdd"><strong>Given</strong> the settings read fails, <strong>then</strong> the app reports it and does
-not silently apply DEFAULT_SETTINGS grace rules to hour calculations.</div>
+<div class="bdd"><strong>Given</strong> the roster read failed, <strong>then</strong> no lock is written &mdash;
+its totals would not carry the <code>emp_</code> merge.</div>
+
+<div class="bdd"><strong>The negative control. Given</strong> a period that genuinely has no entries,
+<strong>when</strong> the manager confirms that, <strong>then</strong> it locks normally &mdash; the guard must
+not be a blanket refusal.</div>
+
+<div class="bdd"><strong>Given</strong> a good lock-status read followed by a failed one (the shared
+<code>lockedPeriods</code> global is reassigned unconditionally at <code>app.js:1074</code> and
+<code>:2055</code>), <strong>then</strong> <code>isDateInLockedPeriod</code> still reports the known locks
+rather than defaulting open for the rest of the session.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 1b &mdash; the three reads themselves <em>(no write)</em></h3>
+<ul class="checklist">
+  <li>A failed timesheet read says so instead of showing zero hours.</li>
+  <li>A failed settings read says so instead of silently applying defaults &mdash; and the Settings modal
+  cannot then SAVE those defaults over the real configuration (<code>app.js:5487</code>, <code>:5798</code>).</li>
+  <li>A failed lock-status read says the status is unknown rather than showing the period as unlocked.</li>
+</ul>
+<p><strong>Check before building:</strong> every settings consumer reads
+<code>(appSettings &amp;&amp; appSettings.X) || &lt;the same default&gt;</code>, so a failed read is
+byte-identical to a successful read of a config holding the defaults. <code>loadSettings</code> is only
+payroll-critical if the stored <code>timeclock_settings/appConfig</code> actually differs from
+<code>DEFAULT_SETTINGS</code> on <code>overtimeWeeklyThreshold</code> / <code>overtimeMultiplier</code> /
+<code>breakAutoEndMinutes</code>. <strong>One look in the Firebase console decides whether it is in scope at all.</strong></p>
+<p><strong>The branch-order problem gets a better fix than a test</strong> (Claude): extract the decision into a
+pure <code>readState({ ok, items }) &rarr; 'failed' | 'empty' | 'loaded'</code>, unit-test that, and have every
+render site call it. Order then cannot be reversed because there is ONE branch site instead of eleven &mdash;
+the idiom <code>reminderRowStatus</code> already uses.</p>
 </div>
 
 <div class="phase">
@@ -202,6 +265,27 @@ so rather than showing an empty, reassuring &ldquo;No pending requests&rdquo;.</
 
 <h2>Decisions Log</h2>
 <ul>
+  <li><strong>Sep 28 &mdash; two-model plan review; the plan's own framing was wrong and the fix got SMALLER.</strong>
+  Both models confirmed the <code>getLockedPeriods</code> chain line by line, including that the rules contain no
+  immutability condition on <code>lockedPeriods</code> and that the Payroll Tool treats the stored values as
+  authoritative. But both then found a more reachable path the plan had missed entirely &mdash; <strong>Path A</strong>:
+  <code>handleLockPeriod</code> does its own second entries read and never checks it, so a lock can store
+  <code>{}</code> while every read on screen was healthy. Both also rejected the plan's proposed remedy
+  (gate the write on a successful read) as the wrong primitive: it makes locking depend on a read that can fail
+  and does not close Path A. The remedy is a REFUSING TRANSACTION plus an empty-snapshot guard &mdash; roughly a
+  third of the original Phase 1, and strictly stronger. Reviews archived as
+  <code>2026-09-28-plan-review-failed-reads-{claude,codex}.md</code>.</li>
+  <li><strong>Sep 28 &mdash; inventory corrections from the review.</strong> <code>getAllTodayEntries</code> has no
+  production caller at all (delete it, drop its row); &ldquo;No one is clocked in&rdquo; actually comes from
+  <code>listenTodayEntries</code>, whose failure mode is STALE rather than empty and needs an error callback, not
+  an <code>{ ok }</code> return; the <code>!_ready</code> branch is a second silent entry into all eleven; and the
+  nine &ldquo;already correct&rdquo; functions are correct in the data layer only &mdash; several consequential
+  call sites still use the swallowing wrappers. The prose saying &ldquo;ten places&rdquo; was wrong; it is eleven.</li>
+  <li><strong>Sep 28 &mdash; <code>loadSettings</code> may not belong in Tier 1 at all.</strong> Every consumer reads
+  <code>(appSettings &amp;&amp; appSettings.X) || &lt;same default&gt;</code>, so a failed read is
+  indistinguishable from a config holding the defaults. It is payroll-critical only if the stored
+  <code>appConfig</code> actually differs on the overtime and break fields. Christie can settle it with one look
+  in the console; until then it is provisional.</li>
   <li><strong>Sep 28 &mdash; the HFWA bug is CONFIRMED FIXED, and the contested diagnosis is settled.</strong>
   Kaitlyn can now see her own submissions in &ldquo;My Submissions&rdquo;. The missing
   <code>timeclock_hfwa</code> uid+date index was the cause, as diagnosed; the alternative raised in review (a
