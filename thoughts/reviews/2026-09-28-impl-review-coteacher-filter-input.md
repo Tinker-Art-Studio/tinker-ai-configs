@@ -1,0 +1,3 @@
+Implementation review, do NOT edit files. Repo /Users/christiehubley/summer-camp-app, change = `git show HEAD` (co-teacher list filter in js/app.js: rememberStaffUser, coTeacherChoices, loadCoTeachersForEditor, loadCurriculum, staffNamesForDialog; collectCoTeachersForSave). summerCamps_curriculum.sharedWith is also read by The Classbook.
+Check: can Save now drop or add a co-teacher the user didn't intend (someone on the camp not rendered as a checkbox; duplicate uids; STAFF_INFO missing when STAFF_NAMES was filled elsewhere or cached from an earlier load)? Any other caller of STAFF_NAMES affected? Test proves its name?
+Numbered findings, severity, file:line, fix. End "safe to ship" or "not safe to ship: <why>". Under 300 words.

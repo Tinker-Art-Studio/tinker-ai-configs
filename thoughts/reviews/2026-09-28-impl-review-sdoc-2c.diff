@@ -1,0 +1,693 @@
+diff --git a/css/styles.css b/css/styles.css
+index 5d32d52..48707d8 100644
+--- a/css/styles.css
++++ b/css/styles.css
+@@ -7246,3 +7246,15 @@ label[for="ca-semester-select"] {
+ .sdoc-editor-materials .materials-table { margin-top: 4px; }
+ @media (max-width: 600px) { .sdoc-tv-day { grid-template-columns: 1fr; } }
+ .summer-lesson-modal textarea[readonly], .te-modal-overlay.view-only textarea { background: #F6F5FA; color: var(--text-medium); cursor: default; }
++
++/* Phase 2C — project details (vision + inspo links) */
++.sdoc-materials-details:empty { display: none; }
++.sdoc-materials-details { border-bottom: 1px solid var(--border-color, #eee); padding-bottom: 12px; }
++.sdoc-details-title { font-weight: 700; font-size: 13px; margin: 8px 0 4px; }
++#sdoc-details-vision { width: 100%; font: inherit; }
++.sdoc-details-link-row { display: flex; gap: 8px; margin: 4px 0; }
++.sdoc-details-link-row input { flex: 1; }
++.sdoc-details-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
++.sdoc-details-links { margin: 4px 0 0 18px; padding: 0; }
++.sdoc-details-links a { word-break: break-all; }
++.sdoc-details-readonly-vision { white-space: normal; font-size: 14px; }
+diff --git a/e2e/day-off-materials.spec.js b/e2e/day-off-materials.spec.js
+index b8b3d74..895d495 100644
+--- a/e2e/day-off-materials.spec.js
++++ b/e2e/day-off-materials.spec.js
+@@ -756,3 +756,274 @@ test.describe('School Day Off Camps — Phase 2A.1: event materials checklist',
+     } finally { await prep.evaluate(() => { window.readDayOffPlan = window.__realRead; }); }
+   });
+ });
++
++// ── Phase 2C: project details (vision + inspo links) and "n/a" blocks ─────
++// Plan: classbook-school-day-off-camps.html → Phase 2C (revision 6).
++test.describe('School Day Off Camps — Phase 2C: project details + unused blocks', () => {
++  async function openPopup(page, camp, title) {
++    await loadYear(page);
++    await page.evaluate(() => initGlobalSemesterSelector());
++    await page.selectOption('#global-semester-select', Y);
++    await page.click('.tab-btn[data-tab="curriculum-admin"]');
++    await page.click(`tr[data-camp-id="${camp.id}"] .sdoc-mat-btn[data-title="${title}"]`);
++    await expect(page.locator('#sdoc-materials-modal')).toHaveClass(/open/);
++    await expect(page.locator('#sdoc-materials-modal-body .sdoc-mat-table, #sdoc-materials-modal-body .sdoc-errors:not(:empty)').first()).toBeVisible();
++  }
++  const detailsOf = async (camp, title) => {
++    const p = await readPlan(planner, camp, title);
++    return p ? { details: p.projectDetails, links: p.projectLinks, has: ['projectDetails' in p, 'projectLinks' in p] } : null;
++  };
++  const save = (page, camp, title, details, links, expected = { details: '', links: [] }) =>
++    attempt(page, ({ Y, c, t, details, links, expected }) => saveDayOffProjectDetails(Y, c, t, { details, links, expected, auth: { canPlan: canPlanDayOffCamps() } }), { Y, c: camp.id, t: title, details, links, expected });
++
++  test('D1: a planner saves a vision + two links from the popup — only the details fields (and identity/id) are written; materials, ticks and the sign-off are untouched', async () => {
++    const { camp } = await campWithTwoProjects();
++    const item = (await addItem(planner, camp, 'Clay Creatures', { name: 'TEST clay', qty: 1, scope: 'class set' })).value;
++    expect((await attempt(planner, ({ Y, c, id }) => setDayOffMaterialCheck(Y, c, 'Clay Creatures', id, true), { Y, c: camp.id, id: item })).ok).toBe(true);
++    expect((await attempt(planner, ({ Y, c }) => setDayOffCampSignoff(Y, c, true, null), { Y, c: camp.id })).ok).toBe(true);
++    const before = await readPlan(planner, camp, 'Clay Creatures');
++    const signoffBefore = await readSignoff(planner, camp);
++    await openPopup(planner, camp, 'Clay Creatures');
++    await planner.fill('#sdoc-details-vision', 'TEST vision line 1\nTEST vision line 2');
++    await planner.fill('#sdoc-materials-details .sdoc-details-link >> nth=0', 'https://example.test/board');
++    await planner.click('#sdoc-details-add-link');
++    await planner.fill('#sdoc-materials-details .sdoc-details-link >> nth=1', 'https://example.test/video');
++    await planner.evaluate(() => { window.__spy = __sdocT.spyUpdates(); });
++    try {
++      await planner.click('#sdoc-details-save');
++      await expect(planner.locator('#sdoc-details-status')).toContainText('Saved');
++      const calls = await planner.evaluate(() => window.__spy.calls);
++      expect(calls.length).toBe(1);
++      expect(calls[0].via).toBe('tx.set');
++      expect(Object.keys(calls[0].data).sort()).toEqual(['campId', 'detailsEditId', 'eventId', 'projectDetails', 'projectLinks', 'projectTitle', 'yearKey']);
++    } finally { await planner.evaluate(() => window.__spy.restore()); }
++    const after = await readPlan(planner, camp, 'Clay Creatures');
++    expect(after.projectDetails).toBe('TEST vision line 1\nTEST vision line 2');
++    expect(after.projectLinks).toEqual(['https://example.test/board', 'https://example.test/video']);
++    expect(after.materialItems).toEqual(before.materialItems);
++    expect(after.materialChecks).toEqual(before.materialChecks);
++    expect(await readSignoff(planner, camp)).toEqual(signoffBefore);
++    await planner.click('#sdoc-materials-modal >> text=Done');
++    await expect(planner.locator(`tr[data-camp-id="${camp.id}"] .sdoc-mat-btn[data-title="Clay Creatures"]`)).toContainText('details');
++  });
++
++  test('D2: typed details survive redraws, keep focus and caret, and survive a refused save; closing with only a link changed asks first', async () => {
++    const { camp } = await campWithTwoProjects();
++    await openPopup(planner, camp, 'Clay Creatures');
++    await planner.fill('#sdoc-details-vision', 'TEST typing in progress');
++    await planner.evaluate(() => { const ta = document.getElementById('sdoc-details-vision'); ta.focus(); ta.setSelectionRange(5, 5); });
++    // Redraws of the materials body: a render, a failed material add, a reorder-style re-render.
++    await planner.evaluate(() => renderDayOffMaterialsList('TEST error line'));
++    await planner.fill('#sdoc-materials-modal-body .sdoc-mi-name', '');
++    await planner.click('#sdoc-materials-modal-body >> text=Add');
++    await expect(planner.locator('#sdoc-materials-modal-body .sdoc-errors')).not.toBeEmpty();
++    await planner.evaluate(() => { const ta = document.getElementById('sdoc-details-vision'); ta.focus(); ta.setSelectionRange(5, 5); renderDayOffMaterialsList(); });
++    expect(await planner.evaluate(() => { const ta = document.getElementById('sdoc-details-vision'); return [ta.value, document.activeElement === ta, ta.selectionStart]; })).toEqual(['TEST typing in progress', true, 5]);
++    // A refused save (bad link) keeps everything typed.
++    await planner.fill('#sdoc-materials-details .sdoc-details-link >> nth=0', 'javascript:alert(1)');
++    await planner.click('#sdoc-details-save');
++    await expect(planner.locator('#sdoc-details-errors')).toContainText('http');
++    await expect(planner.locator('#sdoc-details-vision')).toHaveValue('TEST typing in progress');
++    expect(await readPlan(planner, camp, 'Clay Creatures')).toBeNull();
++    // Close with a change pending → asked; cancel keeps it open.
++    planner.once('dialog', d => { expect(d.message()).toContain('Discard the details'); d.dismiss(); });
++    await planner.click('#sdoc-materials-modal >> text=Done');
++    await expect(planner.locator('#sdoc-materials-modal')).toHaveClass(/open/);
++    // Only a link changed (vision back to saved = empty) still asks.
++    await planner.fill('#sdoc-details-vision', '');
++    await planner.fill('#sdoc-materials-details .sdoc-details-link >> nth=0', 'https://example.test/x');
++    let asked = false;
++    planner.once('dialog', d => { asked = true; d.accept(); });
++    await planner.click('#sdoc-materials-modal >> text=Done');
++    await expect(planner.locator('#sdoc-materials-modal')).not.toHaveClass(/open/);
++    expect(asked).toBe(true);
++  });
++
++  test('D3: validation before any write — bad schemes, too long, too many; duplicates dropped; a record-less links-only save creates only identity + links; both empty on a record-less project writes nothing', async () => {
++    const { camp } = await campWithTwoProjects();
++    for (const [details, links, msg] of [
++      ['', ['javascript:alert(1)'], 'http'], ['', ['www.pinterest.com/x'], 'http'],
++      ['x'.repeat(5001), [], '5,000'], ['', Array.from({ length: 11 }, (_, i) => `https://example.test/${i}`), '10'],
++    ]) {
++      const r = await save(planner, camp, 'Clay Creatures', details, links);
++      expect(r.ok).toBe(false);
++      expect(r.message).toContain(msg);
++    }
++    expect(await readPlan(planner, camp, 'Clay Creatures')).toBeNull();
++    await planner.evaluate(() => { window.__spy = __sdocT.spyUpdates(); });
++    try {
++      const r0 = await save(planner, camp, 'Glaze Day', '  ', ['  ']);
++      expect(r0.ok, r0.message).toBe(true);
++      expect(await planner.evaluate(() => window.__spy.calls.length)).toBe(0);
++    } finally { await planner.evaluate(() => window.__spy.restore()); }
++    expect(await readPlan(planner, camp, 'Glaze Day')).toBeNull();
++    const r = await save(planner, camp, 'Clay Creatures', '', ['https://example.test/a', ' https://example.test/a ', 'https://example.test/b']);
++    expect(r.ok, r.message).toBe(true);
++    const p = await readPlan(planner, camp, 'Clay Creatures');
++    expect(p.projectLinks).toEqual(['https://example.test/a', 'https://example.test/b']);
++    expect('projectDetails' in p).toBe(false);
++    // Missing auth or expected → refused.
++    const noAuth = await attempt(planner, ({ Y, c }) => saveDayOffProjectDetails(Y, c, 'Clay Creatures', { details: 'x', links: [], expected: { details: '', links: [] } }), { Y, c: camp.id });
++    expect(noAuth.ok).toBe(false);
++    const noExpected = await attempt(planner, ({ Y, c }) => saveDayOffProjectDetails(Y, c, 'Clay Creatures', { details: 'x', links: [], auth: { canPlan: true } }), { Y, c: camp.id });
++    expect(noExpected.ok).toBe(false);
++  });
++
++  test('D4: clearing everything removes both fields; a second save without reopening lands; another planner\'s change since open is refused and kept', async () => {
++    const { camp } = await campWithTwoProjects();
++    await openPopup(planner, camp, 'Clay Creatures');
++    await planner.fill('#sdoc-details-vision', 'TEST first');
++    await planner.click('#sdoc-details-save');
++    await expect(planner.locator('#sdoc-details-status')).toContainText('Saved');
++    await planner.fill('#sdoc-details-vision', 'TEST second');
++    await planner.click('#sdoc-details-save');
++    await expect.poll(async () => (await detailsOf(camp, 'Clay Creatures')).details).toBe('TEST second');
++    await expect(planner.locator('#sdoc-details-errors')).toBeEmpty();
++    // Another planner adds a link (a direct write = another client).
++    await planner.evaluate(({ Y, c }) => curriculumDb.collection('dayOffCamps_lessonData').doc(dayOffPlanDocId(Y, c, 'Clay Creatures')).update({ projectLinks: ['https://example.test/theirs'] }), { Y, c: camp.id });
++    await planner.evaluate(() => renderDayOffMaterialsList());   // a redraw must not re-base the baseline
++    await planner.fill('#sdoc-details-vision', 'TEST third');
++    await planner.click('#sdoc-details-save');
++    await expect(planner.locator('#sdoc-details-errors')).toContainText('changed by someone else');
++    expect(await detailsOf(camp, 'Clay Creatures')).toMatchObject({ details: 'TEST second', links: ['https://example.test/theirs'] });
++    // Clear all (fresh open → new baseline) → both fields absent.
++    planner.once('dialog', d => d.accept());
++    await planner.click('#sdoc-materials-modal >> text=Done');
++    await openPopup(planner, camp, 'Clay Creatures');
++    await planner.fill('#sdoc-details-vision', '');
++    await planner.click('#sdoc-materials-details .sdoc-details-link-remove >> nth=0');
++    await planner.click('#sdoc-details-save');
++    await expect(planner.locator('#sdoc-details-status')).toContainText('Saved');
++    expect((await detailsOf(camp, 'Clay Creatures')).has).toEqual([false, false]);
++  });
++
++  test('D5: hostile stored values render as text everywhere — no javascript: links, no attribute breakout, no auto-link from the vision', async () => {
++    const { camp } = await campWithTwoProjects();
++    await planner.evaluate(({ Y, c }) => curriculumDb.collection('dayOffCamps_lessonData').doc(dayOffPlanDocId(Y, c, 'Clay Creatures')).set({
++      yearKey: Y, campId: c, projectTitle: 'Clay Creatures',
++      projectDetails: 'see https://x.com/"onmouseover="window.__pwned=1 and <img src=x onerror="window.__pwned=2">',
++      projectLinks: ['javascript:window.__pwned=3', 'https://x.com/"onmouseover="window.__pwned=4'],
++    }), { Y, c: camp.id });
++    for (const page of [planner, prep]) {
++      await openPopup(page, camp, 'Clay Creatures');
++      await page.locator('#sdoc-materials-details a').evaluateAll(as => as.forEach(a => a.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))));
++      expect(await page.locator('#sdoc-materials-details a[href^="javascript"]').count()).toBe(0);
++      expect(await page.locator('#sdoc-materials-details img').count()).toBe(0);
++      expect(await page.evaluate(() => window.__pwned || 0)).toBe(0);
++    }
++    // The vision is never auto-linked in the read-only view.
++    expect(await prep.locator('#sdoc-materials-details .sdoc-details-readonly-vision a').count()).toBe(0);
++  });
++
++  test('D6: prep sees details read-only; an empty details section is not shown to them', async () => {
++    const { camp } = await campWithTwoProjects();
++    expect((await save(planner, camp, 'Clay Creatures', 'TEST vision', ['https://example.test/a'])).ok).toBe(true);
++    await openPopup(prep, camp, 'Clay Creatures');
++    await expect(prep.locator('#sdoc-materials-details')).toContainText('TEST vision');
++    await expect(prep.locator('#sdoc-materials-details a[href="https://example.test/a"]')).toHaveAttribute('target', '_blank');
++    await expect(prep.locator('#sdoc-details-vision')).toHaveCount(0);
++    await expect(prep.locator('#sdoc-details-save')).toHaveCount(0);
++    await prep.click('#sdoc-materials-modal >> text=Done');
++    await prep.click(`tr[data-camp-id="${camp.id}"] .sdoc-mat-btn[data-title="Glaze Day"]`);
++    await expect(prep.locator('#sdoc-materials-modal-body .sdoc-mat-table')).toBeVisible();
++    expect((await prep.locator('#sdoc-materials-details').innerText()).trim()).toBe('');
++  });
++
++  test('D7: switching projects never carries typed details over — including a failed read and a superseded read (success or failure)', async () => {
++    const { camp } = await campWithTwoProjects();
++    await openPopup(planner, camp, 'Clay Creatures');
++    await planner.fill('#sdoc-details-vision', 'TEST typed for Clay');
++    planner.once('dialog', d => d.accept());
++    await planner.click('#sdoc-materials-modal >> text=Done');
++    await planner.click(`tr[data-camp-id="${camp.id}"] .sdoc-mat-btn[data-title="Glaze Day"]`);
++    await expect(planner.locator('#sdoc-details-vision')).toHaveValue('');
++    // Glaze Day's read fails → no details section at all.
++    await planner.click('#sdoc-materials-modal >> text=Done');
++    await planner.evaluate(() => { window.__realRead = window.readDayOffPlan; window.readDayOffPlan = async () => { throw new Error('TEST read failure'); }; });
++    try {
++      await planner.click(`tr[data-camp-id="${camp.id}"] .sdoc-mat-btn[data-title="Glaze Day"]`);
++      await expect(planner.locator('#sdoc-materials-modal-body')).toContainText('TEST read failure');
++      expect((await planner.locator('#sdoc-materials-details').innerHTML()).trim()).toBe('');
++    } finally { await planner.evaluate(() => { window.readDayOffPlan = window.__realRead; }); }
++    await planner.evaluate(() => { document.getElementById('sdoc-materials-modal').classList.remove('open'); dayOffMaterialsView = null; });
++    // Superseded read: Clay's read is held; Glaze opens; then Clay's read resolves (and, second time, rejects).
++    for (const outcome of ['resolve', 'reject']) {
++      await planner.evaluate((outcome) => {
++        window.__realRead = window.readDayOffPlan;
++        window.readDayOffPlan = (y, c, t) => t === 'Clay Creatures'
++          ? new Promise((res, rej) => { window.__releaseClay = () => (outcome === 'resolve' ? window.__realRead(y, c, t).then(res, rej) : rej(new Error('TEST Clay failed'))); })
++          : window.__realRead(y, c, t);
++      }, outcome);
++      try {
++        await planner.evaluate(({ c }) => { openDayOffMaterials(c, 'Clay Creatures'); }, { c: camp.id });
++        await planner.evaluate(({ c }) => openDayOffMaterials(c, 'Glaze Day'), { c: camp.id });
++        await planner.fill('#sdoc-details-vision', 'TEST typed for Glaze');
++        await planner.evaluate(() => window.__releaseClay());
++        await planner.waitForTimeout(400);
++        expect(await planner.evaluate(() => dayOffMaterialsView.title)).toBe('Glaze Day');
++        await expect(planner.locator('#sdoc-details-vision')).toHaveValue('TEST typed for Glaze');
++        await expect(planner.locator('#sdoc-materials-modal-body')).not.toContainText('TEST Clay failed');
++      } finally {
++        await planner.evaluate(() => { window.readDayOffPlan = window.__realRead; document.getElementById('sdoc-materials-modal').classList.remove('open'); dayOffMaterialsView = null; });
++      }
++    }
++  });
++
++  test('D8: renaming carries the details; a links-only record protects camp removal; teachers can never write details', async () => {
++    const { camp } = await campWithTwoProjects();
++    expect((await save(planner, camp, 'Glaze Day', '', ['https://example.test/only'])).ok).toBe(true);
++    expect(await planner.evaluate((p) => dayOffPlanHasUserData(p), { projectLinks: ['https://x.test'] })).toBe(true);
++    expect(await planner.evaluate((p) => dayOffPlanHasUserData(p), { projectDetails: 'x' })).toBe(true);
++    const r = await attempt(planner, ({ Y, c }) => deleteDayOffCamp(Y, c), { Y, c: camp.id });
++    expect(r.ok).toBe(false);
++    // Rename Glaze Day → Glaze Art (same cells) moves the record.
++    const cur = await planner.evaluate(({ Y, id }) => currentDayOffCamps[Y].find(c => c.id === id), { Y, id: camp.id });
++    const projects = { ...cur.projects, '2026-11-24': ['Glaze Art', 'Open Studio'] };
++    const rr = await attempt(planner, ({ Y, cur, projects }) => saveDayOffCamp(Y, { ...cur, projects }, cur), { Y, cur, projects });
++    expect(rr.ok, rr.message).toBe(true);
++    expect(await readPlan(planner, camp, 'Glaze Day')).toBeNull();
++    expect((await readPlan(planner, camp, 'Glaze Art')).projectLinks).toEqual(['https://example.test/only']);
++    // A plan save (2B's teacher path) may not carry details — refused by the allow-list before anything else.
++    await loadYear(prep);
++    const tr = await attempt(prep, ({ Y, c }) => saveSingleLesson(Y, dayOffLessonKey(Y, c, 'Clay Creatures'), { projectDetails: 'hijack' }, [], { dayOffAuth: { canEditAnywhere: true, hasClassbook: true, myTeacherName: null } }), { Y, c: camp.id });
++    expect(tr.ok).toBe(false);
++    expect(tr.message).toContain('may not write');
++  });
++
++  test('D9: "not used" blocks — every spelling, twice in a day, hidden from plans/materials/Teacher View, shown as typed in the admin list; summer unchanged', async () => {
++    const out = await planner.evaluate(() => ({
++      unused: ['—', '-', 'n/a', 'N/A', ' na ', 'NONE', 'None'].map(isDayOffUnusedBlock),
++      notUnused: ['', 'Open Studio', 'Clay', 'nah', 'n/a art'].map(isDayOffUnusedBlock),
++      noPlan: ['n/a', 'none', 'Open Studio', '', '—'].map(isDayOffNoPlanTitle),
++      summer: ['n/a', 'none'].map(isSummerNoPlanTitle),
++    }));
++    expect(out.unused.every(Boolean)).toBe(true);
++    expect(out.notUnused.some(Boolean)).toBe(false);
++    expect(out.noPlan.every(Boolean)).toBe(true);
++    expect(out.summer).toEqual([false, false]);
++    const ev = await makeEvent(planner);
++    const camp = await makeCamp(planner, ev.id, { projects: { '2026-11-23': { block1: 'Clay Creatures', block2: 'N/A', openStudio: 'n/a' }, '2026-11-24': { block1: 'none', block2: '-' }, '2026-11-25': { block1: 'Clay Creatures' } } });
++    expect(await planner.evaluate(({ Y, c }) => [...dayOffCampTitles(currentDayOffCamps[Y].find(x => x.id === c)).keys()], { Y, c: camp.id })).toEqual(['Clay Creatures']);
++    expect(await planner.evaluate(({ Y, c }) => dayOffBlocksToFill(currentDayOffCamps[Y].find(x => x.id === c)).empty, { Y, c: camp.id })).toBe(1);   // only Wed Block 2 is empty
++    await loadYear(prep);
++    await prep.evaluate(() => initGlobalSemesterSelector());
++    await prep.selectOption('#global-semester-select', Y);
++    await prep.click('.tab-btn[data-tab="curriculum-admin"]');
++    await expect(prep.locator(`tr[data-camp-id="${camp.id}"] .sdoc-mat-btn`)).toHaveCount(1);
++    await expect(prep.locator(`tr[data-camp-id="${camp.id}"]`)).toContainText('N/A');   // shown as typed
++  });
++
++  test('D10: a real project changed to "n/a" is a prompted removal (not a rename); "n/a" → a real title creates a new project', async () => {
++    const { camp } = await campWithTwoProjects();
++    await addItem(planner, camp, 'Glaze Day', { name: 'TEST glaze', qty: 1, scope: 'class set' });
++    const cur = await planner.evaluate(({ Y, id }) => currentDayOffCamps[Y].find(c => c.id === id), { Y, id: camp.id });
++    const projects = { ...cur.projects, '2026-11-24': ['n/a', 'Open Studio'] };
++    let asked = null;
++    await planner.exposeFunction('__askedOrphans', (x) => { asked = x; });
++    const r = await attempt(planner, ({ Y, cur, projects }) => saveDayOffCamp(Y, { ...cur, projects }, cur, { confirmOrphans: async (t) => { await window.__askedOrphans(JSON.stringify(t)); return false; } }), { Y, cur, projects });
++    expect(asked).toContain('Glaze Day');
++    expect(r.ok, r.message).toBe(true);
++    expect(r.value.cancelled).toBe(true);
++    expect((await readPlan(planner, camp, 'Glaze Day')).materialItems).toBeTruthy();
++  });
++});
+diff --git a/e2e/day-off-teacher.spec.js b/e2e/day-off-teacher.spec.js
+index 566c6fa..afac9b4 100644
+--- a/e2e/day-off-teacher.spec.js
++++ b/e2e/day-off-teacher.spec.js
+@@ -701,4 +701,22 @@ test.describe('School Day Off Camps — Phase 2B: teachers plan their days', ()
+     await t.evaluate(() => renderQaActivityPanel());
+     expect(await t.locator('#tv-qa-activity').innerHTML()).toBe('');
+   });
++
++  test('T22: "About this project" shows the planner\'s vision (line breaks kept) and links (new tab); absent when there are none', async ({ browser }) => {
++    const { clay } = await makeCamps();
++    const r = await attempt(planner, ({ Y, c }) => saveDayOffProjectDetails(Y, c, 'Clay Creatures', {
++      details: 'TEST first line\nTEST second line', links: ['https://example.test/board'], expected: { details: '', links: [] }, auth: { canPlan: true },
++    }), { Y, c: clay.id });
++    expect(r.ok, r.message).toBe(true);
++    const t = await teacherSession(browser);
++    await openTeacherView(t);
++    await openPlan(t, clay, 'Clay Creatures');
++    const about = t.locator('#summer-lesson-modal .sdoc-editor-about');
++    await expect(about).toContainText('TEST first line');
++    expect(await about.locator('.field-text').innerHTML()).toContain('<br>');
++    await expect(about.locator('a[href="https://example.test/board"]')).toHaveAttribute('target', '_blank');
++    await t.click('#summer-lesson-cancel');
++    await openPlan(t, clay, 'Glaze Day');
++    await expect(t.locator('#summer-lesson-modal .sdoc-editor-about')).toHaveCount(0);
++  });
+ });
+diff --git a/index.html b/index.html
+index 1da5081..b99d2d5 100644
+--- a/index.html
++++ b/index.html
+@@ -273,6 +273,8 @@
+             <h3 id="sdoc-materials-modal-title">Materials</h3>
+             <button class="simple-modal-close" onclick="closeDayOffMaterials()">&times;</button>
+           </div>
++          <!-- Phase 2C: the project's details — its own container, never redrawn by the materials list. -->
++          <div class="simple-modal-body sdoc-materials-details" id="sdoc-materials-details"></div>
+           <div class="simple-modal-body" id="sdoc-materials-modal-body"></div>
+         </div>
+       </div>
+diff --git a/js/app.js b/js/app.js
+index 4b14122..c51c664 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -1747,7 +1747,7 @@ function renderDayOffTeacherView(container, yearKey) {
+         const day = normaliseDayOffDayBlocks(camp.projects?.[date]);
+         const cells = SDOC_BLOCKS.map(({ key, label }) => {
+           const title = day[key];
+-          if (title === '—') return '';   // deliberately unused
++          if (isDayOffUnusedBlock(title)) return '';   // deliberately unused ("—", "n/a", "none")
+           if (!title) {
+             return SDOC_PROJECT_BLOCK_KEYS.includes(key)
+               ? `<div class="sdoc-tv-block sdoc-tv-unassigned" data-block="${key}"><span class="sdoc-tv-label">${label}</span> project not assigned yet</div>`
+@@ -11490,6 +11490,14 @@ async function openPlanEditor(semKey, lessonKey, { onClosed = null } = {}) {
+ 
+   const headcount = Number(lesson.classSize) || 0;
+   const sdocItems = sdoc ? dayOffSortedItems(lesson) : [];
++  // Phase 2C: the planner's vision + inspo links. The vision is escaped with
++  // line breaks and never auto-linked; links only if they parse as http(s).
++  const sdocAboutHtml = !sdoc || !(String(lesson.projectDetails || '').trim() || (lesson.projectLinks || []).length) ? '' : `
++        <div class="field-group sdoc-editor-about">
++          <label>About this project</label>
++          ${String(lesson.projectDetails || '').trim() ? `<div class="field-text">${sdocEsc(lesson.projectDetails).replace(/\n/g, '<br>')}</div>` : ''}
++          ${(lesson.projectLinks || []).length ? `<ul class="sdoc-details-links">${lesson.projectLinks.map(dayOffLinkHtml).join('')}</ul>` : ''}
++        </div>`;
+   const sdocMaterialsHtml = !sdoc ? '' : `
+         <div class="field-group sdoc-editor-materials">
+           <label>Materials (from the planner — headcount ${headcount})</label>
+@@ -11516,7 +11524,7 @@ async function openPlanEditor(semKey, lessonKey, { onClosed = null } = {}) {
+       <div class="te-modal-meta">${metaHtml}
+       </div>
+       <div class="te-modal-body">
+-${sdoc ? sdocMaterialsHtml : `
++${sdoc ? sdocAboutHtml + sdocMaterialsHtml : `
+         <!-- Reference Section (Collapsible) -->
+         <div class="summer-reference-section">
+           <h4 class="collapsible" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('hidden');">
+@@ -12910,7 +12918,8 @@ function renderDayOffMaterialsCell(yearKey, camp, { planner, ticker, dis }) {
+   const buttons = titles.map(t => {
+     const plan = currentDayOffPlans[yearKey]?.[dayOffLessonKey(yearKey, camp.id, t)];
+     const n = dayOffValidItemIds(plan).length;
+-    return `<button class="btn-text sdoc-mat-btn" data-title="${sdocEscA(t)}" onclick="openDayOffMaterials('${sdocEscA(camp.id)}', this.dataset.title)">${sdocEsc(t)} — Materials (${n})</button>`;
++    const hasDetails = !!(String(plan?.projectDetails || '').trim() || (plan?.projectLinks || []).length);
++    return `<button class="btn-text sdoc-mat-btn" data-title="${sdocEscA(t)}" onclick="openDayOffMaterials('${sdocEscA(camp.id)}', this.dataset.title)">${sdocEsc(t)} — Materials (${n})${hasDetails ? ' · details' : ''}</button>`;
+   }).join('');
+   const { items, ticked } = dayOffCampMaterialsSummary(yearKey, camp);
+   const signoff = currentDayOffSignoffs[yearKey]?.[camp.id];
+@@ -12934,19 +12943,139 @@ async function openDayOffMaterials(campId, title) {
+   const yearKey = getAdminSemKey();
+   const camp = (currentDayOffCamps[yearKey] || []).find(c => c.id === campId);
+   if (!camp) { alert('That camp is no longer here — reload the page.'); return; }
+-  dayOffMaterialsView = { yearKey, campId, title, plan: null, editingId: null };
++  const view = { yearKey, campId, title, plan: null, editingId: null, detailsBase: null };
++  dayOffMaterialsView = view;
+   document.getElementById('sdoc-materials-modal-title').textContent = `${title} — ${camp.title}`;
++  clearDayOffDetailsSection();
+   document.getElementById('sdoc-materials-modal-body').innerHTML = '<div class="settings-hint">Loading…</div>';
+   document.getElementById('sdoc-materials-modal').classList.add('open');
++  let plan;
+   try {
+-    dayOffMaterialsView.plan = await readDayOffPlan(yearKey, campId, title);   // fresh from the server
++    plan = await readDayOffPlan(yearKey, campId, title);   // fresh from the server
+   } catch (err) {
++    // A superseded open (another project was opened meanwhile) does nothing at all.
++    if (dayOffMaterialsView !== view) return;
+     document.getElementById('sdoc-materials-modal-body').innerHTML = `<div class="sdoc-errors">${sdocEsc(err.message)}</div>`;
+     return;
+   }
++  if (dayOffMaterialsView !== view) return;
++  view.plan = plan;
++  renderDayOffDetailsSection(plan);
+   renderDayOffMaterialsList();
+ }
+ 
++// ── Phase 2C: the project's details (vision + inspo links) ──────────────────
++// Rendered once per open (and after its own save) into its own container, so
++// ticks and material actions — which redraw the materials body wholesale —
++// never touch what the planner is typing.
++function dayOffLinkHtml(link) {
++  const text = sdocEsc(link);
++  if (!isSafeDayOffLink(link)) return `<li>${text}</li>`;
++  return `<li><a href="${sdocEscA(new URL(link).href)}" target="_blank" rel="noopener noreferrer">${text}</a></li>`;
++}
++
++function clearDayOffDetailsSection() {
++  const box = document.getElementById('sdoc-materials-details');
++  if (box) { box.innerHTML = ''; delete box.dataset.for; }
++  if (dayOffMaterialsView) dayOffMaterialsView.detailsBase = null;
++}
++
++function renderDayOffDetailsSection(plan, { status = '', error = '', keepTyped = null } = {}) {
++  const v = dayOffMaterialsView;
++  const box = document.getElementById('sdoc-materials-details');
++  if (!v || !box) return;
++  const base = {
++    details: typeof plan?.projectDetails === 'string' ? plan.projectDetails : '',
++    links: Array.isArray(plan?.projectLinks) ? plan.projectLinks : [],
++  };
++  v.detailsBase = base;
++  box.dataset.for = `${v.campId}|||${v.title}`;
++  const planner = canPlanDayOffCamps() && lessonDataLoadedSuccessfully !== false;
++  if (!planner) {
++    box.innerHTML = !base.details.trim() && !base.links.length ? '' : `
++      <div class="sdoc-details-readonly">
++        <div class="sdoc-details-title">About this project</div>
++        ${base.details.trim() ? `<div class="sdoc-details-readonly-vision">${sdocEsc(base.details).replace(/\n/g, '<br>')}</div>` : ''}
++        ${base.links.length ? `<ul class="sdoc-details-links">${base.links.map(dayOffLinkHtml).join('')}</ul>` : ''}
++      </div>`;
++    return;
++  }
++  const shown = keepTyped || base;
++  const links = shown.links.length ? shown.links : [''];
++  box.innerHTML = `
++    <div class="sdoc-details-editor">
++      <div class="sdoc-details-title">About this project <span class="settings-hint">— optional; teachers see this in their plan</span></div>
++      <textarea id="sdoc-details-vision" rows="4" placeholder="The vision for this project, for the teacher…">${sdocEsc(shown.details)}</textarea>
++      <div class="sdoc-details-title">Inspo links <span class="settings-hint">— optional</span></div>
++      <div id="sdoc-details-links">${links.map(l => dayOffLinkRowHtml(l)).join('')}</div>
++      <button class="btn-text" id="sdoc-details-add-link" onclick="addDayOffDetailsLinkRow()">+ Add link</button>
++      <div class="sdoc-errors" id="sdoc-details-errors">${sdocEsc(error)}</div>
++      <div class="sdoc-details-actions">
++        <button class="btn-primary" id="sdoc-details-save" onclick="saveDayOffDetailsFromPopup()">Save details</button>
++        <span class="settings-hint" id="sdoc-details-status">${sdocEsc(status)}</span>
++      </div>
++    </div>`;
++}
++
++function dayOffLinkRowHtml(value = '') {
++  return `<div class="sdoc-details-link-row"><input type="url" class="sdoc-details-link" value="${sdocEscA(value)}" placeholder="https://…"><button class="btn-text sdoc-details-link-remove" onclick="this.closest('.sdoc-details-link-row').remove()">Remove</button></div>`;
++}
++function addDayOffDetailsLinkRow() {
++  document.getElementById('sdoc-details-links')?.insertAdjacentHTML('beforeend', dayOffLinkRowHtml(''));
++}
++
++// What the planner has typed in the Details section (null if it isn't showing).
++function readDayOffDetailsInputs() {
++  const ta = document.getElementById('sdoc-details-vision');
++  if (!ta) return null;
++  return {
++    details: ta.value,
++    links: [...document.querySelectorAll('#sdoc-materials-details .sdoc-details-link')].map(i => i.value),
++  };
++}
++function dayOffDetailsDirty() {
++  const v = dayOffMaterialsView;
++  const typed = readDayOffDetailsInputs();
++  if (!v?.detailsBase || !typed) return false;
++  const norm = (x) => JSON.stringify({ d: String(x.details || '').trim(), l: (x.links || []).map(s => String(s).trim()).filter(Boolean) });
++  return norm(typed) !== norm(v.detailsBase);
++}
++
++let dayOffDetailsSaving = false;
++async function saveDayOffDetailsFromPopup() {
++  const v = dayOffMaterialsView;
++  const box = document.getElementById('sdoc-materials-details');
++  const typed = readDayOffDetailsInputs();
++  if (!v || !typed || !v.detailsBase || dayOffDetailsSaving) return;
++  // The section must belong to the project this popup now shows.
++  if (box?.dataset.for !== `${v.campId}|||${v.title}`) return;
++  dayOffDetailsSaving = true;
++  const btn = document.getElementById('sdoc-details-save');
++  if (btn) btn.disabled = true;
++  try {
++    const result = await saveDayOffProjectDetails(v.yearKey, v.campId, v.title, {
++      details: typed.details, links: typed.links, expected: v.detailsBase, auth: { canPlan: canPlanDayOffCamps() },
++    });
++    if (dayOffMaterialsView !== v) return;
++    const saved = currentDayOffPlans[v.yearKey]?.[dayOffLessonKey(v.yearKey, v.campId, v.title)] || null;
++    const status = result.status === 'savedSince' ? 'Saved — but someone else changed these details just after; reopen to see them.'
++      : result.status === 'renamed' ? 'Saved — but this project was just renamed or removed; reopen the camp.'
++      : result.status === 'noop' ? 'Nothing to save.' : 'Saved.';
++    if (result.status === 'renamed') { box.innerHTML = `<div class="settings-hint">${sdocEsc(status)}</div>`; return; }
++    v.plan = saved;
++    renderDayOffDetailsSection(saved, { status });
++  } catch (err) {
++    console.error('Details save failed:', err);
++    if (dayOffMaterialsView !== v) return;
++    const errEl = document.getElementById('sdoc-details-errors');
++    if (errEl) errEl.textContent = err.problems ? err.problems.join('\n') : err.message;
++  } finally {
++    dayOffDetailsSaving = false;
++    const b = document.getElementById('sdoc-details-save');
++    if (b) b.disabled = false;
++  }
++}
++
+ function cancelDayOffMaterialEdit(btn) {
+   const row = btn.closest('tr');
+   const v = dayOffMaterialsView;
+@@ -12960,7 +13089,9 @@ function closeDayOffMaterials() {
+   captureDayOffMaterialDrafts();
+   const typed = Object.values(dayOffMaterialsView?.drafts || {}).some(d => [d.name, d.qty, d.size, d.notes].some(x => String(x ?? '').trim()));
+   if (typed && !confirm('Discard the material you were typing?')) return;
++  if (dayOffDetailsDirty() && !confirm('Discard the details you were typing?')) return;
+   document.getElementById('sdoc-materials-modal')?.classList.remove('open');
++  clearDayOffDetailsSection();
+   dayOffMaterialsView = null;
+   renderAdminGrid();
+ }
+diff --git a/js/firebase-data.js b/js/firebase-data.js
+index 854d4eb..6fba22f 100644
+--- a/js/firebase-data.js
++++ b/js/firebase-data.js
+@@ -1909,7 +1909,8 @@ function normaliseDayOffDayBlocks(day) {
+ }
+ 
+ // How many project blocks (Block 1 / Block 2 on each of the camp's days) are
+-// still empty. "—" counts as filled — it means "not used".
++// still empty. An unused block ("—", "n/a", "none" — isDayOffUnusedBlock)
++// counts as filled.
+ function dayOffBlocksToFill(camp) {
+   let empty = 0, total = 0;
+   for (const date of camp?.dates || []) {
+@@ -2005,11 +2006,20 @@ function formatDayOffDate(iso, opts = { weekday: 'short', month: 'short', day: '
+   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-US', opts);
+ }
+ 
+-// Titles that never get a plan (Open Studio etc.) — the summer rule, reused.
++// A block deliberately left unused (Phase 2C, Christie Sep 28): "—", "-",
++// "n/a", "na" or "none", any case. Never true for an empty block — an empty
++// block is "still to fill in".
++function isDayOffUnusedBlock(title) {
++  return /^(—|-|n\/?a|none)$/i.test(String(title ?? '').trim());
++}
++
++// Titles that never get a plan: an unused block, or the summer rule (Open
++// Studio etc.). The summer rule itself is unchanged.
+ function isDayOffNoPlanTitle(title) {
++  if (isDayOffUnusedBlock(title)) return true;
+   if (typeof isSummerNoPlanTitle === 'function') return isSummerNoPlanTitle(title);
+   const t = String(title || '').trim().toLowerCase();
+-  return t === '' || t === 'open studio' || t === '—';
++  return t === '' || t === 'open studio';
+ }
+ 
+ // Is there anything a person wrote on this plan? Every persisted user-authored
+@@ -2023,6 +2033,9 @@ function dayOffPlanHasUserData(plan) {
+   if (Array.isArray(plan.qaThread) && plan.qaThread.length > 0) return true;
+   if (plan.planComplete === true) return true;
+   if (Array.isArray(plan.materialsList) && plan.materialsList.length > 0) return true;
++  // Phase 2C: the planner's project details for teachers.
++  if (typeof plan.projectDetails === 'string' && plan.projectDetails.trim()) return true;
++  if (Array.isArray(plan.projectLinks) && plan.projectLinks.length > 0) return true;
+   // Phase 2A: a planner-built list, or a tick on an item that still exists.
+   if (dayOffValidItemIds(plan).length > 0) return true;
+   if (dayOffLiveChecks(plan).length > 0) return true;
+@@ -2709,7 +2722,7 @@ async function saveDayOffPlan(yearKey, lessonKey, lessonData, fieldsToClear = []
+ // sent them — anything else is a real failure. A different id means someone
+ // saved after me, and any difference is their save winning. Returns the
+ // server document (null if it is gone).
+-async function verifyDayOffPlanWrite(ref, editId, written, cleared, identity) {
++async function verifyDayOffPlanWrite(ref, editId, written, cleared, identity, idField = 'lastEditId') {
+   let snap;
+   try {
+     snap = await ref.get({ source: 'server' });
+@@ -2723,7 +2736,7 @@ async function verifyDayOffPlanWrite(ref, editId, written, cleared, identity) {
+   const saved = snap.data();
+   const wrongIdentity = Object.entries(identity || {}).filter(([f, v]) => saved[f] !== v).map(([f]) => f);
+   if (wrongIdentity.length) throw new Error(`Save may not have completed — please reload and check (${wrongIdentity.join(', ')}).`);
+-  if (saved.lastEditId !== editId) return saved;
++  if (saved[idField] !== editId) return saved;
+   const failed = [
+     ...Object.entries(written).filter(([f, v]) => JSON.stringify(saved[f]) !== JSON.stringify(v)).map(([f]) => f),
+     ...cleared.filter(f => f in saved),
+@@ -2736,6 +2749,89 @@ async function verifyDayOffPlanWrite(ref, editId, written, cleared, identity) {
+   return saved;
+ }
+ 
++// ─── Phase 2C: project details for teachers (vision + inspo links) ──────────
++// Two planner-owned fields on the project's record: projectDetails (text) and
++// projectLinks (http/https URLs). Planner-owned in the UI only — the rules let
++// any classbook user write this collection (the 2A materialItems gap), so the
++// renderers treat stored values as hostile.
++const DAY_OFF_DETAILS_MAX = 5000;
++const DAY_OFF_LINKS_MAX = 10;
++const DAY_OFF_LINK_MAX_CHARS = 2000;
++
++function isSafeDayOffLink(value) {
++  try { const u = new URL(String(value)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
++}
++
++function validateDayOffProjectDetails({ details, links } = {}) {
++  const problems = [];
++  const cleanDetails = typeof details === 'string' ? details.trim() : '';
++  if (cleanDetails.length > DAY_OFF_DETAILS_MAX) problems.push(`The vision is ${cleanDetails.length.toLocaleString()} characters — keep it under ${DAY_OFF_DETAILS_MAX.toLocaleString()}.`);
++  const cleanLinks = [];
++  for (const raw of Array.isArray(links) ? links : []) {
++    const link = String(raw ?? '').trim();
++    if (!link || cleanLinks.includes(link)) continue;
++    if (link.length > DAY_OFF_LINK_MAX_CHARS) { problems.push('A link is too long.'); continue; }
++    if (!isSafeDayOffLink(link)) { problems.push(`"${link.slice(0, 80)}" — links must start with http:// or https://`); continue; }
++    cleanLinks.push(link);
++  }
++  if (cleanLinks.length > DAY_OFF_LINKS_MAX) problems.push(`Up to ${DAY_OFF_LINKS_MAX} links per project.`);
++  return { problems, clean: { details: cleanDetails, links: cleanLinks } };
++}
++
++// Planner: save a project's details. `expected` is the popup's baseline (its
++// open read, or its own last verified save) — the save refuses if the record
++// changed since, because projectLinks is written whole. Returns { status }:
++// 'saved' | 'savedSince' (another planner saved just after) | 'renamed' | 'noop'.
++async function saveDayOffProjectDetails(yearKey, campId, title, { details, links, expected, auth } = {}) {
++  assertDayOffWritable();
++  if (!auth || auth.canPlan !== true) throw new Error('Only planners can change project details — refused.');
++  if (!expected || typeof expected.details !== 'string' || !Array.isArray(expected.links)) throw new Error('Project details save needs the values it started from — refused.');
++  if (isDayOffNoPlanTitle(title) || title === DAY_OFF_SIGNOFF_TITLE) throw new Error(`"${title}" has no project record — refused.`);
++  const { problems, clean } = validateDayOffProjectDetails({ details, links });
++  if (problems.length) throw new DayOffValidationError(problems);
++  const planRef = curriculumDb.collection(DAY_OFF_COLLECTIONS.plans).doc(dayOffPlanDocId(yearKey, campId, title));
++  const campRef = curriculumDb.collection(DAY_OFF_COLLECTIONS.camps).doc(campId);
++  const editId = newDayOffEditId();   // once, before the transaction
++  let identity = null;
++  let noop = false;
++  await curriculumDb.runTransaction(async (tx) => {
++    const campSnap = await tx.get(campRef);
++    const planSnap = await tx.get(planRef);
++    const camp = dayOffAssertCampHasTitle(campSnap, title);   // the rename lock
++    if (camp.yearKey !== yearKey) throw new Error('This camp belongs to a different school year — refused.');
++    const cur = planSnap.exists ? planSnap.data() : {};
++    const curDetails = typeof cur.projectDetails === 'string' ? cur.projectDetails : '';
++    const curLinks = Array.isArray(cur.projectLinks) ? cur.projectLinks : [];
++    if (curDetails !== expected.details || JSON.stringify(curLinks) !== JSON.stringify(expected.links)) {
++      throw new DayOffValidationError(['These details were changed by someone else — copy your text, then reopen the project.']);
++    }
++    if (!planSnap.exists && !clean.details && !clean.links.length) { noop = true; return; }
++    identity = { yearKey, eventId: camp.eventId, campId, projectTitle: title };
++    const del = firebase.firestore.FieldValue.delete();
++    tx.set(planRef, {
++      ...identity,
++      projectDetails: clean.details || del,
++      projectLinks: clean.links.length ? clean.links : del,
++      detailsEditId: editId,
++    }, { merge: true });
++  });
++  if (noop) return { status: 'noop' };
++  const written = {};
++  const cleared = [];
++  if (clean.details) written.projectDetails = clean.details; else cleared.push('projectDetails');
++  if (clean.links.length) written.projectLinks = clean.links; else cleared.push('projectLinks');
++  const lessonKey = dayOffLessonKey(yearKey, campId, title);
++  const server = await verifyDayOffPlanWrite(planRef, editId, written, cleared, identity, 'detailsEditId');
++  if (!server) {
++    dayOffInstallVerified(yearKey, lessonKey, null);
++    scheduleDayOffReload(0);
++    return { status: 'renamed' };
++  }
++  dayOffInstallVerified(yearKey, lessonKey, server);
++  scheduleDayOffReload();
++  return { status: server.detailsEditId === editId ? 'saved' : 'savedSince', doc: server };
++}
++
+ // ─── Phase 2A writers: materials, ticks, sign-off ────────────────────────────
+ 
+ // One generation-gated reload a few seconds after the last 2A write in a
