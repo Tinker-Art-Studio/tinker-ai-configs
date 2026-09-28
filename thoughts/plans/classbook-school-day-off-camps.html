@@ -475,6 +475,75 @@ Then: nothing executes (escaped)</div>
   <p><strong>Not in 2B:</strong> Q&amp;A (dropped by Christie), print, teacher-side prep ticks, a rules field-pin, the wipe-monitor tally, the admin plan-status columns (Phase 3).</p>
 </div>
 
+<div class="phase" id="phase-2c">
+  <h3>Phase 2C — Project details for teachers (vision + inspo links) and "n/a" blocks — DESIGN, revision 1 (Sep 28, 2026; line numbers @ <code>22ed027</code>) — <span class="status-tag not-ready">execution-ready: false</span></h3>
+  <p><strong>Why (Christie, Sep 28, after building real camps):</strong> "in the SDOC curriculum building, I need to be able to add short details about each project — not just the one tiny notes box. Like so that I can type a paragraph explaining the vision of the project to the teacher (optional, though) and also a spot to add a hyperlink if there's an inspo link for the project (also optional)." Her answers the same day: type them <strong>in the project's popup</strong> (the one that holds its materials); <strong>several links</strong> allowed; and <strong>"n/a" / "none" in a block mean "not used"</strong>, like "—" (she had typed "n/a" in an Open Studio block, which today would become a project named "n/a" with its own plan).</p>
+
+  <p><strong>Acceptance (user outcomes):</strong></p>
+  <ul>
+    <li>Each project's popup (opened from the camp list's per-project button, today "… — Materials (n)") gains a <strong>Details</strong> section above the materials: a <em>vision</em> paragraph (multi-line, optional) and <em>inspo links</em> (a list; + Add link; each removable; optional). A planner types them and presses <strong>Save details</strong>; the section shows "Saved" and the list button gains a "· details" marker. Kathy/Allie (prep) and anyone else see the section read-only; an empty section is not shown to them.</li>
+    <li>Typing in the Details section survives every redraw of the popup (a tick, a material add, an error) — the 2A draft-capture rule; closing the popup with unsaved details asks first.</li>
+    <li>Teachers see it: the SDOC plan editor gains <strong>"About this project"</strong> at the top — the vision paragraph (line breaks kept) and each link as a clickable link that opens in a new tab. Empty → the section is omitted.</li>
+    <li>Renaming a project in the camp editor carries its details with it (the rename move already copies the whole record); removing a project whose record has details asks first, as for materials.</li>
+    <li>A block typed as <code>n/a</code>, <code>N/A</code>, <code>na</code> or <code>none</code> (any case, trimmed) is "not used", exactly like "—": no plan, no materials button, counts as filled, invisible in Teacher View.</li>
+  </ul>
+
+  <p><strong>Data — no rules change.</strong> Two planner-owned fields on the project's existing record in <code>dayOffCamps_lessonData</code> (the same doc as its materials and the teacher's plan): <code>projectDetails</code> (string, trimmed, ≤ 5,000 characters) and <code>projectLinks</code> (array of strings, ≤ 10, each a trimmed <code>http://</code> or <code>https://</code> URL ≤ 2,000 characters, duplicates dropped). The summer names are reused on purpose (<code>projectDetails</code>) so the shared editor's reference section idea carries over; <code>projectLinks</code> is new (summer's <code>projectInspiration</code> is free text). Both are <em>outside</em> 2B's teacher allow-list (<code>DAY_OFF_PLAN_WRITABLE</code>), so a teacher save can never write them, and a teacher's set-merge never touches them.</p>
+
+  <p><strong>Writer</strong> <code>saveDayOffProjectDetails(yearKey, campId, title, { details, links })</code> — planners only (<code>canPlanDayOffCamps()</code> in the UI; the rules' planner condition matches, and a classbook-only user is never offered it). Same guards as 2A's material writers: load guard, validation before any write (bad URL, too long, too many → refused with the reason), a <code>runTransaction</code> that reads the camp (must exist, <code>camp.yearKey === yearKey</code>, must still list the title — the rename lock) and the record, then writes <strong>only</strong> those two fields: <code>tx.update</code> when the record exists, <code>tx.set</code> with the identity fields when it doesn't (as 2A's first material item does); an emptied field is <code>FieldValue.delete()</code>, never an empty string. Does <em>not</em> touch the sign-off (details aren't part of the materials check). Server read-back (<code>readDayOffPlan</code>) checks both fields landed and installs the record; then 2A's debounced reload.</p>
+  <p><code>dayOffPlanHasUserData()</code> (firebase-data.js:2016) counts a non-empty <code>projectDetails</code> or <code>projectLinks</code>, so camp removal and project removal/rename prompts protect them.</p>
+
+  <p><strong>Rendering / safety.</strong> The vision text is escaped then line breaks become <code>&lt;br&gt;</code> (the existing <code>linkifyText()</code>, app.js:8206, which also linkifies bare URLs). Each stored link is rendered only if it parses as <code>http:</code>/<code>https:</code> (<code>new URL()</code>), as <code>&lt;a href="…" target="_blank" rel="noopener noreferrer"&gt;</code> with the href attribute-escaped — so a hand-written <code>javascript:</code> value (the rules let any classbook user write the field) is shown as text, never a link. Draft capture follows 2A's <code>captureDayOffMaterialDrafts()</code> pattern.</p>
+
+  <p><strong>"Not used" blocks.</strong> One helper <code>isDayOffUnusedBlock(title)</code> = trimmed, case-insensitive <code>—</code>, <code>-</code>, <code>n/a</code>, <code>na</code>, <code>none</code>; <code>isDayOffNoPlanTitle()</code> (firebase-data.js:2008) becomes "the summer rule or unused" — <em>without</em> changing <code>isSummerNoPlanTitle()</code> (app.js:4148, summer is untouched). Every SDOC site that special-cases <code>'—'</code> uses the helper instead (Teacher View app.js:1750; the camp validator's same-title-twice-in-a-day check, which must not refuse "n/a" in two blocks). Existing data: the Sep 28 backup has no record titled n/a/none, so nothing is stranded.</p>
+
+  <div class="bdd">Given: a planner opens "Canvas Painting part 1 — Materials" for Northern Lights
+When: she types a two-paragraph vision, adds two links, and presses Save details
+Then: the record holds projectDetails (with the line break) and projectLinks [2 URLs], and nothing else on it changed (materialItems, materialChecks, the teacher's plan text, the sign-off doc — forced read); the list button shows "· details"
+
+Given: the planner types a vision and, before saving, a prep user's tick redraws the popup
+When: the redraw happens
+Then: the typed vision and links are still there; closing now asks "Discard the details you were typing?"
+
+Given: a link "javascript:alert(1)" or "www.pinterest.com/x" (no scheme)
+When: she saves
+Then: refused before any write, naming the link ("Links must start with http:// or https://")
+
+Given: a hand-written record carrying projectLinks ["javascript:window.__pwned=1"] and details containing &lt;img onerror&gt;
+When: the popup and the teacher's editor render
+Then: nothing executes; the javascript: value appears as plain text, not a link
+
+Given: the teacher (Mariah) opens that project's plan once the year is published
+When: the editor opens
+Then: "About this project" shows the vision (line breaks kept) and both links, opening in a new tab; with no details at all, the section is absent
+
+Given: a planner clears the vision and removes every link, then saves
+When: the save lands
+Then: projectDetails and projectLinks are absent from the record (not empty strings/arrays)
+
+Given: a teacher's plan save (2B) races a planner's details save on the same record
+When: both land
+Then: both are present (different fields; the teacher's allow-list cannot write details)
+
+Given: the planner renames "Canvas Painting part 1" → "Aurora Canvas" in the camp editor
+When: the save runs
+Then: the details are on the "Aurora Canvas" record and the old record is gone
+
+Given: a record whose only content is projectDetails
+When: the planner removes that project (or the camp)
+Then: she is asked first (dayOffPlanHasUserData counts it)
+
+Given: Kathy (prep) opens the popup
+When: it renders
+Then: the details are shown read-only (no textarea, no Save details); an empty section is not shown
+
+Given: a camp day with Block 2 "N/A" and Open Studio "none"
+When: the camp is saved and viewed
+Then: no project/plan/materials button for either; "every block filled"; Teacher View shows nothing for them; summer's no-plan rule is unchanged (a summer title "n/a" still behaves as today)</div>
+  <p><strong>Tests (emulator, red first):</strong> new cases in <code>e2e/day-off-materials.spec.js</code> (D1–D10 for the scenarios above; planner + prep sessions; write spy asserting only <code>projectDetails</code>/<code>projectLinks</code> paths) and one in <code>e2e/day-off-teacher.spec.js</code> (the editor's "About this project"). Full suite before the dual implementation review.</p>
+  <p><strong>Not in 2C:</strong> link labels (the URL is shown as-is), rich text, photos in details, details per day.</p>
+</div>
+
 <div class="phase">
   <h3>Phase 3 — Admin overview (plan status on the planner's cards)</h3>
   <p><strong>Acceptance:</strong> the planner's camp cards show each project's plan status and Plan complete; Christie can open any plan from there (the 2B editor, which already lets planners edit). <em>Q&amp;A dropped Sep 25 (Christie: "skip the help queue entirely for SDOCs").</em></p>
@@ -510,6 +579,7 @@ Then: nothing executes (escaped)</div>
 
 <h2 id="decisions-log">Decisions Log</h2>
 <ul>
+  <li><strong>Sep 28, 2026 (Phase 2C designed, revision 1 — not yet reviewed):</strong> Christie asked for per-project vision text + inspo links for teachers. Her choices: typed in the project popup; several links; "n/a"/"none" = not used (like "—"). Design: two planner-owned fields (<code>projectDetails</code>, <code>projectLinks</code>) on the existing project record, a transactional planner-only writer, rendered to teachers as "About this project", http(s)-only links, counted as user data; <code>isDayOffUnusedBlock()</code> for "—"/n/a/none without touching the summer rule. No rules change. Next: one Codex + Claude review round.</li>
   <li><strong>Sep 28, 2026 (2A.1 + 2B DEPLOYED):</strong> Christie ran <code>npm run deploy</code> herself (the auto-mode classifier blocked Claude's attempt — which was malformed, carrying a stray second background deploy; no deploy ran from it). Netlify <code>6aba91a48eab0ebcc7f29cd8</code>, commit <code>22ed027</code>. The script's immediate live check reported 3 DIFFs (CDN propagation); re-run a minute later: every file byte-identical, every dev path 404, <code>[check-live] ok</code>. The SDOC year stays unpublished until Christie publishes it. Next: Christie publishes when ready; confirm a teacher sees her camp; then Phase 3.</li>
   <li><strong>Sep 26, 2026 (Phase 2B BUILT — <code>main</code> @ <code>22ed027</code>, pushed; 2A.1 + 2B await ONE "okay to deploy", by Christie's choice to batch them):</strong> Built as designed (revision 7). Deviations, logged: (a) the save path and editor find a plan's camp/title from the camp list (<code>dayOffFindProject</code>), not the slot map — the first test runs showed a reload can briefly swap <code>currentLessonData</code>, so the SDOC list also rebuilds its slots when they don't cover the camps; (b) the plan's explicit summer-editor regression cases were not written as new tests: the existing summer suite (data-safety.spec.js — open/save/read-back/photo/serialized saves/revert/close-wait) drives the split's summer path through <code>openLessonModal</code> and stayed green, which Claude's implementation review confirmed; (c) the Teacher View's own semester selector is CSS-hidden (styles.css, "Hide individual semester selectors") — its handler now calls <code>setGlobalSemester</code> anyway. Implementation review round 1 (Codex + Claude, both CHANGES NEEDED, no data-loss path): one-sided photo clears → the pair is enforced across payload and clears; Teacher View re-entry after a semester change on another tab, leaving SDOC (picker names, teacher group) → fixed; the Q&A activity panel could show an SDOC <code>qaThread</code> → cleared for SDOC; two SDOC years could briefly show a pre-save slot → <code>healDayOffYearAfterReload</code> (per-year start seq); T12 was vacuous (no input event) → fixed; missing tests → T14 drives the three Q&A writers, T18 failed save after upload, T19 sign-off byte-identity + tick interleavings, T20 SDOC ↔ weekly transitions, T21 Q&A panel, T5 same-millisecond + photo-removal races. Round 2: <strong>READY from both</strong>; two LOWs applied (editor meta via <code>sdocEsc</code>; Publish refuses after a failed load). <strong>Follow-ups, not done:</strong> the heal rebuilds the whole year (could rebuild only keys verified after the reload began); an editor-open read is marked verified (a newer reload result can lose to it until the next reload); no two-SDOC-year test; print for SDOC plans; the rules field-pin for <code>dayOffCamps_lessonData</code>; the admin plan-status columns (Phase 3). Tests T1–T21 stable ×3; full suite 307/307. Reviews: <code>thoughts/reviews/2026-09-26-impl-review-sdoc-2b-*</code>. <strong>After deploy:</strong> Christie publishes SDOC 2026-27 when she's ready (Curriculum Admin → Published); Mariah and Kaitlyn then see their camps — their names in the year's pool are first names, matched to their accounts by first name (unique today).</li>
   <li><strong>Sep 26, 2026 (Phase 2A.1 BUILT on branch <code>sdoc-2a1-event-checklist</code>; awaiting "okay to deploy"):</strong> Built as designed; red first (M16–M21 failed for the missing button, then passed). Dual implementation review, three rounds. Round 1 (Codex + Claude, both CHANGES NEEDED, no data-safety or write-path problem): rows and the sign-off badge read two models → one model (both render from the shared caches; the view keeps only read/sign-off/tick error channels, separately); a successful tick could erase a sign-off load failure → separate channels, sign-off controls withheld while it failed; "Materials complete" was a silent no-op when its pre-check read failed (pre-existing in 2A) → wrapped, alerts; closing/reopening mid-action → <code>isCurrent</code> checked after every await in <code>markDayOffCampComplete</code>; Undo cleared load errors → only a completed re-read clears them; close kept the body under the card's class names → cleared, own classes; test gaps → M22 (teacher gate), M23 (shared item id), M24 (failed sign-off read), M25 (close/reopen during load), button text, Esc, backdrop, write spy, quotes. Round 2: Codex — a cached complete sign-off with a failed list still showed badge/Undo → withheld entirely (M26); Claude — a superseded open's reads could land after a newer open's → each open's reads chained behind the previous (M25 updated). Round 3: Claude READY; Codex — one never-settling read would strand later opens → the chain wait is capped at 10 s (M27; accepted residual: a stuck read could then land late, re-read by any tick or reload). Suite 285/285 before the cap; Phase 2A specs 27/27 after it. Reviews: <code>thoughts/reviews/2026-09-26-impl-review-sdoc-2a1-*</code>.</li>
