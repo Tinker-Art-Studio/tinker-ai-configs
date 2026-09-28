@@ -120,6 +120,32 @@ Interview answers show up on the other person's screen as they're saved, and a c
   <li><b>R10. Push-button removal:</b> the HTML section and the JS listener are removed <b>in the same commit</b>. A leftover
     <code>getElementById(...).addEventListener</code> would throw during start-up and the app would never load.</li>
 </ul>
+<h3>Design changes from review round 2 (2026-09-28) — these supersede R4 and R7 where they differ</h3>
+<ul>
+  <li><b>B1 (replaces R7's baseline): the Notes-tab fields work like the answer boxes.</b> Stage, considering, notes, actions, the checkboxes and hireDate are
+    each marked dirty on change. Save Changes writes only dirty fields. Each snapshot refills the non-dirty fields, so the form always shows current data and a
+    later save can never write a stale value. No baseline object. hireDate's auto-fill with today counts as a change once Save is clicked (same as today).</li>
+  <li><b>S1: distinct names.</b> The data-layer functions are <code>writeCandidateFields</code>, <code>writeInterviewAnswers</code> and
+    <code>writeJobTemplates</code>. Nothing may share a top-level name with <code>app.js</code>, which is a classic script in the same global scope. A Phase 1
+    test loads <code>config.js</code>, <code>sync-logic.js</code>, <code>firebase-data.js</code> and <code>app.js</code> in index.html order into one context
+    and fails on any clash.</li>
+  <li><b>S2 (replaces R4's "last value written"): one local overlay.</b> An overlay entry is <code>{candidateKey, field-or-answer path, value | DELETE, state:
+    queued | in-flight | awaiting-confirm}</code>. It is applied to both <code>candidateData</code> and the on-screen refill, whether or not the box has focus.
+    An awaiting-confirm entry clears when a snapshot's value matches it, or after 2 later snapshots or 10 s, whichever is first, so another person's later edit
+    is never hidden forever. A refill held back for a focused box applies on blur. <code>sync-logic.js</code> unit tests cover each transition.</li>
+  <li><b>S3 (tightens R3): one import rule.</b> The full-document import runs <i>only</i> when the Firestore read succeeded and the document doesn't exist. If it
+    exists, nothing is ever rebuilt from the sheet, whatever <code>importDone</code> or localStorage say. On a load error the board shows a red "Couldn't reach
+    the database — reload" banner, with no board and no saving. A later successful listener snapshot does <i>not</i> quietly enable saving: the banner asks for a
+    reload.</li>
+  <li><b>S4 (R1 helper and legacy keys):</b> data check on the 2026-09-28 nightly backup: 232 candidates; 88 email-only legacy keys, <b>all 88 already have an
+    email|timestamp twin</b>; 0 legacy flat answer sets; document ≈108 KB (far from the 1 MiB limit, which rules out the "document full" theory). The helper still
+    includes the migrate-legacy branch with its first-applicant-wins set, for correctness. With today's data it never fires.</li>
+  <li><b>S6: order and branch.</b> The <code>?emulator=1</code> switch moves to the start of Phase 2, reviewed with it. Phases 1–3 happen on branch
+    <code>fix/concurrent-edits</code>, merged to main only at Phase 4, so no unrelated deploy from main can ship unverified wiring. <code>sync-logic.js</code> is
+    new, so it gets no <code>?v=</code>.</li>
+  <li><b>S5: old tabs during rollout.</b> An old tab with a card open still does the old 5-second whole-document save, so it can still blank answers and drop
+    brand-new applicants' records. Choice for Christie (open question 3).</li>
+</ul>
 <div class="note"><b>Known limit:</b> job templates stay last-write-wins on the whole list (rarely edited).</div>
 <div class="note"><b>Known limit:</b> if both people edit <i>the same</i> answer box at the same time, the last write wins for that box. Different boxes, different
 fields, and different candidates never collide.</div>
@@ -224,6 +250,13 @@ Then the answer boxes are disabled with the "pick a position" message</div>
 <div class="bdd">Scenario (R7): two Save Changes in a row
 When A changes stage and saves, then changes notes and saves
 Then the second save writes only notes</div>
+<div class="bdd">Scenario (B1): the other person saves, then I save twice
+Given the GM has K open (stage "screening")
+When Christie saves K as "interview", then the GM edits notes and saves, then edits notes again and saves
+Then K's stage is "interview" throughout, and the GM's stage dropdown switched to "interview" when Christie's save arrived</div>
+<div class="bdd">Scenario (S2): someone else edits a box after my write
+When A saves Q2 = "x", then B saves Q2 = "y"
+Then within 10 s both screens show "y" (A's confirmed write no longer masks it)</div>
 <div class="bdd">Scenario (R3, failure): Firestore unreachable, no import flag
 Given the Firestore read errors and this browser has no import flag
 Then the app shows "Couldn't load" and writes nothing</div>
@@ -287,6 +320,10 @@ Then the app ignores the switch and uses the live project as normal</div>
     returns <code>null</code> on any error), <code>importDone</code> stays unset, and <code>mergeCandidateData</code> rebuilds every candidate from the sheet and
     writes the whole document, wiping every stage, note and interview answer for everyone. <b>Recommendation:</b> remove it too. Separately (in Phase 1/2
     regardless): the first-import whole-document write may run only when Firestore <i>confirmed</i> the document doesn't exist, never after a read error.</li>
+  <li><b>Old tabs during rollout (S5).</b> (a) <b>Reload only</b> (recommended): after the deploy, Christie and the GM reload the app on every device, including
+    phones. The risk is a forgotten tab for the few minutes or hours until it's reloaded. (b) <b>Temporary rules guard</b>: the new code stamps
+    <code>writerVersion: 2</code> on every write, and a <code>hiring</code> rule refuses writes without it, so old tabs are blocked. This is a rules release after
+    the app deploy, which needs the "approved to change firebase &lt;sha&gt;" step, a rules test, and later a second release to remove the guard.</li>
   <li><b>The GM's report:</b> once she says what she sees, record it in the Decisions log. If it's "the card disappears" (Not Moving Forward is hidden by default),
     add a small "Moved to Not Moving Forward — hidden; click Show Archived" message in Phase 2.</li>
 </ol>
@@ -327,6 +364,14 @@ Then the app ignores the switch and uses the live project as normal</div>
   the code myself: <b>R1</b> (sheet-only applicants vanish on the first snapshot; answer and Considering saves then throw) and <b>R5</b> (the Save Answers button
   throws on every click; only the autosave has ever saved). R1 is also a candidate cause of the GM's report. Codex was not available (out of credits), so this is a
   single-reviewer pass. Recommendation: one more short Claude round on the revised design before marking phases execution-ready.</p>
+</div>
+<div class="decision">
+  <h3>2026-09-28 — Review round 2 folded in</h3>
+  <p>Christie agreed to one more round. It found one blocker, B1: resetting R7's baseline from live data brought the stage revert back. The fix is to make the
+  Notes-tab fields dirty-tracked like the answers. It also found S1–S6. I verified S1 myself: <code>app.js</code> already declares a global
+  <code>saveInterviewAnswers</code>, so the data layer can't reuse the name. For S4, the backup's counts (no PII read out) show all legacy keys are already migrated.
+  Reviewer verdict: execution-ready once B1 and S1–S4 are applied (done here) and Christie decides S5 and Re-import (open questions 2 and 3). Christie asked what
+  Re-import does; I explained that normally it's the same as a page refresh, and dangerous only when the database is unreachable. Awaiting her answer.</p>
 </div>
 
 </body>
