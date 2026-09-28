@@ -1,0 +1,1 @@
+The verdict above stands. The full write-up is at `/Users/christiehubley/.claude/plans/plan-review-round-bright-kurzweil.md` — say the word and I'll copy it to `~/tinker-ai-configs/thoughts/reviews/2026-09-28-plan-review-sdoc-2c-round4-claude-full.md` (the empty `…-round4-claude.md` placeholder is already there). Nothing in the repo or the plan HTML was touched.

@@ -1,0 +1,27 @@
+# Verdict: CHANGES NEEDED
+
+Shape is right — planner-owned fields outside the teacher allow-list, on the record materials already live on, no rules change. The render path and the writer's exists/not-exists split are wrong, and one BDD proves the wrong thing.
+
+**Citations verified.** All cited symbols exist and point at the code described: `linkifyText` app.js:8206, `isSummerNoPlanTitle` app.js:4148, Teacher View `title === '—'` app.js:1750, `captureDayOffMaterialDrafts` app.js:12957, `DAY_OFF_PLAN_WRITABLE` firebase-data.js:2561, `readDayOffPlan` firebase-data.js:2776. Two are 1–2 lines high (comment, not function): `dayOffPlanHasUserData` is **2018**, `isDayOffNoPlanTitle` is **2009**. Confirmed true: `CONTENT_FIELDS` (firebase-data.js:19) does *not* contain `projectDetails`, so the allow-list isolation holds; the rename move copies the whole record (2461-2464); `verifyDayOffPlanWrite` (2712) checks only written/cleared fields, so D7 holds; `dayOffRenamePairs` (2500) filters both sides through `dayOffCampTitles`, so typing "n/a" over a project is a prompted removal, not a silent move.
+
+### Findings
+
+1. **HIGH — quote-unsafe render; the XSS test proves the wrong thing.** `linkifyText` (app.js:8206) escapes via `escHtml` (app.js:8159) — `& < >` only — then wraps `https?://[^\s<]+` in `href="$1"`. `https://x.com/"onmouseover="alert(1)` survives and breaks the attribute → executes. Any `classbook` user can write the field (rules:701). The plan's payload (`<img onerror>`) *is* escaped, so D4 passes with the hole open. **Fix:** render the vision as `sdocEsc(text).replace(/\n/g,'<br>')` — links live in `projectLinks`, nothing needs linkifying — or tighten the regex to `[^\s<"']+`, which also closes it for summer's `projectDetails`/`projectInspiration` (app.js:2166, 11514-11516). Swap D4's payload to the quote vector.
+
+2. **MEDIUM — `FieldValue.delete()` cannot ride in a plain `tx.set`** (firebase-data.js, new writer). The plan splits update/set on existence *and* deletes emptied fields. Use one branch: `tx.set(ref, {...identity, ...}, {merge:true})` with delete sentinels, exactly as `saveDayOffPlan` (2681-2684) — safe because the camp read + `dayOffAssertCampHasTitle` is the lock. No-op when the record is absent and both fields are empty.
+
+3. **MEDIUM — no stale-editor guard; `projectLinks` is written whole.** Two planners in the popup: B's Save silently drops A's link. Compare the record's current values inside the transaction against what the popup opened with (`dayOffMaterialsView.plan`) and refuse as the camp editor does (firebase-data.js:2445-2450). Add the BDD.
+
+4. **MEDIUM — "read-back (readDayOffPlan) checks both fields landed" is false.** `readDayOffPlan` (firebase-data.js:2776) reads and installs; it verifies nothing (2A's writers don't either). Call `verifyDayOffPlanWrite` (2712) with the two fields, or state the explicit comparison.
+
+5. **MEDIUM — say where "About this project" goes.** The editor body is one ternary, `${sdoc ? sdocMaterialsHtml : <summer reference section>}` (app.js:11507-11519). It must be a new `sdocAboutHtml` inside the `sdoc` branch. "The shared editor's reference section idea carries over" invites un-gating that section instead — which renders the same field name under summer's label *plus* `projectAdminNotes`.
+
+6. **MEDIUM — the close-confirm won't fire.** `closeDayOffMaterials` (app.js:12950-12956) decides "typed" from `[d.name, d.qty, d.size, d.notes]` over `v.drafts`, unkeyed rows landing at `'new'`. A details draft in that bag is invisible to the test and can collide. Use a separate `v.detailsDraft`; extend the test and the message. D2 catches it — after it's built wrong.
+
+7. **MEDIUM — name the helper per site.** `isDayOffNoPlanTitle` (firebase-data.js:2009-2013) delegates to `isSummerNoPlanTitle` whenever it exists; the literals sit only in the dead fallback, so editing the fallback changes nothing in production — broaden the wrapper. Keep the validator's duplicate check (2224) on the broadened `isDayOffNoPlanTitle`: switching it to `isDayOffUnusedBlock` would start refusing "Open Studio" typed in two blocks of one day. app.js:1750 is the one site that takes `isDayOffUnusedBlock`.
+
+8. **LOW — two already-true claims, one staleness.** `dayOffBlocksToFill` (firebase-data.js:1911) counts only absent blocks, so "n/a" already counts as filled — no change needed, but the comments at 1888/1912 still say only "—". The admin list (app.js:12481) and camp-editor grid (12810) show titles raw and should keep showing "n/a" as typed — say so, so nobody "fixes" them. Once "n/a" is unplannable, a pre-existing record under that title leaves `dayOffCampTitles`, so the project-removal prompt (2422-2427) can never see it (camp deletion still can, via the campId query at 2525-2541). Re-run the no-such-record check at build time over each camp's `projects` map, not just record titles — the Sep 28 backup claim will be days stale.
+
+**BDD coverage.** D1–D12 would catch a partial implementation of the visible behaviour. Blind spots: finding 1 (wrong payload), finding 3 (no concurrent-planner case), the ≤5,000-char / ≤10-link / duplicate-drop limits, and a direct assertion that `DAY_OFF_PLAN_WRITABLE` refuses `projectDetails`. Nothing in 2C touches summer or the rules; "no rules change" is correct.
+
+Review written to `/Users/christiehubley/.claude/plans/plan-review-wobbly-conway.md`. I edited nothing in the repo or the plan HTML — `plan-review <id> --execution-ready` should stay `false` until findings 1–7 are folded in.
