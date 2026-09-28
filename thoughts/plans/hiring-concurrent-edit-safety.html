@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: Hiring — two people, one candidate, no lost work</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.6; }
+  h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .decision, .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .decision h3, .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .87rem; font-family: monospace; white-space: pre-wrap; }
+  .safe { background: #f0fdf4; border-left: 4px solid #16a34a; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .warn { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .87rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .87rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: Hiring — two people, one candidate, no lost work</h1>
+
+<div class="meta" id="plan-meta">
+  <span class="status-tag not-ready">DRAFT — execution-ready: false</span><br>
+  <b>App:</b> Hiring Pipeline — <code>~/tinker-hiring/</code> (static site; <code>js/app.js</code>, <code>js/firebase-data.js</code>) · https://tinker-hiring.netlify.app<br>
+  <b>Firestore:</b> one document, <code>hiring/appData</code> (rule: <code>match /hiring/{docId}</code>, manager+ or <code>appAccess('hiring')</code>, read+write). <b>No rules change.</b><br>
+  <b>Created:</b> 2026-09-28 · <b>Owner:</b> Christie Hubley · <b>Starting commit:</b> <code>4b53ecc</code><br>
+  <b>Tests today:</b> none in this repo (a gap this plan fills)
+</div>
+
+<h2>Goal</h2>
+<p>Christie and the GM can have the same candidate open at the same time, and nothing either of them types or changes gets undone by the other person's screen.
+Interview answers show up on the other person's screen as they're saved, and a change of stage (e.g. to <b>Not Moving Forward</b>) always sticks.</p>
+
+<h2>What's wrong today (research, 2026-09-28)</h2>
+<ol>
+  <li><b>Interview answers get erased.</b> Every open candidate card auto-saves every 5 seconds (<code>app.js:692</code>). The save copies <i>every</i> answer box on
+    that screen, blanks included (<code>app.js:793–807</code>), even if nobody typed. The other person's screen never refreshes its boxes (the live refresh was
+    removed in <code>a13c9b0</code>). So an idle viewer's blank boxes are saved over the typist's answers every 5 seconds. The Firestore merge
+    (<code>firebase-data.js</code>) lets any answer set with keys win, and <code>{'0':'','1':''}</code> has keys. The live listener
+    (<code>app.js:1878–1899</code>) also lets the local copy win, so the idle viewer never picks up the real answers and keeps re-saving blanks until they close
+    the card. Last to close wins.</li>
+  <li><b>Every save rewrites the whole pipeline.</b> Each save (<code>saveDataToFirestore</code>) writes <code>candidateData</code> for <i>every</i> candidate
+    from that browser's memory. The transaction only merges interview answers, and the data is computed <i>before</i> the transaction runs. If one person changes
+    a stage and another person's open card auto-saves before the first change reaches them, the stage change is reverted. That can happen every 5 s while any
+    card is open. <b>This may explain the GM's "can't move people to Not Moving Forward."</b> (Not confirmed; Christie is asking her what she sees.)</li>
+  <li><b>A failed save looks like a successful one.</b> Errors go only to <code>console.error</code>. The button still says "Saved!" and the autosave line
+    still says "✓ Auto-saved".</li>
+  <li><b>Smaller issues found on the same path:</b> <code>saveNotes</code> rebuilds the record and drops <code>declineDismissed</code>.
+    <code>dismissAllDeclineAlerts</code> re-links cards using the old email-only key, so cards don't update until a reload. Settings → "Push Data to Firestore"
+    (<code>seedDataToFirestore</code>) overwrites the whole document from one browser's local copy.</li>
+</ol>
+
+<h2>Design</h2>
+<ul>
+  <li><b>Write only what changed, one field at a time.</b> New data-layer functions write single field paths inside a transaction:
+    <code>candidateData.&lt;key&gt;.&lt;field&gt;</code> and <code>candidateData.&lt;key&gt;.interviewAnswers.&lt;position&gt;.&lt;n&gt;</code>. They use
+    <code>FieldPath</code> segments because candidate keys contain <code>.</code>, <code>|</code>, <code>@</code>, <code>/</code> and spaces, and
+    <code>transaction.update</code> leaves every other candidate and field alone. This keeps the repo's "all writes in transactions" invariant.</li>
+  <li><b>Remember what this person typed.</b> Interview boxes are marked "dirty" on <code>input</code>. The 5-second autosave (kept, per the repo invariant)
+    writes <i>only</i> dirty boxes, and a tick with nothing dirty writes nothing. Blur and closing the card flush immediately. A box stops being dirty only once its
+    write succeeds <i>and</i> its value hasn't changed since the flush began.</li>
+  <li><b>Incoming wins, except for what I'm typing.</b> The live listener takes Firestore's version of <code>candidateData</code> and overlays only this browser's
+    still-unsaved dirty answers. If the card is open, every interview box that isn't dirty is refilled from the incoming data, so the other person's typing
+    appears.</li>
+  <li><b>Save Changes (Notes tab) writes only the fields you changed.</b> When the card opens, it captures a baseline of stage, considering, notes, actions,
+    declineEmailSent, futureCandidate and hireDate. Save writes only the fields whose form value differs from that baseline, so fields you didn't touch never
+    overwrite someone else's change.</li>
+  <li><b>Other writers become field writes:</b> reference notes, the "Considering for" change, Dismiss All (<code>declineDismissed</code> per candidate, one
+    transaction), and job templates (<code>jobTemplates</code> only). The whole-document <code>saveDataToFirestore</code> is deleted once nothing calls it.</li>
+  <li><b>First save for a new applicant.</b> A candidate who exists only in the Google Sheet has no Firestore record yet. Their defaults (stage, notes,
+    considering) come from the sheet. If the transaction finds no record for that key, it writes the full local record for that one candidate, not a single field,
+    so the sheet-derived defaults aren't lost.</li>
+  <li><b>Empty values:</b> clearing an answer or a text field writes <code>FieldValue.delete()</code>, never an empty string (repo invariant). Readers already
+    treat missing as <code>''</code>. Empty keys are refused before any write.</li>
+  <li><b>Saves that fail say so.</b> Every save function returns success or failure. The autosave line shows "✓ Saved" only after the write lands, and on failure
+    shows "⚠ Not saved — check your connection", which stays up until a later save succeeds. The Save buttons do the same.</li>
+  <li><b>Testability:</b> <code>firebase-data.js</code> gets <code>initHiringDataLayer({db, FieldPath, FieldValue})</code> and a <code>module.exports</code>
+    guard, the same pattern as clay-hub-membership's <code>initDataLayer</code>. The pure decision logic (which fields changed, how to merge incoming data with
+    dirty answers) goes in a new <code>js/sync-logic.js</code>, a plain script that is also requireable in Node.</li>
+  <li><b>Cache busting:</b> bump <code>app.js?v=8→9</code> and add <code>?v=2</code> to <code>firebase-data.js</code> and <code>sync-logic.js</code>, so no browser
+    runs new <code>app.js</code> with an old data layer.</li>
+</ul>
+<div class="note"><b>Known limit:</b> if both people edit <i>the same</i> answer box at the same time, the last write wins for that box. Different boxes, different
+fields, and different candidates never collide.</div>
+<div class="warn"><b>Rollout hazard:</b> a tab still running the <i>old</i> code keeps rewriting the whole document every 5 s while a card is open. After deploying,
+Christie and the GM must reload every open Hiring tab. Phase 4 includes a "reload now" step for both of them.</div>
+
+<h2>Phases</h2>
+
+<div class="phase" id="phase-1">
+<h3>Phase 1 — Safe save functions + tests (no visible change) · <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><b>Changes:</b> <code>js/sync-logic.js</code> (new, pure), new functions in <code>js/firebase-data.js</code> (<code>saveCandidateFields</code>,
+<code>saveInterviewAnswers</code>, <code>saveJobTemplatesField</code>, <code>initHiringDataLayer</code>), <code>tests/sync-logic.test.js</code> (unit),
+<code>tests/emulator/concurrent-edits.emulator.cjs</code> (emulator, real studio-hub rules). The old functions stay, and <code>app.js</code> is untouched.</p>
+<p><b>Done when (user terms):</b> the tests prove that two people saving different answers, or one saving a stage while the other saves answers, both keep their
+work, and that nothing else in the pipeline document changes.</p>
+<div class="bdd">Scenario: two people answer different questions
+Given candidate K has no interview answers
+When A saves answer 0 = "Loves clay" and B saves answer 1 = "Taught camp" for the same position
+Then Firestore has both answers, and every other candidate is byte-identical to before</div>
+<div class="bdd">Scenario: a stage change survives someone else's autosave (the GM case)
+Given candidate K is in "screening"
+When A sets K's stage to "rejected" and B then saves an interview answer for candidate J
+Then K's stage is "rejected"</div>
+<div class="bdd">Scenario: an idle viewer writes nothing
+Given B has K open and has typed nothing
+When B's autosave tick runs
+Then no write is made (the plan for B is empty)</div>
+<div class="bdd">Scenario: clearing an answer
+Given K's answer 2 is "old text"
+When A clears it and saves
+Then the field is removed (not an empty string)</div>
+<div class="bdd">Scenario: first save for a sheet-only applicant
+Given candidate N is not in Firestore yet (only in the Google Sheet, stage "applied", sheet notes "Referred by Lulu")
+When A saves an interview answer for N
+Then N's Firestore record has the answer AND stage "applied" AND notes "Referred by Lulu"</div>
+<div class="bdd">Scenario (failure): no access
+Given a signed-in user without hiring access or manager role
+When they save a field
+Then the write is denied, the function returns failure, and the document is unchanged</div>
+<div class="bdd">Scenario (edge): awkward keys
+Given a key like "jo.smith@x.com|9/28/2026 10:00:00"
+When a field is saved for it
+Then exactly that candidate's field changes (no nested "jo" map is created)</div>
+<p><b>Commands:</b> <code>node --test tests/</code> from the repo root; emulator:
+<code>cd ~/studio-hub && firebase emulators:exec --only firestore --project tinker-hq-test "node --test --test-concurrency=1 ~/tinker-hiring/tests/emulator/*.emulator.cjs"</code>.
+Failing tests are written first where they can fail (the GM scenario against the current <code>saveDataToFirestore</code>).</p>
+<p><b>Then:</b> commit, then a second-model <b>implementation</b> review of the diff before Phase 2.</p>
+</div>
+
+<div class="phase" id="phase-2">
+<h3>Phase 2 — Wire the app to the safe saves · <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><b>Changes (<code>js/app.js</code>, <code>index.html</code>):</b> dirty tracking and flushing on interview boxes (5 s tick kept, blur, close, position change);
+listener rewritten (incoming wins plus a dirty overlay, and non-dirty boxes refilled on an open card); a baseline captured at open, with
+<code>saveNotes</code> writing only changed fields; ref notes, Considering, Dismiss All and templates moved to field writes; the Dismiss All re-link fixed to use
+<code>getCandidateKey</code>; the saved/failed indicator; <code>saveDataToFirestore</code> deleted; cache-bust bumps. The first-import path in
+<code>mergeCandidateData</code> (runs only when Firestore's <code>importDone</code> is false, which is never in production) stays whole-document, with a comment
+saying so. <code>tests/browser-wiring.test.js</code> loads the real scripts with a stand-in Firebase and checks that the tick writes nothing when idle, and only
+the dirty box after typing.</p>
+<p><b>Done when:</b> in the app, one person typing never erases anything, the other person sees the answers appear within a few seconds, and a failed save is
+visible on screen.</p>
+<div class="bdd">Scenario: the reported bug
+Given Christie and the GM both have candidate K's Interview tab open
+When Christie types answers and the GM types nothing, then the GM closes the card last
+Then Christie's answers are still saved, and the GM's screen showed them before closing</div>
+<div class="bdd">Scenario: both typing, different questions
+When Christie types in Q1 and the GM types in Q4 at the same time
+Then both answers are saved and each person sees the other's</div>
+<div class="bdd">Scenario: stage change while another card is open
+Given the GM has candidate J open (autosave ticking)
+When Christie moves K to Not Moving Forward and clicks Save Changes
+Then after a refresh on both screens K is in Not Moving Forward</div>
+<div class="bdd">Scenario: Save Changes doesn't revert untouched fields
+Given the GM opened K and then Christie changed K's stage to "interview"
+When the GM edits only K's notes and clicks Save Changes
+Then K's stage stays "interview" and the notes are the GM's</div>
+<div class="bdd">Scenario (failure): offline
+Given the network is off
+When someone types in an answer box
+Then the status line shows "⚠ Not saved — check your connection" and the box stays dirty; when the network returns, the next tick saves it</div>
+<p><b>Then:</b> commit, run all tests, and a second-model <b>implementation</b> review of the diff before Phase 3.</p>
+</div>
+
+<div class="phase" id="phase-3">
+<h3>Phase 3 — Two-window click-through, off the live data · <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p>The app has no emulator mode, and local dev talks to the <b>live</b> database. Add a localhost-only switch (<code>?emulator=1</code>, ignored on any other host)
+that connects Firestore and Auth to the local emulators, like Classbook's <code>__USE_EMULATORS__</code>. Seed a test <code>hiring/appData</code>, a test user
+with <code>appAccess: ['hiring']</code> (credentials recorded in a seed file, not in chat), and run the Phase 2 scenarios in two browser-pane tabs. The Google Sheet
+is still read live (read-only). Candidates not in the seed get local defaults, which exercises the first-save path.</p>
+<p><b>Done when:</b> every Phase 2 scenario has been clicked through in two tabs, with notes recorded in the Decisions log.</p>
+<div class="bdd">Scenario (safety): the switch can't reach production
+Given the page is served from tinker-hiring.netlify.app with ?emulator=1
+Then the app ignores the switch and uses the live project as normal</div>
+</div>
+
+<div class="phase" id="phase-4">
+<h3>Phase 4 — Ship + live check · <span class="status-tag not-ready">execution-ready: false</span></h3>
+<ol>
+  <li>Update <code>CLAUDE.md</code> / <code>AGENTS.md</code> "Multi-user sync" with: writes go through transactions <i>and write only changed field paths</i>;
+    autosave writes only dirty boxes; the listener lets incoming data win. Also record the test commands. Commit and push.</li>
+  <li>Confirm last night's backup contains <code>hiring</code> (<code>tail -3 ~/tinker-backups/logs/backup.log</code>). Note the current live Netlify deploy id
+    for rollback.</li>
+  <li>Ask Christie: "Ready to deploy Hiring to Netlify?" Deploy once, from a clean tree at a pushed commit, with the sha as the message.</li>
+  <li><b>Christie and the GM reload every open Hiring tab.</b></li>
+  <li>Live check with Christie and the GM, on a real candidate chosen by Christie: both open the card, one types, and both see the answer after closing and
+    reopening. One moves a candidate to Not Moving Forward while the other has a card open, and it sticks.</li>
+</ol>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<table>
+  <tr><th>Check</th><th>Status</th></tr>
+  <tr><td>Rules updated?</td><td>Not needed: same document, and the existing <code>hiring/{docId}</code> rule covers read+write. The emulator tests run against the real rules.</td></tr>
+  <tr><td>Partial updates use update, not set?</td><td>Yes: <code>transaction.update</code> with field paths. The only full writes left are the first-import path (never runs in prod) and the Settings seed button (see open question 1).</td></tr>
+  <tr><td>Empty strings / undefined stripped?</td><td>Yes: cleared values become <code>FieldValue.delete()</code>, undefined is never sent, and empty keys are refused.</td></tr>
+  <tr><td>Critical writes awaited?</td><td>Yes, with the result shown on screen.</td></tr>
+  <tr><td>Snapshot before bulk ops?</td><td>No bulk operation. The nightly backup includes <code>hiring</code>, and it is checked in Phase 4 before deploying.</td></tr>
+  <tr><td>Emulator test before each data-write phase?</td><td>Phase 1 is the tests. Phase 2 adds browser-wiring tests.</td></tr>
+  <tr><td>Data shape changed?</td><td>No. Old and new code read the same document, so a Netlify rollback is safe in both directions.</td></tr>
+</table>
+
+<h2>Completeness — what if this stops halfway?</h2>
+<ul>
+  <li>Phase 1 only adds code, and the app behaves exactly as today.</li>
+  <li>Phase 2 is one commit, and nothing is live until Phase 4's deploy. Stopping between phases leaves production on the old code.</li>
+  <li>Each save is one transaction, so it either fully lands or doesn't. A dirty box that failed to save stays dirty and retries on the next tick.</li>
+  <li>After the deploy, the remaining risk is an old tab left open (see the rollout hazard above).</li>
+</ul>
+
+<h2>Open questions for Christie</h2>
+<ol>
+  <li><b>Settings → "Push Data to Firestore".</b> It overwrites the whole hiring document with whatever one browser has saved locally, so one click from an
+    out-of-date laptop could undo everyone's work. It was a one-time migration tool. <b>Recommendation:</b> remove the button (it removes no data, only the
+    ability to overwrite it). Otherwise keep it behind a typed confirmation.</li>
+  <li><b>The GM's report:</b> once she says what she sees, record it in the Decisions log. If it's "the card disappears" (Not Moving Forward is hidden by default),
+    add a small "Moved to Not Moving Forward — hidden; click Show Archived" message in Phase 2.</li>
+</ol>
+
+<h2>Resume instructions</h2>
+<ol>
+  <li>Read this plan's Decisions log (last entry) and the phase status tags.</li>
+  <li><code>git -C ~/tinker-hiring log --oneline -10</code>. Phase commits are titled <code>phase N: …</code>.</li>
+  <li>Run <code>node --test tests/</code> and the emulator command in Phase 1 to confirm a green starting point.</li>
+  <li>Continue with the first phase not marked done. Never deploy without asking Christie.</li>
+</ol>
+
+<h2>Decisions log</h2>
+<div class="decision">
+  <h3>2026-09-28 — Plan drafted</h3>
+  <p>Christie reported that interview answers get wiped when she and the GM both have a candidate open, and approved planning the fix ("yes sounds good").
+  Kept the 5-second autosave (repo invariant: don't remove or lengthen it) but made it write nothing when nothing changed. Kept transactions (repo invariant),
+  now with field-path updates. The same-box conflict is last-write-wins, which is accepted as the known limit.</p>
+</div>
+<div class="decision">
+  <h3>2026-09-28 — Plan review started (RESUME HERE)</h3>
+  <p>A Claude review and a Codex review of this plan were started in the background. The session hit its usage limit before their results were read. Output
+  went to the session scratchpad (<code>review-claude.md</code>, <code>review-codex.md</code>), which may be gone by the next session. If so, re-run
+  <code>/second-model-review</code> on this plan. Next: read both reviews, verify each finding against the code, fix the plan, then mark phases execution-ready.
+  No product code has been written.</p>
+</div>
+
+</body>
+</html>
