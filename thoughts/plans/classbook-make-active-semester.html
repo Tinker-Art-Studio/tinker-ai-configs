@@ -34,7 +34,7 @@
   <strong>App:</strong> tinker-spring-curriculum (The Classbook): <code>js/app.js</code>, <code>js/firebase-data.js</code>, one new e2e spec. <strong>No</strong> Firestore rules change, no new collection.<br>
   <strong>Context:</strong> Created Sep 29, 2026. Christie asked how to move "active" from Spring 2026 to Fall 2026 and found there is no UI for it. She is doing a one-time console switch meanwhile (<code>await updateAppData({ activeSemester: 'fall-2026' })</code>). Her answer to "want me to plan it?": <em>"yes we should do this."</em><br>
   <strong>Line numbers</strong> are at <code>2ef2e62</code> (main, live on Netlify).<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Christie answered Q1/Q2 (below). Second-model review next.
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Christie answered Q1/Q2. Round-1 review addressed (revision 2). Round-2 review next.
 </div>
 
 <h2 id="open-questions">Christie's decisions (Sep 29)</h2>
@@ -56,6 +56,12 @@
   <tr><td>The template to follow is <code>toggleSemesterPublish()</code>: optimistic in-memory change, <code>updateAppData</code>, exact restore plus an alert on failure, then re-render.</td><td><code>app.js:4604-4630</code></td></tr>
   <tr><td>Config is read once per page load. There is no live listener (<code>setupConfigListener</code> is never called), so open tabs see a change on their next reload.</td><td><code>firebase-data.js:521</code>, <code>app.js:11328</code></td></tr>
   <tr><td>No other Tinker app reads <code>activeSemester</code> (grep of studio-hub, summer-camp-app, roster-manager, schedule-viewer, playbook, materials, enrollment-board).</td><td>—</td></tr>
+  <tr><td><strong>Settings' "Editing Semester" dropdown doesn't work.</strong> <code>onchange="loadSettingsForm()"</code> redraws the form for <code>getSettingsSemKey()</code> = the header's <code>globalSemesterKey</code>, so the pick snaps back. Today the only way to point Settings at another semester is the header dropdown. (Round-1 review, finding 2; confirmed.)</td><td><code>index.html:411</code>; <code>app.js:10659-10661, 10681-10689</code></td></tr>
+  <tr><td><strong>Making a weekly semester non-active arms its Delete.</strong> Curriculum Admin's bar (manager/admin only) shows Delete for every non-active semester. For a weekly one, <code>deleteSemester</code> removes the appData entry (manager-only), then <code>deleteLessonData(key)</code> removes that semester's whole lesson map, behind two generic confirms. Since the Sep 29 console switch this is already true of Spring 2026 in production. (Finding 3; confirmed.)</td><td><code>app.js:4481-4483, 4522, 4527-4590</code>; <code>firebase-data.js:961-966</code></td></tr>
+  <tr><td>The header selector's <code>change</code> listener is attached on every <code>initGlobalSemesterSelector()</code> call, with no attach-once guard (the Teacher View selector has one). It's already re-called after creating a semester. (Finding 7; confirmed.)</td><td><code>app.js:86</code>, <code>:825</code>, <code>:4724, 4845</code></td></tr>
+  <tr><td>Teacher View's own selector labels the active semester "(current)".</td><td><code>app.js:818-819</code>, <code>:653-655</code></td></tr>
+  <tr><td>Teachers can <em>read</em> appData (<code>classbook</code> / <code>classbook-admin</code> / <code>curriculum-admin</code>). Only create/update is manager+. That read is what lets Phase 2 work for teachers.</td><td><code>firestore.rules:665-669</code></td></tr>
+  <tr><td>e2e: no spec has ever written appData for real. They stub <code>window.updateAppData</code> and assert the payload. The Node helper signs in as the staff account, which the rules refuse on appData. There is a saved <em>manager</em> session but no saved teacher session.</td><td><code>data-safety.spec.js:3947, 7596-7610</code>; <code>helpers/firestore.js:57</code>; <code>global-setup.js:63-70</code></td></tr>
   <tr><td>e2e seed: <code>activeSemester: spring-2026</code>; semesters spring-2026 (weekly, published) and summer-2026 (camp, unpublished). Specs that touch activeSemester or publishing: day-off-camps, day-off-teacher, data-safety.</td><td><code>e2e/fixtures/seed/curriculum.json</code></td></tr>
 </table>
 
@@ -63,110 +69,153 @@
 <p>Two phases, committed separately and <strong>deployed once</strong> (one Netlify credit) after both are reviewed.</p>
 
 <div class="phase" id="phase-1">
-<h3>Phase 1: "Make active" in Settings <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>Phase 1: "Make active" in Settings, plus the two things it depends on <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance (user outcomes):</strong></p>
 <ul>
-  <li>In Settings, when the "Editing Semester" dropdown is on a non-active Fall/Spring class semester or Summer camp season (Q1 — not an SDOC year), a manager sees <strong>"Make this the active semester"</strong> next to the Published toggle.</li>
-  <li>Clicking it asks one confirmation that names both semesters: "Make Fall 2026 the active semester? Spring 2026 stops being active." It adds a line when that matters:
+  <li><strong>Settings' "Editing Semester" dropdown works.</strong> Picking a semester there switches the app to it, the same as the header and Teacher View dropdowns already do, and the Settings form shows that semester.</li>
+  <li>When Settings is on a non-active Fall/Spring class semester or Summer camp season (Q1; never an SDOC year), a manager sees <strong>"Make this the active semester"</strong> in the publish group.</li>
+  <li>Clicking it asks one confirmation that names both semesters, "Make Fall 2026 the active semester? Spring 2026 stops being active.", and adds, when true:
     <ul>
-      <li>If the new semester is a draft: "It's a draft — it will be published so teachers can see it." Making it active also publishes it, in the same single write.</li>
-      <li>If the old semester is a draft (<code>published === false</code>): "Spring 2026 is a draft, so teachers will stop seeing it."</li>
+      <li>New semester is a draft: "It's a draft — it will be published so teachers can see it." Activation publishes it in the same single write. That makes the existing "Active Semester — always visible to teachers" badge true, which it isn't today for an unpublished active semester.</li>
+      <li>Old semester is a weekly class semester: "Spring 2026 can then be deleted from Curriculum Admin — its lessons stay unless someone deletes it."</li>
     </ul></li>
-  <li>After confirming, the "(active)" label, the Active Semester badge, and the Publish toggle and Delete button all move to reflect the new state, in Settings, the header dropdown and Curriculum Admin, without a reload.</li>
-  <li>If the write fails, nothing changes on screen, an alert says why, and "Nothing was changed."</li>
-  <li>Nobody below manager ever sees the control (Settings is already hidden, and the rules refuse the write anyway).</li>
+  <li>After confirming, every place that labels the active semester updates without a reload: the header, Teacher View ("(current)"), Settings' badge/toggle, and Curriculum Admin's badge/toggle/Delete.</li>
+  <li><strong>Deleting a weekly semester gets a real guard:</strong> the confirmation states how many lessons it holds, and you must type the semester's name to proceed. Camp seasons and SDOC years keep their current (non-destructive) flows.</li>
+  <li>If the write fails for any reason (rules, a failed config load, or the season registry being unknown or in error), nothing changes on screen and an alert names the reason and says "Nothing was changed."</li>
+  <li>Nobody below manager sees the control, and the rules refuse the write regardless.</li>
 </ul>
-<p><strong>Shape:</strong> new <code>makeSemesterActive(key)</code> in <code>app.js</code> beside <code>toggleSemesterPublish</code>. It checks eligibility and that the key exists and isn't already active, confirms, then calls <code>updateAppData({ activeSemester: key, [semesters.key.published]: true <em>(only if it was a draft)</em> })</code>. It updates <code>currentConfig</code> optimistically, restores it exactly on failure, then re-renders the header selector, <code>renderSemesterSelector()</code> and <code>loadSettingsForm()</code>. The button lives in the Settings publish group (<code>app.js:10700-10712</code>). The Curriculum Admin bar stays read-only for "active", because non-managers use it and can't write appData.</p>
+<p><strong>Shape:</strong></p>
+<ul>
+  <li><code>index.html:411</code>: <code>onchange="setGlobalSemester(this.value)"</code>. <code>setGlobalSemester</code> already re-renders the active tab, so Settings redraws for the new key.</li>
+  <li>New <code>makeSemesterActive(key)</code> beside <code>toggleSemesterPublish</code>. Eligibility is by type (<code>isWeeklySemester(key) || isCampSeason(key)</code>), never by key prefix (there's a ratchet against prefix routing). It refuses if the key is missing or already active, then confirms, then writes <code>updateAppData({ activeSemester: key, ['semesters.'+key+'.published']: true /* only if it was false */, …Phase 2 fields })</code>. It changes <code>currentConfig</code> optimistically and restores it exactly on failure, including "field was absent".</li>
+  <li>Re-render set after success or failure: header options, Teacher View selector, <code>renderSemesterSelector()</code>, <code>loadSettingsForm()</code>. The header's <code>change</code> listener gets the attach-once guard Teacher View already uses (<code>dataset.listenerAttached</code>), so re-rendering doesn't stack handlers.</li>
+  <li><code>deleteSemester</code>, weekly branch only: the first confirm includes the lesson count from <code>currentLessonData[key]</code> (the lessons the page has loaded; if it isn't loaded, say so and refuse). The second confirm becomes a typed-name <code>prompt()</code> that must equal <code>sem.name</code>. Camp and SDOC branches are unchanged.</li>
+  <li>The Curriculum Admin bar stays read-only for "active" (it's the same audience, but one place to change it is enough).</li>
+</ul>
 
-<div class="bdd">Scenario: manager makes Fall active (happy path)
-  Given a manager on Settings, Editing Semester = Fall 2026 (published, weekly), active = Spring 2026
+<div class="bdd">Scenario: the Settings dropdown switches semester (fix)
+  Given a manager on Settings with the header on Spring 2026
+  When they pick Fall 2026 in "Editing Semester"
+  Then the header shows Fall 2026 and the Settings form shows Fall's name/start date
+
+Scenario: manager makes Fall active (happy path) — real write, manager session
+  Given a manager on Settings for Fall 2026 (published, weekly), active = Spring 2026
   When they click "Make this the active semester" and confirm
-  Then curriculum/appData.activeSemester reads back as "fall-2026"
-   And only activeSemester, lastUpdated and lastUpdatedBy changed in appData
-   And the header dropdown shows "Fall 2026 (active)" and plain "Spring 2026"
-   And Settings shows the Active Semester badge for Fall; switching to Spring shows its Publish toggle and Delete
+  Then curriculum/appData.activeSemester reads back from the emulator as "fall-2026"
+   And a whole-document diff of appData, ignoring lastUpdated/lastUpdatedBy (as app.js:10918 does), shows only activeSemester changed
+   And header "Fall 2026 (active)", Teacher View "Fall 2026 (current)", Settings badge on Fall,
+       Curriculum Admin shows Spring with Publish toggle and Delete
 
-Scenario: making a draft semester active publishes it (edge)
+Scenario: making a draft semester active publishes it (edge) — stubbed updateAppData
   Given Fall 2026 is published:false
-  When the manager makes it active and confirms (the dialog mentions publishing)
-  Then activeSemester = "fall-2026" and semesters.fall-2026.published = true, from one update()
+  When the manager makes it active and confirms (dialog mentions publishing)
+  Then exactly one updateAppData call, and
+       Object.keys(payload).sort() equals ["activeSemester", "semesters.fall-2026.published", …Phase 2 keys]
 
-Scenario: the old active semester was a draft (edge)
-  Given Spring 2026 is published:false and active
-  When the manager makes Fall active
-  Then the confirmation warns that teachers will stop seeing Spring 2026
-
-Scenario: cancel changes nothing (edge)
-  When the manager clicks the button and cancels the confirmation
-  Then no write happens and nothing on screen changes
-
-Scenario: ineligible semesters show no button (edge; per Q1)
-  Given Editing Semester = an SDOC year, or the already-active semester
-  Then no "Make this the active semester" button is shown
-
-Scenario: a Summer camp season can be made active (happy path, Q1)
-  Given Editing Semester = Summer 2026 (camp season)
+Scenario: a Summer camp season can be made active (Q1)
+  Given Settings on Summer 2026 (camp season)
   When the manager makes it active
-  Then activeSemester = "summer-2026", and a user with nothing remembered lands on Summer 2026
-   And Teacher View, Curriculum Admin (manager) and the Prep Dashboard tab (hidden for camps) behave
-       exactly as they do today when Summer 2026 is simply selected
-   And Curriculum Admin's post-delete reset (app.js:4590) lands on a semester it can render
+  Then activeSemester = "summer-2026"; with nothing remembered a user lands on Summer 2026;
+       Prep Dashboard hidden (as for any camp selection); Teacher View and Curriculum Admin render as they do when Summer is merely selected
 
-Scenario: switching back from Summer to a class semester (edge)
+Scenario: back from Summer to a class semester (edge)
   Given Summer 2026 is active
   When the manager makes Fall 2026 active
-  Then the Prep Dashboard tab reappears for Fall and nothing summer-specific is left selected
+  Then the Prep Dashboard tab reappears for Fall
 
-Scenario: the write fails (failure)
-  Given updateAppData rejects (e.g. rules refuse, or config load had failed)
+Scenario: cancel changes nothing (edge)
+  When the manager cancels the confirmation
+  Then updateAppData is not called and nothing on screen changes
+
+Scenario: ineligible or already active: no button (edge)
+  Given Settings on an SDOC year, or on the active semester
+  Then no "Make this the active semester" button
+
+Scenario: non-manager never sees it (UI)
+  Given a curriculum-admin (staff) user
+  Then the Settings tab is hidden (setupRoleAccess), so there is no button
+
+Scenario: write refused by the rules (failure) — real write, staff session
+  Given the staff test account
+  When updateAppData({ activeSemester: "spring-2026" }) is called
+  Then it rejects with permission-denied and appData is unchanged
+
+Scenario: write refused by the app's own guard (failure)
+  Given seasonRegistryMode = "error" (or configLoadFailed)
   When the manager confirms
-  Then an alert names the error and says "Nothing was changed"
-   And currentConfig.activeSemester and the published flag are exactly as before, labels unchanged
+  Then the alert names the reason, says "Nothing was changed", and the labels, activeSemester and published flag are exactly as before
 
-Scenario: a non-manager cannot write it (failure, rules)
-  Given a staff user with classbook-admin access (emulator, real rules)
-  When code calls updateAppData({ activeSemester: ... })
-  Then the write is refused and appData is unchanged</div>
+Scenario: deleting a weekly semester needs its name typed (safety)
+  Given Spring 2026 is not active and holds N loaded lessons
+  When the manager clicks Delete
+  Then the first confirm states N lessons; the prompt requires "Spring 2026";
+       a wrong or empty answer deletes nothing (updateAppData and deleteLessonData not called)
+
+Scenario: re-render does not stack handlers (regression)
+  After makeSemesterActive runs twice, one header change calls setGlobalSemester exactly once</div>
 </div>
 
 <div class="phase" id="phase-2">
 <h3>Phase 2: "Switch everyone to it" <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance (user outcomes):</strong></p>
 <ul>
-  <li>The Phase 1 confirmation has a checkbox, <strong>"Also switch everyone to Fall 2026 the next time they open the Classbook"</strong>, ticked by default (Q2).</li>
-  <li>With it ticked, every user who can see the new active semester lands on it the next time they load the Classbook, once. After that they can pick any semester and it sticks as usual.</li>
-  <li>With it unticked, nobody's remembered semester moves; only the label and the default for new browsers change (Phase 1's behaviour).</li>
-  <li>A teacher who can't see the new active semester (unpublished) is not moved.</li>
+  <li>The Phase 1 confirmation has a checkbox, <strong>"Also switch everyone to Fall 2026 the next time they open the Classbook"</strong>, ticked by default (Q2). Because a plain <code>confirm()</code> can't hold a checkbox, the confirmation becomes a small in-app modal, reusing the existing <code>simple-modal</code> styling.</li>
+  <li>With it ticked, every user who can see that semester lands on it the next time they load the Classbook, once. That includes the manager who made the switch, on their next load. After that, any semester they pick sticks as usual.</li>
+  <li>The switch is tied to <strong>that</strong> semester. If someone later makes a different semester active without ticking the box, browsers that haven't loaded yet are not moved anywhere.</li>
+  <li>A user who can't see the semester yet (unpublished; rare, since activation publishes) isn't moved, and isn't marked done either. If it becomes visible while the switch still stands, they move then.</li>
+  <li>With it unticked, nobody's remembered semester moves.</li>
   <li>Tabs already open move on their next reload, not live.</li>
 </ul>
-<p><strong>Shape:</strong> the same single <code>update()</code> also writes <code>activeSemesterSwitchAt: &lt;ISO timestamp&gt;</code>, only when ticked. On load, just before the existing pick at <code>app.js:65</code>: if <code>currentConfig.activeSemesterSwitchAt</code> is set and differs from localStorage <code>activeSemesterSwitchSeen</code>, and the active semester is visible, set <code>globalSemesterKey</code> to it. In every case record <code>activeSemesterSwitchSeen = activeSemesterSwitchAt</code>, so each switch applies once per browser. A browser that has never seen a switch (seen value missing) takes it. That matches what a new browser gets anyway: the default is the active semester.</p>
-<div class="note">This is a new <strong>field</strong> on an existing document (<code>curriculum/appData</code>), not a new collection, so no rules change. Nothing reads it until the first switch, so deploying Phase 2 moves nobody by itself. The timestamp comes from the manager's clock, and it only needs to differ from the last value, not be accurate. The comparison is "not equal to seen", not "newer than", so a skewed clock can't block a switch.</div>
+<p><strong>Shape:</strong> when ticked, the same single <code>update()</code> writes <code>activeSemesterSwitch: { to: key, at: &lt;ISO&gt; }</code>. It's one map field, so it replaces the previous switch whole. On load, before the existing pick at <code>app.js:65</code>, with <code>sw = currentConfig.activeSemesterSwitch</code> and <code>seen = localStorage.activeSemesterSwitchSeen</code>:</p>
+<ul>
+  <li>If <code>sw</code> is missing, or <code>sw.at === seen</code>: do nothing.</li>
+  <li>If <code>sw.to !== currentConfig.activeSemester</code>: the switch is stale, so mark it seen and do nothing.</li>
+  <li>If <code>canSeeSemester(sw.to)</code>: set <code>globalSemesterKey = sw.to</code> and <strong>write <code>localStorage.globalSemesterKey</code> here</strong> (the <code>setItem</code> at :69 sits in the fallback branch, which this makes false), then mark it seen.</li>
+  <li>Otherwise (can't see it yet): don't move and don't mark it seen.</li>
+</ul>
+<p>The comparison is equality, so clock skew can't block a switch. No existing appData writer touches this field: Settings' save writes only <code>semesters.&lt;key&gt;.*</code>, <code>teacherMappings</code> and <code>activeSemester</code> (<code>app.js:11295-11319</code>).</p>
+<div class="note">A new <strong>field</strong> on existing <code>curriculum/appData</code>. It's not a new collection, so no rules change. Nothing reads it until the first switch, so deploying Phase 2 moves nobody.</div>
 
 <div class="bdd">Scenario: teachers are moved once (happy path)
-  Given a teacher's browser remembers "spring-2026"
-   And a manager made Fall 2026 active with "switch everyone" ticked
+  Given a teacher's browser remembers "spring-2026" (fresh context, teacher signed in via the form)
+   And appData.activeSemester = "fall-2026", activeSemesterSwitch = { to: "fall-2026", at: T1 }
   When the teacher loads the Classbook
-  Then they land on Fall 2026 and localStorage.globalSemesterKey = "fall-2026"
-  When they then pick Spring 2026 and reload
-  Then they stay on Spring 2026 (the switch applied once)
+  Then they land on Fall 2026, localStorage.globalSemesterKey = "fall-2026", activeSemesterSwitchSeen = T1
+  When they pick Spring 2026 and reload
+  Then they stay on Spring 2026
+
+Scenario: the manager who switched is moved too (edge)
+  Given the manager made Fall active with the box ticked, then picked Spring
+  When they reload
+  Then they land on Fall 2026 once
 
 Scenario: unticked moves nobody (edge)
-  Given the manager made Fall active with the box unticked
+  Given the box was unticked (no activeSemesterSwitch written; payload keys asserted)
   When a teacher who remembers Spring loads
   Then they stay on Spring; the header shows "Fall 2026 (active)"
 
-Scenario: invisible active semester (edge)
-  Given the active semester is unpublished and the user is not a manager
-  When they load after a switch
-  Then they are not moved (existing visibility fallback applies) and the switch is marked seen
+Scenario: a stale switch does not move anyone (edge, finding 5)
+  Given activeSemesterSwitch.to = "fall-2026" but activeSemester was since set to "summer-2026" (unticked)
+  When a not-yet-loaded browser loads
+  Then it is not moved, and the switch is marked seen
 
-Scenario: second switch later in the year (edge)
+Scenario: invisible target waits (edge, finding 6)
+  Given activeSemesterSwitch.to is unpublished and the user is a teacher
+  When they load
+  Then not moved, not marked seen; after it is published and they reload, they are moved
+
+Scenario: a second switch later in the year (edge)
   Given a browser has seen switch A
-  When a manager makes another semester active with the box ticked (switch B)
-  Then that browser is moved again on its next load
+  When switch B is written (different at)
+  Then that browser is moved on its next load
+
+Scenario: open tabs are unaffected until reload (edge)
+  Given a second tab already open on Spring
+  When the switch is written
+  Then that tab stays on Spring until it reloads
 
 Scenario: deploy alone moves nobody (safety)
-  Given appData has no activeSemesterSwitchAt
+  Given appData has no activeSemesterSwitch
   When any user loads the new build
   Then their remembered semester is unchanged</div>
 </div>
@@ -174,8 +223,9 @@ Scenario: deploy alone moves nobody (safety)
 <h2 id="safety">Firebase safety checklist</h2>
 <div class="safe">
   <ul>
-    <li><strong>Rules:</strong> none needed. <code>curriculum/appData</code> is already manager+ read/write. No new collection. Phase 1's e2e includes the non-manager refusal against the real rules.</li>
-    <li><strong>Partial update:</strong> <code>updateAppData</code> (<code>update()</code> of named dotted paths). Never <code>set()</code>. Only <code>activeSemester</code>, optionally <code>semesters.&lt;key&gt;.published</code> and <code>activeSemesterSwitchAt</code>, plus the existing <code>lastUpdated</code>/<code>lastUpdatedBy</code>.</li>
+    <li><strong>Rules:</strong> none needed. <code>curriculum/appData</code>: read for classbook users, write for manager+ only (<code>firestore.rules:652-669</code>). No new collection. Phase 1's e2e includes the non-manager refusal against the real rules.</li>
+    <li><strong>The Delete exposure (finding 3):</strong> making a weekly semester non-active makes it deletable, which is already true of Spring 2026 in production. Phase 1 adds the lesson count and the typed name to that delete, and the activation confirm says so. Until Phase 1 ships: <strong>don't click Delete on Spring 2026</strong>.</li>
+    <li><strong>Partial update:</strong> <code>updateAppData</code> (<code>update()</code> of named dotted paths; its <code>set(merge)</code> fallback fires only if appData doesn't exist, which isn't the case here). Only <code>activeSemester</code>, optionally <code>semesters.&lt;key&gt;.published</code> and <code>activeSemesterSwitch</code>, plus the existing <code>lastUpdated</code>/<code>lastUpdatedBy</code>.</li>
     <li><strong>No undefined or empty values:</strong> every path is a known string or <code>true</code>. The key is validated against <code>currentConfig.semesters</code> before writing.</li>
     <li><strong>Awaited:</strong> the one write is awaited, and on failure the in-memory state is restored exactly (the <code>toggleSemesterPublish</code> pattern, including "field was absent").</li>
     <li><strong>No bulk op, no delete:</strong> no snapshot needed. The previous value is shown in the confirmation. To roll back, make the old semester active again with the same button (or the console line).</li>
@@ -186,9 +236,15 @@ Scenario: deploy alone moves nobody (safety)
 
 <h2 id="tests">Tests</h2>
 <ul>
-  <li>New <code>e2e/active-semester.spec.js</code> (emulator only), signed in as the seeded manager. It adds a test-only weekly semester <code>TEST_DATA_SAFETY_fall</code> to appData in <code>beforeEach</code> through the emulator helper. In <code>afterEach</code> it removes that entry and restores <code>activeSemester: 'spring-2026'</code> and deletes <code>activeSemesterSwitchAt</code>, verified by reading back, so the other specs, which rely on Spring being active, are unaffected. It covers every BDD scenario above. Phase 2's "teacher" is a second browser context signed in as <code>e2e-teacher-uid</code> with a pre-set localStorage.</li>
-  <li>The full suite must stay green (327 today).</li>
-  <li>This makes the existing gap explicit: nothing tested the Settings publish group before. The new spec covers its active and non-active states.</li>
+  <li>New <code>e2e/active-semester.spec.js</code> (emulator only), following the house pattern (finding 1):
+    <ul>
+      <li><strong>Payload/shape scenarios</strong> stub <code>window.updateAppData</code> and assert <code>Object.keys(payload).sort()</code> (as <code>data-safety.spec.js:7596-7610</code> does). The in-memory test semester is added to <code>currentConfig</code> in the page only, with an explicit <code>semesterType: 'weekly'</code>.</li>
+      <li><strong>One real round-trip</strong> runs in a manager context (<code>MANAGER_STATE_PATH</code>, first spec to use it). The test semester is created and removed through the app's own <code>updateAppData</code> in that page, and <code>activeSemester</code> is restored to <code>spring-2026</code> and <code>activeSemesterSwitch</code> deleted in <code>afterEach</code> <strong>and</strong> <code>afterAll</code>, each read back. Reason: with <code>workers: 1</code> this file runs <strong>first</strong> alphabetically, and a leak would break <code>day-off-camps.spec.js</code> "SDOC R6" and <code>day-off-teacher.spec.js</code> "T20", which read the active semester.</li>
+      <li><strong>One real rules refusal</strong> uses the staff account.</li>
+      <li><strong>Phase 2's teacher</strong> is a fresh context (blank storageState) signed in with <code>signInViaForm(page, 'teacher')</code>, because <code>login(page,'teacher')</code> on the default state returns the admin.</li>
+    </ul></li>
+  <li>Assertions that must use types, not key prefixes: <code>isWeeklySemester</code> / <code>isCampSeason</code> (the ratchet at <code>static-checks.spec.js:108</code>).</li>
+  <li>The full suite stays green. Re-count at execution time; don't trust a number in this plan.</li>
 </ul>
 
 <h2 id="completeness">Completeness: what if this is interrupted?</h2>
@@ -209,8 +265,24 @@ Scenario: deploy alone moves nobody (safety)
 </ol>
 
 <h2 id="decisions">Decisions Log (append-only)</h2>
-<div class="note">
-  <strong>PAUSED Sep 29, 2026 — resume here.</strong> Round-1 plan review (Claude only; Codex is out of credits) finished but has <strong>not been addressed yet</strong>. It reports three findings that would stop or mislead execution, plus smaller ones. It ran on the plan <em>before</em> Christie's Q1 answer added Summer camp seasons, so re-check its points against that too. Files: <code>thoughts/reviews/2026-09-29-plan-review-make-active-semester-r1-claude.md</code> (and <code>-r1-input.md</code>). Next: verify each finding against the code, revise this plan, append the outcome here, run a round-2 review, then ask Christie for the go-ahead. No code has been written, and nothing about this feature is on a branch yet.
+<div class="decision">
+  <strong>Sep 29, 2026: revision 2, after round-1 review (Claude; <code>thoughts/reviews/2026-09-29-plan-review-make-active-semester-r1-claude.md</code>).</strong> Verified against the code and taken:
+  <ul>
+    <li>(1) e2e can't write appData with the Node helper, so the house pattern is used: stub-and-payload, one manager round-trip with restore in afterEach+afterAll, one staff refusal.</li>
+    <li>(2) The Settings dropdown was broken, so it's fixed in Phase 1.</li>
+    <li>(3) Making a semester non-active arms its Delete, which is already live for Spring. Weekly delete now shows the lesson count and needs the name typed, and the confirm mentions it.</li>
+    <li>(4) Dropped the false "teachers will stop seeing it" warning (drafts were never visible). Noted that auto-publish makes the badge honest.</li>
+    <li>(5) Phase 2 stores <code>{to, at}</code> and ignores a switch whose target is no longer active.</li>
+    <li>(6) An invisible target isn't marked seen.</li>
+    <li>(7) Attach-once guard on the header listener.</li>
+    <li>(8) Teacher View's "(current)" is in the re-render set.</li>
+  </ul>
+  Low items taken: the set(merge) fallback noted, teacher read access stated, Phase 2 writes <code>localStorage.globalSemesterKey</code> itself, fresh teacher sign-in, restore with read-back plus the lastUpdated-ignoring diff, type-based eligibility. BDD gaps a–e added.<br>
+  <strong>Deliberately left alone:</strong> the two stale <code>'spring-2026'</code> fallback literals (<code>firebase-data.js:504, 3122</code>). They only fire with no config (the banner state), so they're out of scope and noted here.<br>
+  <strong>New UI consequence:</strong> Phase 2's checkbox needs a small modal instead of <code>confirm()</code>.
+</div>
+<div class="note" style="opacity:.7">
+  <strong>(Superseded — Christie stayed; round 1 addressed below.) PAUSED Sep 29, 2026.</strong> Round-1 plan review (Claude only; Codex is out of credits) finished but has <strong>not been addressed yet</strong>. It reports three findings that would stop or mislead execution, plus smaller ones. It ran on the plan <em>before</em> Christie's Q1 answer added Summer camp seasons, so re-check its points against that too. Files: <code>thoughts/reviews/2026-09-29-plan-review-make-active-semester-r1-claude.md</code> (and <code>-r1-input.md</code>). Next: verify each finding against the code, revise this plan, append the outcome here, run a round-2 review, then ask Christie for the go-ahead. No code has been written, and nothing about this feature is on a branch yet.
 </div>
 <div class="decision">
   <strong>Sep 29, 2026: production switched by console.</strong> Christie ran <code>await updateAppData({ activeSemester: 'fall-2026' })</code> on the live app. Fall 2026 is now active. Semesters at that point: summer-2026 (published), fall-2026 (published), sdoc-2026-27 (published:false), spring-2026 (published field absent, so visible). Returning browsers still remember Spring until they pick Fall. Phase 2's "switch everyone" is what fixes that next time.
