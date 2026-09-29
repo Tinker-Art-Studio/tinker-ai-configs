@@ -1,0 +1,8 @@
+## Codex round 6 — revision 8 (design change)
+Plan: /Users/christiehubley/tinker-ai-configs/thoughts/plans/classbook-make-active-semester.html (revision 8). Your rounds 1–5 are in /Users/christiehubley/tinker-ai-configs/thoughts/reviews/2026-09-29-plan-review-make-active-semester-codex*.md. Read the Decisions Log entry "revision 8": Christie chose to ARCHIVE old class semesters (a semesters.<key>.archived flag; nothing deleted) instead of hardening a hard delete; the listener/fail-closed/save-guard design is removed.
+Repo (read-only, main 2ef2e62): /Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/funny-nash-6aab81 . Rules: /Users/christiehubley/studio-hub/firestore.rules .
+Review the plan as it now stands, adversarially, against the code:
+1. Archive design: is every place that lists or iterates semesters covered (all loaded scripts — selectors, copy-from, diagnostics, prep dashboard, material forecasts, backups, change history, anything using Object.keys(currentConfig.semesters) or similar)? Does an archived semester leak anywhere, or break anything (e.g. getActiveSemesterKey fallback, canSeeSemester for managers, createNewSemester, the season registry / camp code, SDOC code)? Is the "can't reuse an archived key" check placed correctly relative to createNewSemester's existing checks?
+2. Anything from your rounds 1–5 that the removal reopened (activation transaction, per-user switch, unticked clears switch, Settings gating, header sync)?
+3. Tests: workable and non-leaking?
+Verdict: EXECUTION-READY or NOT (minimum list). Be concise. Do not edit files or run tests.
