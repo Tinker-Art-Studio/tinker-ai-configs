@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: A sub is confirmed only by a manager, on the request's real dates</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: A sub is confirmed only by a manager, on the request's real dates</h1>
+<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026
+&middot; <strong>v1</strong> &middot; <strong>execution-ready: false</strong> &mdash; <em>awaiting design review, then
+Christie's written approval to edit the repo.</em></p>
+
+<div class="status">
+  <strong>Goal:</strong> when a manager approves time off, a sub is never shown as "Confirmed" unless their shift is
+  on their schedule and they have been emailed. The one button that does both, <strong>Mark Confirmed</strong>, is
+  always there for the manager and always works.
+  <br><br>
+  <strong>Scope, per Christie (Sep 29):</strong> from here on only. There is no backfill and no change to existing
+  request documents. No rules change, no new collection, no change to the Payroll Tool or the reminder job.
+</div>
+
+<h2>What went wrong (Ivy's request, Sep 29)</h2>
+<table>
+  <tr><th>#</th><th>Defect</th><th>Where</th><th>Effect</th></tr>
+  <tr><td>1</td><td>The request form's <em>"They agreed to cover"</em> checkbox saves the sub as
+  <code>confirmed: true</code>. It writes no schedule, sends no email and records no <code>subUid</code>.</td>
+  <td><code>js/app.js:7295</code> (toggle), <code>:7318</code> (checkbox), <code>:7372</code> (save)</td>
+  <td>The detail view shows a green <strong>Confirmed</strong> badge, and the button beside it reads
+  <strong>Undo</strong>, not <strong>Mark Confirmed</strong>. The manager never sees the real step. The amber
+  "add their shift manually" note (<code>:7615</code>) only fires when the roster match FAILS, so with a good match
+  there is no warning at all.</td></tr>
+  <tr><td>2</td><td>A sub's covered dates are copied from the form's dates <em>at the moment the sub is added</em>
+  and never updated. When the sub is picked before the date, or the date is changed afterwards, the sub's dates
+  don't match the request's dates.</td>
+  <td><code>js/app.js:7283</code> (captured once); <code>getSubCoverageDates</code>,
+  <code>js/schedule-helpers.js:209</code> (keeps only the overlap)</td>
+  <td>Mark Confirmed stops with <em>"This sub has no covered dates to write a shift for"</em>
+  (<code>js/app.js:7953</code>) in every mode, custom times included. It stops before any write, so nothing is
+  left half-done.</td></tr>
+  <tr><td>3</td><td>The manager-only <em>"Coverage: Secured"</em> dropdown only changes the label
+  (<code>updateCoverageStatus</code>, <code>js/app.js:8250</code>).</td><td></td>
+  <td>It looks like it arranged the coverage. Nothing warns that a proposed sub is still unconfirmed.</td></tr>
+  <tr><td>4</td><td>(Found while researching) A requester sees <strong>Mark Confirmed</strong> on their own request
+  (<code>canToggle</code> includes <code>isOwner</code>, <code>:7608</code>). For a matched sub, the rules forbid
+  staff from writing another person's schedule, so it fails with <em>"Failed to write the shift to the sub's
+  schedule. Please try again."</em>, which can never succeed.</td><td><code>js/app.js:7608</code>,
+  <code>:8015</code>; rules <code>timeclock_schedules</code> (manager-only write)</td>
+  <td>Once #1 is fixed this becomes the requester's only visible option, so it has to change with it.</td></tr>
+</table>
+
+<div class="warn"><strong>This reverses an Aug 29 decision.</strong> The <code>ticker-timeoff-email-and-sub-assignment</code>
+plan's log records that "either the requester or an admin can set" <code>confirmed</code>, and that "one shared flag
+is sufficient" (a separate <code>requesterPreConfirmed</code> flag was dropped). Today showed that the shared flag lets
+a requester produce a "Confirmed" that has no shift and no email. Christie chose (Sep 29) to <strong>remove the
+requester's checkbox entirely</strong>. A requester who has lined up a sub can say so in the existing Coverage Notes
+box. No new field is added.</div>
+
+<h2>Phases</h2>
+
+<div class="phase">
+<h3>Phase 1: Only a manager can confirm a sub</h3>
+<p><strong>Acceptance (user outcomes):</strong></p>
+<ul>
+  <li>A staff member filling in a time-off request can add or remove proposed subs, but there is no way to mark one
+  confirmed. The checkbox is gone. The Coverage Notes box already invites "I texted Sam… she can cover Tuesday" (index.html:722), so no new wording is needed there.</li>
+  <li>Every sub on a NEW request is saved un-confirmed, and a manager sees <strong>Not confirmed · Mark
+  Confirmed</strong> on it.</li>
+  <li>Editing an existing request never changes a sub's confirmed state. A sub that was confirmed stays confirmed
+  with its record, and one that wasn't stays unconfirmed. Removing a sub with × still reverses its coverage as
+  today.</li>
+  <li>On their own request, the requester sees no <strong>Mark Confirmed</strong> button. An unconfirmed sub reads
+  <em>"Not confirmed · a manager confirms coverage"</em>. <strong>Undo</strong> on an already-confirmed sub stays as
+  it is today (record-less subs clear, recorded ones go to a manager via <code>handOffSubRemovalToManager</code>).</li>
+</ul>
+<p><strong>Changes:</strong></p>
+<ul>
+  <li>Delete <code>toggleFormSubConfirmed</code> and the checkbox label in <code>renderTimeOffSubs</code>.</li>
+  <li><code>addTimeOffSub</code> keeps <code>confirmed: false</code>. The edit-load mapping (<code>:7068</code>)
+  keeps carrying the document's <code>confirmed</code> unchanged. With nothing able to flip it, the save
+  (<code>:7372</code>) carries it through, and <code>reconcileEditedProposedSubs</code> /
+  <code>carryConfirmedSubs</code> behave as before (they only react to a confirmed→unconfirmed change or a removal,
+  and now only removal can cause one).</li>
+  <li>Detail view: for a sub that is NOT confirmed, only <code>isAdmin</code> gets the Mark Confirmed button. The
+  owner keeps Undo for a confirmed sub.</li>
+  <li><code>handleSubConfirmToggle</code>: refuse the confirm branch for a non-manager, with a clear message
+  (defence against a stale tab / old service-worker copy that still renders the button). Un-confirm stays open
+  to the owner.</li>
+</ul>
+<div class="bdd"><strong>Happy:</strong> Given Ivy submits a request naming Sam as sub, when a manager opens it, then
+Sam shows "Not confirmed" with a Mark Confirmed button, and after Confirm &amp; Add to Schedule Sam's schedule has the
+shift and both emails send (unchanged path).</div>
+<div class="bdd"><strong>Edge:</strong> Given an existing request whose sub was ticked "They agreed" before this
+ships (confirmed, no <code>subUid</code>), when Ivy edits the reason and saves, then the sub is still confirmed, with
+no change to it and no reversal attempted (no backfill, per scope).</div>
+<div class="bdd"><strong>Edge:</strong> Given a manager-confirmed sub with a schedule record, when Ivy edits the
+request (status submitted/under_review) and saves, then the sub keeps <code>confirmed</code>, <code>subUid</code> and
+<code>appliedOverrides</code> (reconcile's "linked" carry). When she removes that sub with ×, the reversal runs as
+today.</div>
+<div class="bdd"><strong>Failure:</strong> Given a stale tab that still shows Mark Confirmed to the requester, when
+they click it, then they get "Only a manager can confirm a sub" and nothing is written.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2: A sub always covers the request's real dates</h3>
+<p><strong>Acceptance:</strong></p>
+<ul>
+  <li>However the requester orders things (sub first, date later, or dates edited afterwards), a saved sub's
+  dates are the request's dates at the moment of saving.</li>
+  <li>Mark Confirmed never stops with "no covered dates" because the stored dates drifted. If a sub's stored dates
+  overlap none of the request's dates, the confirm dialog lists the request's own dates, and the manager can see them
+  before writing anything.</li>
+</ul>
+<p><strong>Changes:</strong></p>
+<ul>
+  <li>Save (<code>:7372</code>): each sub's <code>dates</code> = the request's valid dates being saved, not the
+  add-time copy. The form offers no per-sub date choice today (every sub gets all dates when added), so no
+  choice is lost. The Kayleigh-mornings / Shelley-afternoons split is handled by times in the confirm dialog, not by
+  dates.</li>
+  <li><code>getSubCoverageDates</code>: an array whose overlap with the request's dates is EMPTY falls back to the
+  request's full dates, like the string/missing case already does. A partial overlap is still honoured.
+  The no-roster-match path at <code>:7876</code> already uses this fallback, and this change makes it the
+  rule everywhere.</li>
+</ul>
+<div class="decision-needed"><strong>Side effect to know about (not a backfill):</strong> the fallback is a code
+change, not a data change, but it also makes Mark Confirmed work on <em>existing</em> requests whose sub dates had
+drifted. Ivy's is one of them: once shipped, a manager could Undo → Mark Confirmed there instead of adding the shift by
+hand. If the shift was already added by hand, Mark Confirmed will see it and ask "already has a shift… Overwrite?"
+(<code>:7988</code>), and the answer is Cancel.</div>
+<div class="bdd"><strong>Happy:</strong> Given Ivy adds Sam as sub and THEN picks Oct 3, when she submits, then Sam's
+<code>dates</code> is <code>["2026-10-03"]</code> and Mark Confirmed writes Oct 3.</div>
+<div class="bdd"><strong>Edge:</strong> Given a request edited from Oct 3 to Oct 4 while un-approved, when saved, then
+the sub's dates become <code>["2026-10-04"]</code>. A sub already confirmed on Oct 3 keeps its <code>appliedOverrides</code>
+record for Oct 3, and the reversal uses that record, not <code>dates</code> (unchanged).</div>
+<div class="bdd"><strong>Edge:</strong> Given an old request whose sub has <code>dates: []</code>, when a manager clicks
+Mark Confirmed, then the dialog lists the request's dates and the write proceeds only on Confirm.</div>
+<div class="bdd"><strong>Failure:</strong> Given a request with no valid dates at all, then the existing "no covered
+dates" refusal still fires (the fallback of an empty list is empty) and nothing is written.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 3: "Coverage: Secured" warns while a sub is unconfirmed</h3>
+<p><strong>Acceptance:</strong></p>
+<ul>
+  <li>When a manager picks "Coverage: Secured" and any proposed sub is not confirmed, they see: <em>"Sam isn't
+  confirmed yet, so nothing has been added to their schedule and they haven't been emailed. To do that, use Mark
+  Confirmed next to their name. Mark coverage Secured anyway?"</em></li>
+  <li>Cancel leaves the status unchanged and the dropdown shows the old value. OK saves the label as today.</li>
+  <li>No warning when every sub is confirmed, when there are no proposed subs (coverage arranged some other way),
+  or for Pending / Partial / Not Needed.</li>
+</ul>
+<p><strong>Changes:</strong> <code>updateCoverageStatus</code> reads the request from <code>allTimeoffRequests</code>
+(the list the detail view was drawn from). On Cancel it re-renders the detail so the select snaps back.</p>
+<div class="bdd"><strong>Happy:</strong> Given a request with Sam unconfirmed, when the GM picks Secured and clicks
+Cancel, then nothing is written and the dropdown still reads Pending.</div>
+<div class="bdd"><strong>Edge:</strong> Given two subs, one confirmed, when Secured is picked, then the warning names
+only the unconfirmed one.</div>
+<div class="bdd"><strong>Failure:</strong> Given the request isn't in the in-memory list (stale view), then no warning
+can be computed, and the label is saved as today. The warning is advisory only; it never blocks a manager.</div>
+</div>
+
+<h2>Tests</h2>
+<ul>
+  <li><code>schedule-helpers.test.js</code>: <code>getSubCoverageDates</code> covers empty overlap → request dates,
+  partial overlap kept, empty request dates → empty.</li>
+  <li><code>schedule-editor-wiring.test.js</code> (the repo's source-shape ratchets): no
+  <code>toggleFormSubConfirmed</code> / "They agreed to cover" in <code>app.js</code>; the save maps sub
+  <code>dates</code> from the saved dates; Mark Confirmed rendered only under <code>isAdmin</code>; confirm branch
+  of <code>handleSubConfirmToggle</code> gated on <code>isManagerUser()</code>; <code>updateCoverageStatus</code>
+  confirms before writing Secured with an unconfirmed sub.</li>
+  <li>Existing emulator suites for sub confirm / edit reconcile (<code>timeoff-sub-confirm</code>,
+  <code>timeoff-schedule</code>) must stay green unchanged, which shows the edit path still carries confirmed subs.</li>
+  <li>Click-through on localhost (port 8093) against the emulator where the harness allows. Otherwise the manager
+  flow gets checked live after deploy on a throwaway request.</li>
+</ul>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+  <li>Rules: <strong>no change</strong>. <code>timeclock_timeoff</code> and <code>timeclock_schedules</code> rules are
+  untouched. Note: rules let a staff member update any field of their own request, so this fix is a UI guarantee,
+  not a rules guarantee. Tightening that is out of scope (it would need a rules release through the guard).</li>
+  <li>New collection: none. Bulk write/delete/import: none, so no snapshot needed.</li>
+  <li>Write shape: the request save is unchanged apart from each sub's <code>dates</code> value. No
+  <code>undefined</code> is introduced (dates is always an array). The confirm path's transaction is unchanged.</li>
+  <li>Spot-check after deploy: one new request's <code>proposedSubs[0]</code> in the console shows
+  <code>confirmed: false</code> and <code>dates</code> equal to the request's dates.</li>
+</ul>
+
+<h2>Completeness check: what if this stops part-way?</h2>
+<p>Each phase is a UI-only change in its own commit and is safe alone. Phase 1 without 2 still hits the
+"no covered dates" stop on drifted requests (today's behaviour). Phase 2 without 1 still lets requesters mark subs
+Confirmed (today's behaviour). Nothing ships until all three are committed, tested and reviewed. Then there's one
+Netlify deploy (sw version bump) after Christie's "okay to deploy?".</p>
+
+<h2>Resume instructions</h2>
+<ol>
+  <li>Read the Progress and Decisions Log below.</li>
+  <li><code>git -C ~/tinker-timeclock log --oneline -5</code>: each phase commits as <code>sub-confirm phase N: …</code>.</li>
+  <li>The Tinker Ticker rule applies: no file in the repo is edited without Christie's written approval in the
+  current session.</li>
+  <li>Jest matches copies inside <code>.claude/worktrees/</code>. If a stray worktree exists, confirm failures are
+  not from it before trusting a red run.</li>
+</ol>
+
+<h2>Progress</h2>
+<ul>
+  <li>Sep 29: plan drafted (v1). Not reviewed. Nothing executed.</li>
+</ul>
+
+<h2>Decisions Log</h2>
+<ul>
+  <li><strong>Sep 29, Christie:</strong> fix going forward only, no backtracking/backfill of existing requests.
+  Ivy's own request is being handled by hand (shift added in the Schedule Builder).</li>
+  <li><strong>Sep 29, Christie:</strong> remove the requester's ability to mark a sub confirmed entirely (her words:
+  "take away the option for a staff member to say coverage secured at all"). This supersedes the Aug 29
+  "one shared flag" decision in <code>ticker-timeoff-email-and-sub-assignment</code>. No replacement "agreed" field:
+  Coverage Notes covers it.</li>
+  <li><strong>Sep 29, Christie:</strong> include the "Coverage: Secured" warning (Phase 3).</li>
+  <li><strong>Sep 29, Claude:</strong> requester's Mark Confirmed hidden (defect #4). Undo is kept for the owner
+  because its existing paths are already safe for staff.</li>
+</ul>
+</body>
+</html>
