@@ -1,0 +1,745 @@
+diff --git a/README.md b/README.md
+index b0c708a..8013c4c 100644
+--- a/README.md
++++ b/README.md
+@@ -23,6 +23,27 @@ site/                    the only directory Netlify publishes
+ netlify.toml             publish = "site"
+ ```
+ 
++## `hist-rows.txt` format, and freezing a finished term
++
++One row per offering, pipe-separated:
++
++```
++term|name|loc|time|dow|kind|firstDate|lastDate|occ|enrolled|capacity|waitlist|enrolledAtStart[|x]
++```
++
++`kind` is `s` (weekly series), `c` (camp) or `o` (one-off). The optional 14th field `x` marks
++a section **cancelled** that term. Cancelled rows stay in the file on purpose: the term view
++shows a Cancelled tile ("N · seats withdrawn"), and Analytics leaves them out of every fill rate
++and counts them separately (tile + "Compare two terms").
++
++**When a term ends and is frozen into this file, every section in that term's `CANCELLED` list
++must be written with `x` and the capacity it had *before* it was cancelled.** Sawyer cancels a
++class by setting its capacity to 0 (the calendar then shows `0/0`), so the original seat count
++survives only in the board's own data — the live `RAW` row and `enrollment-snapshots.csv` keep
++it. Copy it from there; do not take a 0 from Sawyer. Spring 2026's three were recorded as 0
++and their counts had to come from Christie (Sep 28, 2026). A row with capacity 0 is dropped at
++load and counts nowhere.
++
+ `template.html` is the only file to edit. `site/index.html` is generated, and any hand edit to
+ it is lost on the next build. There used to be a second, artifact-flavored build output
+ (`enrollment.html`, no auth gate, for the Claude Artifact viewer) — retired once the app moved
+diff --git a/hist-rows.txt b/hist-rows.txt
+index ba91dab..19b87b6 100644
+--- a/hist-rows.txt
++++ b/hist-rows.txt
+@@ -166,10 +166,10 @@ S26|School Day Off Camp // Wheel Throwing! Personalized Plates|C|9:00a|Mo|o|2026
+ S26|Mini Makers|T|3:30p|Tu|s|2026-01-20|2026-05-05|15|12|14|0|14
+ S26|Continuing Sewing|T|5:00p|Tu|s|2026-01-20|2026-05-05|15|8|14|0|8
+ S26|Let's Sew! (ages 7 - 11)|T|5:00p|We|s|2026-01-21|2026-05-06|15|6|14|0|7
+-S26|Clay Class|T|5:00p|Th|s|2026-01-22|2026-05-07|15|0|0|0|0
+-S26|Drawing Portraits|T|6:30p|Th|s|2026-01-22|2026-05-07|15|0|0|1|0
++S26|Clay Class|T|5:00p|Th|s|2026-01-22|2026-05-07|15|0|12|0|0|x
++S26|Drawing Portraits|T|6:30p|Th|s|2026-01-22|2026-05-07|15|0|8|1|0|x
+ S26|Make-Together Workshop: Snuggle Planters|C|4:00p|Fr|o|2026-01-23|2026-01-23|1|5|14|0|5
+-S26|Let's Sew! (ages 6 - 9)|T|3:30p|We|s|2026-01-28|2026-05-06|14|0|0|0|0
++S26|Let's Sew! (ages 6 - 9)|T|3:30p|We|s|2026-01-28|2026-05-06|14|0|12|0|0|x
+ S26|Friday Art Night: Neon Wolf|T|6:00p|Fr|o|2026-01-30|2026-01-30|1|0|9|0|0
+ S26|Saturday Clay Day: Plant Stakes|C|2:15p|Sa|o|2026-01-31|2026-01-31|1|5|14|0|5
+ S26|Try-It-Out Night: Wheel Throwing!|C|6:00p|Sa|o|2026-01-31|2026-01-31|1|10|10|0|10
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..d88159b
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,8 @@
++{
++  "name": "tinker-enrollment-board",
++  "private": true,
++  "scripts": {
++    "build": "node build.js",
++    "test": "node --test tests/"
++  }
++}
+diff --git a/template.html b/template.html
+index 6f2b6c0..0a70ea0 100644
+--- a/template.html
++++ b/template.html
+@@ -332,6 +332,37 @@ td{padding:10px 14px; vertical-align:middle;}
+ .tcell .tbar i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+ .tcell .tag{position:absolute;top:12px;right:13px;font-size:10px;font-family:"Archivo",sans-serif;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink)}
+ 
++/* ---------- goals ---------- */
++.goalgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-top:14px}
++.goalcard{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 18px 16px;box-shadow:var(--shadow)}
++.goalcard h3{font-family:"Archivo",sans-serif;font-size:15px;font-weight:600;margin:0;color:var(--ink)}
++.gbig{font-family:"IBM Plex Mono",monospace;font-size:34px;font-weight:500;line-height:1.1;margin-top:8px;letter-spacing:-.02em}
++.gbig small{font-size:13px;color:var(--ink-3);letter-spacing:0}
++.gstatus{font-size:13px;color:var(--ink-2);margin-top:4px}
++.gstatus b{color:var(--ink)}
++.gtrack{position:relative;height:22px;background:var(--track);border-radius:6px;margin:54px 0 12px}
++.gfill{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:6px}
++.gmark{position:absolute;top:-46px;bottom:-4px;border-left:2px dashed var(--ink-3)}
++.gmark span{position:absolute;top:0;left:4px;font-size:11px;line-height:1.25;white-space:nowrap;color:var(--ink-2);font-family:"IBM Plex Mono",monospace;background:var(--surface);padding:0 3px}
++.gmark.hit{border-left-color:var(--good)} .gmark.hit span{color:var(--good)}
++.gmark.flip span{left:auto;right:4px;text-align:right}
++.grow{display:grid;grid-template-columns:150px 1fr 118px;gap:10px;align-items:center;font-size:13px;margin:7px 0}
++.gbar{height:10px;background:var(--track);border-radius:4px;position:relative;overflow:hidden}
++.gbar i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);opacity:.72}
++.grow .gn{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-2);text-align:right;white-space:nowrap}
++.grow.tracked{color:var(--ink-2)} .grow.tracked .gbar i{background:var(--ink-3);opacity:.5}
++.gdiv{border-top:1px dashed var(--line);margin:14px 0 4px;padding-top:8px;font-size:11px;color:var(--ink-3);
++  font-family:"Archivo",sans-serif;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
++.gcmp{font-size:12.5px;color:var(--ink-3);margin-top:12px}
++.gnote{font-size:12.5px;color:var(--ink-3);margin-top:14px;max-width:920px;line-height:1.55}
++.ghow{margin-top:18px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
++.ghow > summary{cursor:pointer;padding:12px 16px;font-family:"Archivo",sans-serif;font-size:13px;font-weight:600;color:var(--accent-ink)}
++.ghow .ghowbody{padding:0 16px 14px;font-size:12.5px;color:var(--ink-2)}
++.ghow table{border-collapse:collapse;width:100%;margin:8px 0}
++.ghow td,.ghow th{border-bottom:1px solid var(--line-2);padding:5px 8px;text-align:left;vertical-align:top}
++.ghow td.n,.ghow th.n{text-align:right;font-family:"IBM Plex Mono",monospace}
++@media (max-width:520px){ .grow{grid-template-columns:104px 1fr 96px} .gbig{font-size:28px} }
++
+ /* ---------- analytics ---------- */
+ :root{ --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#8a5cd6; --grid:#e1e0d9; --axis:#c3c2b7; }
+ @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){ --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#9d76e0; --grid:#2c2c2a; --axis:#383835; }}
+@@ -875,6 +906,25 @@ td.ws{text-align:right;white-space:nowrap;font-family:"IBM Plex Mono",monospace;
+     </div>
+   </div>
+ 
++  <!-- ============ GOALS ============ -->
++  <div id="goals" class="hide">
++    <section class="sec" style="margin-top:24px">
++      <div class="sec-head">
++        <h2 class="sec-title" id="goalTitle">Enrollment goals</h2>
++        <div class="fgroup" id="goalView">
++          <button data-v="both" aria-pressed="true">Side by side</button>
++          <button data-v="tinker" aria-pressed="false">Tinker</button>
++          <button data-v="clayhub" aria-pressed="false">Clay Hub</button>
++          <button data-v="together" aria-pressed="false">Together</button>
++        </div>
++      </div>
++      <p class="scope" id="goalSub"></p>
++      <div class="goalgrid" id="goalGrid"></div>
++      <p class="gnote" id="goalNote"></p>
++      <details class="ghow" id="goalHow"><summary>How units are counted</summary><div class="ghowbody" id="goalHowBody"></div></details>
++    </section>
++  </div>
++
+   <!-- ============ ANALYTICS ============ -->
+   <div id="analytics" class="hide">
+     <section class="sec" style="margin-top:24px">
+@@ -1018,7 +1068,7 @@ const HIST = `__HIST_ROWS__`;
+ 
+ /* Everything below only runs once real data has arrived from Firestore — wrapping it
+    in bootApp(DATA) is the whole fix: nothing here executes at parse time any more. */
+-function bootApp(DATA){
++function bootApp(DATA, GOALSDOC, PEVENTS){
+ const META=DATA.META||{}, BASELINE=DATA.BASELINE||{}, PREV=DATA.PREV||{},
+       RAW=DATA.RAW||"", DROPIN_SESSIONS=DATA.DROPIN_SESSIONS||"",
+       CANCELLED=new Set(DATA.CANCELLED||[]),
+@@ -1117,6 +1167,275 @@ const GROUPS = [
+ const GROUPLBL = Object.fromEntries(GROUPS.map(g=>[g[0],g[1]]));
+ const GROUPCOL = Object.fromEntries(GROUPS.map(g=>[g[0],g[2]]));
+ 
++/* ==== GOALS UNITS CORE ====
++   Pure functions, no DOM — tests/goals-units.test.js loads this block by its markers.
++   One enrollment unit = one Youth Tinker semester seat ($406 tuition). Every seat is worth its
++   TUITION / 406: materials are a wash, so they're left out. Every year is valued at this same
++   price table, so year-over-year growth measures enrollment, not price increases. Prices are
++   Christie's pricing calculator (tinker-pricing.netlify.app) as read on 2026-09-28; parties are
++   the $419 average backed out of the 15% tip log; the rest are her own figures that day.
++   Plan: ~/tinker-ai-configs/thoughts/plans/enrollment-goals.html */
++const UNIT_REF = 406;
++const GP = {
++  youth:406, youthWheel:488, homeschool:800, adultPaint:546, lifeDrawing:647, adultClay:633, quickSession:243,
++  dayoff:{ tinker:{"2h":38,"3h":58}, clayhub:{"2h":38,"3h":62} },
++  multiDay:{ tinker:{2:104,3:156,4:208,5:260}, clayhub:{2:104,3:168,4:224,5:275} },
++  summerWeek:{ tinker:{2:104,3:156,4:208,5:260}, clayhub:{2:104,3:156,4:208,5:275} },
++  fridayArtNight:41, clayDay:44, tryItOut:53, makeTogether:38,
++  party:419, memberMonth:260, privateEvent:{ tinker:500, clayhub:650, offsite:400 },
++  tinkerTimeClass:12, lacDay:12
++};
++/* Program order is the order the Goals tab draws its bars in. */
++const GOAL_PROGRAMS = [
++  ["semester","Semester classes"], ["summer","Summer camps"], ["dayoff","Day-off & break camps"],
++  ["workshop","Workshops"], ["party","Birthday parties"], ["members","Members"]
++];
++const GOAL_TRACKED = [["tinkertime","Tinker Time"], ["lac","Lunchtime Artists Club"], ["private","Private events"]];
++/* Clay Hub is its own business; every other location (TAS, Coal Creek, BMoCA) is Tinker. */
++const goalBiz = r => (r.loc==="C"||r.loc==="CH") ? "clayhub" : "tinker";
++const goalHour = t => { const m=String(t||"").match(/(\d+):(\d+)\s*([ap])/i); if(!m) return null;
++  let h=+m[1]; if(/p/i.test(m[3])&&h!==12) h+=12; if(/a/i.test(m[3])&&h===12) h=0; return h; };
++const GOAL_DAYOFF_RE = /school day off|(?=.*\bbreak\b)(?=.*\bcamp\b)/i;
++const GOAL_ADULT_TAS_RE = /watercolor|acrylic|\boils?\b|life drawing|community paint|realistic drawing|drawing portraits|intro to/i;
++/* Price one section's seat. Returns {prog, dollars, tracked, why} or null when no rule matches —
++   an unmatched section is reported as "not priced yet", never given a guessed weight. */
++function goalPrice(r){
++  const n=r.n||"", biz=goalBiz(r), summer=r.term==="U26";
++  const days = (()=>{ const m=n.match(/(\d)-Day/i); return m ? +m[1] : (r.occ>1&&r.occ<=5 ? r.occ : 1); })();
++  if(r.kind==="dropin" || /^Tinker Time/i.test(n))
++    return {prog:"tinkertime", dollars:GP.tinkerTimeClass, tracked:true, why:"$12 a class"};
++  if(/lunchtime artists/i.test(n))
++    return {prog:"lac", dollars:GP.lacDay*days, tracked:true, why:"$12 a day × "+days};
++  if(GOAL_DAYOFF_RE.test(n)){
++    if(days>1){ const p=GP.multiDay[biz][Math.min(days,5)]; return {prog:"dayoff", dollars:p, why:days+"-day camp"}; }
++    const h=goalHour(r.t), block=(h!==null&&h<12)?"3h":"2h";
++    return {prog:"dayoff", dollars:GP.dayoff[biz][block], why:(block==="3h"?"3-hour morning":"2-hour afternoon")+" day-off camp"};
++  }
++  if(r.kind==="camp" || /\b2-Day Camp\b/i.test(n)){
++    const d=Math.min(Math.max(days,2),5); return {prog:"summer", dollars:GP.summerWeek[biz][d], why:d+"-day camp week"};
++  }
++  if(r.kind==="series"){
++    let p, why;
++    if(/homeschool/i.test(n)){ p=GP.homeschool; why="homeschool"; }
++    else if(biz==="clayhub"){
++      if(/quick session/i.test(n)){ p=GP.quickSession; why="Quick Session"; }
++      else if(/\bages\b|teen|youth|continuing wheel/i.test(n)){ p=GP.youthWheel; why="youth wheel"; }
++      else { p=GP.adultClay; why="adult clay"; }
++    } else if(/life drawing/i.test(n)){ p=GP.lifeDrawing; why="Life Drawing"; }
++    else if(GOAL_ADULT_TAS_RE.test(n) && !/\bages\b|teen/i.test(n)){ p=GP.adultPaint; why="adult painting & drawing"; }
++    else { p=GP.youth; why="youth semester"; }
++    if(summer){ p=p/2; why+=", 8-week summer (½)"; }
++    return {prog:"semester", dollars:p, why};
++  }
++  if(/friday art night/i.test(n)) return {prog:"workshop", dollars:GP.fridayArtNight, why:"Friday Art Night"};
++  if(/clay day/i.test(n))         return {prog:"workshop", dollars:GP.clayDay, why:"Clay Day"};
++  if(/try-it-out/i.test(n))       return {prog:"workshop", dollars:GP.tryItOut, why:"Try-It-Out Night"};
++  if(/make-?together/i.test(n))   return {prog:"workshop", dollars:GP.makeTogether, why:"Make-Together"};
++  return null;
++}
++/* Add up a set of sections (plus parties, members and private events, which don't come from
++   Sawyer's class cards) into per-business, per-program seats and units. Cancelled sections count
++   nowhere — they never ran. extras = { parties:{tinker:{booked,offered},clayhub:{…}},
++   memberMonths:{clayhub:{filled,offered}}, privateEvents:{tinker:n, offsite:n, clayhub:n} } */
++function goalUnits(rows, extras, opts){
++  extras = extras || {};
++  /* cancelledWeight: how much of a cancelled section's capacity counts as offered. Christie,
++     2026-09-28: 0.5 — a cancelled class still costs most of its overhead (the teacher is paid
++     anyway, rent doesn't change), and the miss is shared between admin scheduling and demand. */
++  const cw = opts && opts.cancelledWeight!=null ? opts.cancelledWeight : 1;
++  const blank = () => ({seatsFilled:0, seatsOffered:0, unitsFilled:0, unitsOffered:0, dollars:0});
++  const out = {tinker:{}, clayhub:{}, unpriced:[], priced:[]};
++  const add = (biz, prog, f, o, dollars) => { const b=out[biz][prog]=out[biz][prog]||blank();
++    b.seatsFilled+=f; b.seatsOffered+=o; b.unitsFilled+=f*dollars/UNIT_REF; b.unitsOffered+=o*dollars/UNIT_REF; b.dollars+=f*dollars; };
++  /* A section cancelled for low enrollment still counts as OFFERED, at cancelledWeight — it was put
++     on sale and didn't sell, which is itself an enrollment result (Christie, 2026-09-28). Its 0
++     seats sold add nothing filled. cancelledOffered = the units it adds to "offered" (weighted);
++     cancelledFull = its whole capacity, for the admin line. */
++  out.tinker.cancelledOffered=0; out.clayhub.cancelledOffered=0;
++  out.tinker.cancelledFull=0; out.clayhub.cancelledFull=0; out.tinker.cancelledSections=0; out.clayhub.cancelledSections=0;
++  (rows||[]).forEach(r=>{
++    if(!(r.c>0)) return;
++    const p=goalPrice(r);
++    if(!p){ out.unpriced.push(r); return; }
++    out.priced.push({r, p});
++    if(r.cancelled){ const b=goalBiz(r);
++      add(b, p.prog, 0, r.c*cw, p.dollars);
++      if(!p.tracked){ out[b].cancelledOffered+=r.c*cw*p.dollars/UNIT_REF; out[b].cancelledFull+=r.c*p.dollars/UNIT_REF; out[b].cancelledSections++; }
++      return; }
++    add(goalBiz(r), p.prog, r.e, r.c, p.dollars);
++  });
++  const pt=extras.parties||{};
++  ["tinker","clayhub"].forEach(b=>{ if(pt[b]) add(b,"party",pt[b].booked||0,pt[b].offered||0,GP.party); });
++  const mm=extras.memberMonths&&extras.memberMonths.clayhub;
++  if(mm) add("clayhub","members",mm.filled||0,mm.offered||0,GP.memberMonth);
++  /* Off-site private events belong to Tinker's business but earn less ($400 vs $500). */
++  const pe=extras.privateEvents||{};
++  if(pe.tinker)  add("tinker","private",pe.tinker,0,GP.privateEvent.tinker);
++  if(pe.offsite) add("tinker","private",pe.offsite,0,GP.privateEvent.offsite);
++  if(pe.clayhub) add("clayhub","private",pe.clayhub,0,GP.privateEvent.clayhub);
++  ["tinker","clayhub"].forEach(b=>{
++    const inGoal=Object.keys(out[b]).filter(k=>GOAL_PROGRAMS.some(g=>g[0]===k));
++    /* (cancelledOffered is a number, not a program, so the filter above skips it) */
++    out[b].total = inGoal.reduce((t,k)=>({unitsFilled:t.unitsFilled+out[b][k].unitsFilled,
++      unitsOffered:t.unitsOffered+out[b][k].unitsOffered, dollars:t.dollars+out[b][k].dollars}),
++      {unitsFilled:0, unitsOffered:0, dollars:0});
++  });
++  return out;
++}
++/* Which Good / Better / Best level a business has reached. The goal is % of capacity (filled ÷
++   offered, in units), like the 2025 slides, because overhead is paid on every seat offered.
++   A level only counts once the FLOOR is met too — at least as many units sold as 2025 — so a
++   smaller schedule run fuller can't earn a level the business didn't grow into. Units needed
++   assume new enrollment lands in seats already offered. levels = {good:72, better:78, best:85}. */
++function goalLevel(filled, offered, floor, levels){
++  const pct = offered>0 ? 100*filled/offered : 0;
++  const order=[["good","Good"],["better","Better"],["best","Best"]];
++  const floorMet = !(floor>0) || filled>=floor;
++  const need = k => Math.max(0, Math.ceil(levels[k]/100*offered - filled - 1e-9), floor>0 ? Math.ceil(floor-filled) : 0);
++  const reached = order.filter(([k])=>pct>=levels[k] && floorMet);
++  const next = order.find(([k])=>!(pct>=levels[k] && floorMet));
++  return { pct, floorMet, floorShort: floorMet?0:Math.ceil(floor-filled),
++    level: reached.length ? reached[reached.length-1] : null,
++    next: next ? {key:next[0], name:next[1], units:need(next[0])} : null };
++}
++/* ==== END GOALS UNITS CORE ==== */
++
++/* ================= GOALS TAB =================
++   Reads enrollmentBoard/goals (GOALSDOC). Christie, 2026-09-28: the goal is % OF CAPACITY in
++   enrollment units, per business, against Good / Better / Best lines (GOALSDOC.levels — the 2025
++   slides used 72 / 78 / 85), because overhead is paid on every seat offered whether it fills or
++   not. Two guards:
++   - FLOOR (Together view only): a level only counts once both businesses together have sold at
++     least 2025's units (GOALSDOC.floor.together), so a smaller schedule run fuller can't earn a
++     level it didn't grow into. Per-business floors were dropped: 2025's split is estimated.
++   - Clay Hub's MEMBERS are shown but kept out of its % and floor (always full — they'd lift the
++     % without one extra class seat), unless GOALSDOC.membersInPercent is true.
++   Cancelled sections count as offered at GOALSDOC.cancelledWeight (0.5: split responsibility). */
++let goalViewSel="both";
++const GOALBIZ=[["tinker","Tinker Art Studio"],["clayhub","Clay Hub"]];
++const fmtU=n=>Math.round(n).toLocaleString();
++function goalRows(year){
++  const yy=String(year).slice(2);
++  return ["S"+yy,"U"+yy,"F"+yy].filter(id=>byId[id]).reduce((a,id)=>a.concat(byId[id].rows),[]);
++}
++/* One business's numbers, or both added together ("together"). */
++function goalSlice(R, key){
++  const keys = key==="together" ? ["tinker","clayhub"] : [key];
++  const progs={}, cx={full:0, counted:0, sections:0}; let filled=0, offered=0, dollars=0;
++  keys.forEach(b=>{
++    cx.full+=R[b].cancelledFull||0; cx.counted+=R[b].cancelledOffered||0; cx.sections+=R[b].cancelledSections||0;
++    Object.keys(R[b]).forEach(p=>{ if(p==="total"||typeof R[b][p]!=="object") return;
++      const s=R[b][p], d=progs[p]=progs[p]||{seatsFilled:0,seatsOffered:0,unitsFilled:0,unitsOffered:0,dollars:0};
++      Object.keys(d).forEach(k=>d[k]+=s[k]); });
++    filled+=R[b].total.unitsFilled; offered+=R[b].total.unitsOffered; dollars+=R[b].total.dollars; });
++  const m = GOALSDOC.membersInPercent===true ? null : progs.members;
++  /* The floor applies only where 2025 is solid: the combined total comes straight off the 2025
++     slides, while the Tinker / Clay Hub split of 2025 is partly estimated (Christie, 2026-09-28). */
++  const floor = (GOALSDOC.floor||{})[key]||0;
++  return {progs, filled, offered, dollars, cx, floor, key,
++    pctFilled: filled-(m?m.unitsFilled:0), pctOffered: offered-(m?m.unitsOffered:0), membersOut: !!m};
++}
++function goalPanel(label, S, note){
++  /* Each view has its own lines: Clay Hub is a much smaller operation and easier to fill, so its
++     bar is higher (GOALSDOC.levels.tinker / .clayhub / .together). */
++  const LV=GOALSDOC.levels||{}, L=LV[S.key]||(LV.good!=null?LV:{good:72,better:78,best:85});
++  const lv=[["good","Good"],["better","Better"],["best","Best"]];
++  const g=goalLevel(S.pctFilled, S.pctOffered, S.floor, L);
++  const status = (g.level ? 'At <b>'+g.level[1]+'</b>' : 'Not yet at <b>Good</b>')
++    + (g.next ? ' · <b>'+fmtU(g.next.units)+'</b> more units to '+g.next.name+' ('+L[g.next.key]+'%)' : ' · top level reached');
++  /* Together's Good line is set where 2026 matches 2025's units (74% of 2026's final capacity,
++     Christie 2026-09-28), so the floor is only a background check: shown only if it ever
++     disagrees with the percentage (i.e. the % clears Good but the units don't). */
++  const floorLine = S.floor>0 && !g.floorMet && g.pct>=L.good ? '<p class="gstatus">Floor — sell at least 2025’s '+fmtU(S.floor)+' units: '
++    +(g.floorMet ? '<b>met</b> ('+fmtU(S.pctFilled)+' sold)' : '<b>'+fmtU(g.floorShort)+' to go</b> ('+fmtU(S.pctFilled)+' sold)')+'</p>' : '';
++  /* 0–100% track like the 2025 slides; the three lines sit a few points apart, so labels stack */
++  const marks = lv.map(([k,l],i)=>{ const hit=g.pct>=L[k]&&g.floorMet;
++    return '<div class="gmark'+(hit?' hit':'')+(L[k]>70?' flip':'')+'" style="left:'+L[k]+'%">'
++      +'<span style="top:'+(i*14)+'px">'+l+' '+L[k]+'%</span></div>'; }).join("");
++  const row=(lab,s,tracked,txt)=>'<div class="grow'+(tracked?' tracked':'')+'"><span>'+lab+'</span>'
++    +'<div class="gbar"><i style="width:'+(s&&s.unitsOffered?Math.min(100,100*s.unitsFilled/s.unitsOffered):0)+'%"></i></div>'
++    +'<span class="gn">'+txt+'</span></div>';
++  const progRows = GOAL_PROGRAMS.filter(([k])=>S.progs[k]).map(([k,l])=>{ const s=S.progs[k];
++    const pc=s.unitsOffered?Math.round(100*s.unitsFilled/s.unitsOffered)+'%':'';
++    return row(l, s, false, (k==="members"&&S.membersOut ? fmtU(s.unitsFilled)+' / '+fmtU(s.unitsOffered)+' · aside'
++      : pc+' · '+fmtU(s.unitsFilled)+' / '+fmtU(s.unitsOffered))); }).join("");
++  const tr=S.progs;
++  const trackedRows = (tr.tinkertime?row("Tinker Time", tr.tinkertime, true, tr.tinkertime.seatsFilled+' / '+tr.tinkertime.seatsOffered+' seats'):"")
++    + (tr.lac?row("Lunchtime Artists Club", tr.lac, true, tr.lac.seatsFilled+' / '+tr.lac.seatsOffered+' seats'):"")
++    + (tr.private?'<div class="grow tracked"><span>Private events</span><div></div><span class="gn">'+tr.private.seatsFilled+' booked</span></div>':"");
++  const cw=GOALSDOC.cancelledWeight!=null?GOALSDOC.cancelledWeight:0.5;
++  const sched = S.cx.sections ? '<p class="gcmp">Scheduling: '+S.cx.sections+' section'+(S.cx.sections>1?'s':'')+' cancelled for low enrollment ('
++    +fmtU(S.cx.full)+' units) — counted as offered at '+(cw===0.5?'half':Math.round(cw*100)+'%')+' ('+fmtU(S.cx.counted)+' units).</p>' : '';
++  return '<div class="goalcard"><h3>'+label+'</h3>'
++    +'<div class="gbig">'+g.pct.toFixed(1)+'% <small>full · '+fmtU(S.pctFilled)+' of '+fmtU(S.pctOffered)+' units'+(S.membersOut?' (members aside)':'')+'</small></div>'
++    +'<p class="gstatus">'+status+'</p>'+floorLine
++    +'<div class="gtrack"><div class="gfill" style="width:'+Math.min(100,g.pct)+'%"></div>'+marks+'</div>'
++    +progRows
++    +(trackedRows?'<div class="gdiv">Tracked, not in the goal</div>'+trackedRows:'')
++    +sched+(note?'<p class="gcmp">'+note+'</p>':'')+'</div>';
++}
++/* Parties come from the refresh (DATA.PARTIES, one entry per calendar month, "T"/"C" booked and
++   open slots from Sawyer's Scheduled and Available calendar views); members from the goals doc;
++   private events from the Private Events app. GOALSDOC.extras, if present, fills any source that
++   isn't available — a local-testing fallback, not how the live board is fed. */
++function goalExtras(year){
++  const fb=GOALSDOC.extras||{}, ex={};
++  const P=DATA.PARTIES||{}, months=Object.keys(P).filter(k=>k.startsWith(year+"-"));
++  if(months.length){
++    const sum=b=>months.reduce((a,m)=>{ const x=(P[m]||{})[b]||{}; a.booked+=x.booked||0; a.offered+=(x.booked||0)+(x.open||0); return a; },{booked:0,offered:0});
++    ex.parties={tinker:sum("T"), clayhub:sum("C")}; ex.partyMonths=months.length;
++  } else if(fb.parties) ex.parties=fb.parties;
++  ex.memberMonths=(GOALSDOC.members)||fb.memberMonths;
++  if(PEVENTS){ ex.privateEvents=PEVENTS[year]||{tinker:0,clayhub:0,offsite:0}; }
++  else if(fb.privateEvents) ex.privateEvents=fb.privateEvents;
++  else ex.privateEventsUnreadable=true;
++  return ex;
++}
++function renderGoals(){
++  const grid=document.getElementById("goalGrid");
++  if(!GOALSDOC || !GOALSDOC.levels){
++    document.getElementById("goalTitle").textContent="Enrollment goals";
++    document.getElementById("goalSub").textContent="";
++    grid.innerHTML='<div class="goalcard"><h3>Goals not set yet</h3><p class="gstatus">This year’s Good / Better / Best targets haven’t been saved to the board. Ask a Claude session to set them (enrollmentBoard/goals).</p></div>';
++    document.getElementById("goalNote").textContent=""; document.getElementById("goalHowBody").innerHTML="";
++    return;
++  }
++  const year=GOALSDOC.year||2026;
++  const R=goalUnits(goalRows(year), goalExtras(year), {cancelledWeight: GOALSDOC.cancelledWeight!=null ? GOALSDOC.cancelledWeight : 0.5});
++  const asOf=META.updated?new Date(META.updated).toLocaleDateString(undefined,{month:"long",day:"numeric",year:"numeric"}):"";
++  /* The page header is what lands in a screenshot, so it names the goals, not the fall term. */
++  document.getElementById("pageTitle").textContent=year+" Enrollment Goals";
++  document.getElementById("pageSub").textContent="Spring, Summer and Fall "+year+(asOf?" · as of "+asOf:"");
++  document.getElementById("goalTitle").textContent="Good · Better · Best";
++  document.getElementById("goalSub").textContent="The goal is how full we ran, counted in enrollment units: one unit is one Youth Tinker semester seat ($"+UNIT_REF
++    +" tuition), and every other seat counts by its tuition \u2014 so a camp day weighs less than a semester seat.";
++  document.querySelectorAll("#goalView button").forEach(b=>{
++    b.setAttribute("aria-pressed", String(b.dataset.v===goalViewSel));
++    b.onclick=()=>{ goalViewSel=b.dataset.v; renderGoals(); }; });
++  const chNote=GOALSDOC.clayhubNote||"";
++  const views = goalViewSel==="both" ? ["tinker","clayhub"] : [goalViewSel];
++  grid.innerHTML = views.map(v=>goalPanel(v==="together"?"Tinker + Clay Hub together":GOALBIZ.find(b=>b[0]===v)[1],
++    goalSlice(R,v), v==="clayhub"?chNote:"")).join("");
++  const ex=goalExtras(year);
++  document.getElementById("goalNote").innerHTML=(GOALSDOC.method||"")
++    +(!ex.parties?' <b>Birthday parties aren’t counted yet</b> — they come in with the next refresh.'
++      :(ex.partyMonths && ex.partyMonths<12?' Birthday parties cover '+ex.partyMonths+' of 12 months so far.':''))
++    +(ex.privateEventsUnreadable?' Private events aren’t readable with this account, so they’re left off.':'')
++    +(R.unpriced.length?' <b>'+R.unpriced.length+' section'+(R.unpriced.length>1?'s aren’t':' isn’t')+' priced yet</b> and '+(R.unpriced.length>1?'are':'is')+' left out — see How units are counted.':'');
++  /* How units are counted: every priced section with its rule, grouped by business and program */
++  const byProg={}; R.priced.forEach(({r,p})=>{ const k=goalBiz(r)+"|"+p.prog; (byProg[k]=byProg[k]||[]).push({r,p}); });
++  const progName=k=>(GOAL_PROGRAMS.concat(GOAL_TRACKED).find(g=>g[0]===k)||[k,k])[1];
++  let h='<p>One unit = $'+UNIT_REF+' of tuition. Materials aren’t counted. Every year is valued at the same prices, so growth means more enrollment, not a price increase.</p>';
++  GOALBIZ.forEach(([b,bl])=>{
++    h+='<table><tr><th colspan="5">'+bl+'</th></tr><tr><th>Section</th><th>Term</th><th>Counted as</th><th class="n">Seats</th><th class="n">Units</th></tr>';
++    Object.keys(byProg).filter(k=>k.startsWith(b+"|")).sort().forEach(k=>{
++      byProg[k].forEach(({r,p})=>{ h+='<tr><td>'+esc(r.n)+(r.cancelled?' <span class="cxpill">cancelled</span>':'')+'</td><td>'+(r.term||"")+'</td><td>'+esc(progName(p.prog))+' · '+esc(p.why)+' · $'+Math.round(p.dollars)+'</td>'
++        +'<td class="n">'+r.e+' / '+r.c+'</td><td class="n">'+(p.tracked?'—':(r.e*p.dollars/UNIT_REF).toFixed(1))+'</td></tr>'; }); });
++    h+='</table>'; });
++  if(R.unpriced.length) h+='<p><b>Not priced yet:</b> '+R.unpriced.map(r=>esc(r.n)+' ('+r.term+')').join(", ")+'</p>';
++  document.getElementById("goalHowBody").innerHTML=h;
++}
++
+ /* ---- current term ---- */
+ const CURRENT = RAW.trim().split("\n").filter(l=>l).map(l=>{
+   const p=l.split("|"), e=+p[5], c=+p[6];
+@@ -1169,8 +1488,12 @@ const HISTROWS = HIST.trim().split("\n").map(l=>{
+   return {term:p[0], n:p[1], loc:p[2], t:p[3], dow:p[4],
+     kind: isDropin(p[1]) ? "dropin" : {s:"series",c:"camp",o:"oneoff"}[p[5]],
+     first:p[6], last:p[7], occ:+p[8], e, c, w:+p[11], eStart:+p[12],
+-    pct: c?Math.round(e/c*100):0, status:status(e,c)};
+-}).filter(r=>r.c>0);   // a handful of cancelled listings carry no capacity
++    pct: c?Math.round(e/c*100):0, status:status(e,c),
++    /* A 14th field "x" marks a section cancelled that term. Its capacity is the seat count
++       it had BEFORE cancelling — Sawyer zeroes capacity when a class is cancelled, so that
++       number has to be recorded here or it's gone (Spring 2026's came from Christie). */
++    cancelled: p[13]==="x"};
++}).filter(r=>r.c>0);   // rows with no capacity on record carry nothing to count
+ 
+ const TERMS = [
+   {id:"F26", label:"Fall 2026", live:true,  title:"Fall Semester Enrollment", range:"August 24 – December 31, 2026", rows:CURRENT},
+@@ -1219,17 +1542,23 @@ document.getElementById("termTabs").innerHTML = TERMS.map(t=>
+   '<button role="tab" data-t="'+t.id+'" aria-selected="'+(t.id===state.term)+'">'+t.label+
+   (t.live?'<span class="live" title="updates twice daily"></span>':'')+'</button>').join("")
+   + '<button role="tab" data-t="SCH" aria-selected="false" style="margin-left:auto">Schedule</button>'
+-  + '<button role="tab" data-t="AN" aria-selected="false">Analytics</button>';
++  + '<button role="tab" data-t="AN" aria-selected="false">Analytics</button>'
++  + '<button role="tab" data-t="GOALS" aria-selected="false">Goals</button>';
+ document.getElementById("termTabs").addEventListener("click", ev=>{
+   const b=ev.target.closest("button"); if(!b) return;
+   const t=b.dataset.t;
+   document.querySelectorAll("#termTabs button").forEach(x=>x.setAttribute("aria-selected", String(x.dataset.t===t)));
+-  const analytics=(t==="AN"), sched=(t==="SCH"), special=analytics||sched;
++  const analytics=(t==="AN"), sched=(t==="SCH"), goals=(t==="GOALS"), special=analytics||sched||goals;
+   TERMVIEW.forEach(id=>document.getElementById(id).classList.toggle("hide", special));
+   document.getElementById("analytics").classList.toggle("hide", !analytics);
++  document.getElementById("goals").classList.toggle("hide", !goals);
+   document.getElementById("schedule").classList.toggle("hide", !sched);
+   document.body.classList.toggle("sched", sched);
+   setLandscape(sched);
++  if(goals){ renderGoals(); return; }
++  /* Goals renames the page header for screenshots; put the term's back for every other view. */
++  document.getElementById("pageTitle").textContent=byId[state.term].title;
++  document.getElementById("pageSub").textContent=byId[state.term].range+" · "+byId[state.term].rows.length+" offerings";
+   if(sched){ renderSchedule(); return; }
+   if(analytics){ renderAnalytics(); return; }
+   state.term=t; state.kind="all"; state.status="all"; state.loc="all";
+@@ -1317,8 +1646,18 @@ function renderView(){
+   const full=live.filter(r=>r.status==="full").length;
+   const wait=S(live,"w"), waitClasses=live.filter(r=>r.w>0).length;
+ 
++  /* The headline blends weekly classes with every camp and workshop in the term, which reads
++     as "too many seats" to anyone thinking in weekly-class terms. When both are in view, say
++     how the total splits. A 16-week class is still one seat per spot, not one per week. */
++  const wk=live.filter(r=>groupOf(r)==="class"), oth=live.filter(r=>groupOf(r)!=="class");
++  const othLbl = oth.some(r=>r.kind==="dropin") ? "camps, workshops & drop-ins" : "camps & workshops";
++  const split = (wk.length && oth.length)
++    ? '<br>Weekly classes '+S(wk,"e")+' / '+S(wk,"c")+' ('+Math.round(100*S(wk,"e")/Math.max(1,S(wk,"c")))+'%) · '
++      + othLbl+' '+S(oth,"e")+' / '+S(oth,"c")
++    : "";
++
+   document.getElementById("tiles").innerHTML =
+-    tile("Seats filled", pct+'<span class="unit">%</span>', pct, "var(--accent)", e+" enrolled of "+c+" seats") +
++    tile("Seats filled", pct+'<span class="unit">%</span>', pct, "var(--accent)", e+" enrolled of "+c+" seats"+split) +
+     tile(T.live?"Empty seats":"Seats left empty", String(c-e), c?Math.round(100*(c-e)/c):0, "var(--serious)",
+       bits.length ? "In this view" : (T.live?"Across the whole term":"Never sold")) +
+     (T.live
+@@ -1345,12 +1684,15 @@ function tile(lab, val, meterPct, meterColor, note){
+ }
+ 
+ function renderCallout(T, rows, wait){
+-  const waiting=rows.filter(r=>r.w>0).sort((a,b)=>b.w-a.w);
++  /* Same basis as the tiles: a cancelled section's seats aren't on sale, so they aren't
++     "empty seats" — counting them here made the callout disagree with the Empty seats tile. */
++  const live=rows.filter(r=>!r.cancelled);
++  const waiting=live.filter(r=>r.w>0).sort((a,b)=>b.w-a.w);
+   const co=document.getElementById("callout");
+   if(!waiting.length){ co.classList.add("hide"); return; }
+   co.classList.remove("hide");
+   const top=waiting.slice(0,4), topSum=S(top,"w");
+-  const empty=S(rows,"c")-S(rows,"e");
++  const empty=S(live,"c")-S(live,"e");
+   let title, body;
+   if(T.live){
+     title = wait+" people are waiting while "+empty+" seats sit empty";
+@@ -1380,7 +1722,9 @@ const REFRESH_REQUEST =
+   "Refresh my Tinker enrollment dashboard from Sawyer.\n\n" +
+   "Follow ~/tinker-ai-configs/refresh-task-prompt.txt exactly.\n\n" +
+   "Scope limit: open ONLY the monthly_calendar URLs that file's Step 3 derives from the current " +
+-  "term's date range — one per month the term spans, plus one extra month right before it. Do " +
++  "term's date range — one per month the term spans, plus one extra month right before it — and " +
++  "the monthly_calendar and monthly_calendar/available pages its Step 3b uses to count birthday " +
++  "parties (card names only). Do " +
+   "not open any other page in my Sawyer account — no rosters, no registrations, no customer or student " +
+   "profiles, no billing, no reports, no settings — and do not click through from a calendar " +
+   "card. Those pages hold student names, guardian contacts and payment details, and this task " +
+@@ -1666,7 +2010,7 @@ function renderRollups(T, rows){
+ function renderTrend(){
+   const order=["F25","S26","U26","F26"];
+   document.getElementById("trend").innerHTML = order.map(id=>{
+-    const T=byId[id], rows=T.rows;
++    const T=byId[id], rows=T.rows.filter(r=>!r.cancelled);
+     const e=S(rows,"e"), c=S(rows,"c"), p=c?Math.round(100*e/c):0, w=S(rows,"w");
+     /* Growth is only meaningful for recurring classes — a one-off camp has a single
+        reading, so including them flattens the signal. */
+@@ -1781,11 +2125,13 @@ function similar(a,b){
+ /* Same T/TAS and C/CH reconciliation renderBreakdown's own loc filter already does —
+    historical rows use the short codes, live rows use the full ones. */
+ const locGroupOf = loc => OFFSITE.has(loc) ? "offsite" : (loc==="C"||loc==="CH") ? "C" : "T";
+-function termRows(id){
+-  return byId[id].rows.filter(r=>anState.cats.has(groupOf(r))
++/* Cancelled sections never ran, so every chart, table and comparison leaves them out —
++   their seats weren't on sale. They're counted on their own through termCancelled(). */
++const inAnScope = r => anState.cats.has(groupOf(r))
+     && (anState.loc==="all" || locGroupOf(r.loc)===anState.loc)
+-    && (anState.aud==="any" || audOf(r)===anState.aud));
+-}
++    && (anState.aud==="any" || audOf(r)===anState.aud);
++function termRows(id){ return byId[id].rows.filter(r=>!r.cancelled && inAnScope(r)); }
++function termCancelled(id){ return byId[id].rows.filter(r=>r.cancelled && inAnScope(r)); }
+ function agg(rows){
+   const c=S(rows,"c"), e=S(rows,"e");
+   return {n:rows.length, c, e, w:S(rows,"w"), empty:c-e, pct:c?Math.round(100*e/c):0,
+@@ -2119,7 +2465,9 @@ function renderCompare(){
+       +'<p class="dfrom">'+x+' → '+y+'</p></div>'; };
+   document.getElementById("cmpDelta").innerHTML =
+     d("Offerings",aa.n,ab.n)+d("Seats offered",aa.c,ab.c)+d("Students enrolled",aa.e,ab.e)
+-    +d("People waiting",aa.w,ab.w)+d("Recurring classes",aa.series,ab.series);
++    +d("People waiting",aa.w,ab.w)+d("Recurring classes",aa.series,ab.series)
++    +(()=>{ const ca=termCancelled(A), cb=termCancelled(B);
++      return (ca.length||cb.length) ? d("Sections cancelled",ca.length,cb.length)+d("Seats withdrawn",S(ca,"c"),S(cb,"c")) : ""; })();
+ 
+   const idx=rows=>{ const m=new Map(); rows.forEach(r=>{ const k=norm(r.n);
+     if(!m.has(k)) m.set(k,{n:r.n,rows:[]}); m.get(k).rows.push(r); }); return m; };
+@@ -2342,7 +2690,13 @@ function renderAnalytics(){
+     tile("Seats offered", String(a.c), 100, "var(--s1)", ts.length+" term"+(ts.length>1?"s":"")+" · "+a.n+" offerings") +
+     tile("Seats filled", String(a.e), a.c?Math.round(100*a.e/a.c):0, "var(--s3)", a.pct+"% of everything offered") +
+     tile("Seats unsold", String(a.empty), a.c?Math.round(100*a.empty/a.c):0, "var(--serious)", "Capacity you staffed and didn't sell") +
+-    tile("People turned away", String(a.w), 100, "var(--s2)", "Waitlisted across "+rows.filter(r=>r.w>0).length+" offerings");
++    tile("People turned away", String(a.w), 100, "var(--s2)", "Waitlisted across "+rows.filter(r=>r.w>0).length+" offerings") +
++    (()=>{ const cx=ts.map(t=>({t, r:termCancelled(t)})).filter(x=>x.r.length);
++      if(!cx.length) return "";
++      const all=cx.reduce((a,x)=>a.concat(x.r),[]);
++      return tile("Cancelled", String(all.length), 100, "var(--ink-3)",
++        S(all,"c")+" seats withdrawn"+(cx.length>1||ts.length>1
++          ? " · "+cx.map(x=>byId[x.t].label+" "+x.r.length+" ("+S(x.r,"c")+" seats)").join(", ") : "")); })();
+ 
+   const opts=ORDER.map(t=>'<option value="'+t+'">'+byId[t].label+'</option>').join("");
+   const sa=document.getElementById("cmpA"), sb=document.getElementById("cmpB");
+@@ -2916,12 +3270,35 @@ function showAccessRestricted(){
+     +'<p>This dashboard is limited to managers and admins, or staff with Enrollment Board access.'
+     +' Contact your administrator if you believe you should have access.</p></div>';
+ }
++/* Booked private events per year and location, read from the Private Events app's own
++   collection (rule: managers, or staff with private-events access — anyone else gets null and
++   the Goals tab says so). Only the counts leave this function: those docs carry client names,
++   emails and phone numbers, and the board has no use for any of it. Booked = the app's
++   "Confirmed & Deposit" or "Completed" stage; the date is the scheduled one, else the preferred. */
++async function countPrivateEvents(){
++  try{
++    const s=await firebase.firestore().collection("privateEvents").get();
++    const out={};
++    s.forEach(d=>{ const r=d.data();
++      if(r.stage!=="confirmed" && r.stage!=="completed") return;
++      const y=String(r.scheduledDateTime||r.preferredDateTime||"").slice(0,4);
++      if(!/^\d{4}$/.test(y)) return;
++      const loc = r.location==="clayhub" ? "clayhub" : r.location==="offsite" ? "offsite" : "tinker";
++      out[y]=out[y]||{tinker:0, clayhub:0, offsite:0}; out[y][loc]++; });
++    return out;
++  }catch(err){ console.warn("privateEvents not readable:", err); return null; }
++}
+ async function loadEnrollmentData(){
+   showDataLoading();
+   try{
+-    const snap=await firebase.firestore().collection("enrollmentBoard").doc("current").get();
++    const col=firebase.firestore().collection("enrollmentBoard");
++    /* The goals doc is optional: if it's missing or unreadable the board still loads, and the
++       Goals tab says "not set yet" rather than drawing zero targets. */
++    const [snap, goalSnap, pe]=await Promise.all([ col.doc("current").get(),
++      col.doc("goals").get().catch(err=>{ console.warn("enrollmentBoard/goals not readable:", err); return null; }),
++      countPrivateEvents() ]);
+     if(!snap.exists){ showDataLoading("No enrollment data yet \u2014 run a refresh first."); return; }
+-    bootApp(snap.data());
++    bootApp(snap.data(), goalSnap && goalSnap.exists ? goalSnap.data() : null, pe);
+   }catch(err){
+     if(err && err.code==="permission-denied"){ showAccessRestricted(); return; }
+     showDataLoading("Something went wrong loading the dashboard. "+((err&&err.message)||""));
+diff --git a/tests/goals-units.test.js b/tests/goals-units.test.js
+new file mode 100644
+index 0000000..78844a7
+--- /dev/null
++++ b/tests/goals-units.test.js
+@@ -0,0 +1,141 @@
++/* Tests for the GOALS UNITS CORE block in template.html (the price-weighted enrollment units
++   behind the Goals tab). Run: npm test. For a printed 2026 report add REPORT=1, and point
++   F26_FIXTURE at a JSON file shaped like enrollmentBoard/current to include the live fall term:
++     REPORT=1 F26_FIXTURE=/path/to/fixture.json npm test
++   Plan: ~/tinker-ai-configs/thoughts/plans/enrollment-goals.html */
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const fs = require('fs');
++const path = require('path');
++
++const root = path.join(__dirname, '..');
++const tpl = fs.readFileSync(path.join(root, 'template.html'), 'utf8');
++const start = tpl.indexOf('/* ==== GOALS UNITS CORE ====');
++const end = tpl.indexOf('/* ==== END GOALS UNITS CORE ==== */');
++assert.ok(start > 0 && end > start, 'GOALS UNITS CORE markers not found in template.html');
++const core = new Function(tpl.slice(start, end) +
++  '\nreturn {UNIT_REF, GP, goalPrice, goalUnits, goalBiz, goalLevel, GOAL_PROGRAMS};')();
++const { UNIT_REF, goalPrice, goalUnits, goalLevel } = core;
++
++/* Same shape the app builds from hist-rows.txt (template.html, HISTROWS). */
++const hist = fs.readFileSync(path.join(root, 'hist-rows.txt'), 'utf8').trim().split('\n').map(l => {
++  const p = l.split('|');
++  return { term: p[0], n: p[1], loc: p[2], t: p[3], dow: p[4],
++    kind: /^Tinker Time/i.test(p[1]) ? 'dropin' : { s: 'series', c: 'camp', o: 'oneoff' }[p[5]],
++    first: p[6], occ: +p[8], e: +p[9], c: +p[10], w: +p[11], cancelled: p[13] === 'x' };
++});
++const row = o => Object.assign({ term: 'F26', loc: 'TAS', t: '3:30p', kind: 'series', occ: 16, e: 10, c: 12 }, o);
++const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, a + ' ≠ ' + b);
++
++test('every inline script in template.html parses', () => {
++  const re = /<script>([\s\S]*?)<\/script>/g; let m, n = 0;
++  while ((m = re.exec(tpl))) { n++; assert.doesNotThrow(() => new Function(m[1]), 'script #' + n + ' has a syntax error'); }
++  assert.ok(n > 0);
++});
++
++test('one unit is a Youth Tinker semester seat at $406 tuition', () => {
++  assert.equal(UNIT_REF, 406);
++  const p = goalPrice(row({ n: 'Art Lab!' }));
++  assert.equal(p.prog, 'semester'); assert.equal(p.dollars, 406);
++});
++
++test('summer camp weeks are priced by business and by days', () => {
++  assert.equal(goalPrice(row({ term: 'U26', n: 'Fired Up!', loc: 'C', kind: 'camp', occ: 5 })).dollars, 275);
++  assert.equal(goalPrice(row({ term: 'U26', n: 'Dino Camp!', loc: 'T', kind: 'camp', occ: 5 })).dollars, 260);
++  assert.equal(goalPrice(row({ term: 'U26', n: 'Robot Art Camp', loc: 'T', kind: 'camp', occ: 4 })).dollars, 208);
++  assert.equal(goalPrice(row({ term: 'U26', n: '2-Day Camp: Slime Time!', loc: 'T', kind: 'oneoff', occ: 2 })).dollars, 104);
++  near(goalUnits([row({ term: 'U26', n: 'Fired Up!', loc: 'C', kind: 'camp', occ: 5, e: 1, c: 1 })]).clayhub.summer.unitsFilled, 275 / 406);
++});
++
++test('an 8-week summer class is half its semester price', () => {
++  const p = goalPrice(row({ term: 'U26', n: 'Intro to Oils', loc: 'T', t: '6:30p' }));
++  assert.equal(p.prog, 'semester'); assert.equal(p.dollars, 546 / 2);
++});
++
++test('day-off camps: morning 3-hour, afternoon 2-hour, multi-day by name, Clay Hub priced separately', () => {
++  assert.equal(goalPrice(row({ n: 'School Day Off Camp // Paper Lanterns', kind: 'oneoff', t: '9:00a', occ: 1 })).dollars, 58);
++  assert.equal(goalPrice(row({ n: 'School Day Off Camp // Silly Goose', kind: 'oneoff', t: '1:00p', occ: 1 })).dollars, 38);
++  assert.equal(goalPrice(row({ n: 'School Day Off Camp // Colorful Mugs', loc: 'CH', kind: 'oneoff', t: '9:00a', occ: 1 })).dollars, 62);
++  assert.equal(goalPrice(row({ n: '3-Day Thanksgiving Break Morning Camp', kind: 'oneoff', occ: 3 })).dollars, 156);
++  assert.equal(goalPrice(row({ n: '4-Day Winter Break Wheel Throwing Morning Camp', loc: 'CH', kind: 'oneoff', occ: 4 })).dollars, 224);
++});
++
++test('Clay Hub semester classes: adult clay, youth wheel, Quick Session', () => {
++  assert.equal(goalPrice(row({ n: 'Wheel Throwing: Beginners', loc: 'CH' })).dollars, 633);
++  assert.equal(goalPrice(row({ n: 'Wheel Throwing 1 (ages 8-12)', loc: 'CH' })).dollars, 488);
++  assert.equal(goalPrice(row({ n: 'Intro to Wheel Throwing: Quick Session', loc: 'CH' })).dollars, 243);
++});
++
++test('Tinker Time and LAC are tracked, not in the goal total', () => {
++  const r = goalUnits([row({ n: 'Tinker Time: Art & Play! (9:45am)', kind: 'dropin', e: 8, c: 12 }),
++                       row({ n: 'Tinker & Clay Hub: Lunchtime Artists Club!', kind: 'oneoff', occ: 3, e: 2, c: 18 })]);
++  assert.ok(goalPrice(row({ n: 'Tinker Time: Art & Play! (9:45am)', kind: 'dropin' })).tracked);
++  assert.equal(goalPrice(row({ n: 'Tinker & Clay Hub: Lunchtime Artists Club!', kind: 'oneoff', occ: 3 })).dollars, 36);
++  assert.equal(r.tinker.total.unitsFilled, 0);
++});
++
++test('a cancelled section counts as offered at the cancelled weight, and adds nothing filled', () => {
++  const h = goalUnits([row({ n: 'Clay Class', e: 0, c: 12, cancelled: true })], {}, { cancelledWeight: 0.5 });
++  near(h.tinker.total.unitsOffered, 6); near(h.tinker.cancelledFull, 12); near(h.tinker.cancelledOffered, 6);
++  assert.equal(h.tinker.cancelledSections, 1);
++  const r = goalUnits([row({ n: 'Clay Class', e: 0, c: 12, cancelled: true }),
++                       row({ n: 'Wheel Throwing 1 (ages 9-13)', loc: 'CH', e: 0, c: 8, cancelled: true })]);
++  near(r.tinker.total.unitsOffered, 12);                       // 12 youth seats × $406 / 406
++  assert.equal(r.tinker.total.unitsFilled, 0);
++  near(r.clayhub.cancelledOffered, 8 * 488 / 406);
++});
++
++test('a section no rule matches is reported as unpriced, never guessed', () => {
++  assert.equal(goalPrice(row({ n: 'Mystery Pop-Up', kind: 'oneoff', occ: 1 })), null);
++  assert.equal(goalUnits([row({ n: 'Mystery Pop-Up', kind: 'oneoff', occ: 1 })]).unpriced.length, 1);
++});
++
++test('goal level: % of capacity against 72/78/85, and a level only counts once the 2025 floor is met', () => {
++  const L = { good: 72, better: 78, best: 85 };
++  let g = goalLevel(1587, 2217, 1590, L);                         // Tinker, 2026-09-28, cancelled at half
++  assert.equal(g.level, null); assert.equal(g.next.name, 'Good'); assert.equal(g.next.units, 10);
++  assert.equal(g.floorMet, false); assert.equal(g.floorShort, 3);
++  g = goalLevel(800, 1000, 700, L);                               // 80%, floor met
++  assert.deepEqual(g.level, ['better', 'Better']); assert.equal(g.next.units, 50);
++  g = goalLevel(800, 1000, 900, L);                               // 80% but 100 short of the floor
++  assert.equal(g.level, null); assert.equal(g.next.units, 100);
++  g = goalLevel(900, 1000, 0, L); assert.deepEqual(g.level, ['best', 'Best']); assert.equal(g.next, null);
++});
++
++test('parties, members and private events come in as extras', () => {
++  const r = goalUnits([], { parties: { tinker: { booked: 49, offered: 85 } },
++    memberMonths: { clayhub: { filled: 480, offered: 480 } },
++    privateEvents: { tinker: 2, offsite: 2, clayhub: 3 } });
++  near(r.tinker.party.unitsFilled, 49 * 419 / 406);
++  near(r.clayhub.members.unitsFilled, 480 * 260 / 406);
++  assert.equal(r.tinker.private.dollars, 2 * 500 + 2 * 400);
++  assert.equal(r.clayhub.private.dollars, 3 * 650);
++  near(r.clayhub.total.unitsFilled, 480 * 260 / 406);          // private events stay out of the total
++});
++
++test('every Spring and Summer 2026 section is priced', () => {
++  const r = goalUnits(hist.filter(x => x.term === 'S26' || x.term === 'U26'));
++  assert.deepEqual(r.unpriced.map(x => x.term + ' ' + x.n), []);
++});
++
++if (process.env.REPORT) test('2026 report', () => {
++  let rows = hist.filter(x => x.term === 'S26' || x.term === 'U26');
++  if (process.env.F26_FIXTURE) {
++    const d = JSON.parse(fs.readFileSync(process.env.F26_FIXTURE, 'utf8'));
++    const cx = new Set(d.CANCELLED || []);
++    rows = rows.concat(d.RAW.split('\n').map(l => { const f = l.split('|');
++      return { term: 'F26', n: f[0], loc: f[1], t: f[2], dow: f[3], occ: +f[4], e: +f[5], c: +f[6], w: +f[7],
++        kind: /^Tinker Time/i.test(f[0]) ? 'dropin' : (+f[4] >= 10 ? 'series' : 'oneoff'),
++        cancelled: cx.has(f.slice(0, 4).join('|')) }; }));
++  }
++  const r = goalUnits(rows, { parties: { tinker: { booked: 49, offered: 85 }, clayhub: { booked: 3, offered: 18 } },
++    memberMonths: { clayhub: { filled: 480, offered: 480 } }, privateEvents: { tinker: 2, offsite: 2, clayhub: 3 } });
++  for (const b of ['tinker', 'clayhub']) {
++    console.log('\n' + b);
++    for (const [k, v] of Object.entries(r[b])) if (k !== 'total' && typeof v === 'object')
++      console.log('  ' + k.padEnd(11), (v.unitsFilled.toFixed(0) + ' / ' + v.unitsOffered.toFixed(0)).padStart(13), ' units   $' + Math.round(v.dollars).toLocaleString());
++    console.log('  TOTAL      ', (r[b].total.unitsFilled.toFixed(0) + ' / ' + r[b].total.unitsOffered.toFixed(0)).padStart(13),
++      Math.round(100 * r[b].total.unitsFilled / r[b].total.unitsOffered) + '%   $' + Math.round(r[b].total.dollars).toLocaleString());
++  }
++  console.log('\nunpriced:', r.unpriced.map(x => x.term + ' ' + x.n));
++});
