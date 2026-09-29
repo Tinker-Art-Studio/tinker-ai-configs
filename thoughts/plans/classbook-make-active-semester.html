@@ -34,7 +34,7 @@
   <strong>App:</strong> tinker-spring-curriculum (The Classbook): <code>js/app.js</code>, <code>js/firebase-data.js</code>, one new e2e spec. <strong>No</strong> Firestore rules change, no new collection.<br>
   <strong>Context:</strong> Created Sep 29, 2026. Christie asked how to move "active" from Spring 2026 to Fall 2026 and found there is no UI for it. She is doing a one-time console switch meanwhile (<code>await updateAppData({ activeSemester: 'fall-2026' })</code>). Her answer to "want me to plan it?": <em>"yes we should do this."</em><br>
   <strong>Line numbers</strong> are at <code>2ef2e62</code> (main, live on Netlify).<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Christie answered Q1/Q2. Three Claude rounds, then Codex's independent review: NOT ready (5 findings). Revisions 4–8 address them (revision 8: archive instead of delete, per Christie). Codex confirmation round 6 is next.
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Christie answered Q1/Q2. Three Claude rounds, then Codex's independent review: NOT ready (5 findings). Revisions 4–9 address them (revision 8: archive instead of delete, per Christie; revision 9: Claude round 4). Codex's round 6 ran out of credits mid-way, so a Codex confirmation is pending.
 </div>
 
 <h2 id="open-questions">Christie's decisions (Sep 29)</h2>
@@ -93,12 +93,16 @@
   <li><code>setupRoleAccess</code> (<code>app.js:318-336</code>): hide <code>#settings-link</code> and its dot (<code>.footer-dot.write-control</code>; other <code>.footer-dot</code>s stay) for non-managers too. <code>switchTab('settings')</code>, the footer handler, <strong>and the tab button's own click handler</strong> (<code>app.js:203</code>) refuse for non-managers.</li>
   <li>New <code>makeSemesterActive(key)</code> beside <code>toggleSemesterPublish</code>. Eligibility is by type (<code>isWeeklySemester(key) || isCampSeason(key)</code>), never by key prefix (there's a ratchet against prefix routing). It refuses if the user isn't admin/manager, or the key is missing or already active. It checks <code>isPublishableType(key)</code> before any auto-publish, so the two gates can't drift. The old semester's name falls back to its key if the name is missing. Then it confirms through <code>confirmModal</code> (built in this phase, so Phase 2 only adds the checkbox and the activation tests aren't rewritten), then writes through a new <code>activateSemesterTx(key, expectedActive, { publish, switchEveryone })</code> in <code>firebase-data.js</code> (Codex finding 4). It's one <code>runTransaction</code> that re-reads appData from the server and refuses, with "reload and try again", unless <code>semesters[key]</code> still exists with a name and an eligible type, and <code>activeSemester === expectedActive</code> (what the confirmation showed). Only then does it <code>tx.update</code> <code>activeSemester</code>, the publish flag if needed, the Phase 2 switch field, and <code>lastUpdated</code>/<code>lastUpdatedBy</code>. This way a stale tab can't point "active" at a semester another tab deleted, or recreate a half-semester through the dotted publish path. It honours the same guards as <code>updateAppData</code>. <code>currentConfig</code> changes only after the commit succeeds; on failure nothing local changes.</li>
   <li>Re-render set after success or failure: header options, Teacher View selector, <code>renderSemesterSelector()</code>, <code>loadSettingsForm()</code>. The header's <code>change</code> listener gets the attach-once guard Teacher View already uses (<code>dataset.listenerAttached</code>), so re-rendering doesn't stack handlers.</li>
-  <li><strong>Archive (replaces the weekly branch of <code>deleteSemester</code>):</strong> new <code>archiveSemester(key)</code> and <code>unarchiveSemester(key)</code> write only <code>semesters.&lt;key&gt;.archived</code> (<code>true</code> / <code>FieldValue.delete()</code>) through a small transaction. It re-reads appData, refuses if the key is missing or is the active semester, then <code>tx.update</code>s that one path plus <code>lastUpdated</code>/<code>lastUpdatedBy</code>, with <code>updateAppData</code>'s guards. The weekly branch's <code>updateAppData(semesters.&lt;key&gt; delete)</code> + <code>deleteLessonData(key)</code> path is removed. <code>deleteLessonData</code> stays for its other caller, the failed-create cleanup (<code>app.js:4994</code>), which is unchanged. The camp and SDOC branches are unchanged. The confirmation uses the shared <code>confirmModal</code>.</li>
-  <li><strong>One helper decides what's listed:</strong> <code>isArchivedSemester(key)</code> (reads <code>semesters[key].archived === true</code>). Every semester list filters it out: header (<code>app.js:56-60</code>, via <code>canSeeSemester</code>), Teacher View (<code>:803</code>), Curriculum Admin bar (<code>:4479</code>), Settings (<code>:10683</code>), and the "Copy from" list (<code>:4499-4506</code>). The executor re-checks with <code>grep -n "semesters)" js/*.js</code>. <code>canSeeSemester()</code> returns false for an archived semester for everyone, so the existing guard at <code>app.js:65</code> moves a browser that remembered it to the active semester on its next load. Reading a lesson doc directly isn't affected.</li>
+  <li><strong>Archive (replaces the weekly branch of <code>deleteSemester</code>):</strong> new <code>archiveSemester(key)</code> and <code>unarchiveSemester(key)</code> write only <code>semesters.&lt;key&gt;.archived</code> (<code>true</code> / <code>FieldValue.delete()</code>) through a small transaction. It re-reads appData, refuses if the key is missing or is the active semester, then <code>tx.update</code>s that one path plus <code>lastUpdated</code>/<code>lastUpdatedBy</code>, with <code>updateAppData</code>'s guards. The weekly branch's <code>updateAppData(semesters.&lt;key&gt; delete)</code> + <code>deleteLessonData(key)</code> path is removed. <code>deleteLessonData</code> stays for its other caller, the failed-create cleanup (<code>app.js:4994</code>), which is unchanged. The camp and SDOC branches are unchanged. The confirmation uses the shared <code>confirmModal</code>. Archive always acts on the <em>selected</em> semester (the CA bar uses <code>getAdminSemKey()</code>, <code>app.js:4486, 4522</code>), so after a successful archive it calls <code>setGlobalSemester(currentConfig.activeSemester)</code>, syncing the header first. Otherwise the session would stay inside a semester that's no longer listed until a reload (round 4, finding 3). Neither transaction has <code>updateAppData</code>'s <code>not-found</code> → <code>set(merge)</code> fallback. appData always exists here, and a missing doc refuses.</li>
+  <li><strong>One helper decides what's listed:</strong> <code>isArchivedSemester(key)</code> (reads <code>semesters[key].archived === true</code>). Every semester list filters it out: header (<code>app.js:56-60</code>, via <code>canSeeSemester</code>), Teacher View (<code>:803</code>), Curriculum Admin bar (<code>:4479</code>), Settings (<code>:10683</code>), and the "Copy from" list (<code>:4499-4506</code>). The executor re-checks with <code>grep -nE "semesters( \|\| \{\})?\)" js/*.js</code>, which also catches <code>Object.keys(currentConfig?.semesters || {})</code>. Round 4 swept the code and found these five lists are the only user-facing ones. <code>firebase-data.js:737,742</code> and <code>app.js:4758,10838</code> are camp/SDOC-typed, and per-semester consumers (diagnostics, forecast, cut bank, change history, Q&amp;A, prep) all follow the selected semester. <code>canSeeSemester()</code> returns false for an archived semester for everyone, with the archived check placed <strong>above</strong> its admin/manager early return (<code>app.js:281</code>), or managers would keep seeing it, so the existing guard at <code>app.js:65</code> moves a browser that remembered it to the active semester on its next load. Reading a lesson doc directly isn't affected.</li>
   <li><strong>Settings → "Archived semesters"</strong> (managers only): lists archived keys by name, each with Unarchive. It's empty and hidden when there are none.</li>
-  <li><strong>Creating a semester whose key belongs to an archived one</strong> (<code>createNewSemester</code>) refuses: "An archived semester already uses this name — unarchive it in Settings instead." The existing checks are unchanged otherwise.</li>
+  <li><strong>Creating a semester whose key belongs to an archived one</strong> (<code>createNewSemester</code>) refuses with "An archived semester already uses this name — unarchive it in Settings instead." The check goes <em>before</em> the existing "already exists" refusal at <code>app.js:4864</code>, which would otherwise preempt it (archived entries stay in <code>semesters</code>). The server re-check at <code>:4977</code> gets the same wording when the server copy is archived. Key reuse is therefore impossible by construction, which is why rounds 3–5's stale-tab and leftover-adoption problems genuinely disappear.</li>
   <li><strong>Stale tabs are a non-issue by design:</strong> nothing is deleted, so a tab still open on an archived semester saves into lessons that still exist. They reappear on unarchive. No listener and no save-path changes are needed. The three existing weekly-delete tests in <code>data-safety.spec.js</code> (around 7778-7790, 8537, and "a refused delete or publish toggle reverts this tab") are rewritten for archive semantics in the same commit. Camp and SDOC delete tests are untouched.</li>
-  <li>Unchanged and fine: Studio Hub's unanswered-question alerts (<code>studio-hub/js/alerts.js:559-580</code>) iterate every semester in <code>lessonData</code>, so an archived semester's open questions still alert, exactly as a non-deleted Spring does today.</li>
+  <li><strong>Consequences of "nothing is ever deleted" (stated for Christie):</strong>
+    <ul>
+      <li>Studio Hub's unanswered-question alerts (<code>studio-hub/js/alerts.js:559-580</code>) iterate every semester in <code>lessonData</code>, so an archived semester's open questions keep alerting until they're answered. Delete used to be the only other way to clear them. To answer one, unarchive the semester, reply, and archive it again.</li>
+      <li><code>curriculum/lessonData</code> is <strong>one document</strong> holding every class semester, under Firestore's 1 MB document limit (the reason camp seasons moved out, <code>firebase-data.js:809</code>). Archiving means it only grows. At the cap, <em>every</em> lesson save fails for everyone. So Settings → Archived semesters shows <strong>"Lesson storage: N KB of 1,024 KB"</strong> (the byte size of the loaded lessonData JSON, an estimate within a few percent), with a warning line above 75%. Moving archived semesters into their own documents is the future fix: a data migration, and its own plan.</li>
+    </ul></li>
   <li>Left alone on purpose: <code>app.js:5069-5074</code> and the <code>caCurrentSemester</code> assignment at <code>:4590</code> are dead code (round 2 confirmed that nothing reads them). This plan doesn't touch them.</li>
   <li>The Curriculum Admin bar stays read-only for "active" (it's the same audience, but one place to change it is enough).</li>
 </ul>
@@ -116,11 +120,11 @@ Scenario: manager makes Fall active (happy path) — real write, manager session
    And header "Fall 2026 (active)", Teacher View "Fall 2026 (current)", Settings badge on Fall,
        Curriculum Admin shows Spring with Publish toggle and Delete
 
-Scenario: making a draft semester active publishes it (edge) — stubbed updateAppData
+Scenario: making a draft semester active publishes it (edge) — recorded, non-committing transaction
   Given Fall 2026 is published:false
   When the manager makes it active and confirms (dialog mentions publishing)
-  Then exactly one updateAppData call, and
-       Object.keys(payload).sort() equals ["activeSemester", "semesters.fall-2026.published", …Phase 2 keys]
+  Then exactly one transaction with one tx.update on curriculum/appData, whose
+       Object.keys(update).sort() equals ["activeSemester", "activeSemesterSwitch" (set or delete), "lastUpdated", "lastUpdatedBy", "semesters.fall-2026.published"]
 
 Scenario: a Summer camp season can be made active (Q1)
   Given Settings on Summer 2026 (camp season)
@@ -135,7 +139,7 @@ Scenario: back from Summer to a class semester (edge)
 
 Scenario: cancel changes nothing (edge)
   When the manager cancels the confirmation
-  Then updateAppData is not called and nothing on screen changes
+  Then no transaction runs and nothing on screen changes
 
 Scenario: ineligible or already active: no button (edge)
   Given Settings on an SDOC year, or on the active semester
@@ -158,7 +162,7 @@ Scenario: a camp season active can't be removed (edge)
 
 Scenario: write refused by the rules (failure) — real write, staff session
   Given the staff test account
-  When updateAppData({ activeSemester: "spring-2026" }) is called
+  When activateSemesterTx (and, separately, updateAppData) writes activeSemester
   Then it rejects with permission-denied and appData is unchanged
 
 Scenario: write refused by the app's own guard (failure)
@@ -193,6 +197,14 @@ Scenario: a stale tab keeps saving into an archived semester (edge, harmless)
 Scenario: a new semester can't reuse an archived key (edge)
   When a manager creates a semester whose key matches an archived one
   Then it refuses and points to Unarchive; nothing is written
+
+Scenario: archiving the semester you're on moves you to the active one (round 4, finding 3)
+  Given the manager has Spring 2026 selected and archives it
+  Then the header, grid and Settings are on the active semester immediately, and no Archive/Publish control shows for Spring
+
+Scenario: lesson storage readout (safety)
+  Given Settings → Archived semesters
+  Then it shows the lessonData size in KB of 1,024, and a warning above 75%
 
 Scenario: camp and SDOC deletes are unchanged (regression)
   Then the existing camp-removal and SDOC-year delete tests pass unmodified
@@ -294,12 +306,12 @@ Scenario: deploy alone moves nobody (safety)
   <ul>
     <li><strong>Rules:</strong> none needed. <code>curriculum/appData</code>: read for classbook users, write for manager+ only (<code>firestore.rules:652-669</code>). No new collection. Phase 1's e2e includes the non-manager refusal against the real rules.</li>
     <li><strong>The Delete exposure (finding 3), removed:</strong> making a weekly semester non-active used to arm a hard delete of its whole lesson map. That's already true of Spring 2026 in production. Phase 1 replaces it with Archive, which deletes nothing. Until Phase 1 ships: <strong>don't click Delete on Spring 2026</strong>.</li>
-    <li><strong>Partial update:</strong> <code>updateAppData</code> (<code>update()</code> of named dotted paths; its <code>set(merge)</code> fallback fires only if appData doesn't exist, which isn't the case here). Only <code>activeSemester</code>, optionally <code>semesters.&lt;key&gt;.published</code> and <code>activeSemesterSwitch</code>, plus the existing <code>lastUpdated</code>/<code>lastUpdatedBy</code>.</li>
+    <li><strong>Partial update:</strong> activation, archive and unarchive each run one <code>runTransaction</code> whose <code>tx.update</code> names dotted paths only. Activation writes <code>activeSemester</code>, optionally <code>semesters.&lt;key&gt;.published</code>, <code>activeSemesterSwitch</code> (set or delete), and <code>lastUpdated</code>/<code>lastUpdatedBy</code>. Archive writes <code>semesters.&lt;key&gt;.archived</code> plus the same two stamps. There's no <code>set()</code>, and no fallback that could create the document.</li>
     <li><strong>No undefined or empty values:</strong> every path is a known string or <code>true</code>. The key is validated against <code>currentConfig.semesters</code> before writing.</li>
-    <li><strong>Awaited:</strong> the one write is awaited, and on failure the in-memory state is restored exactly (the <code>toggleSemesterPublish</code> pattern, including "field was absent").</li>
+    <li><strong>Awaited:</strong> each transaction is awaited, and <code>currentConfig</code> changes only after it commits, so on failure there's nothing to restore. The alert says "Nothing was changed."</li>
     <li><strong>Activation</strong> deletes nothing. The previous value is shown in the confirmation. To roll back, make the old semester active again.</li>
     <li><strong>No bulk delete remains in this plan:</strong> archive and unarchive each write one field on <code>curriculum/appData</code>. No snapshot is needed because nothing is removed. The removed hard-delete path was the only bulk delete.</li>
-    <li><strong>Refuses on a bad load:</strong> inherited from <code>updateAppData</code> (config load failed, season registry unknown or error).</li>
+    <li><strong>Refuses on a bad load:</strong> both new transactions check the same guards <code>updateAppData</code> does (config load failed, season registry unknown or error) before running.</li>
     <li><strong>Production spot-check</strong> after deploy: Christie uses the button once for real (or the console line has already done it), then checks <code>curriculum/appData.activeSemester</code> in the Firebase Console.</li>
   </ul>
 </div>
@@ -308,12 +320,11 @@ Scenario: deploy alone moves nobody (safety)
 <ul>
   <li>New <code>e2e/active-semester.spec.js</code> (emulator only), following the house pattern (finding 1):
     <ul>
-      <li><strong>Payload/shape scenarios</strong> stub <code>window.updateAppData</code> and assert <code>Object.keys(payload).sort()</code> (as <code>data-safety.spec.js:7596-7610</code> does). The in-memory test semester is added to <code>currentConfig</code> in the page only, with an explicit <code>semesterType: 'weekly'</code>.</li>
-      <li><strong>Top leak risk:</strong> a leaked <code>activeSemesterSwitch</code> would silently move <em>every</em> later test (their contexts carry no <code>activeSemesterSwitchSeen</code>) to <code>sw.to</code>. The restore below is mandatory and read back, and a final assertion in this spec checks appData has no <code>activeSemesterSwitch</code>.</li>
-      <li><strong>One real round-trip</strong> runs in a manager context (<code>MANAGER_STATE_PATH</code>, first spec to use it). The test semester is created and removed through the app's own <code>updateAppData</code> in that page, and <code>activeSemester</code> is restored to <code>spring-2026</code> and <code>activeSemesterSwitch</code> deleted in <code>afterEach</code> <strong>and</strong> <code>afterAll</code>, each read back. Cleanup is self-contained and doesn't rely on file order. With <code>workers: 1</code> this file happens to run first alphabetically, and a leak would break <code>day-off-camps.spec.js</code> "SDOC R6" and <code>day-off-teacher.spec.js</code> "T20", which read the active semester.</li>
-      <li><strong>The restore can't run from Node</strong> (the helper is staff, and appData writes are manager-only). <code>afterEach</code>/<code>afterAll</code> open a manager browser context and call the page's own <code>updateAppData</code> (<code>activeSemester: 'spring-2026'</code>, <code>activeSemesterSwitch: FieldValue.delete()</code>, <code>semesters.&lt;test&gt;: FieldValue.delete()</code>), then read back with <code>readAppDataFromServer()</code> (<code>firebase-data.js:243-247</code>).</li>
+      <li><strong>Payload/shape scenarios</strong> record the transaction's writes without committing: the house pattern at <code>e2e/helpers/sdoc.js:87-97</code> (records <code>tx.update</code>/<code>tx.set</code>) and the non-committing stub at <code>e2e/day-off-teacher.spec.js:243-253</code>. They assert on the recorded update's keys. Activation and archive write through <code>runTransaction</code>, so a <code>window.updateAppData</code> stub would never fire. The in-memory test semester is added to <code>currentConfig</code> in the page only, with an explicit <code>semesterType: 'weekly'</code>.</li>
+      <li><strong>Top leak risk:</strong> a leaked <code>activeSemesterSwitch</code> would silently move <em>every</em> later test (their contexts carry no <code>activeSemesterSwitchSeen</code>) to <code>sw.to</code>. The restore below is mandatory and read back, and a final assertion in this spec checks appData has no <code>activeSemesterSwitch</code> and that <code>semesters.spring-2026</code> has no <code>archived</code>. A leaked <code>archived: true</code> on the seeded Spring would hide it from every later spec, which is equally severe.</li>
+      <li><strong>One real round-trip</strong> runs in a manager context (<code>MANAGER_STATE_PATH</code>, first spec to use it). The real scenarios create a test weekly semester (<code>semesterType: 'weekly'</code>, published) through the app's own <code>updateAppData</code> in that page, and make <em>it</em> active, so Spring becomes non-active without touching <code>summer-2026</code> (activating that would auto-publish it). <code>activeSemester</code> is restored to <code>spring-2026</code>, <code>activeSemesterSwitch</code> deleted, <code>semesters.spring-2026.archived</code> deleted, and the test semester removed in <code>afterEach</code> <strong>and</strong> <code>afterAll</code>, each read back. Cleanup is self-contained and doesn't rely on file order. With <code>workers: 1</code> this file happens to run first alphabetically, and a leak would break <code>day-off-camps.spec.js</code> "SDOC R6" and <code>day-off-teacher.spec.js</code> "T20", which read the active semester.</li>
+      <li><strong>The restore can't run from Node</strong> (the helper is staff, and appData writes are manager-only). <code>afterEach</code>/<code>afterAll</code> open a manager browser context and call the page's own <code>updateAppData</code> (<code>activeSemester: 'spring-2026'</code>, <code>activeSemesterSwitch: FieldValue.delete()</code>, <code>semesters.spring-2026.archived: FieldValue.delete()</code>, <code>semesters.&lt;test&gt;: FieldValue.delete()</code>), then read back with <code>readAppDataFromServer()</code> (<code>firebase-data.js:243-247</code>).</li>
       <li>The <strong>camp-season scenario runs stubbed</strong>. Its auto-publish would otherwise flip the seed's <code>summer-2026.published: false</code>, which <code>day-off-materials</code> M10 and <code>day-off-camps</code> enumerate.</li>
-      <li>Payloads: use the <code>window.updateAppData</code> stub pattern (<code>data-safety.spec.js:3947-3958</code>), whose payload holds only the caller's keys. <code>withAppDataSpy</code> is file-local and adds <code>lastUpdated</code>.</li>
       <li><strong>One real rules refusal</strong> uses the staff account and asserts <code>permission-denied</code> specifically (the seeded season registry is valid, so <code>updateAppData</code>'s own guard won't fire first).</li>
       <li><strong>Phase 2's teacher</strong> is a fresh context (blank storageState) signed in with <code>signInViaForm(page, 'teacher')</code>, because <code>login(page,'teacher')</code> on the default state returns the admin. The remembered <code>globalSemesterKey</code> is set <em>after</em> that first load, followed by a reload, because the app writes it itself on first load and the test would otherwise pass vacuously.</li>
     </ul></li>
@@ -339,6 +350,20 @@ Scenario: deploy alone moves nobody (safety)
 </ol>
 
 <h2 id="decisions">Decisions Log (append-only)</h2>
+<div class="decision">
+  <strong>Sep 29, 2026: revision 9, after review round 4 (Claude, <code>…-r4-claude.md</code>).</strong> Codex round 6 ran out of credits mid-review (<code>…-codex-r6-INCOMPLETE-out-of-credits.md</code>), so a Claude round stood in. It found nothing from rounds 1–5 reopened, and archive coverage of every semester list complete. Taken:
+  <ul>
+    <li>(1) Payload tests record the transaction with the sdoc house pattern instead of a <code>window.updateAppData</code> stub that would never fire.</li>
+    <li>(2) Cleanup also deletes <code>semesters.spring-2026.archived</code> with a read-back, and the real scenarios make a created test semester active instead of Summer.</li>
+    <li>(3) After archiving, the session moves to the active semester.</li>
+    <li>(4) The archived-key refusal goes before the existing "already exists" check.</li>
+    <li>(5) The archived check sits above <code>canSeeSemester</code>'s manager early return.</li>
+    <li>(6) The re-grep pattern is widened.</li>
+    <li>(7) Stated: archived questions keep alerting in Studio Hub; <code>lessonData</code> only grows toward the 1 MB cap, so a storage readout with a 75% warning goes in Settings.</li>
+    <li>(8) The safety checklist is updated for transactions.</li>
+  </ul>
+  A Codex confirmation is pending until its credits return.
+</div>
 <div class="decision">
   <strong>Sep 29, 2026: revision 8. Christie chose Archive over hard delete.</strong> Codex round 5 (<code>…-codex-r5.md</code>) was still finding gaps in the hardened hard-delete: <code>saveLessonData</code> runs before a new semester's appData entry exists, so an existence guard would break "Copy from"; and offline detection lags, so stale saves could still resurrect a deleted key. Its minimum was a transaction on every lesson save. Rather than change the app's hottest path for a rare admin action, Christie chose (options: Archive / split out / keep hardening) to <strong>archive old class semesters instead of deleting them</strong>. Removed from the plan: the snapshot download, <code>deleteWeeklySemesterTx</code>, the <code>serverSemesterKeys</code> listener, <code>assertSemesterStillExists</code> and its fail-closed states (so the offline-save behaviour change is gone, and saves are untouched), the lessonData-writer ratchet, and the no-copy "adopt leftovers" confirm. Kept from rounds 1–5: activation by transaction, per-user "switch everyone", clearing the switch when unticked, Settings gating, and the header sync. Permanent deletion of a class semester is no longer offered in the app.
 </div>
