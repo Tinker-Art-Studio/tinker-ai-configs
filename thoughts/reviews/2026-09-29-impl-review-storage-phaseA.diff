@@ -1,0 +1,373 @@
+diff --git a/firestore.rules b/firestore.rules
+index ec41acd..897ba93 100644
+--- a/firestore.rules
++++ b/firestore.rules
+@@ -650,8 +650,53 @@ service cloud.firestore {
+     // ═══════════════════════════════════════════════════════════════
+ 
+     match /curriculum/{docId} {
+-      // Manager+: full access to everything including appData
+-      allow read, write: if isManagerOrAbove();
++      // ── Spring 2026 storage move (Sep 29 2026) ──────────────────────────
++      // Plan: tinker-ai-configs/thoughts/plans/classbook-per-semester-lesson-storage.html (Phase A).
++      // curriculum/lessonData holds every Fall/Spring semester in ONE document and was at 95% of
++      // Firestore's 1 MiB cap. Spring 2026 moves to curriculum/lessons_spring-2026 in one manager
++      // transaction. Three docs therefore get their own rules below; every other curriculum doc
++      // keeps exactly the rules it had (the "ordinary docs" lines).
++      //   lessonData          — nobody changes its 'spring-2026' key, except manager+ deleting ONLY
++      //                         that key (the move) or re-adding ONLY that key while the move is
++      //                         unverified AND the new doc is deleted in the same transaction
++      //                         (the rollback). Nobody deletes the whole document.
++      //   lessons_spring-2026 — created by manager+; edited only once storageMigrations says the move
++      //                         is verified; deleted only by manager+ and only while unverified.
++      //   storageMigrations   — manager+ writes; classbook roles read.
++      function isClassbookRole() {
++        return hasAppAccess('classbook-admin') || hasAppAccess('curriculum-admin') || hasAppAccess('classbook');
++      }
++      function isClassbookAdminRole() {
++        return hasAppAccess('classbook-admin') || hasAppAccess('curriculum-admin');
++      }
++      function isStorageMoveDoc() {
++        return docId in ['lessonData', 'lessons_spring-2026', 'storageMigrations'];
++      }
++      function springMoveVerified() {
++        let path = /databases/$(database)/documents/curriculum/storageMigrations;
++        return exists(path) && get(path).data.get('spring-2026', {}).get('verified', false) == true;
++      }
++      function lessonDataChangedKeys() {
++        return request.resource.data.diff(resource.data).affectedKeys();
++      }
++      function springKeyUntouched() {
++        return !lessonDataChangedKeys().hasAny(['spring-2026']);
++      }
++      function springKeyRemovedOnly() {
++        return lessonDataChangedKeys().hasOnly(['spring-2026'])
++          && !('spring-2026' in request.resource.data);
++      }
++      function springKeyRolledBack() {
++        return lessonDataChangedKeys().hasOnly(['spring-2026'])
++          && ('spring-2026' in request.resource.data)
++          && !('spring-2026' in resource.data)
++          && !existsAfter(/databases/$(database)/documents/curriculum/lessons_spring-2026)
++          && !springMoveVerified();
++      }
++
++      // Manager+: full access to everything including appData (reads; ordinary-doc writes)
++      allow read: if isManagerOrAbove();
++      allow create, update, delete: if isManagerOrAbove() && !isStorageMoveDoc();
+ 
+       // classbook-admin, curriculum-admin (legacy key), and classbook: full read/write except appData and prepCycleConfig
+       // appData (Settings) is manager+ only, always
+@@ -662,24 +707,49 @@ service cloud.firestore {
+       // by these rules. This is a known, accepted gap (see
+       // firebase-agent-defense-hardening.md) pending a possible future
+       // data-model change, not something this rule can close on its own.
+-      allow read: if hasAppAccess('classbook-admin') || hasAppAccess('curriculum-admin') || hasAppAccess('classbook');
++      allow read: if isClassbookRole();
+       allow create, update: if
+-        (hasAppAccess('classbook-admin') || hasAppAccess('curriculum-admin') || hasAppAccess('classbook'))
++        isClassbookRole()
+         && docId != 'appData'
+-        && docId != 'prepCycleConfig';
++        && docId != 'prepCycleConfig'
++        && !isStorageMoveDoc();
+       // Whole-document delete is classbook-admin/curriculum-admin only.
+       // Plain 'classbook' (teacher) access never calls a full-document
+       // delete in the app (only FieldValue.delete() on specific lesson
+       // fields, which is an update, not a delete) — so this closes an
+       // unused, high-blast-radius capability with no functional change.
+       allow delete: if
+-        (hasAppAccess('classbook-admin') || hasAppAccess('curriculum-admin'))
++        isClassbookAdminRole()
+         && docId != 'appData'
+-        && docId != 'prepCycleConfig';
++        && docId != 'prepCycleConfig'
++        && !isStorageMoveDoc();
+       // prepCycleConfig: classbook-admin and curriculum-admin write only
+       allow create, update, delete: if
+-        (hasAppAccess('classbook-admin') || hasAppAccess('curriculum-admin'))
++        isClassbookAdminRole()
+         && docId == 'prepCycleConfig';
++
++      // lessonData: as before for every semester except 'spring-2026'; no whole-document delete.
++      allow create: if docId == 'lessonData'
++        && (isManagerOrAbove() || isClassbookRole())
++        && !('spring-2026' in request.resource.data);
++      allow update: if docId == 'lessonData'
++        && (isManagerOrAbove() || isClassbookRole())
++        && springKeyUntouched();
++      allow update: if docId == 'lessonData'
++        && isManagerOrAbove()
++        && (springKeyRemovedOnly() || springKeyRolledBack());
++
++      // lessons_spring-2026: Spring 2026's lessons after the move.
++      allow create: if docId == 'lessons_spring-2026' && isManagerOrAbove();
++      allow update: if docId == 'lessons_spring-2026'
++        && (isManagerOrAbove() || isClassbookRole())
++        && springMoveVerified();
++      allow delete: if docId == 'lessons_spring-2026'
++        && isManagerOrAbove()
++        && !springMoveVerified();
++
++      // storageMigrations: the move's record (manager+ writes; read via the read lines above).
++      allow create, update: if docId == 'storageMigrations' && isManagerOrAbove();
+     }
+ 
+     // ═══════════════════════════════════════════════════════════════
+diff --git a/rules.test.js b/rules.test.js
+index 11bb541..32cd0b2 100644
+--- a/rules.test.js
++++ b/rules.test.js
+@@ -2585,3 +2585,252 @@ describe('Clay Hub Membership — the database protects memberId and freezes ret
+     await assertFails(setDoc(doc(db, 'clayHub_appData', 'b0-app-x'), { a: 1 }));
+   });
+ });
++
++
++// ─── CLASSBOOK — SPRING 2026 STORAGE MOVE (lessonData fence) ────────────────
++// Plan: tinker-ai-configs/thoughts/plans/classbook-per-semester-lesson-storage.html, Phase A.
++// curriculum/lessonData (every Fall/Spring semester in ONE document) was at 95% of Firestore's
++// 1 MiB cap on Sep 29 2026. Spring 2026 moves to curriculum/lessons_spring-2026 in one
++// manager transaction. These rules: nobody changes lessonData's spring-2026 key except the
++// move (delete only) and its rollback (re-add only, while unverified, target deleted in the
++// same transaction); nobody deletes the whole lessonData doc; the new doc is created by a
++// manager, edited only once storageMigrations says the move is verified, and deleted only by a
++// manager during a rollback. Every other /curriculum doc behaves exactly as before.
++
++const SPRING = 'spring-2026';
++const SPRING_DOC = 'lessons_spring-2026';
++const MIGRATIONS = 'storageMigrations';
++const FENCE_ROLES = [
++  ['teacher (classbook)', CLASSBOOK_UID],
++  ['classbook-admin', CLASSBOOK_ADMIN_UID],
++  ['curriculum-admin (legacy key)', CURRICULUM_ADMIN_ONLY_UID],
++  ['manager', MANAGER_UID],
++  ['admin', ADMIN_UID],
++];
++const NON_MANAGER_ROLES = FENCE_ROLES.slice(0, 3);
++const MANAGER_ROLES = FENCE_ROLES.slice(3);
++const springMap = () => ({ 'mariah-tuesday-1': { teacher: 'Mariah', shortDetails: 'Clay' }, 'kathy-monday-2': { teacher: 'Kathy', processStep1: 'Paint' } });
++
++async function resetStorageMoveFixtures({ spring = true, target = null, migrations = null } = {}) {
++  await testEnv.withSecurityRulesDisabled(async (ctx) => {
++    const db = ctx.firestore();
++    const lessonData = { 'fall-2026': { 'allie-wednesday-1': { teacher: 'Allie', shortDetails: 'Print' } }, lastUpdated: 'x' };
++    if (spring) lessonData[SPRING] = springMap();
++    await setDoc(doc(db, 'curriculum', 'lessonData'), lessonData);
++    if (target) await setDoc(doc(db, 'curriculum', SPRING_DOC), target); else await deleteDoc(doc(db, 'curriculum', SPRING_DOC));
++    if (migrations) await setDoc(doc(db, 'curriculum', MIGRATIONS), migrations); else await deleteDoc(doc(db, 'curriculum', MIGRATIONS));
++  });
++}
++
++// The Phase C move, as the console procedure will run it (one transaction).
++async function runMove(db) {
++  return runTransaction(db, async (tx) => {
++    const ld = await tx.get(doc(db, 'curriculum', 'lessonData'));
++    const target = await tx.get(doc(db, 'curriculum', SPRING_DOC));
++    await tx.get(doc(db, 'curriculum', MIGRATIONS));
++    if (target.exists()) throw new Error('target exists');
++    const map = ld.data()[SPRING];
++    tx.set(doc(db, 'curriculum', SPRING_DOC), { ...map, lastUpdated: 'now', lastUpdatedBy: 'test' });
++    tx.update(doc(db, 'curriculum', 'lessonData'), { [SPRING]: deleteField() });
++    tx.set(doc(db, 'curriculum', MIGRATIONS), { [SPRING]: { lessonCount: Object.keys(map).length, sha256: 'h', verified: false } }, { merge: true });
++  });
++}
++// The rollback: re-add the key and delete the target in the same transaction.
++async function runRollback(db, { deleteTarget = true } = {}) {
++  return runTransaction(db, async (tx) => {
++    await tx.get(doc(db, 'curriculum', 'lessonData'));
++    await tx.get(doc(db, 'curriculum', SPRING_DOC));
++    tx.update(doc(db, 'curriculum', 'lessonData'), { [SPRING]: springMap() });
++    if (deleteTarget) tx.delete(doc(db, 'curriculum', SPRING_DOC));
++  });
++}
++
++describe('Classbook storage move — lessonData spring-2026 fence', () => {
++  beforeEach(() => resetStorageMoveFixtures());
++
++  test.each(FENCE_ROLES)('%s can still update another semester in lessonData', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'fall-2026.allie-wednesday-1.shortDetails': 'Updated' }));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT change a spring-2026 lesson in lessonData', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'spring-2026.mariah-tuesday-1.shortDetails': 'Changed' }));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT add a new spring-2026 lesson in lessonData', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'spring-2026.new-lesson': { teacher: 'X' } }));
++  });
++  test.each(MANAGER_ROLES)('%s can delete ONLY the spring-2026 key', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { [SPRING]: deleteField() }));
++  });
++  test.each(NON_MANAGER_ROLES)('%s CANNOT delete the spring-2026 key', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { [SPRING]: deleteField() }));
++  });
++  test.each(MANAGER_ROLES)('%s CANNOT delete spring-2026 together with another change', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { [SPRING]: deleteField(), 'fall-2026.allie-wednesday-1.shortDetails': 'x' }));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT delete the whole lessonData document', async (_l, uid) => {
++    await assertFails(deleteDoc(doc(getDb(uid), 'curriculum', 'lessonData')));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT replace lessonData with a set() that changes spring-2026', async (_l, uid) => {
++    await assertFails(setDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'fall-2026': {}, [SPRING]: { stale: true } }));
++  });
++  test.each(FENCE_ROLES)('%s can still merge-set another semester into lessonData (saveLessonData shape)', async (_l, uid) => {
++    await assertSucceeds(setDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'fall-2026': { 'new-slot': { teacher: 'Allie' } } }, { merge: true }));
++  });
++});
++
++describe('Classbook storage move — lessonData cannot be recreated with spring-2026', () => {
++  beforeEach(async () => {
++    await resetStorageMoveFixtures();
++    await testEnv.withSecurityRulesDisabled(async (ctx) => { await deleteDoc(doc(ctx.firestore(), 'curriculum', 'lessonData')); });
++  });
++  test.each(FENCE_ROLES)('%s CANNOT create lessonData containing spring-2026', async (_l, uid) => {
++    await assertFails(setDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { [SPRING]: springMap() }));
++  });
++  test.each(FENCE_ROLES)('%s can create lessonData without spring-2026 (as today)', async (_l, uid) => {
++    await assertSucceeds(setDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'fall-2026': {} }));
++  });
++});
++
++describe('Classbook storage move — the move transaction', () => {
++  beforeEach(() => resetStorageMoveFixtures());
++  test.each(MANAGER_ROLES)('%s can run the one-step move', async (_l, uid) => {
++    await assertSucceeds(runMove(getDb(uid)));
++  });
++  test.each(NON_MANAGER_ROLES)('%s CANNOT run the move', async (_l, uid) => {
++    await assertFails(runMove(getDb(uid)));
++  });
++  test.each(NON_MANAGER_ROLES)('%s CANNOT create lessons_spring-2026', async (_l, uid) => {
++    await assertFails(setDoc(doc(getDb(uid), 'curriculum', SPRING_DOC), springMap()));
++  });
++  test.each(NON_MANAGER_ROLES)('%s CANNOT write storageMigrations', async (_l, uid) => {
++    await assertFails(setDoc(doc(getDb(uid), 'curriculum', MIGRATIONS), { [SPRING]: { verified: true } }, { merge: true }));
++  });
++  test.each(FENCE_ROLES)('%s can read storageMigrations once it exists', async (_l, uid) => {
++    await testEnv.withSecurityRulesDisabled(async (ctx) => { await setDoc(doc(ctx.firestore(), 'curriculum', MIGRATIONS), { [SPRING]: { verified: false } }); });
++    await assertSucceeds(getDoc(doc(getDb(uid), 'curriculum', MIGRATIONS)));
++  });
++});
++
++describe('Classbook storage move — moved, NOT yet verified (edits paused; rollback allowed)', () => {
++  beforeEach(() => resetStorageMoveFixtures({ spring: false, target: { ...springMap(), lastUpdated: 'now' }, migrations: { [SPRING]: { verified: false } } }));
++
++  test.each(FENCE_ROLES)('%s CANNOT edit lessons_spring-2026 before verification', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', SPRING_DOC), { 'mariah-tuesday-1.shortDetails': 'Changed' }));
++  });
++  test.each(FENCE_ROLES)('%s can read lessons_spring-2026', async (_l, uid) => {
++    await assertSucceeds(getDoc(doc(getDb(uid), 'curriculum', SPRING_DOC)));
++  });
++  test.each(MANAGER_ROLES)('%s can run the rollback (re-add + delete target, one transaction)', async (_l, uid) => {
++    await assertSucceeds(runRollback(getDb(uid)));
++  });
++  test.each(NON_MANAGER_ROLES)('%s CANNOT run the rollback', async (_l, uid) => {
++    await assertFails(runRollback(getDb(uid)));
++  });
++  test.each(MANAGER_ROLES)('%s CANNOT re-add spring-2026 without deleting the target', async (_l, uid) => {
++    await assertFails(runRollback(getDb(uid), { deleteTarget: false }));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT plainly re-add spring-2026 to lessonData', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { [SPRING]: springMap() }));
++  });
++  test.each(MANAGER_ROLES)('%s can delete lessons_spring-2026 before verification', async (_l, uid) => {
++    await assertSucceeds(deleteDoc(doc(getDb(uid), 'curriculum', SPRING_DOC)));
++  });
++  test.each(NON_MANAGER_ROLES)('%s CANNOT delete lessons_spring-2026', async (_l, uid) => {
++    await assertFails(deleteDoc(doc(getDb(uid), 'curriculum', SPRING_DOC)));
++  });
++  test.each(MANAGER_ROLES)('%s can mark the move verified', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', MIGRATIONS), { [`${SPRING}.verified`]: true }));
++  });
++  test.each(MANAGER_ROLES)('%s CANNOT create lessons_spring-2026 again while it exists (set over it is an update, refused while unverified)', async (_l, uid) => {
++    await assertFails(setDoc(doc(getDb(uid), 'curriculum', SPRING_DOC), { replaced: true }));
++  });
++});
++
++describe('Classbook storage move — moved AND verified (edits back on; no delete, no rollback)', () => {
++  beforeEach(() => resetStorageMoveFixtures({ spring: false, target: { ...springMap(), lastUpdated: 'now' }, migrations: { [SPRING]: { verified: true } } }));
++
++  test.each(FENCE_ROLES)('%s can edit a Spring lesson in lessons_spring-2026', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', SPRING_DOC), { 'mariah-tuesday-1.shortDetails': 'Changed' }));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT delete lessons_spring-2026 after verification', async (_l, uid) => {
++    await assertFails(deleteDoc(doc(getDb(uid), 'curriculum', SPRING_DOC)));
++  });
++  test.each(MANAGER_ROLES)('%s CANNOT roll back after verification', async (_l, uid) => {
++    await assertFails(runRollback(getDb(uid)));
++  });
++  test.each(FENCE_ROLES)('%s CANNOT re-create spring-2026 in lessonData', async (_l, uid) => {
++    await assertFails(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'spring-2026.stale': { teacher: 'X' } }));
++  });
++  test.each(FENCE_ROLES)('%s still updates Fall in lessonData normally', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', 'lessonData'), { 'fall-2026.allie-wednesday-1.shortDetails': 'Updated' }));
++  });
++});
++
++describe('Classbook storage move — every other /curriculum doc exactly as before', () => {
++  beforeEach(async () => {
++    await testEnv.withSecurityRulesDisabled(async (ctx) => {
++      const db = ctx.firestore();
++      await setDoc(doc(db, 'curriculum', 'cutProjects'), { 'fall-2026': [] });
++      await setDoc(doc(db, 'curriculum', 'prepCycleConfig'), { a: 1 });
++      await setDoc(doc(db, 'curriculum', 'ordinary-delete-target'), { a: 1 });
++    });
++  });
++  test.each(FENCE_ROLES)('%s can update cutProjects', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', 'cutProjects'), { 'fall-2026': ['x'] }));
++  });
++  test.each(MANAGER_ROLES)('%s can still delete an ordinary curriculum doc', async (_l, uid) => {
++    await assertSucceeds(deleteDoc(doc(getDb(uid), 'curriculum', 'ordinary-delete-target')));
++  });
++  test('classbook-admin can still write prepCycleConfig; a plain teacher cannot', async () => {
++    await assertSucceeds(updateDoc(doc(getDb(CLASSBOOK_ADMIN_UID), 'curriculum', 'prepCycleConfig'), { a: 2 }));
++    await assertFails(updateDoc(doc(getDb(CLASSBOOK_UID), 'curriculum', 'prepCycleConfig'), { a: 3 }));
++  });
++  test.each(MANAGER_ROLES)('%s can still update appData and prepCycleConfig', async (_l, uid) => {
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', 'appData'), { settings: true }));
++    await assertSucceeds(updateDoc(doc(getDb(uid), 'curriculum', 'prepCycleConfig'), { a: 4 }));
++  });
++  test('staff without classbook access still cannot read or write curriculum', async () => {
++    await assertFails(getDoc(doc(getDb(STAFF_NOACCESS_UID), 'curriculum', 'cutProjects')));
++    await assertFails(updateDoc(doc(getDb(STAFF_NOACCESS_UID), 'curriculum', 'lessonData'), { 'fall-2026.x': {} }));
++  });
++});
++
++// A near-1 MiB lessonData (how production looked on Sep 29 2026): prove the fence evaluates on a
++// full-size document. Built from many sub-fields; its Firestore size is estimated and asserted.
++describe('Classbook storage move — fence on a near-1 MiB lessonData', () => {
++  const firestoreSize = (v) => {
++    const s = (x) => Buffer.byteLength(x, 'utf8') + 1;
++    if (v === null || v === undefined) return 1;
++    if (typeof v === 'string') return s(v);
++    if (typeof v === 'number') return 8;
++    if (typeof v === 'boolean') return 1;
++    return Object.entries(v).reduce((t, [k, x]) => t + s(k) + firestoreSize(x), 0);
++  };
++  const bigSemester = (n) => {
++    const out = {};
++    for (let i = 0; i < n; i++) out[`teacher-class-${i}`] = { teacher: `T${i % 7}`, shortDetails: 'x'.repeat(600), processStep1: 'y'.repeat(600), introPitch: 'z'.repeat(500) };
++    return out;
++  };
++  let big;
++  beforeAll(() => {
++    big = { 'fall-2026': bigSemester(230), [SPRING]: bigSemester(300), lastUpdated: 'x' };
++  });
++  beforeEach(async () => {
++    await testEnv.withSecurityRulesDisabled(async (ctx) => {
++      await setDoc(doc(ctx.firestore(), 'curriculum', 'lessonData'), big);
++      await deleteDoc(doc(ctx.firestore(), 'curriculum', SPRING_DOC));
++      await deleteDoc(doc(ctx.firestore(), 'curriculum', MIGRATIONS));
++    });
++  });
++  test('the fixture really is near the cap (≈ 0.9–1.0 MiB estimated)', () => {
++    const kb = firestoreSize(big) / 1024;
++    expect(kb).toBeGreaterThan(900);
++    expect(kb).toBeLessThan(1020);
++  });
++  test('teacher can update Fall; cannot touch Spring', async () => {
++    await assertSucceeds(updateDoc(doc(getDb(CLASSBOOK_UID), 'curriculum', 'lessonData'), { 'fall-2026.teacher-class-1.shortDetails': 'Updated' }));
++    await assertFails(updateDoc(doc(getDb(CLASSBOOK_UID), 'curriculum', 'lessonData'), { 'spring-2026.teacher-class-1.shortDetails': 'Changed' }));
++  });
++  test('manager can run the one-step move on the full-size document', async () => {
++    await assertSucceeds(runMove(getDb(MANAGER_UID)));
++  });
++});
