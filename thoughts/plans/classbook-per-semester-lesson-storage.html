@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Plan: Classbook — each class semester in its own document (lessonData is at 95% of Firestore's 1 MB cap)</title>
+<title>Plan: Classbook — move Spring 2026's lessons into their own document (lessonData is at 95% of Firestore's 1 MB cap)</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
   h1 { font-size: 1.6rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
@@ -27,149 +27,173 @@
 </head>
 <body>
 
-<h1 id="plan-title">Plan: Classbook — each class semester in its own document</h1>
+<h1 id="plan-title">Plan: Classbook — move Spring 2026's lessons into their own document</h1>
 
 <div class="meta" id="plan-meta">
-  <strong>Goal:</strong> Teachers never hit a wall where lesson saves stop working. Every Fall/Spring semester's lessons live in their own Firestore document instead of one shared document that's almost full, with no lesson lost or changed in the move.<br>
-  <strong>Why now:</strong> On Sep 29, 2026 Christie measured <code>curriculum/lessonData</code> at <strong>972 KB of 1,024 KB (95%)</strong> (Firestore-size estimate from a forced server read): <code>spring-2026</code> 551 KB, <code>fall-2026</code> 420 KB, test keys about 1 KB. The biggest single field is 2.5 KB. The bulk is real content spread over hundreds of lessons (processStep1 96 KB, shortDetails 94, processStep2 85, introPitch 79, materialsList 78, …), so there's nothing to trim. At the cap, <strong>every weekly lesson save fails for everyone</strong>. Fall is just starting and will grow.<br>
-  <strong>App:</strong> tinker-spring-curriculum (The Classbook). <strong>Also touches:</strong> <code>studio-hub/firestore.rules</code> (Phase 2, rules deploy through the guard with the sha phrase), <code>studio-hub/js/alerts.js</code> (Q&amp;A alerts read lessonData).<br>
-  <strong>Supersedes the ordering of:</strong> <code>classbook-make-active-semester.html</code> (paused). Its Archive design keeps old semesters in this document, so it resumes after this plan.<br>
-  <strong>Line numbers</strong> at <code>2ef2e62</code>.<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Draft 1, not yet reviewed.
+  <strong>Goal:</strong> Teachers never hit a wall where lesson saves stop working. Spring 2026, a finished semester, moves out of the almost-full shared document into its own, with no lesson lost or changed, and Spring stays viewable exactly as today.<br>
+  <strong>Why now:</strong> On Sep 29, 2026 Christie measured <code>curriculum/lessonData</code> at <strong>972 KB of 1,024 KB (95%)</strong> from a forced server read: <code>spring-2026</code> 551 KB, <code>fall-2026</code> 420 KB. It's real content spread over hundreds of lessons (the largest field is 2.5 KB), so there's nothing to trim. At the cap, <strong>every weekly lesson save fails for everyone</strong>. Fall is being written into it right now.<br>
+  <strong>Scope (revision 2):</strong> <strong>Spring 2026 only, with its key written literally into the code and the rules.</strong> Spring ran Jan–May and is dormant, so the move needs no new UI and no config flags. Moving Fall, making every new semester get its own document, and the <code>createNewSemester</code>/<code>deleteSemester</code> changes that requires are a <strong>follow-up plan</strong>. That plan must land before the next semester is created (see "Follow-up").<br>
+  <strong>Touches:</strong> the Classbook (<code>js/firebase-data.js</code>, <code>js/app.js</code>), <code>studio-hub/firestore.rules</code> + <code>studio-hub/rules.test.js</code> (sha phrase + guard), <code>studio-hub/js/alerts.js</code> (Studio Hub deploy), and <code>tinker-backups/backup.js</code>, <strong>which only Christie edits</strong> (memory: <code>backup-js-uses-cli-token</code>).<br>
+  <strong>Line numbers</strong> at <code>2ef2e62</code>. <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Revision 2, after review round 1.
 </div>
 
 <div class="danger">
-  <strong>Emergency lever (only if saves start failing before Phase 4 lands, and only with Christie's explicit go-ahead):</strong> take a snapshot, then as manager copy <code>lessonData['spring-2026']</code> into <code>curriculum/lessons_spring-2026</code> and remove it from <code>lessonData</code>. That frees about 55% at once. Spring would show as empty in the app until Phase 1's code is live. Check headroom with the size snippet every few days until Phase 4 is done. If it's under about 20 KB, discuss pulling this lever.
+  <strong>Emergency lever (corrected order).</strong> Only after Phase B's read-side code is live, never before, and only with Christie's explicit go-ahead: run Phases C and D back-to-back instead of days apart. Deleting Spring from <code>lessonData</code> before the app can read <code>lessons_spring-2026</code> would make Spring look empty, which is the May 2026 incident on purpose. Phase B adds a headroom readout, so nobody has to remember to paste a snippet.
 </div>
 
-<h2 id="today">What exists today (research)</h2>
+<h2 id="today">What exists today (research, verified in review round 1)</h2>
 <table>
   <tr><th>Fact</th><th>Where</th></tr>
-  <tr><td><code>curriculum/lessonData</code> is one document: <code>{ &lt;semKey&gt;: { &lt;lessonKey&gt;: lesson } , lastUpdated, lastUpdatedBy, qaData? }</code>. Firestore caps a document at 1 MiB.</td><td>measured Sep 29</td></tr>
-  <tr><td>Camp seasons already moved out for this exact reason (<code>summerCamps_lessonData</code>, one doc per lesson). Storage is chosen by <code>lessonStoreFor(semKey)</code>, which returns <code>'camp'</code> or <code>'weekly'</code> and throws for any other type. Its callers are the four lesson writers, two reply writers, and the existence check.</td><td><code>firebase-data.js:55-72</code>; callers <code>firebase-data.js:811, 1387, 1479</code>, <code>app.js:3636, 5848, 7155, 7240</code></td></tr>
-  <tr><td>Every read/write of weekly lessons, i.e. everything that touches <code>doc('lessonData')</code>. Load: <code>loadLessonData</code> (:762). Live listener: :1171. Forced reads: <code>readServerSemesterLessonMap</code> (:975), <code>readAdminLessonDoc</code> (<code>app.js:5835</code>), <code>computeLiveContentCountByTeacher</code> (<code>app.js:7518</code>). Writers: <code>saveLessonData</code> (:817), <code>deleteLessonKey</code> (:830), <code>deleteLessonData</code> (:963), <code>saveSingleLesson</code> (:1438), <code>saveMultipleLessonFields</code> (:1500), <code>sendTeacherQaMessage</code> (<code>app.js:3690</code>), <code>sendHelpResponse</code> (:7202), <code>sendQaReply</code> (:7285). Per-field dotted paths are built by <code>buildLessonFieldUpdates</code> (:1455) as <code>&lt;semKey&gt;.&lt;lessonKey&gt;.&lt;field&gt;</code>.</td><td>as cited</td></tr>
-  <tr><td>Rules: <code>curriculum/{docId}</code> is read for classbook users, and create/update for classbook users on any docId except <code>appData</code>/<code>prepCycleConfig</code>. Manager+ has full access. So a new doc like <code>curriculum/lessons_spring-2026</code> needs <strong>no new rule</strong> for normal use.</td><td><code>studio-hub/firestore.rules:652-672</code></td></tr>
-  <tr><td>Outside the Classbook: Studio Hub's unanswered-Q&amp;A alerts listen to <code>curriculum/lessonData</code> and iterate every semester. The nightly backup copies the whole <code>curriculum</code> collection, so new docs are backed up automatically. <code>tinker-backups/classbook-health.js</code> counts only <code>summerCamps_lessonData</code>, so it's unaffected.</td><td><code>studio-hub/js/alerts.js:559-580</code>; <code>summer-camp-app/scripts/backup-firestore.js:39</code></td></tr>
-  <tr><td>Reads today: every Classbook load reads the whole ~1 MB doc, and the listener re-sends it on every change. Per-semester docs make each read smaller.</td><td>—</td></tr>
+  <tr><td><code>curriculum/lessonData</code> = <code>{ &lt;semKey&gt;: { &lt;lessonKey&gt;: lesson }, lastUpdated, lastUpdatedBy, qaData? }</code>. Firestore caps a document at 1 MiB.</td><td>measured Sep 29</td></tr>
+  <tr><td>Storage is routed by <code>lessonStoreFor(semKey)</code> (<code>'camp'</code> / <code>'weekly'</code>; throws otherwise). Callers: <code>firebase-data.js:811, 1387, 1479</code>; <code>app.js:3636, 5848, 7155, 7240</code>.</td><td><code>firebase-data.js:55-72</code></td></tr>
+  <tr><td>The 13 in-app <code>doc('lessonData')</code> sites. Reads: <code>:762</code> load, <code>:975</code> <code>readServerSemesterLessonMap</code>, <code>:1171</code> listener, <code>app.js:5835</code> <code>readAdminLessonDoc</code>, <code>app.js:7518</code> <code>computeLiveContentCountByTeacher</code>. Writes: <code>:817</code> <code>saveLessonData</code> (whole-semester merge-set), <code>:830</code> <code>deleteLessonKey</code>, <code>:963</code> <code>deleteLessonData</code>, <code>:1438</code> <code>saveSingleLesson</code>, <code>:1500</code> <code>saveMultipleLessonFields</code>, <code>app.js:3690</code> <code>sendTeacherQaMessage</code>, <code>:7202</code> <code>sendHelpResponse</code>, <code>:7285</code> <code>sendQaReply</code>. Dead code: <code>backupLessonData</code>/<code>restoreFromBackup</code> (<code>:979-1002</code>, no callers).</td><td>as cited</td></tr>
+  <tr><td><strong>The live listener replaces the whole model</strong>: <code>currentLessonData = doc.data()</code> (<code>:1186</code>), carrying across only camp/SDOC maps through <code>snapshotCampSeasons()</code> (<code>:1094-1100</code>). It bumps <code>globalListenerGeneration</code> (<code>:1181</code>), which gates the summer reload, and a superseded reload never sets <code>lessonDataLoadedSuccessfully</code> (<code>:1131, 1143-1145</code>). It's registered from two places (<code>app.js:676</code>, <code>:5038</code>) with one unsubscribe handle (<code>:1116</code>).</td><td>as cited</td></tr>
+  <tr><td><code>setupConfigListener()</code> is never called, so an open tab's <code>currentConfig</code> is frozen at load.</td><td><code>app.js:11328</code></td></tr>
+  <tr><td>Rules: <code>:654</code> is <code>allow read, write: if isManagerOrAbove()</code>, and <code>:666</code> is a separate create/update for classbook roles (not appData/prepCycleConfig). Rules OR across statements, so fencing a key for managers too means <strong>splitting <code>:654</code></strong> into per-operation statements. Whole-doc delete is limited to classbook-admin/curriculum-admin (<code>:675-678</code>). <code>studio-hub/rules.test.js</code> has no <code>curriculum/lessonData</code> fixture today.</td><td><code>studio-hub/firestore.rules:652-678</code></td></tr>
+  <tr><td>Outside the Classbook, readers of <code>curriculum/lessonData</code>:
+    <ul>
+      <li>Studio Hub's Q&amp;A alerts (<code>studio-hub/js/alerts.js:559-580</code>, iterating every top-level key).</li>
+      <li><strong><code>tinker-backups/backup.js</code></strong>: it backs up the <code>curriculum</code> collection as Tier 1 (<code>:38, :56</code>; new <code>lessons_*</code> docs are included automatically), and <code>computeClassbookContentByTeacher</code> (<code>:370-389</code>) counts per-teacher content from <code>curriculum/lessonData</code> only, writing <code>backupStatus/latest</code> (<code>:471</code>) with a 10% drop alarm. The Classbook's <code>renderContentCount()</code> (<code>app.js:7578-7600</code>) compares live counts to that baseline.</li>
+      <li><code>studio-hub/test-alerts.js:98, 143</code>: an Admin SDK test script that writes <code>lessonData.qaData</code>. It bypasses rules and isn't part of the app.</li>
+      <li>The <code>summer-camp-app/scripts/backup-firestore.js</code> console script is manual and weekly, not the nightly backup (a round-1 correction).</li>
+    </ul></td><td>as cited</td></tr>
 </table>
 
 <h2 id="design">Design</h2>
 <ul>
-  <li><strong>New store <code>'semesterDoc'</code>:</strong> lessons for semester <code>K</code> live in <code>curriculum/lessons_K</code> as <code>{ &lt;lessonKey&gt;: lesson, lastUpdated, lastUpdatedBy }</code>, the same lesson shape as today. A semester uses it when <code>appData.semesters[K].lessonStore === 'doc'</code>. <code>lessonStoreFor</code> returns <code>'semesterDoc'</code> for those, <code>'weekly'</code> for weekly semesters without the flag, and <code>'camp'</code> as today.</li>
-  <li><strong>One path helper</strong> replaces the hard-coded <code>doc('lessonData')</code> in every weekly site: <code>weeklyLessonRef(K)</code> returns the doc, and <code>weeklyLessonPath(K, lessonKey, field?)</code> returns <code>lessonKey.field</code> for <code>'semesterDoc'</code> or <code>K.lessonKey.field</code> for legacy. Every site listed above goes through them, with a static ratchet: no <code>doc('lessonData')</code> outside the helper and the legacy migration code.</li>
-  <li><strong>Loading:</strong> <code>loadLessonData</code> reads legacy <code>lessonData</code> (for unmigrated semesters) plus each <code>lessons_K</code> for migrated semesters listed in appData. <code>currentLessonData[K]</code> keeps its current shape, so no rendering code changes. The live listener follows the same split: one listener per migrated semester doc, plus the legacy one.</li>
-  <li><strong>New semesters</strong> (<code>createNewSemester</code>) are created with <code>lessonStore: 'doc'</code> from Phase 3 on, so the shared document never grows again.</li>
-  <li><strong>Stale tabs can't write to the old location (rules, Phase 2).</strong> appData gets <code>migratedSemesters: [K, …]</code>. The <code>lessonData</code> rule refuses any update whose changed top-level keys intersect <code>migratedSemesters</code>, <em>for every role including managers</em>, except a manager's removal of exactly that key in Phase 4. A tab loaded before a migration then gets a loud permission error on save ("reload"), instead of silently writing a lost edit to the stale copy or recreating an orphan. This is enforced on the server, so it closes the stale-tab problem that sank the make-active plan's delete design.</li>
-  <li><strong>Studio Hub alerts</strong> also listen to <code>lessons_K</code> for each migrated semester (read from <code>appData.migratedSemesters</code>), so Q&amp;A alerts don't vanish.</li>
+  <li><strong>One constant, <code>OWN_DOC_SEMESTERS = ['spring-2026']</code></strong>, in <code>firebase-data.js</code>. It's changed only by a code deploy, just as the rules fence is changed only by a rules deploy. No appData flag and no <code>get()</code> in rules.</li>
+  <li><strong>Where Spring lives:</strong> <code>curriculum/lessons_spring-2026</code> = <code>{ &lt;lessonKey&gt;: lesson, lastUpdated, lastUpdatedBy }</code>. <code>lessonStoreFor</code> returns <code>'ownDoc'</code> for keys in the constant. Every weekly site listed above goes through two helpers: <code>weeklyLessonRef(semKey)</code> and <code>weeklyLessonPath(semKey, lessonKey, field?)</code>. The paths are rooted at <code>lessonKey</code> for <code>'ownDoc'</code> and at <code>semKey.lessonKey</code> for legacy.</li>
+  <li><strong>Transitional read rule (so Phase B can ship before the copy):</strong> for an <code>'ownDoc'</code> semester, <em>if <code>lessons_K</code> exists</em>, read it. Otherwise read <code>lessonData[K]</code> as today. So the code can deploy before the copy, and Spring keeps working at every step.</li>
+  <li><strong>Writes to Spring</strong> go to <code>lessons_K</code>. If it doesn't exist yet (before Phase C), <code>update()</code> would throw <code>not-found</code>, and the rules fence (Phase A) already refuses Spring writes to <code>lessonData</code>. <strong>So from Phase A until Phase C, Spring is read-only</strong> and saves show "Spring 2026 is being moved to new storage — editing is paused." Spring is finished, so Christie confirms this is acceptable (Decisions Log). After Phase C, writes work normally.</li>
 </ul>
 
 <h2 id="phases">Phases</h2>
 
-<div class="phase" id="phase-1">
-<h3>Phase 1: the Classbook can read and write per-semester docs (no data moves) <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance:</strong> with no semester migrated, the app behaves exactly as today (the full suite stays green). In the emulator, a semester flagged <code>lessonStore:'doc'</code> with its lessons in <code>lessons_K</code> works end to end: view, edit, save, Q&amp;A, help replies, move/swap, admin edits, copy-from, delete key. Studio Hub alerts include migrated semesters. Ships as one Classbook deploy (one Netlify credit) plus one Studio Hub deploy.</p>
-<div class="bdd">Scenario: nothing migrated, nothing changes (regression)
-  Given no semester has lessonStore:'doc'
-  Then every existing e2e test passes unchanged and saves still target lessonData
-
-Scenario: a migrated semester works end to end (emulator)
-  Given semester T with lessonStore:'doc' and lessons only in curriculum/lessons_T
-  When a teacher views and saves a lesson, sends a Q&A message; an admin replies and edits; lessons are moved/swapped
-  Then every write lands in lessons_T with paths lessonKey.field, lessonData is untouched, and reloads show the changes
-
-Scenario: legacy and migrated semesters side by side
-  Given spring legacy and T migrated
-  Then switching between them shows the right lessons, and each save goes to its own document
-
-Scenario: copy-from a migrated semester into a new semester
-  Then the new semester is created as lessonStore:'doc' with the copied lessons in its own doc
-
-Scenario: Studio Hub alerts
-  Given an unanswered question in a migrated semester
-  Then Studio Hub shows the alert, as it does for legacy semesters
-
-Scenario: ratchet
-  Then no doc('lessonData') remains outside weeklyLessonRef and the migration code</div>
+<div class="phase" id="phase-a">
+<h3>Phase A: rules fence for <code>spring-2026</code> in <code>lessonData</code> <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance:</strong> nobody, managers included, can change the <code>spring-2026</code> key of <code>curriculum/lessonData</code>, except a manager update that <em>only deletes</em> that key (Phase D). Everything else about <code>/curriculum</code> behaves exactly as today for every role. It deploys through <code>deploy-rules.sh --approved &lt;sha&gt;</code> after Christie says the phrase. It ships first because it's small, breaks nothing (Spring is dormant), and stops Spring's copy changing while the rest lands.</p>
+<p><strong>Shape:</strong> split <code>:654</code> into <code>allow read</code>, <code>allow create</code>, <code>allow update</code> and <code>allow delete</code> for manager+. Both update allowances (manager's, and the classbook roles' at <code>:666</code>) add, for <code>docId == 'lessonData'</code>: <code>!request.resource.data.diff(resource.data).affectedKeys().hasAny(['spring-2026'])</code>, OR (manager only) <code>affectedKeys().hasOnly(['spring-2026']) &amp;&amp; !('spring-2026' in request.resource.data)</code>, which means deleting it and nothing else. <code>diff().affectedKeys()</code> reports top-level keys, so a dotted write to <code>spring-2026.x.qaThread</code> and a stale tab re-creating the key after Phase D both surface as <code>spring-2026</code>.</p>
+<div class="bdd">Rules tests (studio-hub/rules.test.js), new lessonData fixture incl. a NEAR-1 MB one (~950 KB, two semesters):
+  teacher / classbook-admin / manager: update fall-2026.x.field            → allowed (as today)
+  teacher / classbook-admin / manager: update spring-2026.x.field          → denied
+  manager: update { spring-2026: delete } only                              → allowed
+  manager: update { spring-2026: delete, fall-2026.x: … }                   → denied
+  classbook-admin: update { spring-2026: delete }                           → denied
+  any role: re-create spring-2026 after it was deleted                      → denied
+  manager/classbook roles: every other /curriculum doc (appData, prepData, cutProjects, changeLog, lessons_spring-2026, …) → exactly as today
+  the near-1 MB fixture: the allowed and denied cases above evaluate correctly (proves affectedKeys on a full-size doc)
+  whole existing studio-hub suite passes</div>
+<div class="note">The Classbook side, before Phase B: a Spring edit fails with the app's normal save-error alert. Spring is dormant, so this should be rare. Studio Hub's alerts only read.</div>
 </div>
 
-<div class="phase" id="phase-2">
-<h3>Phase 2: rules stop writes to migrated semesters in the old document <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance:</strong> with <code>migratedSemesters</code> empty or absent, every existing lessonData write behaves as today. With <code>K</code> listed, any role's update to <code>lessonData</code> that touches top-level key <code>K</code> is refused, except a manager update that <em>only deletes</em> <code>K</code>. Studio Hub's rules suite gets new cases, and the whole suite passes. Deployed through <code>deploy-rules.sh</code> after Christie says "approved to change firebase &lt;sha&gt;".</p>
-<p><strong>Shape (draft; the rules review decides):</strong> a dedicated <code>match /curriculum/lessonData</code> condition, or a condition inside the existing block on <code>docId == 'lessonData'</code>, using <code>request.resource.data.diff(resource.data).affectedKeys()</code> and <code>get(/…/curriculum/appData).data.get('migratedSemesters', [])</code>. The manager catch-all at <code>:654</code> currently ORs in unconditional write, so it must be narrowed for this doc. That's the delicate part of the phase, because it's a shared-rules change for every app.</p>
-<div class="bdd">Scenario: empty list changes nothing (rules tests)
-Scenario: teacher / classbook-admin / manager update touching a migrated key → denied
-Scenario: manager update that only deletes the migrated key → allowed
-Scenario: updates to other semesters' keys → allowed as today
-Scenario: appData unreadable in the rule (missing doc) → behaves as an empty list</div>
+<div class="phase" id="phase-b">
+<h3>Phase B: the Classbook reads and writes Spring from its own document (no data moves yet) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance:</strong>
+<ul>
+  <li>With <code>lessons_spring-2026</code> absent (the production state after this deploy), the app behaves as today, except Spring edits show "editing is paused" (see Design).</li>
+  <li>In the emulator, with it present, Spring works end to end from it. Fall and every other semester are untouched.</li>
+  <li>A <strong>headroom readout</strong> appears in Curriculum Admin → Diagnostics (managers): "Lesson storage: N KB of 1,024 KB", with a warning above 90%.</li>
+  <li>Studio Hub alerts include <code>lessons_spring-2026</code>.</li>
+  <li>This is one Classbook deploy (one Netlify credit) plus one Studio Hub deploy.</li>
+</ul></p>
+<p><strong>Shape (each fixes a round-1 finding):</strong></p>
+<ul>
+  <li><strong>(A) The listener must not drop Spring.</strong> The carry-across at <code>:1184-1187</code> keeps own-doc semesters too: <code>snapshotCampSeasons</code> becomes <code>snapshotNonLegacySemesters</code> and includes keys in <code>OWN_DOC_SEMESTERS</code> whenever <code>lessons_K</code> is the source. A separate <code>lessons_K</code> listener updates <code>currentLessonData[K]</code> only. It does <strong>not</strong> bump <code>globalListenerGeneration</code> and never touches <code>lessonDataLoadedSuccessfully</code>. Its own error goes to a visible banner ("Spring 2026 lessons couldn't be loaded — reload") and marks Spring unwritable. Test: a Fall save's legacy snapshot leaves Spring's lessons on screen.</li>
+  <li><strong>(D) A vanished key is loud, not blank.</strong> If a legacy snapshot lacks a key the tab is rendering from <code>lessonData</code> (a pre-Phase-C tab after Phase D), the app shows "This semester moved to new storage — reload the page" instead of an empty grid.</li>
+  <li><strong>Teardown:</strong> <code>setupLessonDataListener</code> keeps an array of unsubscribes and tears them all down, which fixes the double registration from <code>app.js:676</code>/<code>:5038</code> for the new listener.</li>
+  <li><strong>(E) First write to a missing doc:</strong> the own-doc write helpers catch <code>not-found</code>. Before Phase C, they refuse with "editing is paused". After Phase C, the doc exists, so this can't happen for Spring.</li>
+  <li><strong>Readers:</strong> <code>readServerSemesterLessonMap</code>, <code>readAdminLessonDoc</code> and <code>computeLiveContentCountByTeacher</code> route through the helpers. The live count sums <code>lessonData</code> plus <code>lessons_spring-2026</code>, so the content-loss comparison stays whole.</li>
+  <li><strong>Ratchet:</strong> no <code>doc('lessonData')</code> in the app's loaded scripts outside <code>weeklyLessonRef</code>, the legacy load/listener, and the dead backup helpers (left alone). <code>e2e/</code> is exempt.</li>
+  <li><strong>Studio Hub alerts:</strong> add a second listener on <code>curriculum/lessons_spring-2026</code>, iterating its lessons the same way. A missing doc is fine.</li>
+  <li><strong>Seed:</strong> a <code>lessons_spring-2026</code> fixture for the emulator scenarios. The default seed keeps Spring in <code>lessonData</code>, so the existing suites are unchanged.</li>
+</ul>
+<div class="bdd">Scenario: production state after deploy (lessons_spring-2026 absent) — regression
+  Then every existing e2e test passes; Fall saves go to lessonData as today; Spring reads from lessonData
+   and a Spring edit shows "editing is paused" (the rules fence refuses it)
+
+Scenario: Spring in its own doc works end to end (emulator)
+  Given lessons_spring-2026 exists and lessonData has no spring-2026
+  When a teacher views/saves a Spring lesson, sends Q&A; an admin replies, edits, moves/swaps
+  Then every write lands in lessons_spring-2026 at lessonKey.field paths; lessonData is untouched
+
+Scenario: a Fall save doesn't blank Spring (round-1 finding A)
+  Given Spring served from its own doc
+  When a Fall lesson is saved (legacy snapshot fires)
+  Then Spring's lessons are still on screen and currentLessonData['spring-2026'] is unchanged
+
+Scenario: own-doc listener error is loud and isolated
+  Given reading lessons_spring-2026 fails
+  Then a banner says so, Spring is unwritable, and Fall keeps working (lessonDataLoadedSuccessfully unaffected)
+
+Scenario: headroom readout
+  Then Diagnostics shows lessonData size of 1,024 KB, warning above 90%
+
+Scenario: content counts stay whole
+  Then computeLiveContentCountByTeacher counts Spring from its own doc</div>
 </div>
 
-<div class="phase" id="phase-3">
-<h3>Phase 3: move Spring 2026 into its own document (copy + switch; old copy kept) <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance:</strong> Spring 2026 reads and writes from <code>curriculum/lessons_spring-2026</code>, and its lessons there are deep-equal to what <code>lessonData['spring-2026']</code> held at the moment of the move. Teachers notice nothing except, for a tab left open across the move, one "reload" error on save. The old copy is still in <code>lessonData</code> for now (Phase 4 removes it), so it isn't yet freeing space.</p>
-<p><strong>How:</strong> a manager-only button in Settings, <strong>"Move this semester to its own storage"</strong>, runs:</p>
+<div class="phase" id="phase-c">
+<h3>Phase C: copy Spring into its own document (production, one-off, manager) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance:</strong> <code>curriculum/lessons_spring-2026</code> holds exactly what <code>lessonData['spring-2026']</code> holds, the app now serves Spring from it (per the transitional read rule), and Spring is editable again. The old copy stays, frozen by the Phase A fence. It needs Christie's go-ahead, and she runs it at a quiet time.</p>
+<p><strong>How:</strong> a console procedure that Christie pastes while signed in as manager, written into this plan before execution and reviewed:</p>
 <ol>
-  <li>A forced-server read of <code>lessonData[K]</code>, then a JSON snapshot download (<code>classbook-K-lessons-&lt;ISO&gt;.json</code>). The move refuses if either fails.</li>
-  <li>One transaction that reads <code>lessonData</code> and <code>lessons_K</code> (which must not exist) and appData (<code>K</code> must exist, not yet migrated). It sets <code>lessons_K</code> = the map read <em>inside</em> the transaction, sets <code>appData.semesters.K.lessonStore = 'doc'</code>, and adds K to <code>migratedSemesters</code> with <code>arrayUnion</code>. Once this commits, Phase 2's rule fences the old copy.</li>
-  <li>Verify: a forced-server read of <code>lessons_K</code> must deep-equal the transaction's source map. On mismatch it shows a loud alert, and the manager undoes it with "Move back" (removes the flag and list entry; the old copy is intact because nothing deleted it).</li>
+  <li>A forced-server read of <code>lessonData</code>, then download of <code>classbook-spring-2026-lessons-&lt;ISO&gt;.json</code>. It refuses if the read fails.</li>
+  <li>One transaction: read <code>lessonData</code> and <code>lessons_spring-2026</code> (which must not exist), then <code>tx.set(lessons_spring-2026, { ...lessonData['spring-2026'], lastUpdated, lastUpdatedBy })</code>, using the map read <em>inside</em> the transaction. It also writes a small record <code>curriculum/storageMigrations</code> → <code>{ 'spring-2026': { copiedAt, copiedBy, lessonCount, sha256 } }</code>, the SHA-256 of a canonical (sorted-key) JSON of the copied map.</li>
+  <li>Verify from a forced-server read: every lesson key present, and the hash of <code>lessons_spring-2026</code> minus its <code>lastUpdated*</code> fields equals the recorded hash. Because the Phase A fence means <strong>nothing can change the source</strong>, a deep-equal is valid, which answers round-1 finding B. A mismatch is loud. To undo, a manager deletes the new doc (whole-doc delete; see Q3) and the app falls back to <code>lessonData</code>, which is intact.</li>
 </ol>
-<p>It's run by Christie at a quiet time. She also spot-checks one lesson in the Firebase Console.</p>
-<div class="bdd">Scenario: move succeeds (emulator, real transaction)
-  Then lessons_K deep-equals the pre-move lessonData[K], appData flags it, the snapshot file was downloaded first
-
-Scenario: target doc already exists → refuses, nothing changes
-Scenario: a lesson is saved between the snapshot and the transaction
-  Then the transaction copies the newer data (read inside the tx); the snapshot is older and says so in its name/time
-Scenario: a stale tab saves to lessonData[K] after the move
-  Then the rules refuse it; the app shows "reload"; lessons_K is unaffected
-Scenario: move back
-  Then the flag and list entry are removed, the app reads lessonData[K] again, lessons_K is left for inspection</div>
+<div class="bdd">Scenario: copy (emulator, same procedure as a test)
+  Then lessons_spring-2026 deep-equals lessonData['spring-2026'] (+ lastUpdated*), storageMigrations records count + hash, the app serves Spring from the new doc and edits work
+Scenario: target already exists → refuses, nothing written
+Scenario: after the copy, a stale pre-Phase-B tab edits Spring → the Phase A fence refuses it (loud save error)</div>
 </div>
 
-<div class="phase" id="phase-4">
-<h3>Phase 4: free the space by removing Spring's old copy <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><strong>Acceptance:</strong> <code>lessonData['spring-2026']</code> is gone and <code>lessonData</code> is around 420 KB (about 41%). Spring works from its own doc. This needs its own explicit go-ahead from Christie after Phase 3 has run in production for a few days without problems.</p>
-<p><strong>How:</strong> a manager-only "Remove old copy" button, shown only for migrated semesters. It does a forced-server read of both copies and refuses unless <code>lessonData[K]</code> deep-equals the Phase 3 snapshot. Edits after the move went to <code>lessons_K</code>, and the rules kept the old copy frozen, so they must be equal. It downloads that copy as JSON again, then runs one manager <code>update({ K: FieldValue.delete() })</code>, which is the one write Phase 2's rule allows. <strong>This is the plan's only deletion, and it removes a verified duplicate.</strong></p>
-<div class="bdd">Scenario: remove old copy (emulator)
-  Given K migrated and the old copy equal to the snapshot
-  Then lessonData has no K, lessons_K is unchanged, the app still shows all of K's lessons
-
-Scenario: old copy differs from the snapshot → refuses, nothing deleted, the alert says so</div>
+<div class="phase" id="phase-d">
+<h3>Phase D: remove Spring's old copy and free the space (production, one-off, manager) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance:</strong> <code>lessonData['spring-2026']</code> is gone, and <code>lessonData</code> drops to about 420 KB (41%). Spring works from its own doc. It needs Christie's separate go-ahead after Phase C has run for a few days, or immediately under the emergency lever.</p>
+<p><strong>How (console procedure):</strong> a forced-server read of <code>lessonData</code>. It refuses unless the SHA-256 of <code>lessonData['spring-2026']</code> equals the Phase C recorded hash. The fence kept it frozen, so it must equal what the transaction <em>wrote</em>, not the pre-transaction download (round-1 finding C). Then it downloads that copy again as JSON and runs one manager <code>update({ 'spring-2026': FieldValue.delete() })</code>, the one write the fence allows. <strong>This is the plan's only deletion, and it removes a verified, frozen duplicate.</strong></p>
+<div class="bdd">Scenario: remove (emulator)
+  Then lessonData has no spring-2026, lessons_spring-2026 unchanged, Spring fully visible, Fall unaffected
+Scenario: hash mismatch → refuses, nothing deleted
+Scenario: an open tab whose Spring came from lessonData (loaded before Phase C) → shows "moved — reload", not an empty grid</div>
+<div class="note"><strong>Christie's edit to <code>tinker-backups/backup.js</code></strong> must land <em>before</em> Phase D. An agent may not touch that file. After Phase D, <code>computeClassbookContentByTeacher</code> (<code>:370-389</code>) would stop seeing Spring and trip the 10% content-loss alarm for every Spring teacher. The change is to also tally lessons from <code>collections.curriculum['lessons_spring-2026']</code>, and the exact lines will be written out for her in this plan before Phase D.</div>
 </div>
 
-<div class="phase" id="phase-5">
-<h3>Phase 5: Fall 2026 the same way, then resume the make-active plan <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p>Phases 3–4 are run for <code>fall-2026</code>, and <code>lessonData</code> is then left holding only test keys and metadata. The make-active-semester plan resumes, and its Archive now leaves a semester in its own doc, so the size worry is gone.</p>
-</div>
+<h2 id="followup">Follow-up plan (required before the next semester is created)</h2>
+<div class="note">After Phase D, <code>lessonData</code> holds Fall (420 KB and growing). <strong>Before Spring 2027 is created</strong> (or before <code>lessonData</code> passes about 70%, whichever comes first), a follow-up plan must: move Fall the same way at the end of its term; make <code>createNewSemester</code> create new semesters in their own document, setting config <em>before</em> <code>saveLessonData</code> (round-1 finding F, <code>app.js:4965</code> vs <code>:4980</code>) and handling <code>not-found</code> on the first write (finding E); make <code>deleteSemester</code>/Archive handle own-doc semesters (finding "deleteSemester breaks"); and generalise the constant. The make-active-semester plan resumes after that.</div>
 
 <h2 id="safety">Firebase safety checklist</h2>
 <div class="safe"><ul>
-  <li><strong>Rules:</strong> Phase 2 is a shared-rules change. The rules tests come first, all tests must pass, and it deploys only through <code>deploy-rules.sh --approved &lt;sha&gt;</code> after the phrase. New <code>lessons_K</code> docs need no new rule (<code>curriculum/{docId}</code>).</li>
-  <li><strong>Snapshots:</strong> JSON downloads before the move (Phase 3) and before the removal (Phase 4). Nightly backups cover the whole <code>curriculum</code> collection, including the new docs.</li>
-  <li><strong>Atomic:</strong> the move is one transaction (target created, flag set, list updated). The removal is one manager update that the rules restrict to deleting exactly that key.</li>
-  <li><strong>Verified:</strong> deep-equal checks from forced-server reads after the move and before the removal.</li>
-  <li><strong>Reversible:</strong> Phase 3 can be undone ("Move back") until Phase 4. After Phase 4, the snapshot plus the nightly backup can restore it.</li>
-  <li><strong>Partial updates:</strong> per-field dotted paths as today (<code>buildLessonFieldUpdates</code>), just rooted at <code>lessonKey</code> in the new doc. No whole-lesson <code>set()</code>.</li>
-  <li><strong>Spot checks:</strong> one real lesson in the Firebase Console after Phase 3 and after Phase 4.</li>
+  <li><strong>Rules:</strong> Phase A is a shared-rules change: rules tests including a near-1 MB fixture, the whole suite green, then <code>deploy-rules.sh --approved &lt;sha&gt;</code> after the phrase. New <code>lessons_*</code> and <code>storageMigrations</code> docs are covered by <code>curriculum/{docId}</code>, so no new rule is needed. The executor re-checks <code>storageMigrations</code> is writable by manager and readable by classbook roles.</li>
+  <li><strong>Snapshots:</strong> JSON downloads before Phase C and before Phase D, plus <code>tinker-backups/backup.js</code>'s automated backup of the <code>curriculum</code> collection (Tier 1).</li>
+  <li><strong>Atomic:</strong> the copy is one transaction. The removal is one update that the rules restrict to deleting exactly that key.</li>
+  <li><strong>Verified:</strong> a hash recorded at copy time is checked after the copy and before the removal, all from forced-server reads.</li>
+  <li><strong>Reversible:</strong> until Phase D, the original is untouched. After Phase D, the downloads and backups can restore it.</li>
+  <li><strong>Partial updates:</strong> per-field dotted paths as today. <code>saveLessonData</code> is a whole-semester merge-set today and becomes a whole-document merge-set for an own-doc semester; it's reached from <code>createLessonSlotsForRoster</code> on Settings save, and it keeps <code>merge: true</code>. (The round-1 correction to "no whole-lesson <code>set()</code>".)</li>
+  <li><strong>Spot checks:</strong> one Spring lesson in the Firebase Console after Phase C and after Phase D.</li>
 </ul></div>
 
 <h2 id="completeness">If interrupted</h2>
 <ul>
-  <li><strong>Phase 1–2 code deployed, nothing migrated:</strong> fully safe, and everything behaves as today.</li>
-  <li><strong>Mid-move:</strong> the transaction either committed or didn't, so there's no half state. After commit and before verify, the old copy is intact and "Move back" exists.</li>
-  <li><strong>Between Phases 3 and 4:</strong> two copies exist. The app uses the new one, and the rules freeze the old one. No space is freed yet, so the lessonData headroom is unchanged, same as today.</li>
+  <li><strong>After A:</strong> Spring is read-only, and nothing else changes.</li>
+  <li><strong>After B:</strong> same as A for users, plus the readout.</li>
+  <li><strong>Mid-C:</strong> the transaction either committed or didn't. If it committed but verify fails, the original is intact, and deleting the new doc restores the old behaviour.</li>
+  <li><strong>Between C and D:</strong> two copies exist. The app serves the new one, and the fence freezes the old one. No space is freed yet.</li>
 </ul>
 
 <h2 id="resume">Resume instructions</h2>
 <ol>
-  <li>Read this plan and its Decisions Log. Re-measure lessonData's size first (snippet in the log).</li>
-  <li>Worktree on a new branch off <code>origin/main</code>. Re-check the line numbers.</li>
-  <li>Phase by phase: commit, run the full suite, then a second-model implementation review. Deploys and the two production data steps (Phases 3 and 4) each need Christie's separate yes. Phase 2 needs the sha phrase.</li>
+  <li>Read this plan and its Decisions Log. Re-measure lessonData first (Phase B's readout, or the Sep 29 snippet).</li>
+  <li>A worktree off <code>origin/main</code>, with line numbers re-checked. Phase A work is in <code>studio-hub</code> (committed to main there, then the guard).</li>
+  <li>Phase by phase: commit, run the full suite, then a second-model implementation review. Each deploy and each production step (C, D) needs Christie's own yes. Phase A needs the sha phrase.</li>
 </ol>
 
 <h2 id="decisions">Decisions Log (append-only)</h2>
 <div class="decision">
-  <strong>Sep 29, 2026: plan created (draft 1).</strong> Found while reviewing the make-active plan's Archive design. Christie measured lessonData at 972 KB / 1,024 KB (95%): spring-2026 551 KB, fall-2026 420 KB. The largest fields are ordinary content (the largest single field is 2.5 KB), so trimming won't help. Chosen: a per-semester document store behind <code>lessonStoreFor</code> (the pattern camp seasons used). Rules fence migrated keys in the old doc, so stale tabs fail loudly instead of writing lost edits. The move (copy + switch) and the removal of the old copy are separate steps, each with its own go-ahead. The make-active plan is paused until Phase 5.<br>
-  Size snippet (read-only, console on the live Classbook): see the Sep 29 conversation. It reads <code>curriculum/lessonData</code> with <code>{source:'server'}</code> and sums Firestore field sizes per top-level key.
+  <strong>Sep 29, 2026: revision 2, after review round 1 (Claude; <code>thoughts/reviews/2026-09-29-plan-review-per-semester-storage-r1-claude.md</code>): NOT ready, 11-point minimum list, all taken.</strong> Re-scoped to <strong>Spring only, hard-coded</strong>, with no appData flags, <code>migratedSemesters</code>, UI buttons or "Move back". The copy and the removal are reviewed console procedures. The rules fence uses a literal key (no <code>get(appData)</code>), splits <code>:654</code>, and ships <strong>first</strong>. Fixed: the listener drops own-doc semesters (A); verify races (B, moot now that the fence freezes the source first); Phase D's precondition compares against the hash of what was written (C); vanished keys are loud (D); <code>not-found</code> on first write (E); <code>createNewSemester</code>/<code>deleteSemester</code> deferred to the follow-up plan, with a deadline (F, delete); the missing readers are added (<code>tinker-backups/backup.js</code>, which is Christie's edit, the in-app content count, <code>test-alerts.js</code>, dead backup helpers, e2e exemptions, seed); the backup citation and "nightly" are corrected; the listener generation is decided (no bump); teardown uses an array; a near-1 MB rules fixture is added; there's a headroom readout; and the emergency lever's order is fixed.<br>
+  <strong>Open questions for Christie:</strong> (Q1) Is it OK that Spring 2026 is read-only ("editing is paused") from Phase A until Phase C, probably a few days? (Q2) Will you make the small <code>backup.js</code> edit before Phase D, or accept one expected content-loss alarm for Spring teachers? (Q3, for the reviewer) Undoing a bad Phase C copy needs a whole-doc delete of <code>lessons_spring-2026</code>; today only classbook-admin/curriculum-admin may whole-doc delete (<code>:675-678</code>). Should Phase A's split give managers delete as well (they have it today through <code>:654</code>'s <code>write</code>)? The plan assumes yes: the split keeps manager delete.
+</div>
+<div class="decision">
+  <strong>Sep 29, 2026: plan created (draft 1).</strong> Found while reviewing the make-active plan's Archive design (now paused behind this plan). Christie measured 972 KB / 1,024 KB.
 </div>
 
 </body>
