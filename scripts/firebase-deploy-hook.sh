@@ -32,9 +32,9 @@ if ! printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_.-])(firebase|firebase-tools)
 fi
 
 /usr/bin/jq -n --arg reason \
-"firebase deploy is gated (Firebase Backend Resilience Plan). Deploys for tinker-hq-apps go through the guard, from any cwd:
-    /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --status
-    /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --approved <full sha> [--target firestore:rules|storage|firestore:indexes]
-Christie's phrase is 'approved to change firebase <full sha>' — --status prints the exact sentence and --diff the change to paste when asking. If you only meant to read text containing 'firebase deploy', use Read/Grep instead of Bash. See ~/.claude/CLAUDE.md → FIREBASE RULES." \
+"firebase deploy is gated (Firebase Backend Resilience Plan). Each project deploys only through its own guard, from any cwd — start with --status:
+    tinker-hq-apps:  /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --status
+    my-clay-hub:     /Users/christiehubley/my-clay-hub/scripts/deploy-rules.sh --status
+Christie's phrase is 'approved to change firebase <full sha>' — --status prints the exact sentence and command, and --diff the change to paste when asking. An approval counts only for that project's guard, never the other one. If you only meant to read text containing 'firebase deploy', use Read/Grep instead of Bash. See ~/.claude/CLAUDE.md → FIREBASE RULES." \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
 exit 0
