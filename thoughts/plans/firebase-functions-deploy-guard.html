@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plan: A guarded, verifiable way to deploy Cloud Functions to my-clay-hub (My Clay Hub Phase D2)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.55rem; border-bottom: 2px solid #8B30BC; padding-bottom: .5rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; color: #6052C8; }
+  h3 { font-size: 1rem; margin-top: 1.2rem; }
+  .meta { background: #f5f0ff; border-left: 4px solid #8B30BC; padding: .75rem 1rem; border-radius: 4px; margin: 1rem 0; font-size: .9rem; }
+  .phase { border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .phase h3 { margin-top: 0; }
+  .bdd { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 4px; padding: .5rem .75rem; margin: .5rem 0; font-size: .88rem; font-family: monospace; white-space: pre-wrap; }
+  .note { background: #fffbeb; border-left: 4px solid #f59e0b; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  .danger { background: #fef2f2; border-left: 4px solid #dc2626; padding: .6rem 1rem; border-radius: 4px; font-size: .9rem; margin: .5rem 0; }
+  code { background: #f3f4f6; padding: .1rem .35rem; border-radius: 3px; font-size: .88rem; }
+  table { border-collapse: collapse; width: 100%; margin: .75rem 0; }
+  th, td { border: 1px solid #e5e7eb; padding: .4rem .75rem; font-size: .88rem; text-align: left; vertical-align: top; }
+  th { background: #f9fafb; }
+  .status-tag { display: inline-block; font-size: .75rem; font-weight: 700; padding: .15rem .5rem; border-radius: 999px; }
+  .not-ready { background: #fef3c7; color: #92400e; }
+  .ready { background: #d1fae5; color: #065f46; }
+</style>
+</head>
+<body>
+
+<h1 id="plan-title">Plan: A guarded, verifiable way to deploy Cloud Functions to <code>my-clay-hub</code> (My Clay Hub Phase D2)</h1>
+
+<div class="meta">
+  <strong>Goal:</strong> A Cloud Function reaches <code>my-clay-hub</code> only as the exact commit Christie approved, built from a clean checkout, after its tests pass. After every deploy the guard proves what is running and that no private function can be called anonymously, and it leaves a receipt that says honestly whether the deploy fully worked.<br>
+  <strong>Repo:</strong> <code>/Users/christiehubley/my-clay-hub</code> (<code>Tinker-Art-Studio/my-clay-hub</code>, <code>main</code>). Rules guard <code>scripts/deploy-rules.sh</code> (D-3) stays as it is.<br>
+  <strong>Parent plan:</strong> <code>clayhub-members-foundation.html</code>, Phase D2. It extends the design in <code>firebase-deploy-guard.html</code>. It picks up <code>my-clay-hub-phase-d-project.html</code>'s C5 (build identity), which the facts below overturn (<a href="#choices">F7</a>).<br>
+  <strong>Scope (Christie, Sep 29):</strong> <strong>my-clay-hub only.</strong> The <code>tinker-hq-apps</code> copy for the <code>clayhub-link</code> codebase is built at the start of Phase E, from this guard, once there is link code to deploy. Nothing in this plan touches <code>tinker-hq-apps</code> or studio-hub.<br>
+  <strong>Not in this plan:</strong> any real app function (the D-4 vault export is the first, in its own plan right after this one); secrets; deleting functions (refused, see F6); the studio-hub copy (Phase E); sign-in providers and web app (Phase F).<br>
+  <strong>Risk:</strong> MEDIUM. It is the first code ever to run in <code>my-clay-hub</code>, and a functions deploy changes IAM, enables APIs and creates Google-side resources on its own (<a href="#facts">facts</a>). The database is still empty and deny-all, so the worst realistic outcome is a public or over-privileged canary, not data loss. D2-4 edits the global hook, as D-3 did.<br>
+  <strong>History:</strong> Sep 29 written, after a source-level read of firebase-tools 15.22.3 (the pinned version).<br>
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — needs review rounds (Codex + Claude) and Christie's OK on the choices and Appendix A.
+</div>
+
+<h2 id="already">Already decided (not reopened here)</h2>
+<table>
+<tr><th>What</th><th>Value</th><th>Source</th></tr>
+<tr><td>What D2 must deliver</td><td>A deploy from a clean worktree of the approved commit, with no untracked files, an explicit <code>functions.ignore</code> and the lockfile committed. A <code>functions.predeploy</code> backstop that refuses a missing sha, a folder that doesn't match, dirty files, the wrong codebase or an unexpected ignore list, tested by calling the Firebase CLI directly. A receipt with the commit and the folder hash. A post-deploy read-back that fails if a private function is public. A clear record of a partial deploy. Functions tests first. <code>--only functions:&lt;codebase&gt;</code>, with a check that the name is a codebase.</td><td>Foundation plan, Phase D2</td></tr>
+<tr><td>Generation, region, runtime</td><td>2nd gen; functions in <code>us-central1</code>; triggers in <code>nam5</code>; retries set explicitly; explicit <code>maxInstances</code>; one Admin app per instance</td><td>D23 / DECISIONS #54</td></tr>
+<tr><td>Read-back of "not public"</td><td><strong>An anonymous probe</strong>: after a deploy, the guard calls each HTTP function with no credentials and requires a refusal. <strong>No gcloud on this laptop.</strong> The full invoker list is checked once in the Console at the first deploy.</td><td>Christie, Sep 29</td></tr>
+<tr><td>Scope</td><td>my-clay-hub now; the tinker-hq-apps copy at the start of Phase E</td><td>Christie, Sep 29</td></tr>
+<tr><td>Deploy approval</td><td>"approved to change firebase &lt;full sha&gt;", valid only for that sha and that project's guard</td><td>Global CLAUDE.md</td></tr>
+</table>
+
+<h2 id="facts">Facts this plan is built on (firebase-tools 15.22.3, read from its source Sep 29)</h2>
+<p>Paths are under <code>node_modules/firebase-tools/lib/</code>. Every guard step below exists because of one of these.</p>
+<table>
+<tr><th>#</th><th>Fact</th><th>Where</th><th>So the guard…</th></tr>
+<tr><td>K1</td><td>The upload is everything under the codebase's <code>source</code> folder, minus <code>functions.ignore</code>. <strong>An <code>ignore</code> list replaces the defaults</strong> (<code>node_modules</code>, <code>.git</code>), and <strong><code>.gitignore</code> is not used</strong>: untracked and gitignored files ship.</td><td><code>deploy/functions/prepareFunctionsUpload.js</code> <code>packageSource</code>; <code>fsAsync.js</code></td><td>deploys only from a fresh worktree, checks the folder has no file the commit doesn't have, and pins the ignore list exactly.</td></tr>
+<tr><td>K2</td><td>The CLI <strong>runs our code on this laptop</strong> to discover the functions (it spawns <code>node_modules/.bin/firebase-functions</code> in the source folder, with <code>HOME</code> set). A <code>functions.yaml</code> in the folder skips that and is trusted as the manifest.</td><td><code>deploy/functions/runtimes/node/index.js</code>; <code>discovery/index.js</code></td><td>forbids <code>functions.yaml</code>. Discovery runs only the approved commit's code, in the worktree.</td></tr>
+<tr><td>K3</td><td><code>.env</code>, <code>.env.&lt;projectId&gt;</code> and <code>.env.&lt;alias&gt;</code> become the functions' environment variables. The CLI can <strong>write</strong> <code>.env.&lt;projectId&gt;</code> when it prompts for params.</td><td><code>functions/env.js</code>; <code>prepare.js</code></td><td>forbids any <code>.env*</code> in the source folder. Configuration lives in code; no secrets in D2.</td></tr>
+<tr><td>K4</td><td>A plain <code>--only functions</code> <strong>skips "unchanged" functions</strong> by hash, still exits 0, and doesn't re-apply their IAM. A <code>functions:&lt;codebase&gt;</code> selector forces every function in it to update.</td><td><code>release/planner.js</code> <code>calculateChangesets</code>; <code>prepare.js</code></td><td>always deploys <code>--only functions:&lt;codebase&gt;</code>.</td></tr>
+<tr><td>K5</td><td><code>functions:foo</code> means codebase <code>foo</code> only if a codebase has that name; otherwise it means function <code>foo</code> in the <code>default</code> codebase, and then <strong>every</strong> codebase's predeploy runs.</td><td><code>functionsDeployHelper.js</code> <code>parseFunctionSelector</code>; <code>deploy/lifecycleHooks.js</code></td><td>refuses a name that isn't in <code>firebase.json</code>'s codebase list, before calling the CLI.</td></tr>
+<tr><td>K6</td><td>A function in the project but not in the source is a deletion. With <code>--non-interactive</code> and no <code>--force</code>, the CLI <strong>throws after the upload, before changing any function</strong>. Deletion only touches functions labelled <code>cli-firebase</code>, and only in the codebase being deployed.</td><td><code>release/planner.js</code>; <code>prompts.js</code> <code>promptForFunctionDeletion</code></td><td>never passes <code>--force</code>, and reports "this commit removes a function" as its own refusal (F6).</td></tr>
+<tr><td>K7</td><td><code>--force</code> also approves unsafe trigger migrations, retry policies, minimum-instance cost increases, the cleanup policy and extra API enablement. <code>--non-interactive</code> without it silently skips unsafe updates and throws on the rest.</td><td><code>prompts.js</code>; <code>release/index.js</code></td><td>never passes <code>--force</code>. A silently skipped update is caught by the read-back's hash check (F8).</td></tr>
+<tr><td>K8</td><td>If the <code>gcf-artifacts</code> repository has no cleanup policy, a non-interactive deploy <strong>ends with exit 1 "Functions successfully deployed but could not set up cleanup policy"</strong>. That can hide a real partial failure.</td><td><code>release/index.js</code> <code>setupArtifactCleanupPolicies</code></td><td>requires the policy to exist before the first deploy (D2-1), and never trusts the exit code alone: the read-back decides.</td></tr>
+<tr><td>K9</td><td>A partial failure exits 2 with "There was an error deploying functions". <code>--json</code> has <strong>no per-function result</strong>.</td><td><code>release/index.js</code>; <code>command.js</code></td><td>reads back every function after every deploy, whatever the exit code, and writes the receipt from that.</td></tr>
+<tr><td>K10</td><td><code>functions:list --json</code> returns each function's id, region, trigger, state, <code>serviceAccount</code>, <code>ingress</code>, <code>uri</code>, labels, codebase and the <code>firebase-functions-hash</code> label. It also returns <strong>env var values in plain text</strong>. It enables no APIs. It shows <strong>no IAM</strong>, and no firebase-tools command does.</td><td><code>commands/functions-list.js</code></td><td>uses it for the read-back, never prints the env values, and proves "not public" with the anonymous probe.</td></tr>
+<tr><td>K11</td><td><code>onRequest</code> with no <code>invoker</code> is made <strong>public</strong> (<code>allUsers</code>) on create. <code>invoker:'private'</code> leaves the policy empty on create and clears <code>run.invoker</code> on update. Callables are always public.</td><td><code>release/fabricator.js</code>; <code>gcp/run.js</code>; <code>gcp/proto.js</code></td><td>requires every HTTP function in my-clay-hub to refuse the anonymous probe.</td></tr>
+<tr><td>K12</td><td><strong>The CLI cannot choose the build service account.</strong> Builds in a project created after mid-2024 run as <code>&lt;number&gt;-compute@developer.gserviceaccount.com</code>, which Google creates <strong>with Editor</strong> when the Compute Engine API is enabled, unless an org policy stops it (Christie has no organization).</td><td><code>gcp/cloudfunctionsv2.js</code> (no build SA field); Google: <em>build-custom-sa</em>, <em>cloud-build-service-account-updates</em></td><td>overturns C5 (F7).</td></tr>
+<tr><td>K13</td><td>A functions deploy <strong>changes project IAM on its own</strong>. On the first <em>event-triggered</em> deploy it grants the Compute account <code>run.invoker</code> and <code>eventarc.eventReceiver</code> on the project, and the Pub/Sub agent Token Creator. It enables APIs even on <code>--dry-run</code>.</td><td><code>checkIam.js</code> <code>ensureServiceAgentRoles</code>; <code>ensure.js</code></td><td>has an IAM principal-list check after any deploy that adds a new trigger type (the canary is HTTP-only, so D2 doesn't cause this; D-4's schedule will).</td></tr>
+<tr><td>K14</td><td>Node 20 is decommissioned for Cloud Functions on <strong>2026-10-30</strong>; the CLI refuses it after that date. Discovery uses the laptop's Node (v20.20.2 today) and only warns on a mismatch.</td><td><code>runtimes/supported/types.js</code></td><td>uses <code>nodejs22</code>.</td></tr>
+</table>
+
+<h2 id="choices">Choices made here (Christie can overrule any)</h2>
+<table>
+<tr><th>#</th><th>Choice</th><th>Why</th></tr>
+<tr><td>F1</td><td>A <strong>separate script</strong>, <code>scripts/deploy-functions.sh</code>, with the same CLI shape (<code>--status</code>, <code>--diff</code>, <code>--approved &lt;sha&gt;</code>, plus <code>--codebase &lt;name&gt;</code>). It uses the same lock (<code>.git/tinker-deploy.lock</code>), so a rules deploy and a functions deploy never overlap, and the same receipt rules. Receipts: <code>deployed/my-clay-hub/functions-&lt;codebase&gt;/&lt;UTC stamp&gt;-&lt;sha7&gt;</code>.</td><td><code>deploy-rules.sh</code> was reviewed line by line and just proved itself. Mixing functions logic into it would put that at risk for no gain. Its record logic (<code>receipt_rows</code>, the pending-receipt reconcile, stamp reservation) is copied with its comments and tests, not rewritten.</td></tr>
+<tr><td>F2</td><td>Codebases live at <code>functions/&lt;codebase&gt;/</code>, each with its own <code>package.json</code>, committed <code>package-lock.json</code> and <code>"engines": {"node": "22"}</code>. <code>firebase.json</code> gets the array form. D2 creates one codebase, <code>core</code>, holding one function, <strong><code>canary</code></strong>: <code>onRequest({ invoker: 'private', region: 'us-central1', serviceAccount: 'canary@', maxInstances: 1 })</code>. It returns 204 and does nothing else.</td><td>The guard needs a real, harmless function to prove itself on before D-4's vault export ships. The canary stays for good: every deploy probes it, so a broken probe (say, one that reads every reply as "refused") shows up on the one function known to be private.</td></tr>
+<tr><td>F3</td><td><strong>"The folder matches the commit"</strong> means: under <code>functions/&lt;cb&gt;/</code>, every file on disk, excluding only <code>node_modules/</code>, is tracked in the approved commit and byte-identical to it, and every tracked file is on disk. The receipt's folder hash is git's tree id for <code>&lt;sha&gt;:functions/&lt;cb&gt;</code>. Both the guard (before the CLI) and the predeploy backstop (inside it) check this.</td><td>K1: whatever is in the folder ships. A git tree id changes when any byte of any tracked file changes; the on-disk walk catches the untracked extras a tree id can't see.</td></tr>
+<tr><td>F4</td><td>The ignore list is pinned to exactly <code>["node_modules", ".git", "firebase-debug.log", "firebase-debug.*.log", "*.local"]</code>, and the backstop refuses any other list. The source folder may not contain <code>functions.yaml</code> or any <code>.env*</code> file, tracked or not.</td><td>K1–K3. A short, fixed list is easy to review. Forbidding the files beats ignoring them: an ignored <code>.env</code> is still read by discovery.</td></tr>
+<tr><td>F5</td><td>The CLI call is always <code>firebase deploy --only functions:&lt;cb&gt; --project my-clay-hub --non-interactive</code>, run in the worktree with <code>TINKER_DEPLOY_SHA</code> set. <strong>Never <code>--force</code>.</strong> The dependencies are installed fresh in the worktree with <code>npm ci</code> in <code>functions/&lt;cb&gt;/</code>, not symlinked.</td><td>K4, K5, K7. Discovery runs <code>node_modules/.bin/firebase-functions</code> from that folder (K2), so it must come from this commit's lockfile, not whatever the shared tree has installed.</td></tr>
+<tr><td>F6</td><td><strong>The guard never deletes a function.</strong> Before deploying, it compares the functions the commit defines (from the CLI's discovery output) with what <code>functions:list</code> shows in that codebase. If the commit removes one, it refuses and says so, before anything is uploaded. Deleting gets its own guarded mode in a later plan, when something first needs removing.</td><td>K6. The CLI would refuse anyway, but only after uploading, and with a message that's easy to misread. A deletion is a different kind of change and deserves its own approval.</td></tr>
+<tr><td>F7</td><td><strong>C5 is replaced.</strong> Builds run as the Compute default account (K12), so that account gets C5's narrow build roles: Logs Writer on the project; Artifact Registry Writer on the <code>gcf-artifacts</code> repository only; Storage Object Viewer with a condition limited to the <code>gcf-v2-sources-*</code>, <code>gcf-v2-uploads-*</code> and <code>run-sources-*</code> buckets. <strong>Editor is removed from it before the first build ever runs</strong> (D2-1 enables the Compute API first, on purpose). No function ever <em>runs</em> as it: each function names its own runtime account (<code>serviceAccount</code>), and the read-back refuses the Compute account. <code>functions-build@</code> (D-1, no roles) is deleted as unused.</td><td>The Firebase CLI offers no other way; only gcloud's <code>--build-service-account</code> can choose, and there is no gcloud (Christie, Sep 29). Doing it in this order means no build runs with Editor, even for a moment.</td></tr>
+<tr><td>F8</td><td><strong>The read-back</strong> runs after every deploy, whatever the CLI's exit code. <code>functions:list --json</code>, filtered through <code>jq</code> so env values are never printed or stored, must show: every function the commit defines, and no others, in that codebase; each <code>ACTIVE</code>; each with the hash label the CLI computed for this deploy; each running as its declared account, never the Compute one; <code>ingress</code> "all". Then the <strong>anonymous probe</strong>: a plain HTTPS request with no credentials to every HTTP function's <code>uri</code> must get 401 or 403. Any other reply, including 2xx, 404, 5xx or a timeout, fails the read-back.</td><td>K9–K11. The probe checks the one property that matters, "strangers can't call it", end to end, without new credentials on the laptop. Cloud Run refuses an unauthenticated request before any of our code runs, so the probe can't trigger work.</td></tr>
+<tr><td>F9</td><td><strong>The receipt</strong> is an annotated tag written after the read-back, whatever the outcome, because production may have changed either way. Its message holds: project, codebase, commit, folder tree id, the CLI's exit code, each function's state and hash, the probe results, and <code>outcome=complete|partial|unsafe</code>. <code>partial</code>: the read-back doesn't match the commit. <code>unsafe</code>: a probe wasn't refused. The guard exits non-zero for both, with a plain-English next step. <strong><code>--status</code> treats the newest <em>complete</em> receipt as "what shipped", and names any newer partial or unsafe one above it in red.</strong></td><td>"A clear record when a deploy only partly succeeds" (foundation). The rules guard writes no receipt on failure, because a rules release is all-or-nothing. A functions release isn't (K9).</td></tr>
+<tr><td>F10</td><td><strong>Tests first:</strong> the guard runs the repo's full <code>npm test</code> in the worktree, extended with <code>test:functions</code> (each codebase's own tests, run with <code>node --test</code>, no emulator needed for the canary). The Functions emulator is added when a codebase first needs Firestore triggers, on its own pinned port, through <code>scripts/emulator-safety.js</code>.</td><td>The canary has nothing to emulate. Adding an emulator now would be untested machinery.</td></tr>
+<tr><td>F11</td><td><strong>The cleanup policy is set before the first deploy</strong>, on a <code>gcf-artifacts</code> repository Christie pre-creates in <code>us-central1</code> (Docker format), with the policy "delete untagged images older than 1 day, keep the 2 most recent" set in the Console. The read-back also treats the K8 message as a failure that needs attention, never as success.</td><td>K8. Pre-creating the repository also lets F7 scope Artifact Registry Writer to it.</td></tr>
+<tr><td>F12</td><td>The global hook also denies the CLI's other function-changing commands: <code>functions:delete</code>, <code>functions:secrets:set|destroy|prune</code>, <code>functions:artifacts:setpolicy</code>, <code>functions:config:set|unset|clone</code>. Its message names both guards and the new functions guard (<a href="#appendix-a">Appendix A</a>, for Christie's approval).</td><td>The hook exists to catch habits. These commands change production as surely as <code>deploy</code> does.</td></tr>
+</table>
+
+<h2 id="phases">Phases</h2>
+<p>Order: D2-1 → D2-2 → D2-3 → D2-4 → D2-5. D2-2 and D2-3 are one branch and one PR each, reviewed and then merged. D2-1 can run alongside D2-2.</p>
+
+<div class="phase">
+<h3>D2-1 — Christie secures the build identity and pre-creates the repository (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>The Compute default service account exists and holds <strong>no Editor</strong>. It has exactly F7's three roles, each with the scope F7 names. Screenshots of IAM "View by roles" are the evidence.</li>
+  <li><code>canary@my-clay-hub.iam.gserviceaccount.com</code> exists with <strong>no roles</strong>.</li>
+  <li>The <code>gcf-artifacts</code> Docker repository exists in <code>us-central1</code>, with the cleanup policy from F11.</li>
+  <li><code>functions-build@</code> is deleted.</li>
+  <li>Christie (Owner) can act as both accounts. Owner includes <code>iam.serviceAccounts.actAs</code>, so no extra grant is needed; that is recorded, not assumed, by reading her roles.</li>
+  <li>Nothing else changed: no web app, no sign-in provider, and the rules are still deny-all.</li>
+</ul>
+<p><strong>Christie's checklist</strong> (Claude walks through it live and records each result in the Decisions log):</p>
+<ol>
+  <li>APIs &amp; Services → enable <strong>Compute Engine API</strong>. This creates <code>&lt;number&gt;-compute@developer.gserviceaccount.com</code>, and Google gives it Editor.</li>
+  <li>IAM → find that account → <strong>remove Editor</strong>. Screenshot.</li>
+  <li>IAM → grant that account <strong>Logs Writer</strong> on the project.</li>
+  <li>Artifact Registry → Create repository: name <code>gcf-artifacts</code>, Docker, us-central1. Then Cleanup policies: delete untagged images older than 1 day, keep the 2 most recent.</li>
+  <li>That repository → Permissions → grant the Compute account <strong>Artifact Registry Writer</strong>.</li>
+  <li>IAM → grant the Compute account <strong>Storage Object Viewer</strong> with an IAM condition: resource name starts with <code>projects/_/buckets/gcf-v2-sources-</code>, <code>…/gcf-v2-uploads-</code> or <code>…/run-sources-</code>. Claude supplies the exact condition text.</li>
+  <li>Service accounts → create <code>canary</code> ("Canary function"). Grant nothing.</li>
+  <li>Service accounts → delete <code>functions-build@</code>.</li>
+  <li>IAM "View by roles", including Google-provided grants → screenshot. That list is the evidence.</li>
+</ol>
+<div class="note">Exact role names and the condition syntax get checked against Google's current docs at execution time. If a documented minimum differs from F7's list (for example, the build needs one more permission), the smallest documented addition is taken and logged. It is never Editor.</div>
+<div class="bdd">Scenario: the build account never holds Editor during a build
+  Given the Compute Engine API was enabled in step 1
+  When Christie removes Editor in step 2, before any functions deploy exists
+  Then the principal list in step 9 shows the Compute account with only Logs Writer and the conditional Storage Object Viewer at project level
+  And Artifact Registry Writer on gcf-artifacts only</div>
+<div class="bdd">Scenario: Google re-adds Editor
+  Given the step 9 screenshot shows Editor on the Compute account again
+  Then nothing else is done until it's removed and the list is re-read</div>
+<p><strong>If interrupted:</strong> each step is visible in the Console. A new session re-reads the principal list and continues from the first step not done. The window that matters is between steps 1 and 2 (the account holds Editor), and nothing uses the account then: there are no functions and no builds.</p>
+</div>
+
+<div class="phase">
+<h3>D2-2 — Repo: the <code>core</code> codebase with the canary, and the functions predeploy backstop <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li><code>functions/core/</code> holds <code>index.js</code> (the canary, F2), <code>package.json</code> (<code>engines.node</code> 22, <code>firebase-functions</code> and <code>firebase-admin</code> pinned to exact versions), <code>package-lock.json</code> and <code>tests/canary.test.js</code>. The test proves the handler returns 204, and that its declared options are <code>invoker: 'private'</code>, <code>serviceAccount: 'canary@'</code>, region <code>us-central1</code> and <code>maxInstances: 1</code>, read from the function's exported <code>__endpoint</code>.</li>
+  <li><code>firebase.json</code> has <code>"functions": [{ "source": "functions/core", "codebase": "core", "runtime": "nodejs22", "ignore": [F4's list], "predeploy": ["bash scripts/predeploy-check.sh functions"] }]</code>.</li>
+  <li><code>scripts/predeploy-check.sh functions</code> refuses, with a one-line reason each:
+    <ul>
+      <li>the wrong project, or a run outside this repo (as today);</li>
+      <li>no <code>TINKER_DEPLOY_SHA</code>;</li>
+      <li><code>RESOURCE_DIR</code> isn't a codebase <code>source</code> in <code>firebase.json</code>;</li>
+      <li>the source folder doesn't match the commit (F3);</li>
+      <li>an ignore list other than F4's;</li>
+      <li>a <code>functions.yaml</code> or <code>.env*</code> anywhere in the folder;</li>
+      <li><code>firebase.json</code> or the check itself differing from the commit;</li>
+      <li>a missing <code>package-lock.json</code>.</li>
+    </ul></li>
+  <li>Tests call the <strong>real Firebase CLI</strong> as well as the script. <code>firebase deploy --only functions:core --project demo-my-clay-hub</code> from the repo must stop at the predeploy check, which fails because the project isn't <code>my-clay-hub</code>, so the hook is proven wired. Nothing reaches the network, because predeploy runs before prepare (<code>deploy/index.js</code>). Every other refusal is tested on the script directly, with a fixture folder per case.</li>
+  <li><code>npm test</code> gains <code>test:functions</code>. Everything passes, and the existing 410 tests are unchanged.</li>
+</ul>
+<div class="bdd">Scenario: an untracked file in the source folder
+  Given functions/core/notes.txt exists but isn't in the approved commit
+  When the predeploy check runs for functions
+  Then it refuses, naming notes.txt</div>
+<div class="bdd">Scenario: a .env file, even an ignored one
+  Given functions/core/.env.my-clay-hub exists
+  Then the check refuses, whatever the ignore list says</div>
+<div class="bdd">Scenario: a raw deploy by hand
+  Given no TINKER_DEPLOY_SHA
+  When someone runs the Firebase CLI's functions deploy for my-clay-hub directly
+  Then the predeploy check refuses before discovery runs any code or anything is uploaded</div>
+<div class="bdd">Scenario: one changed byte
+  Given functions/core/index.js differs from the approved commit by one byte
+  Then the check refuses; identical bytes pass</div>
+<p><strong>If interrupted:</strong> a branch with nothing deployed. Resume from its last commit.</p>
+</div>
+
+<div class="phase">
+<h3>D2-3 — The functions guard, <code>scripts/deploy-functions.sh</code> <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong> (steps in order; each refusal has its own exit code and a <code>REFUSED:</code> line):</p>
+<ol>
+  <li><strong>Lock</strong>, shared with the rules guard. <strong>Fetch</strong> the branch and receipts. <strong>Reconcile</strong> a pending receipt. All three are copied from <code>deploy-rules.sh</code>.</li>
+  <li><code>--codebase</code> names a codebase in the tip's <code>firebase.json</code> (K5). The sha is full, is a commit, is on <code>origin/main</code>, and its control files match the tip's. The control files are those of <code>deploy-rules.sh</code> plus <code>scripts/deploy-functions.sh</code>, its test suite, and <code>functions/&lt;cb&gt;/package.json</code> and <code>package-lock.json</code>.</li>
+  <li>A <strong>fresh worktree</strong> at the sha. <code>npm ci</code> at the root and in <code>functions/&lt;cb&gt;/</code>; the root <code>node_modules</code> is symlinked as today, but the codebase's never is (F5). Then the F3 folder check, in the worktree, before anything else runs.</li>
+  <li><strong>Discovery preview:</strong> the CLI's discovery lists the functions the commit defines, with their options. The guard refuses on:
+    <ul>
+      <li>a deletion (F6);</li>
+      <li>an HTTP function without <code>invoker: 'private'</code>;</li>
+      <li>a function with no <code>serviceAccount</code>, or with the Compute account.</li>
+    </ul>
+    If the CLI's hidden <code>internaltesting:functions:discover</code> turns out to be unusable for this, the guard runs the same <code>firebase-functions</code> discovery binary directly. Either way, D2-3 tests pin the output format.</li>
+  <li><code>npm test</code> in the worktree.</li>
+  <li>Reserve the receipt stamp (copied logic). The diff shown is <code>git diff &lt;last complete receipt&gt; &lt;sha&gt; -- functions/&lt;cb&gt;</code>.</li>
+  <li>The CLI call (F5). Its exit code is <strong>recorded, not trusted</strong>.</li>
+  <li>The read-back and anonymous probe (F8), then the receipt (F9). The exit status is 0 only for <code>outcome=complete</code>.</li>
+</ol>
+<ul>
+  <li><code>--status</code> and <code>--diff</code> behave as the rules guard's do. They name the codebase, the last complete receipt, any newer partial or unsafe receipt, the exact approval sentence and the command.</li>
+  <li>The test suite (<code>scripts/deploy-functions.test.sh</code>) runs against a fake <code>firebase</code> on <code>PATH</code> that records its argv and plays back set responses. That covers discovery output, deploy exit codes 0, 1 (the K8 text) and 2, and <code>functions:list</code> JSON. A fake <code>curl</code> plays back probe replies. It asserts:
+    <ul>
+      <li>never <code>--force</code>;</li>
+      <li>always <code>functions:&lt;cb&gt;</code>;</li>
+      <li>no env value ever appears in the output or a receipt;</li>
+      <li>each outcome's receipt text and exit code;</li>
+      <li>a 200 from the probe gives <code>unsafe</code>;</li>
+      <li>a deploy that exits 0 but reads back the old hash gives <code>partial</code> (the K7 silent skip);</li>
+      <li>the lock is shared with <code>deploy-rules.sh</code>.</li>
+    </ul></li>
+</ul>
+<div class="bdd">Scenario: the CLI says success but a function didn't change
+  Given the fake CLI exits 0 and functions:list shows canary with the previous deploy's hash
+  Then the receipt says outcome=partial, the guard exits non-zero, and --status still names the previous complete receipt as what shipped</div>
+<div class="bdd">Scenario: a private function answers a stranger
+  Given the probe gets 200 from canary's uri
+  Then the receipt says outcome=unsafe, and the guard prints the exact Console path to check canary's permissions</div>
+<div class="bdd">Scenario: the cleanup-policy trap
+  Given the CLI exits 1 with "Functions successfully deployed but could not set up cleanup policy"
+  Then the read-back still runs, and the receipt records exit=1 and the read-back's own verdict</div>
+<div class="bdd">Scenario: a function name instead of a codebase
+  Given --codebase canary (a function, not a codebase)
+  Then the guard refuses before any CLI call</div>
+<div class="bdd">Scenario: a commit that deletes a function
+  Given functions:list shows core:canary and core:old, and the commit defines only canary
+  Then the guard refuses before uploading, naming core:old, and says deletion has its own guarded path</div>
+<p><strong>If interrupted:</strong> a branch; nothing is deployed until D2-5.</p>
+</div>
+
+<div class="phase">
+<h3>D2-4 — The wording: global hook, global and repo CLAUDE.md, settings <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria:</strong> Appendix A's text, approved by Christie, is applied the same way D-3 step 3 was:</p>
+<ul>
+  <li>backups first;</li>
+  <li>the hook edited and its fixtures run: a deny for each new command form, and no output for <code>functions:list</code> and <code>functions:log</code>;</li>
+  <li><code>settings.json</code> left as valid JSON with the hook entry intact;</li>
+  <li>a diff against the backups showing exactly the approved hunks.</li>
+</ul>
+<p>Then a <strong>fresh session</strong> confirms three things: the new wording is loaded, both rules guards' <code>--status</code> still work, and a raw functions deploy is denied with the new message. The backups are deleted after that.</p>
+<div class="bdd">Scenario: the hook still fails closed
+  Given the edited hook
+  When a Bash command contains the CLI's functions:delete
+  Then it is denied with the new message
+  And `true` still runs (the hook isn't broken)</div>
+</div>
+
+<div class="phase">
+<h3>D2-5 — The first guarded functions deploy (the canary) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Acceptance criteria</strong></p>
+<ul>
+  <li>In the fresh session: <code>npm ci</code>, fetch, <code>deploy-functions.sh --status --codebase core</code>, and <code>--diff</code> pasted verbatim (the whole <code>functions/core</code> folder, since this is the first deploy). The ask names the sha. Only after "approved to change firebase &lt;sha&gt;": <code>--approved &lt;sha&gt; --codebase core</code>.</li>
+  <li>The receipt says <code>outcome=complete</code>, and the probe got 401 or 403.</li>
+  <li>Christie's Console check, done once:
+    <ul>
+      <li>Cloud Run → <code>canary</code> → Security/Permissions shows <strong>no invoker at all</strong>;</li>
+      <li>IAM "View by roles" matches D2-1's screenshot, plus only what a first deploy is documented to add;</li>
+      <li>the Compute account still has no Editor.</li>
+    </ul></li>
+  <li>Anything the deploy added to project IAM is listed in the Decisions log, and any addition not documented in K13 is removed or explained before D-4.</li>
+</ul>
+<div class="bdd">Scenario: the first deploy
+  Given D2-1 to D2-4 are done and Christie approved sha S
+  When the guard deploys core at S
+  Then the canary is ACTIVE, running as canary@, with S's hash
+  And an anonymous request is refused
+  And one receipt deployed/my-clay-hub/functions-core/&lt;stamp&gt;-&lt;S7&gt; says outcome=complete</div>
+<div class="bdd">Scenario: the first deploy fails while APIs finish setting up
+  Given the CLI fails because a Google service agent is still propagating (a known first-deploy failure)
+  Then the receipt says outcome=partial, nothing is retried automatically, and the same sha is re-run under the same approval once Christie OKs the retry</div>
+<p><strong>If interrupted:</strong> the receipt, or the pending-receipt file, says what happened. The canary is harmless in any state: private, no roles, does nothing.</p>
+</div>
+
+<h2 id="safety">Firebase safety checklist</h2>
+<table>
+<tr><th>Check</th><th>This plan</th></tr>
+<tr><td>Rules for every collection touched</td><td>No collections. The canary reads and writes nothing, and its account has no roles.</td></tr>
+<tr><td>Tests first</td><td>D2-2's backstop tests and D2-3's guard suite pass before D2-5. The guard re-runs <code>npm test</code> in the worktree.</td></tr>
+<tr><td>Deploy path</td><td>Only <code>deploy-functions.sh</code>, only after "approved to change firebase &lt;sha&gt;" for that sha, in a session started after D2-4's wording landed. Never <code>--force</code>, never a raw CLI deploy (hook + backstop).</td></tr>
+<tr><td>Snapshot / updateDoc / empty fields</td><td>Not applicable: no documents are written.</td></tr>
+<tr><td>tinker-hq-apps untouched</td><td>Yes. Its copy of the guard is built in Phase E.</td></tr>
+<tr><td>Credentials</td><td>No gcloud, no key files, no new login. <code>~/.config/configstore/firebase-tools.json</code> is never read. The probe sends no credentials at all. Env values from <code>functions:list</code> are never printed or stored.</td></tr>
+<tr><td>IAM drift</td><td>D2-1 screenshots before; D2-5 Console check after; every addition logged (K13).</td></tr>
+</table>
+
+<h2 id="completeness">Completeness check — what if this stops partway?</h2>
+<ul>
+  <li><strong>After D2-1 only:</strong> a Compute account with narrow roles and no Editor, an empty repository with a cleanup policy, and an unused <code>canary@</code>. Safe indefinitely.</li>
+  <li><strong>Mid D2-1, between steps 1 and 2:</strong> the Compute account holds Editor, but nothing runs as it (no functions, no builds). Finish step 2 first when resuming.</li>
+  <li><strong>After D2-2 or D2-3 only:</strong> code on a branch or on main, nothing deployed. The raw CLI is refused by the backstop.</li>
+  <li><strong>Mid D2-4:</strong> as D-3: the backups show which files changed, and nothing deploys until a fresh session passes the checks.</li>
+  <li><strong>Mid D2-5:</strong> covered by the receipt outcomes and the pending-receipt file (F9).</li>
+</ul>
+
+<h2 id="open">Open items to settle during execution (logged when settled)</h2>
+<ul>
+  <li><strong>O1:</strong> Is <code>internaltesting:functions:discover</code> stable enough in 15.22.3 to parse? If not, the guard runs the discovery binary directly (D2-3 step 4).</li>
+  <li><strong>O2:</strong> Does Cloud Run answer an anonymous request to a private service with 403 (expected) or 401? Both are accepted; the observed one is logged.</li>
+  <li><strong>O3:</strong> The exact minimum build roles for the Compute account, from Google's current docs (D2-1 note).</li>
+  <li><strong>O4:</strong> Whether to install Node 22 on the laptop, so discovery matches the runtime (K14). This is not required: discovery on Node 20 only warns. It's Christie's call.</li>
+</ul>
+
+<h2 id="resume">Resume instructions</h2>
+<ol>
+  <li>Read this plan's Decisions log, then <code>~/my-clay-hub/CLAUDE.md</code>.</li>
+  <li>Find the first phase not marked done. D2-1 progress is in the log (step numbers). D2-2 and D2-3 are on branches <code>d2-functions-backstop</code> and <code>d2-functions-guard</code>.</li>
+  <li>Never run a functions deploy, <code>functions:delete</code>, or any <code>functions:secrets</code> / <code>functions:artifacts</code> / <code>functions:config</code> write by hand. Only D2-5, through the guard, after the phrase.</li>
+</ol>
+
+<h2 id="appendix-a">Appendix A — proposed wording (for Christie's approval; not applied)</h2>
+<p><strong>A1. Hook</strong> (<code>tinker-ai-configs/scripts/firebase-deploy-hook.sh</code>). Keep the existing <code>deploy</code> match, and add a second match for any of these CLI commands: <code>functions:delete</code>, <code>functions:secrets:set</code>, <code>functions:secrets:destroy</code>, <code>functions:secrets:prune</code>, <code>functions:artifacts:setpolicy</code>, <code>functions:config:set</code>, <code>functions:config:unset</code>, <code>functions:config:clone</code>. Both give the same deny message:</p>
+<div class="bdd">firebase deploy and function-changing commands are gated (Firebase Backend Resilience Plan). Each project deploys only through its own guard, from any cwd — start with --status:
+    tinker-hq-apps rules:   /Users/christiehubley/studio-hub/scripts/deploy-rules.sh --status
+    my-clay-hub rules:      /Users/christiehubley/my-clay-hub/scripts/deploy-rules.sh --status
+    my-clay-hub functions:  /Users/christiehubley/my-clay-hub/scripts/deploy-functions.sh --status --codebase &lt;name&gt;
+Christie's phrase is 'approved to change firebase &lt;full sha&gt;' … (rest unchanged). Deleting a function, and secrets or artifact-policy changes, have no guarded path yet — ask Christie.</div>
+<p><strong>A2. Global <code>~/.claude/CLAUDE.md</code></strong>, in the projects table: add the my-clay-hub functions guard to the "Deploy guard" cell. In the safe-patterns table, add a row: <em>"<code>…/my-clay-hub/scripts/deploy-functions.sh --approved &lt;sha&gt; --codebase &lt;cb&gt;</code> | ✅ After the sha phrase | Deploying my-clay-hub Cloud Functions"</em>. Change the ❌ row to: <em>"a raw <code>firebase … deploy</code>, or any <code>functions:delete</code> / <code>functions:secrets:*</code> / <code>functions:artifacts:setpolicy</code> / <code>functions:config:*</code> write"</em>.</p>
+<p><strong>A3. <code>~/my-clay-hub/CLAUDE.md</code> and <code>AGENTS.md</code></strong>, in the Firebase section: add the functions guard commands, the rule "every HTTP function is <code>invoker: 'private'</code> with its own <code>serviceAccount</code>; nothing runs as the Compute account", and "no <code>.env*</code> or <code>functions.yaml</code> in a codebase folder".</p>
+<p><strong>A4. <code>settings.json</code> autoMode:</strong> the same commands as A1, listed with the existing raw-deploy entry.</p>
+
+<h2 id="reviews">Reviews</h2>
+<p>None yet.</p>
+
+<h2 id="log">Decisions log (append-only)</h2>
+<ul>
+  <li><strong>Sep 29:</strong> Plan written after a source-level read of firebase-tools 15.22.3 (K1–K14). Christie chose the anonymous probe over installing gcloud, and my-clay-hub now with the tinker-hq-apps copy in Phase E. C5 (a dedicated build account) is replaced by F7, because the Firebase CLI cannot choose the build account (K12).</li>
+</ul>
+
+</body>
+</html>
