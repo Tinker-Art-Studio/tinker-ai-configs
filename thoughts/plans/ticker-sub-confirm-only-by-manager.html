@@ -21,19 +21,19 @@
 <body>
 <h1>Plan: A sub is confirmed only by a manager, on the request's real dates</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026
-&middot; <strong>v2</strong> after design review round 1 (Claude + Codex, Sep 29: both "not ready"; every finding is
-folded in or answered in the Decisions Log) &middot; <strong>execution-ready: false</strong> &mdash; <em>D1&ndash;D3 answered by Christie
-(Sep 29); waiting on design review round 2, then her written approval to edit the repo.</em></p>
+&middot; <strong>v3</strong> after design review rounds 1 and 2 (Claude + Codex each round; both "not ready" in round 2,
+"much closer"; every finding folded in or answered in the Decisions Log) &middot; <strong>execution-ready: false</strong>
+&mdash; <em>waiting on round 3, then Christie's written approval to edit the repo.</em></p>
 
 <div class="status">
   <strong>Goal:</strong> a sub shows as <strong>Confirmed</strong> only after a manager used <strong>Mark
-  Confirmed</strong>. That step writes the shift to the sub's schedule and sends the confirmation email, or, for a
-  name the roster can't match, confirms with the amber "add their shift manually" note. A requester can't produce a
-  "Confirmed" of any kind. When a manager confirms, they choose from the request's real dates.
+  Confirmed</strong>. For a sub on the roster, that step writes the shift to their schedule for the dates the manager
+  ticks and sends the confirmation email. For a name the roster can't match, it confirms with the amber "add their
+  shift manually" note, as today. A requester can't produce a "Confirmed" of any kind, and nothing an edit form, a
+  stale confirm box, or a second tab does can create or remove a confirmation behind anyone's back.
   <br><br>
-  <strong>What "Confirmed" does NOT promise (review round 1, Codex):</strong> that the email arrived. The email is
-  sent after the confirmation lands and is fire-and-forget (<code>js/app.js:9274</code>), exactly as today. A sub with
-  no email address on file gets none. Making delivery part of confirmation is a bigger redesign and is out of scope.
+  <strong>Not promised:</strong> that the email arrived. It is sent after the confirmation lands, fire-and-forget
+  (<code>js/app.js:9274</code>), as today, and a sub with no email on file gets none.
   <br><br>
   <strong>Scope, per Christie (Sep 29):</strong> from here on only. Nothing rewrites existing request documents.
   No rules change, no new collection, no change to the Payroll Tool or the reminder job.
@@ -41,150 +41,206 @@ folded in or answered in the Decisions Log) &middot; <strong>execution-ready: fa
 
 <h2>What went wrong (Ivy's request, Sep 29)</h2>
 <table>
-  <tr><th>#</th><th>Defect</th><th>Where</th><th>Effect</th></tr>
-  <tr><td>1</td><td>The form's <em>"They agreed to cover"</em> checkbox saves <code>confirmed: true</code> with no schedule
-  write, no email, no <code>subUid</code>.</td><td><code>js/app.js:7295</code>, <code>:7318</code>, <code>:7372</code></td>
-  <td>Green <strong>Confirmed</strong> badge + <strong>Undo</strong>. The manager never sees Mark Confirmed. The amber
-  note (<code>:7615</code>) only fires on a FAILED roster match.</td></tr>
-  <tr><td>1b</td><td>(Round 1, Claude) <strong>The edit-save path keeps a form-supplied <code>confirmed: true</code>.</strong>
-  <code>carryConfirmedSubs</code> only strips a stale confirmation that carries a link (<code>js/schedule-helpers.js:1024</code>,
-  <code>hasLink</code>). A link-less one is treated as "the form's decision" (tests <code>schedule-helpers.test.js:733</code>,
-  <code>:737</code>, <code>:629</code>).</td><td></td>
-  <td>With the checkbox gone this is still reachable: Ivy opens Edit (form loads <code>confirmed: true</code>, <code>:7068</code>),
-  a manager clicks Undo in another tab, Ivy saves, and Sam is green "Confirmed" again with no shift. Removing the checkbox
-  alone does NOT close defect 1.</td></tr>
-  <tr><td>2</td><td>A sub's dates are copied when the sub is added (<code>:7283</code>) and never updated.
-  <code>getSubCoverageDates</code> keeps only the overlap (<code>js/schedule-helpers.js:209</code>).</td><td></td>
-  <td>"This sub has no covered dates to write a shift for" (<code>:7953</code>), in every mode.</td></tr>
-  <tr><td>3</td><td>The manager-only "Coverage: Secured" dropdown is a label (<code>:8250</code>).</td><td></td>
-  <td>It looks like it arranged coverage.</td></tr>
-  <tr><td>4</td><td>The requester sees Mark Confirmed on their own request (<code>canToggle</code> includes <code>isOwner</code>,
-  <code>:7608</code>).</td><td></td>
-  <td>Matched sub: fails at the schedule write (staff can't write others' schedules). <strong>Unmatched/unclaimed
-  name: succeeds</strong> (<code>:7865</code>, no schedule write), which is a second route to defect 1 (round 1, Claude).</td></tr>
+  <tr><th>#</th><th>Defect</th><th>Effect</th></tr>
+  <tr><td>1</td><td>The form's <em>"They agreed to cover"</em> checkbox (<code>js/app.js:7295</code>, <code>:7318</code>,
+  <code>:7372</code>) saves <code>confirmed: true</code> with no schedule write, no email, no <code>subUid</code>.</td>
+  <td>Green <strong>Confirmed</strong> + <strong>Undo</strong>. The manager never sees Mark Confirmed. The amber note
+  (<code>:7615</code>) only fires on a FAILED roster match.</td></tr>
+  <tr><td>1b</td><td>The edit-save path trusts the form's copy of <code>confirmed</code>. <code>carryConfirmedSubs</code>
+  (<code>js/schedule-helpers.js:1024</code>) keeps a link-less form "confirmed" (round 1, Claude), and
+  <code>reconcileEditedProposedSubs</code> (<code>:988</code>) reverses real coverage when a stale form says "unconfirmed"
+  (round 2, Codex).</td>
+  <td>A form opened before another tab's Undo can bring back a confirmation. A form opened before another tab's
+  confirm can take real coverage off the sub's schedule.</td></tr>
+  <tr><td>2</td><td>A sub's dates are copied when the sub is added (<code>:7283</code>) and never updated.</td>
+  <td>"This sub has no covered dates to write a shift for" (<code>:7953</code>).</td></tr>
+  <tr><td>3</td><td>"Coverage: Secured" is a label (<code>:8250</code>).</td><td>Looks like it arranged coverage.</td></tr>
+  <tr><td>4</td><td>The requester sees Mark Confirmed (<code>canToggle</code> includes <code>isOwner</code>,
+  <code>:7608</code>).</td><td>Matched sub: fails at the schedule write. Unmatched name: succeeds (<code>:7865</code>),
+  a second route to defect 1.</td></tr>
+  <tr><td>5</td><td>(Round 2) Neither the edit save nor the confirm transaction checks the request's dates.</td>
+  <td>A confirm box opened on Oct 3 can confirm after the request moved to Oct 4. An edit can move the dates while a
+  confirmation lands mid-save.</td></tr>
 </table>
 
 <div class="warn"><strong>This reverses an Aug 29 decision</strong> in <code>ticker-timeoff-email-and-sub-assignment</code>
-("either the requester or an admin can set" <code>confirmed</code>; "one shared flag is sufficient"). Christie chose on
-Sep 29 to remove the requester's ability to confirm entirely. Coverage Notes (<code>index.html:722</code>, whose placeholder
-already reads "I texted Sam… she can cover Tuesday") carries "who agreed".</div>
+("either the requester or an admin can set" <code>confirmed</code>). Christie chose on Sep 29 to remove the
+requester's ability to confirm entirely. Coverage Notes (<code>index.html:722</code>) carries "who agreed".</div>
 
-<h2>Decisions for Christie &mdash; ANSWERED Sep 29: D1 = (a) refuse, D2 = yes, D3 = yes</h2>
+<h2>Christie's decisions (Sep 29)</h2>
 <div class="decision-needed">
-<p><strong>D1. A requester changes the dates after a manager has confirmed the sub.</strong> Today (pre-existing), on a
-request that isn't approved yet, the sub stays "Confirmed" with a shift on the OLD date (round 1, Codex). Options:</p>
-<ol type="a">
-  <li><strong>(Recommended)</strong> Refuse the save: <em>"Sam is confirmed to cover Oct 3. Ask a manager to Undo Sam first,
-  then change the dates."</em> This is simple, and nothing moves on anyone's schedule without a manager.</li>
-  <li>Save it, and automatically take Sam's Oct 3 shift off and un-confirm Sam (a manager then re-confirms for Oct 4).</li>
-</ol>
-<p>(Approved requests aren't affected: editing one already sends it back to review and takes every confirmed sub's
-shift off.)</p>
-<p><strong>D2. Pick dates when confirming.</strong> <strong>(Recommended)</strong> The confirm box lists the request's
-dates as checkboxes, pre-ticked with the dates the sub was proposed for (or all of them, if those don't line up, which
-was Ivy's case). The manager unticks any date the sub isn't covering. This replaces v1's "overwrite every sub's dates
-on save", which both reviewers flagged: it would erase real "she can cover Tuesday but not Wednesday" splits, and it
-would leave no way to decline one conflicting date without abandoning the rest.</p>
-<p><strong>D3. Flag the "Confirmed but nothing on their schedule" state where it already exists.</strong>
-<strong>(Recommended)</strong> A display-only amber line under such a sub: <em>"Confirmed, but no shift was added to
-their schedule. Add it by hand, or Undo and use Mark Confirmed."</em> No data is changed. It would show on old requests
-like Ivy's, which is the point: otherwise they stay a bare green badge forever (round 1, Claude). Say no if you'd rather
-old requests stay exactly as they look now.</p>
+<p><strong>D1: refuse</strong> an edit that changes the dates while any sub is confirmed: <em>"Sam is confirmed to cover
+this request. Ask a manager to Undo Sam first, then change the dates."</em></p>
+<p><strong>D2: yes</strong>, the confirm box lists the request's dates as checkboxes (roster-matched subs; the
+unmatched-name path writes no schedule and is unchanged).</p>
+<p><strong>D3: yes</strong>, a display-only amber line when a confirmed sub has no record of a shift being added,
+old requests included.</p>
 </div>
+
+<h2>The one rule behind Phase 1</h2>
+<p>Once the checkbox is gone, <strong>the edit form has no say over <code>confirmed</code></strong>. The form remembers
+each sub's confirmed state as it was when the form <em>opened</em> (<code>openedSubs</code>). At save, if the document
+disagrees with that memory for any sub still in the form, the save is refused: <em>"A manager confirmed or un-confirmed a
+sub while you were editing, so nothing was saved. Close this form, reopen the request, and try again."</em> A form that
+is out of date can't decide anything, in either direction. This closes the round-1 race (stale "confirmed"), the round-2
+race (stale "unconfirmed" → reversal) and the "removed a sub that just got confirmed without seeing the × prompt" race
+in one check. <code>carryConfirmedSubs</code> also loses its <code>hasLink</code> exemption, as defence in depth.</p>
+<p>The check is a pure helper, <code>checkEditAgainstDocument({ openedSubs, formSubs, formDates, docSubs, docDates })</code>
+in <code>js/schedule-helpers.js</code>, returning <code>{ ok: true }</code> or <code>{ ok: false, reason: 'subs-changed' |
+'dates-while-confirmed', names }</code>. It is the real exported function, so its unit tests exercise production code
+(round 2, Claude M4: the emulator harness re-implements app logic and can't test the orchestration itself).</p>
+<ul>
+  <li><strong>subs-changed:</strong> for each sub name in <code>formSubs</code>, the document's <code>confirmed</code>
+  ≠ <code>openedSubs</code>' <code>confirmed</code> (absent on either side counts as unconfirmed). For each sub the form
+  <em>removed</em>: the document now says confirmed but <code>openedSubs</code> said unconfirmed (it was confirmed after the
+  form opened, so the × prompt never showed).</li>
+  <li><strong>dates-while-confirmed (D1):</strong> any sub is confirmed on the document AND
+  <code>normalizeRequestDates(formDates)</code> ≠ <code>normalizeRequestDates(docDates)</code>.</li>
+  <li><code>normalizeRequestDates</code> (round 2, Claude B1 + Codex): sort by <code>date</code>; <code>type</code> missing
+  → <code>'full'</code>; <code>partialStart</code>/<code>partialEnd</code> kept only when <code>type === 'partial'</code>, with
+  <code>''</code>/<code>undefined</code> → <code>null</code>; <code>flexible</code> dropped. So a legacy document compares
+  equal to itself after the form's load (<code>:7063</code>: <code>|| 'full'</code>, <code>|| ''</code>) and save
+  (<code>:7366</code>: <code>null</code> when not partial).</li>
+</ul>
+<p><strong>Where it runs</strong> (non-reset edit branch only; the reset branch reverses every sub from the fresh document
+and never trusts the form, unchanged):</p>
+<ol>
+  <li>On the first fresh read (<code>existingData</code>, <code>:7411</code>), before <code>reconcileEditedProposedSubs</code>
+  and before any reversal. A refusal here changes nothing.</li>
+  <li>Again on the post-reversal read inside <code>carryCurrentSubs</code> (<code>:8720</code>, which now also returns the
+  document's <code>dates</code>). Subs the form removed are excluded from the subs-changed test at this point, because their
+  reversal legitimately un-confirmed them. Why a refusal here is still clean: a confirmed sub plus a date change is refused
+  at step 1, so when step 2 refuses on dates, no sub was confirmed at step 1 and no reversal ran. A step-2 subs-changed
+  refusal can only follow reversals of subs the form removed, which were confirmed when the form opened and
+  prompted for, and the existing "any sub coverage removed above stays removed" wording already covers that.</li>
+  <li>The transaction: <code>saveGuard.expect</code> gains <code>dates: carried.currentDates</code>, so a date change
+  between step 2 and the write refuses via <code>updateTimeOffRequestIfStatus</code>'s generic <code>expect</code> loop
+  (<code>js/firebase-data.js:865</code>). A confirm landing in that window is already caught by
+  <code>expect.proposedSubs</code>.</li>
+</ol>
 
 <h2>Phases</h2>
 
 <div class="phase">
-<h3>Phase 1: Only a manager can confirm a sub, and a save can't bring a confirmation back</h3>
+<h3>Phase 1: Only a manager can confirm a sub, and a stale form decides nothing</h3>
 <p><strong>Acceptance:</strong></p>
 <ul>
-  <li>The request form has no way to mark a sub confirmed. A sub that IS confirmed shows a read-only chip in the form
-  (<em>"Confirmed by a manager"</em>), and removing it with × asks first: <em>"Sam is confirmed and has this shift on
-  their schedule. Removing Sam takes it off and tells a manager. Remove?"</em> (round 1, Claude: the checkbox was the
-  form's only cue).</li>
-  <li>Every sub on a new request is saved unconfirmed.</li>
-  <li>On the non-reset edit path (submitted / under_review), the saved <code>confirmed</code> of each sub is whatever the
-  <strong>document</strong> says at save time, in both directions. The form can't set it and can't bring it back.</li>
-  <li>The reset path (editing an approved / completed / denied request) is unchanged. It reverses every confirmed sub's
-  shift and un-confirms those whose reversal landed. v1 wrongly said "editing never changes confirmed state" (round 1, Codex).</li>
+  <li>The request form has no way to mark a sub confirmed. A confirmed sub shows a read-only chip (<em>"Confirmed by a
+  manager"</em>). Removing one with × asks first: <em>"Sam is confirmed and has this shift on their schedule. Removing Sam
+  takes it off (or asks a manager to) and can't be undone here. Remove?"</em></li>
+  <li>A new request saves every sub unconfirmed. This is enforced in the <strong>create</strong> branch's own literal
+  (<code>:7493</code>, <code>proposedSubs: formData.proposedSubs.map(s =&gt; ({ ...s, confirmed: false }))</code>), which
+  closes the old-cached-page hole for new requests without touching the edit paths (round 2, Claude M5).</li>
+  <li>A non-reset edit follows "the one rule" above: subs-changed and D1 refusals at both reads, plus dates in the
+  transaction guard.</li>
+  <li>A D1 refusal that also contains a × removal of the confirmed sub gives the D1 message plus: <em>"To remove Sam, save
+  that change on its own first."</em> (round 2, Claude M7).</li>
+  <li>The reset path (approved / completed / denied → back to review) is unchanged: every confirmed sub's shift is reversed,
+  landed reversals un-confirm, and failed ones keep their confirmation and record.</li>
   <li>On their own request, the requester sees no Mark Confirmed. An unconfirmed sub reads <em>"Not confirmed · a manager
-  confirms coverage"</em>. Undo on a confirmed sub is unchanged (record-less subs clear; recorded ones hand off to a manager).</li>
-  <li>Per D1 (refuse): on the non-reset path, a save whose dates differ from the document's is refused while ANY sub is
-  confirmed on the document: <em>"Sam is confirmed to cover this request. Ask a manager to Undo Sam first, then change the
-  dates."</em> "Differ" means the set of <code>{date, type, partialStart, partialEnd}</code> changes (added, removed, full↔partial,
-  or new partial times), compared against the fresh <code>existingData</code> read that branch already takes. The
-  <code>flexible</code> flag, reason, notes and subs are not dates. This applies to managers editing too (they Undo first).
-  The refusal happens before any reversal runs, so nothing is half-done.</li>
+  confirms coverage"</em>. <strong>The owner keeps Undo</strong> on a confirmed sub, unchanged: record-less subs clear,
+  and recorded ones hand off.</li>
+  <li>D3: the amber line (below) shows for a confirmed sub with no record.</li>
 </ul>
 <p><strong>Changes:</strong></p>
 <ul>
-  <li>Delete <code>toggleFormSubConfirmed</code> and the checkbox. Render the read-only chip + the remove confirm.</li>
-  <li><code>carryConfirmedSubs</code> (<code>js/schedule-helpers.js:1024</code>, called via <code>carryCurrentSubs</code>,
-  <code>js/app.js:8720</code>): drop the <code>hasLink(s)</code> condition so that a form entry claiming
-  <code>confirmed</code> the document doesn't have is always un-confirmed and stripped. <code>reconcileEditedProposedSubs</code>
-  is left alone (its un-tick → reverse branch stays as a guard against an old cached page). Do NOT hard-code
-  <code>confirmed: false</code> at <code>:7372</code>: reconcile would then read every confirmed sub as un-ticked and reverse
-  real coverage on an unrelated edit (round 1, Claude).</li>
-  <li><code>canToggle</code> becomes <code>isAdmin</code> for Mark Confirmed. The owner keeps Undo on a confirmed sub.</li>
-  <li>Manager checks at the top of the confirm branch of <code>handleSubConfirmToggle</code>, right after the status check
-  (<code>:7850</code>), before the roster match (<code>:7857</code>) so it covers the unmatched branch too, and at the top
-  of <code>submitConfirmSub</code> (round 1, both reviewers).</li>
-  <li>D1 check in <code>handleSubmitTimeOff</code>'s non-reset branch, before <code>reconcileEditedProposedSubs</code>'s
-  reversals: a small pure helper <code>requestDatesChanged(oldDates, newDates)</code> in <code>schedule-helpers.js</code>
-  with unit tests.</li>
-  <li>D3 (yes): add a <code>matched</code> entry to the amber-note map at <code>:7615</code> for a confirmed sub with no
-  <code>subUid</code> and no <code>appliedOverrides</code>.</li>
+  <li>Delete <code>toggleFormSubConfirmed</code> and the checkbox. Add the chip and the × prompt in
+  <code>renderTimeOffSubs</code>/<code>removeTimeOffSub</code>. Keep <code>openedSubs</code> (name → confirmed) when the
+  edit form loads (<code>:7068</code>).</li>
+  <li><code>checkEditAgainstDocument</code> + <code>normalizeRequestDates</code> in <code>schedule-helpers.js</code> (exported),
+  called at the two points above. <code>carryCurrentSubs</code> returns <code>currentDates</code>. <code>saveGuard.expect.dates</code>.</li>
+  <li><code>carryConfirmedSubs</code>: drop <code>hasLink(s)</code> (<code>:1024</code>). Side effect: a stripped link-less
+  entry gains <code>subUid: null, appliedOverrides: {}</code> keys (null, not undefined; the guard compares
+  <code>carried.current</code>, not <code>carried.subs</code>, so it is unaffected). <code>reconcileEditedProposedSubs</code>
+  is unchanged: with the stale-form check in front of it, its "un-ticked" branch is only reachable from an old cached page.</li>
+  <li>Mark Confirmed is rendered only when <code>isAdmin</code>. Undo is rendered for <code>isOwner || isAdmin</code> as today.</li>
+  <li>Manager checks: in <code>handleSubConfirmToggle</code> <strong>after</strong> the un-confirm branch returns
+  (<code>:7852–7855</code>) and <strong>before</strong> <code>resolveSubRosterMatch</code> (<code>:7857</code>), i.e. at
+  <code>:7856</code>, so it covers both roster branches without touching the owner's Undo (round 2, Claude M1). Also at the
+  top of <code>submitConfirmSub</code>.</li>
+  <li>D3: change the gate at <code>:7615</code> from <code>s.confirmed &amp;&amp; !s.subUid</code> to
+  <code>s.confirmed &amp;&amp; !Object.keys(s.appliedOverrides || {}).length</code>. Inside it, an unmatched / ambiguous /
+  unclaimed roster status shows today's note (manager adds the shift by hand). A <code>matched</code> status shows the new
+  line: <em>"Ticker has no record of a shift being added to their schedule for this. Check their schedule, or Undo and use
+  Mark Confirmed."</em> The wording claims "no record", not "no shift" (round 2, Codex M4). Cases: link-less (amber);
+  a real record (none); a record without <code>subUid</code>, the partial-failure state (none); <code>subUid</code> with an
+  empty record, legacy/fixtures (amber, correct: no record); <code>dismissedOverrides</code> entries (none, they are unconfirmed).</li>
 </ul>
 <div class="trap"><strong>Honest limit.</strong> These are app-level guarantees. Rules let a staff member update any field of
-their own request (<code>firestore.rules:446</code>), and a page running an old cached <code>app.js</code> (the service worker is
-cache-first, <code>sw.js</code>) has none of these checks until it refreshes. The sw version bump on deploy retires those
-copies, and D3's amber line is the net for anything that slips through. A rules-level guarantee would need a rules release
-through the guard and is out of scope.</div>
-<div class="bdd"><strong>Happy:</strong> Given Ivy submits naming Sam, when a manager opens it, then Sam shows "Not
-confirmed · Mark Confirmed". After Confirm &amp; Add to Schedule, Sam's schedule has the shift and one confirmation email
-goes to Sam and Ivy (the endpoint sends a single combined email; round 1, Codex).</div>
-<div class="bdd"><strong>Edge (the Claude round-1 race):</strong> Given Ivy's edit form is open with Sam confirmed, when a
-manager Undoes Sam in another tab and Ivy then saves a new reason, then Sam is saved <strong>unconfirmed</strong>.</div>
-<div class="bdd"><strong>Edge:</strong> Given a manager-confirmed sub with a record, when Ivy edits only the reason, then
-<code>confirmed</code>, <code>subUid</code> and <code>appliedOverrides</code> are unchanged. When she removes Sam with × and
-accepts the prompt, the reversal and hand-off run as today.</div>
-<div class="bdd"><strong>Edge:</strong> Given an old request whose sub was ticked by the requester (confirmed, no link), when
-Ivy edits the reason, then it stays as the document has it (no backfill). With D3, a manager sees the amber line.</div>
-<div class="bdd"><strong>Edge:</strong> Given an approved request with a confirmed sub, when Ivy edits it, then the request
-goes back to review, a landed reversal un-confirms the sub, and a failed one keeps the confirmation and its record (unchanged
-behaviour, now asserted).</div>
-<div class="bdd"><strong>Failure (D1):</strong> Given Sam is confirmed on an under-review Oct 3 request, when Ivy changes
-it to Oct 4 and saves, then she sees the "ask a manager to Undo Sam first" message, nothing is saved or reversed, and her
-form stays open with her edits. Changing only the reason saves normally.</div>
-<div class="bdd"><strong>Failure:</strong> Given a non-manager calls <code>handleSubConfirmToggle</code> (either branch of
-the roster match) or <code>submitConfirmSub</code>, then they see "Only a manager can confirm a sub": no modal, no schedule
-write, no transaction, no email.</div>
+their own request (<code>firestore.rules:446</code>), and <code>updateCoverageStatus</code>, <code>handleSubConfirmToggle</code>
+and <code>submitConfirmSub</code> are page globals whose role checks run in the browser. A page running an old cached
+<code>app.js</code> (the service worker is cache-first; <code>CACHE_NAME</code> is bumped by hand, <code>sw.js:64</code>) has
+none of these checks until it refreshes. The deploy bumps it. D3's amber line is the net for anything that slips through.
+A rules-level guarantee would need a rules release through the guard and is out of scope.</div>
+<div class="bdd"><strong>Happy:</strong> Ivy submits naming Sam → a manager sees "Not confirmed · Mark Confirmed" →
+Confirm writes Sam's shift and one combined email goes to Sam and Ivy.</div>
+<div class="bdd"><strong>Edge (round-1 race):</strong> Ivy's form opens with Sam confirmed → a manager Undoes Sam in another
+tab → Ivy saves a new reason → refused (subs-changed), nothing written. On reopen, Sam shows unconfirmed.</div>
+<div class="bdd"><strong>Edge (round-2 race):</strong> Ivy's form opens with Sam unconfirmed → a manager confirms Sam → Ivy saves
+a new reason → refused (subs-changed), and Sam's coverage is untouched (no reversal, no hand-off).</div>
+<div class="bdd"><strong>Edge (round-2 race, removal):</strong> as above, but Ivy removed Sam with × (no prompt, since Sam was
+unconfirmed when the form opened) → refused. Sam stays confirmed.</div>
+<div class="bdd"><strong>Edge (legacy dates):</strong> an old request whose dates lack <code>type</code> and store
+<code>partialStart: ''</code>, with a confirmed sub, is edited for its reason only → saves normally (no D1 refusal).</div>
+<div class="bdd"><strong>Failure (D1):</strong> Sam confirmed on an under-review Oct 3 request → Ivy changes it to Oct 4 → the
+D1 message; nothing saved or reversed; the form stays open. The same with Sam also removed → D1 message + "save that change
+on its own first".</div>
+<div class="bdd"><strong>Failure (D1 mid-save race):</strong> Ivy's unconfirmed Oct 3 request is edited to Oct 4 → a manager
+confirms Sam between the first read and the save → refused at the second check or by the transaction's
+<code>expect.proposedSubs</code>/<code>dates</code>.</div>
+<div class="bdd"><strong>Edge:</strong> an approved request with a confirmed sub is edited → back to review, landed reversal
+un-confirms, and a failed one keeps confirmation and record (unchanged, now asserted).</div>
+<div class="bdd"><strong>Edge (owner Undo):</strong> Ivy, on her own request with a record-less confirmed sub, clicks Undo →
+it clears (no manager needed); on a recorded one → the hand-off message (unchanged).</div>
+<div class="bdd"><strong>Failure:</strong> a non-manager reaches <code>handleSubConfirmToggle</code>'s confirm path (either
+roster branch) or <code>submitConfirmSub</code> → "Only a manager can confirm a sub": no modal, no transaction, no
+schedule write, no email.</div>
 </div>
 
 <div class="phase">
-<h3>Phase 2: The manager chooses the dates when confirming (D2)</h3>
+<h3>Phase 2: The manager chooses the dates when confirming (D2), against the request as it is now</h3>
 <p><strong>Acceptance:</strong></p>
 <ul>
-  <li>The confirm box lists each of the request's dates with a checkbox, ticked where the sub was proposed for it. If the
-  sub's saved dates match none of the request's dates, all of them are ticked.</li>
-  <li>Unticking a date means nothing is written for it. The "already has a shift… Overwrite?" prompt still covers the ticked
-  dates. Cancelling it still writes nothing, and the manager can untick the conflicting date and try again.</li>
-  <li>Nothing on the saved request changes. <code>getSubCoverageDates</code> keeps its current meaning, and its
-  "empty array = no dates" test stays green: the "all dates" fallback lives in the box's pre-tick, not in the helper.</li>
-  <li>No ticked dates → "Tick at least one date", and nothing is written.</li>
+  <li>For a roster-matched sub, the confirm box lists each of the request's dates with a checkbox, ticked where the sub was
+  proposed for it, or all ticked if none line up (Ivy's case).</li>
+  <li>Unticked dates are never written, never conflict-checked, and never appear in <code>appliedOverrides</code>, the email's
+  dates, or <code>reminderDates</code> (all derive from <code>overridesToWrite</code>, round 2 Codex confirmed). The overwrite
+  prompt covers only ticked dates. Cancelling it writes nothing; the manager can untick that date and retry.</li>
+  <li><strong>If the request's dates changed after the box opened</strong>, the confirm is refused: the transaction's
+  <code>expectRequest</code> gains <code>dates</code> (the snapshot the checkboxes were built from), and the existing
+  failed-confirm rollback (<code>partitionRollback</code> path, <code>:8030–8060</code>) takes the just-written dates back off.
+  The manager sees "This request's dates changed while the box was open. Nothing was confirmed; close and reopen it."
+  (round 2, Codex B3).</li>
+  <li>No dates ticked → "Tick at least one date", and nothing is written. The existing "This sub has no covered dates"
+  (<code>:7953</code>) remains only for a request that itself has no dates (legacy/hand-edited).</li>
+  <li>Closing the box (Cancel or ×) clears <code>_confirmSubCtx</code> through one <code>closeConfirmSubModal()</code>
+  helper. <code>submitConfirmSub</code> refuses unless the box is open (round 2, Codex M6).</li>
+  <li>Nothing on the saved request changes. <code>getSubCoverageDates</code> keeps its meaning (its "empty array → no
+  dates" test stays green); the "all dates" fallback lives in the pre-tick helper.</li>
+  <li>Pre-existing bug fixed in passing: <code>`${dates}`</code> at <code>:8044</code> is an undefined identifier that turns
+  the careful "nothing was rolled back" message into "Something went wrong" (round 2, Claude M2). It becomes
+  <code>Object.keys(appliedOverrides).sort().join(', ')</code>.</li>
 </ul>
-<p><strong>Changes:</strong> <code>openConfirmSubModal</code> renders checkboxes into <code>#confirm-sub-dates</code>
-(<code>index.html</code>, confirm-sub modal) from the request's dates, pre-ticked from <code>getSubCoverageDates</code> with
-an empty result → all. <code>submitConfirmSub</code> reads the ticked dates into <code>ctx.dates</code> before its existing
-"no covered dates" check. The no-roster-match branch (<code>:7881</code>–<code>:7885</code>) keeps its own fallback,
-unchanged.</p>
-<div class="bdd"><strong>Happy (Ivy's case):</strong> Given a sub whose saved dates are <code>[]</code> on an Oct 3 request,
-when a manager clicks Mark Confirmed, then Oct 3 is listed and ticked, and Confirm writes Oct 3.</div>
-<div class="bdd"><strong>Edge:</strong> Given Kayleigh proposed for Oct 3 only on an Oct 3–4 request, then only Oct 3 is
-pre-ticked. The manager can tick Oct 4 too.</div>
-<div class="bdd"><strong>Edge:</strong> Given Oct 4 already holds the sub's own shift, when the manager unticks Oct 4, then
-there's no overwrite prompt and only Oct 3 is written.</div>
-<div class="bdd"><strong>Failure:</strong> Given every date is unticked, then Confirm refuses and nothing is written.</div>
+<p><strong>Changes:</strong> <code>index.html</code> confirm-sub modal: replace the <code>&lt;span id="confirm-sub-dates"&gt;</code>
+inside its <code>&lt;p&gt;</code> (<code>:1186</code>) with a <code>&lt;div&gt;</code> of checkboxes, labels escaped
+(round 2, Claude L2). Add a pure <code>confirmDatePreticks(sub, requestDates)</code> helper (exported, unit-tested).
+<code>openConfirmSubModal</code> stores <code>requestDatesSnapshot</code> in the context. <code>submitConfirmSub</code> reads the
+ticked dates into <code>ctx.dates</code> and passes <code>dates: requestDatesSnapshot</code> in <code>expectRequest</code>.
+<code>confirmTimeOffSub</code> (<code>js/firebase-data.js:799–803</code>) gains
+<code>if (want.dates !== undefined &amp;&amp; !sameStructure(data.dates || [], want.dates)) return { success: false, reason: 'changed', field: 'dates' }</code>,
+and the rollback branch treats <code>field: 'dates'</code> like any non-<code>sub-changed</code> refusal (full rollback of our
+write). The emulator test's mirrored copy (<code>timeoff-sub-confirm.emulator.test.js:50</code>) and its source ratchet are
+updated to pin the new guard.</p>
+<div class="bdd"><strong>Happy (Ivy's case):</strong> sub dates <code>[]</code> on an Oct 3 request → Oct 3 listed and
+ticked → Confirm writes Oct 3.</div>
+<div class="bdd"><strong>Edge:</strong> Kayleigh proposed for Oct 3 only on an Oct 3–4 request → only Oct 3 pre-ticked; the
+manager can tick Oct 4.</div>
+<div class="bdd"><strong>Edge:</strong> Oct 4 already holds the sub's own shift; the manager unticks Oct 4 → no overwrite
+prompt, only Oct 3 written, <code>appliedOverrides</code> has only Oct 3, and the email lists only Oct 3.</div>
+<div class="bdd"><strong>Failure (stale box):</strong> the box opens on Oct 3 → the requester moves the request to Oct 4 → the
+manager clicks Confirm → refused, Oct 3 rolled back off the sub's schedule, and the sub stays unconfirmed.</div>
+<div class="bdd"><strong>Failure:</strong> everything unticked → refused, nothing written. Cancel, then reopen for another
+request → no dates from the previous one.</div>
 </div>
 
 <div class="phase">
@@ -194,105 +250,120 @@ there's no overwrite prompt and only Oct 3 is written.</div>
   <li>Picking Secured while any proposed sub is unconfirmed shows: <em>"Sam isn't confirmed yet, so nothing has been added
   to their schedule and they haven't been emailed. Use Mark Confirmed next to their name to do that. Mark coverage Secured
   anyway?"</em>, naming only the unconfirmed subs.</li>
-  <li>Cancel writes nothing and the dropdown snaps back. OK saves the label as today.</li>
-  <li>No warning with no proposed subs, all subs confirmed, or any other status.</li>
-  <li>The request is read <strong>fresh</strong> (<code>getTimeOffRequestResult</code>), not from
-  <code>allTimeoffRequests</code>. That cache can be hours old, skips documents without <code>submittedAt</code>, and returns
-  <code>[]</code> on error (round 1, both reviewers; same precedent as <code>js/app.js:8274</code>). A failed read says
-  "Couldn't check the subs" and asks whether to save anyway.</li>
-  <li>A failed label write says so instead of always toasting "Coverage updated" (round 1, Codex). The duplicate
-  <code>renderAdminAllTimeOff()</code> is dropped.</li>
+  <li>Cancel writes nothing, and the detail view is re-rendered (<code>openTimeOffDetail</code>), so the dropdown shows the
+  stored value again. The DOM value had already changed on <code>onchange</code>, so a bare return would leave it lying
+  (round 2, Claude M6).</li>
+  <li>No warning with no proposed subs, all subs confirmed, or any status other than Secured.</li>
+  <li>The request is read fresh (<code>getTimeOffRequestResult</code>). A failed read → "Couldn't check the subs. Mark
+  Secured anyway?" A request that no longer exists → "This request no longer exists", no write.</li>
+  <li>A failed label write → an error message, no "Coverage updated" toast, and the detail re-renders.</li>
+  <li>The duplicate <code>renderAdminAllTimeOff()</code> (<code>:8253–8254</code>) is dropped.</li>
 </ul>
-<div class="warn">The label isn't sticky, which is unchanged and worth knowing: every Mark Confirmed / Undo recomputes it
-(all confirmed → Secured, some → Partial, none → Pending; <code>js/firebase-data.js:805</code>). A manual "Secured" can
-therefore change by itself on the next confirm or undo. That's expected, not a new bug.</div>
-<div class="bdd"><strong>Happy:</strong> Sam unconfirmed → GM picks Secured → Cancel → no write, the dropdown still reads Pending.</div>
-<div class="bdd"><strong>Edge:</strong> Two subs, one confirmed → the warning names only the other.</div>
-<div class="bdd"><strong>Failure:</strong> Fresh read fails → "Couldn't check the subs. Save Secured anyway?" A failed write
-→ an error, not "Coverage updated".</div>
+<p><strong>Changes:</strong> <code>updateCoverageStatus(requestId, status)</code>: when <code>status === 'secured'</code>, fresh
+read → the unconfirmed names come from a pure <code>unconfirmedSubNames(proposedSubs)</code> helper (exported, unit-tested)
+→ <code>confirm()</code>; on Cancel, <code>openTimeOffDetail(requestId); return;</code> before
+<code>updateTimeOffRequest</code>. Check <code>updateTimeOffRequest</code>'s boolean result.</p>
+<div class="warn">The label isn't sticky, which is unchanged: every Mark Confirmed / Undo recomputes it (all → Secured, some →
+Partial, none → Pending; <code>js/firebase-data.js:805</code>). A manual "Secured" can change by itself on the next confirm or
+undo. That's expected.</div>
+<div class="bdd"><strong>Happy:</strong> Sam unconfirmed → Secured → Cancel → no write, the dropdown reads Pending.</div>
+<div class="bdd"><strong>Edge:</strong> two subs, one confirmed → the warning names only the other. No subs, or all
+confirmed → no warning, saved.</div>
+<div class="bdd"><strong>Failure:</strong> the read fails → the "anyway?" prompt; OK saves, Cancel re-renders. The request is
+gone → message, no write. The write fails → error, no toast, re-render.</div>
 </div>
 
 <h2>Tests</h2>
 <ul>
-  <li><strong>Updated on purpose</strong> (each is a decision this plan reverses, not a regression):
-  <code>schedule-helpers.test.js:629-634</code>, <code>:733</code>, <code>:737</code> (a link-less form "confirmed" no
-  longer survives the carry when the document says unconfirmed); <code>schedule-editor-wiring.test.js:1564</code>
-  (<code>canToggle</code> text).</li>
-  <li><strong>New unit tests</strong> for <code>carryConfirmedSubs</code>: the document is authoritative in both directions.
-  Plus the confirm box's pre-tick helper (saved subset / no overlap → all / legacy string → all).</li>
-  <li><strong>New emulator test</strong> (Claude round 1): an edit save after the sub was un-confirmed in another tab leaves
-  it unconfirmed. The existing <code>timeoff-sub-confirm</code> / <code>timeoff-schedule</code> suites do NOT exercise the
-  edit orchestration (Codex round 1), so they can't be cited as covering it.</li>
-  <li><strong>Wiring ratchets:</strong> no <code>toggleFormSubConfirmed</code>; Mark Confirmed rendered only under
-  <code>isAdmin</code>; the manager check precedes the roster match in <code>handleSubConfirmToggle</code> and opens
-  <code>submitConfirmSub</code>; <code>updateCoverageStatus</code> reads fresh and returns before
-  <code>updateTimeOffRequest</code> on Cancel; the D1 check sits in the non-reset edit branch.</li>
-  <li>A click-through on localhost:8093 of the manager confirm box (dates ticked/unticked) and the requester's form (chip,
-  × prompt, no checkbox).</li>
+  <li><strong>Updated on purpose</strong> (a decision this plan reverses): <code>schedule-helpers.test.js:733</code> and the
+  first assertion at <code>:737</code> (a link-less form "confirmed" no longer survives the carry when the document says
+  unconfirmed); <code>schedule-editor-wiring.test.js:1564</code> (<code>canToggle</code> text). <code>:629–635</code> is a
+  <code>reconcileEditedProposedSubs</code> test and stays green, since reconcile is unchanged (round 2, Claude M3).</li>
+  <li><strong>New unit tests on real exported helpers:</strong> <code>carryConfirmedSubs</code> (document authoritative both
+  ways); <code>normalizeRequestDates</code> (order, missing type, <code>''</code>/null/undefined partials, full-day partials,
+  flexible ignored, and a legacy doc equal to its own load→save round-trip); <code>checkEditAgainstDocument</code> (stale
+  confirmed, stale unconfirmed, removal of a since-confirmed sub, removed subs excluded at the second check, D1 with/without a
+  confirmed sub, D1 + removal); <code>confirmDatePreticks</code>; <code>unconfirmedSubNames</code>.</li>
+  <li><strong>Emulator:</strong> <code>timeoff-sub-confirm.emulator.test.js</code> gains the dates guard (refused when the
+  request's dates changed; the entry stays unconfirmed). As that file states (<code>:8–12</code>), it mirrors the transaction
+  rather than requiring <code>app.js</code>. Its source ratchet is what ties the mirror to the real code. No new emulator test
+  claims to cover the edit orchestration; the harness can't (round 2, Claude M4).</li>
+  <li><strong>Wiring ratchets:</strong> no <code>toggleFormSubConfirmed</code>; Mark Confirmed only under <code>isAdmin</code>
+  and Undo still under <code>isOwner || isAdmin</code>; the manager check sits after the un-confirm <code>return</code> and
+  before <code>resolveSubRosterMatch</code>, and opens <code>submitConfirmSub</code>; the create branch forces
+  <code>confirmed: false</code>; <code>checkEditAgainstDocument</code> is called before <code>reconcileEditedProposedSubs</code>
+  and after <code>carryCurrentSubs</code>; <code>saveGuard.expect</code> includes <code>dates</code>; <code>expectRequest</code>
+  includes <code>dates</code>; <code>closeConfirmSubModal</code> nulls the context; <code>updateCoverageStatus</code> reads fresh,
+  calls <code>openTimeOffDetail</code> before returning on Cancel, and checks the write result; the D3 gate uses
+  <code>appliedOverrides</code>.</li>
+  <li><strong>Click-through</strong> on localhost:8093 (emulator if the harness allows, else a throwaway request after deploy):
+  the requester form (no checkbox, chip, × prompt), the manager confirm box (ticks, untick a conflicting date), the Secured
+  warning (Cancel snaps back), and the amber line on a link-less confirmed sub.</li>
 </ul>
 
 <h2>Firebase safety checklist</h2>
 <ul>
   <li>Rules: no change. New collection: none. Bulk write/delete/import: none, so no snapshot.</li>
-  <li>Write shapes: the request save is unchanged except that the carry can now un-confirm a link-less entry (it already
-  un-confirms linked ones, same shape <code>{confirmed:false, subUid:null, appliedOverrides:{}}</code>). The confirm
-  transaction and schedule write are unchanged. Phase 2 only narrows which dates go into the existing payload. No
-  <code>undefined</code> is introduced.</li>
+  <li>Write shapes: the request save is unchanged except (a) the create literal forces <code>confirmed: false</code>, and (b)
+  the carry can un-confirm a link-less entry with the same shape it already uses for linked ones. Both transaction guards gain
+  a <code>dates</code> comparison (read-only). The schedule write only narrows to ticked dates. No <code>undefined</code> is
+  introduced. All writes stay awaited.</li>
   <li>Spot-check after deploy: a new request's <code>proposedSubs[0]</code> shows <code>confirmed: false</code>. After a
   manager confirm, <code>appliedOverrides</code> holds exactly the ticked dates.</li>
 </ul>
 
 <h2>Completeness check: what if this stops part-way?</h2>
-<p>Each phase is its own commit and is safe alone. Phase 1 without 2 leaves today's "no covered dates" stop on drifted
-requests. Phase 2 without 1 leaves today's requester checkbox. Phase 3 is independent. Nothing ships until all three are
-committed, tested and implementation-reviewed. Then there's one Netlify deploy (sw version bump) after Christie's "okay
-to deploy?".</p>
+<p>Each phase is its own commit and is safe alone. Phase 1 without 2 keeps today's "no covered dates" stop and the stale-box
+window. Phase 2 without 1 keeps today's requester checkbox. Phase 3 is independent. Every refusal added here happens before
+any write, or is followed by the existing checked rollback. Nothing ships until all three are committed, tested and
+implementation-reviewed per phase. Then there's one Netlify deploy (sw <code>CACHE_NAME</code> bump) after Christie's "okay
+to deploy?", from a clean pushed tree with the sha as the message.</p>
 
 <h2>Resume instructions</h2>
 <ol>
-  <li>Read Progress and the Decisions Log below. Check whether D1–D3 are answered.</li>
-  <li><code>git -C ~/tinker-timeclock log --oneline -5</code>. The repo's commit style is plain prose; there is no
-  <code>type:</code> prefix convention (checked against AGENTS.md; Codex's LOW was wrong here).</li>
+  <li>Read Progress and the Decisions Log below.</li>
+  <li><code>git -C ~/tinker-timeclock log --oneline -5</code>. Commits follow <code>AGENTS.md:41</code>:
+  <code>type: what changed and why</code> (<code>fix:</code> for these). Recent history is plain prose, but the documented
+  convention governs.</li>
   <li>The Tinker Ticker rule applies: no repo file is edited without Christie's written approval in the current session.</li>
   <li>Jest matches copies inside <code>.claude/worktrees/</code>. Rule out a stray worktree before trusting a red run.</li>
-  <li>Reviews: <code>~/tinker-ai-configs/thoughts/reviews/ticker-sub-confirm-only-by-manager-round1-{input,claude,codex}.md</code>.</li>
+  <li>Reviews: <code>~/tinker-ai-configs/thoughts/reviews/ticker-sub-confirm-only-by-manager-round{1,2}-{input,claude,codex}.md</code>.</li>
 </ol>
 
 <h2>Progress</h2>
 <ul>
-  <li>Sep 29: v1 drafted and reviewed (round 1: both "not ready"). v2 written against both reviews. Nothing executed.</li>
+  <li>Sep 29: v1 → round 1 (both "not ready") → v2 → D1–D3 answered → round 2 (both "not ready", "much closer") → v3.
+  Nothing executed.</li>
 </ul>
 
 <h2>Decisions Log</h2>
 <ul>
-  <li><strong>Sep 29, Christie:</strong> fix going forward only, with no backfill of existing requests. Ivy's own request
-  is handled by hand (shift added in the Schedule Builder).</li>
-  <li><strong>Sep 29, Christie:</strong> remove the requester's ability to mark a sub confirmed entirely. This supersedes
-  Aug 29's "one shared flag". There is no replacement "agreed" field; Coverage Notes covers it.</li>
+  <li><strong>Sep 29, Christie:</strong> going forward only, no backfill. Ivy's request is handled by hand in the Schedule Builder.</li>
+  <li><strong>Sep 29, Christie:</strong> remove the requester's ability to confirm a sub entirely (supersedes Aug 29's
+  "one shared flag"). No replacement field; Coverage Notes covers it.</li>
   <li><strong>Sep 29, Christie:</strong> include the "Coverage: Secured" warning.</li>
-  <li><strong>Sep 29, Christie:</strong> D1 = refuse a date change while a sub is confirmed; D2 = date checkboxes in the
-  confirm box; D3 = show the display-only amber line on confirmed-but-no-shift subs, old requests included.</li>
-  <li><strong>Sep 29, round 1 (Claude + Codex), folded into v2:</strong>
+  <li><strong>Sep 29, Christie:</strong> D1 = refuse a date change while a sub is confirmed; D2 = date checkboxes; D3 = the
+  amber line, old requests included.</li>
+  <li><strong>Sep 29, round 1 (Claude + Codex) → v2:</strong> the carry re-confirmed (drop <code>hasLink</code>); the goal
+  over-promised (reworded); date change on a confirmed sub (→ D1); reset path wrongly described (corrected); overwrite-dates
+  replaced by D2; Phase 3 fresh read; <code>submitConfirmSub</code> guarded; form cue + × prompt; the D3 predicate; test
+  claims corrected.</li>
+  <li><strong>Sep 29, round 2 (Claude + Codex) → v3:</strong>
     <ul>
-      <li>BLOCKING (Claude): the save path re-confirms via <code>carryConfirmedSubs</code>. Phase 1 now makes the
-      document authoritative.</li>
-      <li>BLOCKING (Codex): the goal promised a schedule entry and an email for every Confirmed. It is reworded: the
-      unmatched-name path keeps its manual fallback with the amber note (intentional since Aug 29), and email is
-      "sent", not "delivered".</li>
-      <li>BLOCKING (Codex): a date change on a confirmed sub. This is now decision D1, and v1's BDD that encoded the bad
-      state is removed.</li>
-      <li>BLOCKING (Codex): "editing never changes confirmed" was false on the reset path. Corrected, and a BDD was added.</li>
-      <li>MEDIUM (both): v1's overwrite-dates-on-save erased real per-sub subsets and trapped the overwrite prompt.
-      Replaced by D2 (date checkboxes in the confirm box). No stored data changes, and the helper test is kept.</li>
-      <li>MEDIUM (both): Phase 3 reads fresh.</li>
-      <li>MEDIUM (Codex): <code>submitConfirmSub</code> is guarded too.</li>
-      <li>MEDIUM (Claude): the form keeps a confirmed cue plus a × prompt; the amber note for record-less confirmed is
-      now D3.</li>
-      <li>MEDIUM (both): the tests that flip are named and existing-suite coverage claims are corrected.</li>
-      <li>LOW: Phase 2 is no longer a persisted-data change (so v1's "UI-only" wording is now accurate); the label
-      recompute is documented; the duplicate render is dropped; the unreachable "no valid dates" BDD is reworded; the
-      <code>carryCurrentSubs</code> wrapper is named.</li>
-      <li>Answered, no change: Codex's commit-prefix LOW (not this repo's convention).</li>
+      <li>BLOCKING (Codex): a stale "unconfirmed" form reverses a new confirmation via reconcile. Replaced by "the one
+      rule": a stale form is refused at both reads (<code>checkEditAgainstDocument</code>).</li>
+      <li>BLOCKING (Codex): D1 bypassed by a confirm mid-save. Now a second check at the carry read, plus dates in the
+      transaction guard.</li>
+      <li>BLOCKING (Codex): a stale confirm box confirms old dates. Now dates are in <code>expectRequest</code>, with rollback.</li>
+      <li>BLOCKING (Claude): D1 false-refuses legacy date shapes. Now <code>normalizeRequestDates</code>, with a legacy BDD.</li>
+      <li>MEDIUM: the manager-check placement is pinned to <code>:7856</code> (owner Undo kept); the <code>:8044</code>
+      undefined <code>dates</code> is fixed; <code>:629</code> removed from the "flips" list; the emulator promise is
+      withdrawn in favour of exported-helper unit tests; the create branch forces unconfirmed; Cancel re-renders; D1 +
+      removal gives a message; D3 is gated on "no <code>appliedOverrides</code>" with "no record" wording; D2 is scoped to
+      matched subs; <code>_confirmSubCtx</code> is cleared on close; the test list is expanded.</li>
+      <li>LOW: the commit convention is corrected (round 1's "Codex was wrong" was itself wrong: <code>AGENTS.md:41</code>
+      documents <code>type:</code>). Also: the absent-document case in Phase 3, the modal markup change, the two
+      "nothing to write" refusals distinguished, and the <code>updateCoverageStatus</code> role check noted in the trap box.</li>
     </ul></li>
 </ul>
 </body>
