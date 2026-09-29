@@ -1,0 +1,5 @@
+## Round 3 (confirmation) — plan under review
+/Users/christiehubley/tinker-ai-configs/thoughts/plans/classbook-make-active-semester.html (revision 3). Read it, the round-2 review at /Users/christiehubley/tinker-ai-configs/thoughts/reviews/2026-09-29-plan-review-make-active-semester-r2-claude.md, and the Decisions Log entry "revision 3".
+Repo (read-only; main at 2ef2e62): /Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/funny-nash-6aab81 . Rules: /Users/christiehubley/studio-hub/firestore.rules .
+
+Confirmation round: for each round-2 blocker (a–e) and each "also taken" item, say RESOLVED / NOT RESOLVED with a line citation, and check revision 3 introduced nothing new that is wrong (e.g. the footer-link/switchTab gating — who else calls switchTab('settings')? the shared confirmModal replacing confirm() in deleteSemester and its effect on existing tests; readServerSemesterLessonMap's exact behaviour). Then give a one-line verdict: EXECUTION-READY or NOT, and if not, the minimum list. Be brief; do not re-review settled points. Do not edit files.
