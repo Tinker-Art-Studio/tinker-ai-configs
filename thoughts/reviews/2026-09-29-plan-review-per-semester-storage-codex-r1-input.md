@@ -1,0 +1,9 @@
+## Independent review — plan under review
+/Users/christiehubley/tinker-ai-configs/thoughts/plans/classbook-per-semester-lesson-storage.html (revision 2; read the whole Decisions Log). Context: production curriculum/lessonData (one Firestore doc holding every Fall/Spring semester's lessons) is at 972 KB of the 1 MiB cap; this plan moves the finished Spring 2026 semester into its own document. A Claude round-1 review is at /Users/christiehubley/tinker-ai-configs/thoughts/reviews/2026-09-29-plan-review-per-semester-storage-r1-claude.md — read it so you don't repeat settled points, but don't trust it.
+Repo (read-only, main 2ef2e62): /Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/funny-nash-6aab81 . Rules + rules tests: /Users/christiehubley/studio-hub/firestore.rules, /Users/christiehubley/studio-hub/rules.test.js . Other readers: /Users/christiehubley/studio-hub/js/alerts.js, /Users/christiehubley/tinker-backups/backup.js (read only; an agent must never edit or run it).
+Be adversarial and verify against the code, citing file:line and concrete failing inputs:
+1. Can any phase lose, hide, duplicate, or misroute a lesson edit? Consider tabs on old code (pre-Phase-B), tabs loaded between phases, in-flight saves, the listener/generation logic, the "editing is paused" window, the copy transaction and hash verification, and the delete.
+2. Phase A rules: is splitting line 654 and the affectedKeys fence correct for every role and every other /curriculum doc and every other app touching /curriculum? Is the near-1 MB test fixture approach sound? Is Q3 (manager whole-doc delete) handled right?
+3. Completeness of the reader/writer list and of Phase B's changes.
+4. Is anything simpler and equally safe being missed, given ~52 KB headroom?
+Verdict: EXECUTION-READY or NOT (minimum list). Do not edit files or run tests.
