@@ -22,8 +22,9 @@
 <h1>Plan: A sub is confirmed only by a manager, on the request's real dates</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026
 &middot; <strong>v6</strong> after design review rounds 1&ndash;5 (round 5 checked only the v5 edits: both reviewers, no
-BLOCKING, no wrong schedule write or false confirmation; four plan-text MEDIUMs, folded in here) &middot; <strong>execution-ready: false</strong>
-&mdash; <em>waiting on a short check of the v6 edits, then Christie's written approval to edit the repo.</em></p>
+BLOCKING, no wrong schedule write or false confirmation; four plan-text MEDIUMs, folded in here) &middot; <strong>execution-ready: true</strong> (design)
+&mdash; <em>round 4 Codex passed outright; rounds 5&ndash;6 found no BLOCKING and no wrong write in any edit, and every later
+finding is folded in. Execution still waits for Christie's written approval to edit the repo, per the Tinker Ticker rule.</em></p>
 
 <div class="status">
   <strong>Goal:</strong> a sub shows as <strong>Confirmed</strong> only after a manager used <strong>Mark
@@ -85,7 +86,9 @@ form-shaped object built at <code>:7068</code> (<code>{name, email, dates, confi
 the request's dates as loaded (<code>openedDates = normalizeRequestDates(existingRequest.dates)</code>: a fresh array computed
 from the <strong>document</strong>, never from, or aliasing, <code>timeoffFormDates</code>, whose rows the inline handlers mutate
 in place (<code>:7120–7122</code>). Otherwise every legitimate date edit would look like "someone else changed the dates" and D1
-would never fire (round 5, Claude M3 / Codex M1). It is reset with <code>openedSubs</code>.) <strong>Re-adding a removed name that <code>openedSubs</code> says was confirmed restores the original
+would never fire (round 5, Claude M3 / Codex M1). It is reset to <code>null</code> with <code>openedSubs</code>. That way a skipped fill reaches the helper as a missing value and
+throws, rather than as <code>[]</code>. The throw guards against a wiring bug, which the ratchet already pins; it isn't a runtime
+path users meet (round 6, Claude L1).) <strong>Re-adding a removed name that <code>openedSubs</code> says was confirmed restores the original
 entry</strong> (<code>confirmed: true</code>, so reconcile carries its link and nothing reverses): removing then re-adding
 is an undo, not an un-confirm (round 3, both reviewers). At save, if the document
 disagrees with that memory for any sub still in the form, the save is refused: <em>"A manager confirmed or un-confirmed a
@@ -150,7 +153,8 @@ and never trusts the form, unchanged):</p>
   clause as the transaction refusal at <code>:7485</code>: <em>"A sub or the dates changed while you were editing, so your
   edits were NOT saved. Any sub coverage removed above stays removed. Close this form, reopen the request, and try again."</em>
   <strong>The per-reason wordings below are step-1 only.</strong> At step 2, all three reasons use this one generic sentence,
-  because a removal may already have landed (round 5, Claude M2). The step-1 refusal really is clean and says "nothing was saved
+  because a removal may already have landed (round 5, Claude M2). The "Any sub coverage removed above stays removed" clause is
+  included only when <code>reversedNames</code> is non-empty (round 6, Claude L4). The step-1 refusal really is clean and says "nothing was saved
   or changed". Both call <code>giveBack()</code> before
   returning (round 3, Claude L1).</li>
   <li>The transaction: <code>saveGuard.expect</code> gains <code>dates: carried.currentDates</code> (and the refusal text at
@@ -161,7 +165,8 @@ and never trusts the form, unchanged):</p>
   <code>expect.proposedSubs</code>. Two deliberate asymmetries (round 5, Claude L5/L6): the <strong>reset</strong> branch's guard
   (<code>:7448</code>) does not gain <code>dates</code>, because every sub and the requester's record are reversed before it and the
   request goes back to review anyway. And this transaction compares <code>dates</code> raw through the generic loop, not normalized.
-  A concurrent save that only rewrote a legacy shape also rewrote <code>proposedSubs</code>, so it refuses either way.</li>
+  So a concurrent save that only rewrote a legacy date shape can cause a spurious "its dates changed" refusal. That's acceptable:
+  it never writes, and reopening fixes it (round 6, Claude L2; v6's "refuses either way" reason was wrong for requests without subs).</li>
 </ol>
 
 <h2>Phases</h2>
@@ -407,7 +412,7 @@ shift; grep for those strings. The reset-branch and <code>giveBack</code> ratche
   flexible ignored, and a legacy doc equal to its own load→save round-trip); <code>checkEditAgainstDocument</code> (stale
   confirmed, stale unconfirmed, removal of a since-confirmed sub, removed subs excluded at the second check, D1 with/without a
   confirmed sub, D1 + removal, <code>reversedNames</code> skipping only landed reversals, dates-changed-elsewhere vs
-dates-while-confirmed);
+dates-while-confirmed, dates-changed-elsewhere with no sub confirmed, a missing <code>openedDates</code> throws);
 <code>confirmDatePreticks</code>; <code>unconfirmedSubNames</code>; <code>subMissingWriteNote</code> (the five shapes × roster
 statuses). <code>normalizeRequestDates</code> also covers <code>type</code> <code>null</code>/<code>''</code>.</li>
   <li><strong>Emulator:</strong> <code>timeoff-sub-confirm.emulator.test.js</code> gains the dates guard (refused when the
@@ -550,7 +555,11 @@ to deploy?", from a clean pushed tree with the sha as the message.</p>
   <li><strong>Sep 29, round 6 (v6 edits only) → v6.1:</strong> Codex: no BLOCKING, and no v6 edit causes a wrong write or false
   confirmation. Fixed its MEDIUM: Phase 3 cited auto-complete as a refusal right after allowing it; the example is corrected and
   the tolerance gets a BDD and a ratchet. LOWs: the re-confirm notice is given a derivation and a ratchet, and "empty-string
-  partials" is made precise.</li>
+  partials" is made precise. Claude round 6 (reviewed v6, before v6.1): no BLOCKING. Its MEDIUM (the re-confirm notice could
+  name a stuck reversal) was already closed by v6.1's derivation from <code>reversedNames</code>, which holds landed reversals only.
+  Its LOWs are folded in: <code>openedDates</code> resets to null; the raw-compare justification is corrected; the "stays removed"
+  clause is conditional; the no-confirmed-sub test is added; L3/L6 were already fixed in v6.1. <strong>Design marked
+  execution-ready.</strong></li>
 </ul>
 </body>
 </html>
