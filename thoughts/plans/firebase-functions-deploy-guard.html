@@ -35,7 +35,7 @@
   <strong>Not in this plan:</strong> any real app function; any trigger kind but HTTP; deleting functions; secrets; params.<br>
   <strong>Risk:</strong> MEDIUM. It's the first code to run in <code>my-clay-hub</code>. The database is empty and deny-all, and the canary does nothing.<br>
   <strong>History:</strong> round 1 (both "not ready") → rewrite → round 2 (both "not ready") → HTTP-only rewrite → round 3 (Codex "not ready", Claude "ready after fixes") → <strong>this version</strong>. See <a href="#reviews">Reviews</a>.<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — amendments M1–M6 approved by Christie (Sep 29). Needs a confirming round 4, then Christie's OK on the choices and Appendix A.
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — amendments M1–M6 approved by Christie (Sep 29). Round 4 (Claude only; Codex was out of credits) was "not ready". Its fixes are applied below. Needs Christie's OK on the new M7, a Codex confirming pass when credits allow, then Christie's OK on the choices and Appendix A.
 </div>
 
 <h2 id="already">Already decided (not reopened here)</h2>
@@ -54,11 +54,12 @@
 <table>
 <tr><th>#</th><th>Foundation says</th><th>This plan does instead</th><th>Why</th></tr>
 <tr><td>M1</td><td>"For both projects" — meaning <em>each</em> project gets its <strong>own, separate</strong> functions guard, just as each already has its own rules guard. The projects stay fully separate. tinker-hq-apps needs a guard too only because Phase E puts the one-way <code>clayhub-link</code> functions there (they watch Membership Manager's data, which lives in tinker-hq-apps).</td><td>Build my-clay-hub's guard now. Build tinker-hq-apps' own separate copy at the start of Phase E, when the link code exists. Neither guard can ever deploy to the other project.</td><td>Christie, Sep 29.</td></tr>
-<tr><td>M2</td><td>"A read-back of each function's <strong>revision</strong>"</td><td>No revision id can be read without gcloud (<code>functions:list</code> has none, K10). The guard reads back instead: the CLI succeeded; the sealed manifest; a full configuration and env-key match; the content hash present, and changed exactly when the source changed; and no "skipping" line.</td><td>The CLI exposes no revision or generation id.</td></tr>
+<tr><td>M2</td><td>"A read-back of each function's <strong>revision</strong>"</td><td>The CLI can't read a revision id (<code>functions:list</code> has none, K10). The guard reads back instead: the CLI succeeded; the sealed manifest; a full configuration and env-key match; the content hash present, and changed exactly when the source changed; and no "skipping" line. The <strong>revision itself</strong> is read by Christie (Cloud Run → latest ready revision name, plus the Cloud Build build id), recorded in a fixed shape that <code>--attest</code> and <code>--reconcile</code> validate (F9).</td><td>The CLI exposes no revision or generation id.</td></tr>
 <tr><td>M3</td><td>"A read-back of each function's <strong>invoker policy</strong>"</td><td>Christie reads each function's Security tab ("Require authentication" on) and Permissions (the full <code>run.invoker</code> list), plus the project-level IAM list. <code>--attest</code> records that reading, and the script computes the match against the declarations (F9). Folder- and organization-level grants stay unverifiable: Christie can't read them.</td><td>No gcloud (Christie).</td></tr>
 <tr><td>M4</td><td>"Tested by calling the Firebase CLI directly"</td><td>Tested through the CLI's own lifecycle-hook runner, offline, in a spawned helper. Every real deploy must show the backstop's success line in the transcript.</td><td>The <code>deploy</code> command authenticates before any hook runs (K15).</td></tr>
 <tr><td>M5</td><td>"Refuses … the wrong codebase"</td><td><strong>In plain terms:</strong> functions are grouped into "codebases" (D2 has one, <code>core</code>). The guard always deploys one named group. The backstop, the last-line check the Firebase CLI runs, can tell which group is deploying only when there's more than one. With just <code>core</code>, it can't see the difference between "deploy <code>core</code>" and "deploy all functions". The difference matters because "all functions" lets the CLI silently skip some. So the guard catches that case another way: the CLI prints "Skipping the deploy of unchanged functions" when it skips, and the guard refuses to call such a deploy verified. <strong>Nothing for Christie to do.</strong> It's recorded so the gap is visible.</td><td><code>lifecycleHooks.js</code> passes only <code>GCLOUD_PROJECT</code>, <code>PROJECT_DIR</code> and <code>RESOURCE_DIR</code>.</td></tr>
 <tr><td>M6</td><td>D-4 runs "after Phase D2"</td><td>D-4 (the scheduled vault export) <strong>must first extend this guard</strong> with scheduled functions: a real Cloud Scheduler read-back, <code>retryConfig</code>, and its own review.</td><td>F13: HTTP only.</td></tr>
+<tr><td>M7</td><td>"<code>functions-build@</code>'s roles and the deployer's <code>actAs</code> land in Phase D2" (foundation; Phase D plan C5)</td><td><code>functions-build@</code> is deleted: the CLI can't use it (K12). The deployer's <code>actAs</code> on each runtime account (<code>canary@</code>) comes from Christie's Owner role, recorded in D2-1. If Owner is ever narrowed, a Service Account User grant on each runtime account replaces it. D2-2 corrects the <code>functions-build@</code> statements in both parent plans alongside M1–M6.</td><td>Round 4: the parent plans would otherwise say something false.</td></tr>
 </table>
 <p>The functions emulator requirement is <strong>kept</strong> (F10).</p>
 
@@ -80,6 +81,7 @@
     <li><strong>The runtime</strong> is <code>process.execPath</code>, or a <code>node</code> package in the codebase.</li>
     <li>With <code>FIREBASE_FUNCTIONS_DISCOVERY_OUTPUT_PATH</code> set, the delegate writes the manifest YAML to a file (the <code>execAdmin</code> branch: it adds <code>FUNCTIONS_MANIFEST_OUTPUT_PATH</code> and drops <code>PORT</code>).</li>
     <li><strong>A <code>functions.yaml</code> in the source folder replaces discovery entirely.</strong></li>
+    <li>The discovery child gets <strong>only</strong> those keys (plus <code>__FIREBASE_FRAMEWORKS_ENTRY__</code>); the parent environment isn't inherited. That's what makes F5's discovery reproducible.</li>
   </ul></td><td>F5 (seal).</td></tr>
 <tr><td>K3</td><td><code>.env*</code> become env vars; <code>configDir</code> moves them; prepare writes <code>.env.&lt;id&gt;</code> only when params resolve.</td><td>F4; F13.</td></tr>
 <tr><td>K4</td><td>A plain <code>--only functions</code> skips unchanged functions ("Skipping the deploy of unchanged functions."); <code>functions:&lt;cb&gt;</code> forces them all.</td><td>uses <code>functions:&lt;cb&gt;</code>; the skip line means not verified.</td></tr>
@@ -89,7 +91,7 @@
 <tr><td>K8</td><td>No cleanup policy → exit 1 before the partial exit 2. Any policy skips the check; a missing repository is a silent no-op.</td><td>F11; exit codes are not diagnoses.</td></tr>
 <tr><td>K9</td><td>A partial failure exits 2; <code>--json</code> has no per-function result.</td><td>always reads back.</td></tr>
 <tr><td>K10</td><td><code>functions:list --json</code> → <code>{"status":"success","result":[…]}</code>. Each function's id, region, platform, runtime, trigger, state, expanded <code>serviceAccount</code>, <code>ingressSettings</code>, <code>uri</code> (absent until created), labels, codebase, <code>hash</code>, and its <strong>endpoint env</strong> in plain text: <code>FIREBASE_CONFIG</code>, <code>GCLOUD_PROJECT</code>, <code>EVENTARC_CLOUD_EVENT_SOURCE</code>, <code>FUNCTION_TARGET</code> and <code>LOG_EXECUTION_ID</code>, plus any env already live (kept on update). There is <strong>no revision id and no IAM</strong>.</td><td>F8; never prints env values; M2, M3.</td></tr>
-<tr><td>K11</td><td>No invoker → <code>["public"]</code> → <code>allUsers</code>. <code>'private'</code> → no IAM write on create; the binding is emptied on update. An explicit list replaces the <strong>whole</strong> policy on create. Callables are always public.</td><td>every function declares its invoker (F2).</td></tr>
+<tr><td>K11</td><td>No invoker → <code>["public"]</code> → <code>allUsers</code> <em>on create</em> (on update, an absent invoker skips the IAM write). <code>'private'</code> → no IAM write on create; the binding is emptied on update. An explicit list replaces the <strong>whole</strong> policy on create. Callables are always public.</td><td>every function declares its invoker (F2).</td></tr>
 <tr><td>K12</td><td>The CLI can't choose the build account. Google picks it by when the project first built, and by the <code>cloudbuild.useBuildServiceAccount</code> / <code>useComputeServiceAccount</code> org policies: the Compute account (possibly created with Editor) or the legacy Cloud Build account, which normally holds <code>cloudbuild.builds.builder</code>.</td><td>F7 neutralizes <strong>both</strong> candidates before any build.</td></tr>
 <tr><td>K13</td><td>The first <em>event-triggered</em> deploy grants the Compute account project-wide <code>run.invoker</code> and <code>eventarc.eventReceiver</code>. A deploy that fails still enables APIs and creates service agents.</td><td>not triggered in D2 (HTTP only); F9's <code>functions_unchanged</code> is named honestly.</td></tr>
 <tr><td>K14</td><td>Node 20 is decommissioned 2026-10-30. The host Node runs discovery and the emulator.</td><td>Node 22 everywhere (F5, F10).</td></tr>
@@ -113,7 +115,9 @@
       </ul>
       Only attempt receipts decide "newest attempt". Verify and attest records name their <code>attempt_id</code> and are joined to it.</li>
     <li><strong>Shared code:</strong> <code>scripts/lib/receipts.sh</code> holds the rules guard's record block. <code>deploy-rules.sh</code> sources it, adds it to its <code>CONTROL_FILES</code>, and its test harness copies and pins it. A test checks both guards order an identical tag set identically. The library hosts both fail-closed readers (ordering, <code>deploy_verified</code>, <code>iam_attested</code>) and fail-soft ones (display only), labelled as such.</li>
-    <li><strong>A stale clock refuses</strong> before the CLI call.</li>
+    <li><strong>A stale clock refuses</strong> before the CLI call. This deliberately differs from the rules guard, which proceeds because it's the emergency path. A functions deploy isn't. The escape for a stray future-stamped tag (identify it, then remove it with Christie's approval) is in <code>FUNCTIONS-ROLLBACK.md</code>, with a test.</li>
+    <li><strong>The guard refuses a <code>--codebase</code> value that isn't a <code>codebase</code></strong> in the tip's <code>firebase.json</code> (for example a function id), with its own test. That meets the foundation's "a codebase, not a single function" bullet; M5 applies to the backstop alone.</li>
+    <li><strong>The shared lock</strong> is held for minutes by a functions deploy (install, tests, build). Both rollback docs say: check for a running functions deploy before removing a lock.</li>
   </ul></td><td>One copy of the ordering code. A reconcile that happens later can never look like a newer attempt (round 3).</td></tr>
 <tr><td>F2</td><td>
   <ul>
@@ -124,12 +128,12 @@
         <li>a function not declared;</li>
         <li>no <code>serviceAccount</code>, or no <code>invoker</code>;</li>
         <li><code>invoker</code> containing <code>public</code>;</li>
-        <li>any mismatch with the manifest;</li>
+        <li>any mismatch with the manifest, and a declaration with no matching function (stale);</li>
         <li>categorically, these as runtime accounts: the Compute account, the legacy Cloud Build account, <code>firebase-adminsdk-*</code>, <code>…@appspot</code>, and the build account.</li>
       </ul></li>
     <li><strong>The canary:</strong> <code>core/canary</code>, <code>onRequest({ invoker: 'private', region: 'us-central1', serviceAccount: 'canary@', maxInstances: 1, concurrency: 1, timeoutSeconds: 10, memory: '128MiB' })</code>. It returns 204 with the header <code>x-tinker-reached: canary</code>. It is permanent.</li>
     <li><strong>Every HTTP function</strong> in this repo sets <code>x-tinker-reached: &lt;id&gt;</code> on every response. That's a helper in each codebase, and a test enforces it.</li>
-  </ul></td><td>Round 3: a missing invoker deploys public (K11). The header lets the guard tell "our code answered" from "Google refused".</td></tr>
+  </ul></td><td>Round 3: a missing invoker deploys public (K11). The header lets the guard tell "our code answered" from "Google refused". <code>allUsers</code> and <code>allAuthenticatedUsers</code> can't be written as invokers: the CLI's <code>formatServiceAccount</code> throws on any member without <code>@</code>. So the only public paths are the literal <code>public</code> and an absent invoker, and both are refused.</td></tr>
 <tr><td>F3</td><td><strong>The folder matches the commit:</strong>
   <ul>
     <li>excluding <code>node_modules/</code>, only regular files and directories;</li>
@@ -142,9 +146,9 @@
   <ol>
     <li><strong>Pinned tools:</strong> <code>NODE22=/opt/homebrew/opt/node@22/bin/node</code> and its <code>npm</code>, each asserted by version. The CLI is always <code>"$NODE22" "$REPO/node_modules/firebase-tools/lib/bin/firebase.js"</code>, version <code>15.22.3</code>.</li>
     <li><strong>Install:</strong> <code>"$NPM22" ci --prefix "$TMP/functions/&lt;cb&gt;"</code>. The root <code>node_modules</code> stays symlinked; a real-npm test proves it's untouched. Then refuse unless <code>functions/&lt;cb&gt;/node_modules/.bin/firebase-functions</code> exists.</li>
-    <li><strong>Discovery</strong> runs once, through <code>scripts/functions-discover.mjs</code> (under <code>$NODE22</code>). It drives the pinned CLI's node delegate with <code>FIREBASE_FUNCTIONS_DISCOVERY_OUTPUT_PATH</code> set (K2's file-output branch), and the same Firebase env the CLI builds, including the CLI's own read-only <code>FIREBASE_CONFIG</code> fetch. It prints the manifest file's sha256 and the CLI's own <code>yamlToBuild</code> parse as JSON. The env differs from default discovery only by K2's delta; that's acceptable because <strong>the seal, not the fidelity of discovery, decides what deploys</strong>.</li>
+    <li><strong>Discovery</strong> runs once, through <code>scripts/functions-discover.mjs</code> (under <code>$NODE22</code>). It drives the pinned CLI's node delegate with <code>FIREBASE_FUNCTIONS_DISCOVERY_OUTPUT_PATH</code> set to a <strong>temporary directory outside the worktree</strong> (the delegate writes <code>&lt;dir&gt;/functions.yaml</code>; K2's file-output branch) and <code>FUNCTIONS_DISCOVERY_TIMEOUT=60</code>. Before discovery, a <code>functions.yaml</code> already present in the source folder refuses, with a test. and the same Firebase env the CLI builds, including the CLI's own read-only <code>FIREBASE_CONFIG</code> fetch. It prints the manifest file's sha256 and the CLI's own <code>yamlToBuild</code> parse as JSON. The env differs from default discovery only by K2's delta; that's acceptable because <strong>the seal, not the fidelity of discovery, decides what deploys</strong>.</li>
     <li><strong>Checks:</strong> F13, F14, F2 and F6, then F3 again.</li>
-    <li><strong>Seal:</strong> inside the CLI, the backstop re-runs F3, then copies the sealed file in as <code>functions/&lt;cb&gt;/functions.yaml</code>, after matching <code>TINKER_DEPLOY_MANIFEST_SHA256</code>. The CLI deploys exactly that (K2). It's ignored from the upload and deleted on cleanup.</li>
+    <li><strong>Seal:</strong> inside the CLI, the backstop re-runs F3, then copies the sealed file in as <code>functions/&lt;cb&gt;/functions.yaml</code>, from <code>TINKER_DEPLOY_MANIFEST_PATH</code>, after matching <code>TINKER_DEPLOY_MANIFEST_SHA256</code>. The CLI deploys exactly that (K2). It's ignored from the upload and deleted on cleanup.</li>
     <li><strong>The call:</strong> <code>deploy --only functions:&lt;cb&gt; --project my-clay-hub --non-interactive</code>, <strong>never <code>--force</code></strong>. <code>TINKER_DEPLOY_*</code> go through the exported env, never inline (K15). <code>GOOGLE_APPLICATION_CREDENTIALS</code>, <code>GOOGLE_CLOUD_QUOTA_PROJECT</code>, <code>FUNCTIONS_DISCOVERY_TIMEOUT</code> and <code>FIREBASE_FUNCTIONS_DISCOVERY_OUTPUT_PATH</code> are unset. The transcript is teed.</li>
   </ol></td><td>Rounds 2–3.</td></tr>
 <tr><td>F6</td><td>The guard <strong>never deletes</strong>. A live function missing from the manifest → refuse before uploading. <code>FUNCTIONS-ROLLBACK.md</code> covers: rollback onto a new commit; <code>--clear-inflight</code>; and "the first build failed".</td><td>K6.</td></tr>
@@ -166,9 +170,10 @@
         <li>the set of functions equals the manifest's;</li>
         <li>each <code>ACTIVE</code>, <code>gcfv2</code>, <code>nodejs22</code>, <code>us-central1</code>, HTTPS;</li>
         <li><code>serviceAccount</code> and <code>ingressSettings</code> equal to <code>declarations.json</code>;</li>
-        <li><code>maxInstances</code>, <code>concurrency</code>, <code>timeoutSeconds</code> and <code>availableMemoryMb</code> equal to the manifest's required values (F14);</li>
-        <li>the env keys exactly <code>{EVENTARC_CLOUD_EVENT_SOURCE, FIREBASE_CONFIG, FUNCTION_TARGET, GCLOUD_PROJECT, LOG_EXECUTION_ID}</code>, with <code>EVENTARC_CLOUD_EVENT_SOURCE</code> = <code>projects/my-clay-hub/locations/us-central1/services/&lt;id&gt;</code> and <code>FUNCTION_TARGET</code> = the entry point (any other key refuses, since the CLI would keep a hand-added one);</li>
-        <li>the <code>hash</code> is present. If the folder tree id equals the newest <em>verified</em> attempt's, it must equal that attempt's recorded hash; otherwise it must differ from the before-snapshot's.</li>
+        <li><code>maxInstances</code>, <code>minInstances</code>, <code>concurrency</code>, <code>timeoutSeconds</code> and <code>availableMemoryMb</code> equal to the manifest's required values (F14);</li>
+        <li>the env keys exactly <code>{EVENTARC_CLOUD_EVENT_SOURCE, FIREBASE_CONFIG, FUNCTION_TARGET, GCLOUD_PROJECT, LOG_EXECUTION_ID}</code>, with <code>EVENTARC_CLOUD_EVENT_SOURCE</code> = <code>projects/my-clay-hub/locations/us-central1/services/&lt;id&gt;</code> and <code>FUNCTION_TARGET</code> = the entry point <strong>with every <code>-</code> replaced by <code>.</code></strong> (as <code>cloudfunctionsv2.js</code> does; a fixture uses a hyphenated entry point). Any other key refuses, since the CLI would keep a hand-added one;</li>
+        <li><code>cpu</code> equal to the manifest's (F14);</li>
+        <li>the <code>hash</code> is present. <strong>Every</strong> attempt receipt, verified or not, records the tree id and each function's hash. If any earlier attempt receipt for this codebase carries this tree id, the live hash must equal that receipt's. Otherwise it must differ from the before-snapshot's, and an absent before-hash counts as different. (A failed build leaves the function <code>FAILED</code> but already labelled, so a same-sha retry must be allowed an equal hash.)</li>
       </ul>
       <code>unknown</code> only for a list error or malformed JSON.</li>
     <li><strong>Transcript:</strong> the backstop's success line is present, and the "Skipping" line is absent.</li>
@@ -185,9 +190,11 @@
     <li><strong>In-flight file</strong> (<code>tinker-deploy-inflight-functions</code>): written atomically (temp file, fsync, rename, fsync of the directory) before the CLI call, with the attempt's reserved stamp, sha, tree id, manifest sha256 and before-snapshot digest. A malformed file fails closed.</li>
     <li><strong>Attempt receipt</strong> (tag = <code>attempt_id</code>): <code>cli_exit</code>, <code>backstop_seen</code>, <code>skip_line_seen</code>, <code>functions_unchanged</code> (the functions snapshot only; APIs and service agents may still have changed, K13), <code>deploy_match</code>, <code>access</code>, per-function hash, the tree id and manifest sha. <code>deploy_verified=yes</code> only when <code>cli_exit=0</code>, the backstop was seen, there's no skip line, <code>deploy_match=yes</code> and every function was refused.</li>
     <li><strong><code>--reconcile</code></strong> (after a crash) writes the attempt receipt <strong>with the in-flight file's original stamp</strong>. It requires: no function <code>DEPLOYING</code>; Christie's Console confirmation that the operation finished (Cloud Build → History → that build finished, and Cloud Run → service → latest revision ready), recorded verbatim; and a rebuilt expected state (worktree, Node 22, <code>npm ci</code>, discovery) with a matching manifest sha.</li>
-    <li><strong><code>--clear-inflight</code></strong> is for an operation that never settles. With Christie's approval and her Console evidence, it writes the attempt receipt with <code>deploy_match=unknown</code>.</li>
-    <li><strong><code>--reverify &lt;attempt&gt;</code></strong> carries that attempt's <code>cli_exit</code>, <code>backstop_seen</code> and <code>skip_line_seen</code> forward, re-reads and re-probes, and writes a <code>-verify</code> record. <code>deploy_verified</code> for an attempt = its own receipt's, or its newest verify record's.</li>
-    <li><strong><code>--attest &lt;attempt&gt;</code></strong> takes Christie's per-function reading: the "Require authentication" setting; the complete <code>run.invoker</code> member list; the project-level holders of <code>run.invoker</code>, <code>cloudfunctions.invoker</code>, Owner and Editor. The <strong>script</strong> compares each function with the expected invoker from <code>declarations.json</code> (<code>'private'</code> → no members) and with an expected project-level list, refusing missing or extra functions or members. It writes a <code>-attest</code> record naming the <code>attempt_id</code>. It refuses unless that attempt is the newest.</li>
+    <li><strong><code>--clear-inflight</code></strong> is for an operation that never settles. With Christie's approval and her Console evidence, it writes the attempt receipt with <code>deploy_match=unknown</code>, <strong>carrying the in-flight file's original stamp</strong>, as <code>--reconcile</code> does.</li>
+    <li><strong>Console evidence has a fixed shape</strong> that the script validates. For <code>--reconcile</code>, <code>--clear-inflight</code> and <code>--attest</code>, per function: the Cloud Build build id and its status, and the Cloud Run <strong>latest ready revision name</strong>. This is how the foundation's "revision read-back" is met (M2), through Christie's reading rather than the CLI.</li>
+    <li><strong>The attempt receipt also records</strong> the before-snapshot digest and each function's before-hash, so a later <code>--reverify</code> can re-apply F8's hash rule (the in-flight file, the only other copy, is deleted).</li>
+    <li><strong><code>--reverify &lt;attempt&gt;</code> refuses unless that attempt is the newest attempt</strong> (the same rule as <code>--attest</code>). Re-probing today's production can only speak for the attempt that put it there. It carries that attempt's <code>cli_exit</code>, <code>backstop_seen</code> and <code>skip_line_seen</code> forward, re-reads, re-applies F8 in full (including the hash rule from the receipt's before-hash) and re-probes. It writes a <code>-verify</code> record. <code>deploy_verified</code> for an attempt = its own receipt's, or its newest verify record's.</li>
+    <li><strong><code>--attest &lt;attempt&gt;</code></strong> takes Christie's per-function reading: the "Require authentication" setting; the complete <code>run.invoker</code> member list; the project-level holders of <code>run.invoker</code>, <code>cloudfunctions.invoker</code>, Owner and Editor. The <strong>script</strong> compares each function with the expected invoker from <code>declarations.json</code> (<code>'private'</code> → no members) and with <code>functions/iam-expectations.json</code> (a control file, shown in <code>--diff</code>). That file holds the expected holders of <code>roles/run.invoker</code>, <code>roles/cloudfunctions.invoker</code>, Owner and Editor, and each runtime account's expected role set (for example <code>canary@</code>: none). The script refuses missing or extra functions, members, holders or roles. It writes a <code>-attest</code> record naming the <code>attempt_id</code>. It refuses unless that attempt is the newest.</li>
     <li><strong><code>--status</code>:</strong>
       <ul>
         <li>the newest attempt (by attempt stamp only), with its <code>deploy_verified</code> and <code>iam_attested</code>;</li>
@@ -201,15 +208,16 @@
 <tr><td>F10</td><td>
   <ul>
     <li><strong><code>npm test</code></strong> = <code>unit && guard && functions-guard && functions && rules</code>.</li>
-    <li><strong><code>test:functions</code></strong> runs the canary in the <strong>Functions emulator</strong> on a pinned port (added to <code>emulator-safety.js</code>'s host checks and pinned ports, with its tests). It checks the 204, the header and the declared options.</li>
+    <li><strong><code>test:functions</code></strong> runs the canary in the <strong>Functions emulator</strong> on a pinned port, which is added to <code>emulator-safety.js</code>'s pinned ports. The Functions emulator exports no host variable, so the equivalent check is on <code>FIREBASE_EMULATOR_HUB</code>'s host and port, and the test builds its URL from the pinned port. It checks the 204, the header and the declared options.</li>
+    <li><strong>No credentials in the emulator:</strong> the Functions emulator normally writes Christie's <strong>refresh token</strong> to <code>~/.config/firebase/&lt;account&gt;_application_default_credentials.json</code> and hands it to the function as <code>GOOGLE_APPLICATION_CREDENTIALS</code> (<code>emulator/functionsEmulator.js</code>, <code>defaultCredentials.js</code>). That's against the credential rule. So <code>test:functions</code> runs with <code>HOME</code> set to a scratch directory: no account means nothing is minted, and a <code>demo-</code> project needs none. A test asserts <code>GOOGLE_APPLICATION_CREDENTIALS</code> is absent from the function's env, and the launcher removes any file it caused to be written.</li>
     <li><strong>Loud skip:</strong> it prints a named <strong>SKIPPED</strong> line and exits 0 when the codebase's <code>node_modules</code> is absent <em>or the Node major isn't 22</em>, unless <code>TINKER_FUNCTIONS_TESTS=required</code>. The functions guard sets that; D2-2's own acceptance sets it; the rules guard doesn't.</li>
     <li>D2-2 proves a rules worktree's <code>npm test</code> passes.</li>
-    <li><code>firebase-config.test.js</code> and <code>emulator-safety.test.js</code> are updated.</li>
+    <li><code>firebase-config.test.js</code> and <code>emulator-safety.test.js</code> are updated, as are the stale <code>npm test</code> descriptions in <code>deploy-rules.sh</code>'s <code>--status</code> text and in <code>~/my-clay-hub/CLAUDE.md</code>.</li>
   </ul></td><td>Keeps the foundation's emulator requirement; never blocks a rules rollback.</td></tr>
 <tr><td>F11</td><td><code>gcf-artifacts</code> (Docker, us-central1) is pre-created with a Console cleanup policy.</td><td>K8.</td></tr>
-<tr><td>F12</td><td>The hook denies <code>functions:delete</code>, <code>functions:deletegcfartifacts</code> (each alternative anchored, since one contains the other), <code>functions:secrets:set|destroy|prune</code>, <code>functions:artifacts:setpolicy</code> and <code>functions:config:set|unset|clone</code>. Tested across the full matrix, with allow cases. The split-line gap is documented and tested.</td><td>These change production.</td></tr>
+<tr><td>F12</td><td>The hook denies <code>functions:delete</code>, <code>functions:deletegcfartifacts</code> (each alternative anchored, since one contains the other), <code>functions:secrets:set|destroy|prune</code>, <code>functions:artifacts:setpolicy</code> and <code>functions:config:set|unset|clone|export</code> (<code>export</code> writes <code>.env.&lt;alias&gt;</code> files into the source folder, which F4 forbids), and <code>functions:secrets:access</code> (prints a secret's plaintext). Tested across the full matrix, with allow cases. The split-line gap is documented and tested.</td><td>These change production.</td></tr>
 <tr><td>F13</td><td><strong>HTTP only:</strong> only <code>httpsTrigger</code> endpoints. Each other kind is refused by name, as are params and secrets. The D-4 plan adds schedules (M6).</td><td>Christie.</td></tr>
-<tr><td>F14</td><td><strong>Manifest invariants</strong>, each with its own refusal and test: <code>platform: gcfv2</code>; <code>region</code> exactly <code>["us-central1"]</code>; <code>runtime nodejs22</code>; <code>maxInstances</code>, <code>concurrency</code>, <code>timeoutSeconds</code> and <code>availableMemoryMb</code> <strong>all present</strong> (never left to Google's defaults), and <code>maxInstances ≤ 10</code>.</td><td>Round 3: "as declared" was vacuous when nothing was declared.</td></tr>
+<tr><td>F14</td><td><strong>Manifest invariants</strong>, each with its own refusal and test: <code>platform: gcfv2</code>; <code>region</code> exactly <code>["us-central1"]</code>; <code>runtime nodejs22</code>; <code>maxInstances</code>, <code>concurrency</code>, <code>timeoutSeconds</code>, <code>availableMemoryMb</code> and <code>cpu</code> <strong>all present</strong> (never left to Google's defaults); <code>maxInstances ≤ 10</code>; <code>minInstances</code> absent or 0 (it bills continuously otherwise); no <code>vpc</code>; no <code>secretEnvironmentVariables</code>.</td><td>Round 3: "as declared" was vacuous when nothing was declared.</td></tr>
 </table>
 
 <h2 id="phases">Phases</h2>
@@ -229,6 +237,7 @@
   <li>IAM → <code>760301318440@cloudbuild.gserviceaccount.com</code> → <strong>remove Cloud Build Service Account</strong> (<code>cloudbuild.builds.builder</code>) if present. Screenshot.</li>
   <li>IAM → the provisional account → <strong>Logs Writer</strong>, plus <strong>Storage Object Viewer</strong> with the A5 condition.</li>
   <li>Artifact Registry → create <code>gcf-artifacts</code> (Docker, us-central1) → cleanup policy → Permissions → the provisional account as <strong>Artifact Registry Writer</strong>.</li>
+  <li>IAM → confirm Christie holds <strong>Owner</strong> (the source of her <code>actAs</code> on <code>canary@</code>, M7). Screenshot.</li>
   <li>Service accounts → create <code>canary</code> (exactly 6 characters, Google's minimum; don't shorten it), with no roles. Delete <code>functions-build@</code>.</li>
   <li>IAM "View by roles" (Google-provided grants shown) → screenshot. <strong>Acceptance: neither candidate holds Editor or Cloud Build Service Account; only the provisional one holds the O3 roles.</strong></li>
 </ol>
@@ -262,7 +271,7 @@
       <li>a sealed manifest that is missing, or whose sha differs.</li>
     </ul></li>
   <li><strong>CLI-path test:</strong> a spawned Node helper runs the pinned CLI's <code>lifecycleHooks</code> offline, and the output is captured and asserted (refusal text, and the success line).</li>
-  <li><code>FUNCTIONS-ROLLBACK.md</code>. The foundation plan is updated with M1–M6, once approved.</li>
+  <li><code>functions/iam-expectations.json</code> (F9). <code>FUNCTIONS-ROLLBACK.md</code>, including the stray-tag escape, <code>--clear-inflight</code>, "the first build failed" and the shared-lock warning. The foundation plan and the Phase D plan are updated with M1–M7 (M1–M6 approved Sep 29; M7 once approved), including correcting their <code>functions-build@</code> and <code>actAs</code> statements.</li>
   <li><code>npm test</code> green with <code>TINKER_FUNCTIONS_TESTS=required</code> (the emulator really runs). A rules worktree's <code>npm test</code> is also green.</li>
 </ul>
 </div>
@@ -298,11 +307,12 @@
       <li>the header present on a 403; 200; timeout; 404; 5xx;</li>
       <li>combined failures.</li>
     </ul></li>
-  <li><strong>The hash rule:</strong> first deploy; changed source; <strong>same-sha retry</strong> (equal hash → verified); identical content redeployed.</li>
+  <li><strong>The hash rule:</strong> first deploy; changed source; <strong>the first build fails for permissions, then the same sha re-runs → verified</strong> (the earlier unverified attempt carries this tree id and hash); a same-sha retry after success; identical content redeployed.</li>
   <li><strong>Snapshot canonicalization:</strong> a reordered but equivalent snapshot → equal digest.</li>
   <li><strong>Interruption:</strong> killed after the CLI, and killed during the read-back → <code>--approved</code> refuses → <code>--reconcile</code> refuses without the Console confirmation, and while <code>DEPLOYING</code> → the receipt keeps the original stamp.</li>
   <li><code>--clear-inflight</code>; a truncated in-flight file.</li>
-  <li><strong>Ordering:</strong> attempt A unverified, attempt B verified, then A reverified → <code>--status</code> still names B as the newest attempt.</li>
+  <li><strong>Ordering:</strong> attempt A unverified, attempt B verified, then <code>--reverify A</code> is <strong>refused</strong> (not the newest attempt), and <code>--status</code> still names B and diffs from B. Positive: <code>--reverify B</code> writes a verify record that upgrades only the read-back and probe dimensions.</li>
+  <li><strong><code>--clear-inflight</code></strong> keeps the original stamp; a future-stamped stray tag refuses, and the documented escape clears it.</li>
   <li><strong><code>--attest</code>:</strong> a missing function, an extra member, "Require authentication" off with no members → <code>iam_attested=no</code>; attesting a non-newest attempt is refused.</li>
   <li>Tag or push failure.</li>
   <li><strong>Shared code:</strong> both guards order identical tag sets identically; <code>deploy-rules.test.sh</code> is green after the extraction.</li>
@@ -316,13 +326,16 @@
 </div>
 
 <div class="phase">
-<h3>D2-5 — First guarded deploy: deploy, pin, reverify, attest <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>D2-5 — First guarded deploy: re-check IAM, deploy, attest <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li><strong>Deploy.</strong> <code>--status</code>; <code>--diff</code> verbatim; the ask; the phrase; <code>--approved &lt;sha&gt; --codebase core</code>. This first run <strong>exits non-zero by design</strong> (<code>access=unclassified</code>). <strong>Don't retry on that exit.</strong> It prints the observed env key set and the refusal's headers.</li>
-  <li><strong>Pin.</strong> Commit the observed refusal (status and headers) as fixtures, confirm the env key set matches F8, review, merge.</li>
-  <li><strong>Reverify.</strong> <code>--reverify &lt;attempt&gt;</code> → the verify record must say <code>deploy_verified=yes</code>. Nothing is re-deployed.</li>
+  <li><strong>Re-check IAM immediately before the ask</strong> (the Phase D log asked for this; Google's automatic Editor grant can land late). Christie reads IAM "View by roles" with Google-provided grants shown, and confirms neither build candidate holds Editor or Cloud Build Service Account. That's recorded; without it, don't ask for approval.</li>
+  <li><strong>Deploy.</strong> <code>--status</code>; <code>--diff</code> verbatim; the ask; the phrase; <code>--approved &lt;sha&gt; --codebase core</code>. The <code>x-tinker-reached</code> header makes the probe classifiable from the first run, so this run is <strong>expected to verify</strong>. It exits non-zero only if the observed env key set or a compared field differs from F8. In that case it prints the observed values, and the fix (the F8 expectation, or the canary) is committed, reviewed, and followed by <code>--reverify</code> of that same attempt. Nothing is re-deployed. The observed refusal headers are saved as a test fixture either way.</li>
   <li><strong>Attest.</strong> Christie reads the canary's Security tab ("Require authentication" on), its Permissions (no <code>run.invoker</code> members), IAM "View by roles" (<code>run.invoker</code>, <code>cloudfunctions.invoker</code>, Owner, Editor holders; neither build candidate holds Editor or Cloud Build Service Account), and Cloud Build → History → the build's service account. Claude runs <code>--attest</code> with her reading, and the script's match must be <code>iam_attested=yes</code>.</li>
 </ol>
+<div class="bdd">Scenario: Editor reappeared on the Compute account
+  Given D2-5 step 1 shows Editor on 760301318440-compute@developer.gserviceaccount.com
+  Then nothing is deployed
+  And Christie removes it, re-reads the list, and it is re-recorded before the ask</div>
 <div class="bdd">Scenario: the first build fails for permissions
   Given Cloud Build → History shows a permission denied
   Then Claude names the exact permission and stops
@@ -353,7 +366,7 @@
 <h2 id="open">Open items</h2>
 <ul>
   <li><strong>O1:</strong> settled in D2-2 (the delegate produces the manifest), or the plan is revised.</li>
-  <li><strong>O2:</strong> the refusal's headers, pinned at D2-5 step 2.</li>
+  <li><strong>O2:</strong> no longer blocking. The <code>x-tinker-reached</code> header classifies the probe. The observed refusal headers are saved as a test fixture at D2-5.</li>
   <li><strong>O3, O4:</strong> settled.</li>
   <li><strong>O5:</strong> the exact names of the function-source buckets (A5), confirmed from Google's docs when D2-1 starts and from the first build's record.</li>
 </ul>
@@ -475,6 +488,29 @@ Christie's phrase is 'approved to change firebase &lt;full sha&gt;' … (rest un
 <tr><td><code>production_unchanged</code> over-claims; the discovery mechanism; Node and npm pinning; a <code>node</code> dependency; the emulator on Node 20; the one-codebase <code>--only</code> case; a shared pending file; <code>deploy_match</code> undefined; the first-build failure path; K13 and K16 missing; nits (Claude)</td><td>Renamed <code>functions_unchanged</code>; F5; F2; F10; M5; F1; F8 step 2; F7 and a D2-5 BDD; facts restored and extended.</td></tr>
 </table>
 
+<h3>Round 4 (Sep 29): Claude "not ready" (3 blocking, 13 should-fix, 7 nits). Codex couldn't run: the workspace was out of credits.</h3>
+<p>Full text is in <code>thoughts/reviews/firebase-functions-deploy-guard-round4-claude.md</code>. Confirmed: every public path is now refused; the byte closure holds; the receipt ordering is coherent; the hook regex, <code>npm ci --prefix</code>, the offline hook test and F11 all work. Dispositions:</p>
+<table>
+<tr><th>Finding</th><th>Disposition</th></tr>
+<tr><td>A retry after a failed build can't verify; F8 contradicted D2-3's test (blocking)</td><td>F8: every attempt records its tree id and hash, and the rule keys on <em>any</em> earlier attempt with this tree; a retry-after-failure test.</td></tr>
+<tr><td><code>--reverify</code> of a superseded attempt → wrong diff base (blocking)</td><td>F9: <code>--reverify</code> only on the newest attempt; the receipt records the before-hash; the ordering test is now a refusal.</td></tr>
+<tr><td>No Editor re-check right before the first build (blocking)</td><td>D2-5 step 1, plus a BDD.</td></tr>
+<tr><td>The Functions emulator writes Christie's refresh token and hands it to the function</td><td>F10: scratch <code>HOME</code>, a test that <code>GOOGLE_APPLICATION_CREDENTIALS</code> is absent, cleanup.</td></tr>
+<tr><td>The Functions emulator has no host env var</td><td>F10: the hub check plus the pinned port.</td></tr>
+<tr><td>No artifact for the expected project-level IAM</td><td>F9: <code>functions/iam-expectations.json</code>.</td></tr>
+<tr><td><code>FUNCTION_TARGET</code> replaces <code>-</code> with <code>.</code></td><td>F8, plus a fixture.</td></tr>
+<tr><td><code>minInstances</code>, <code>vpc</code>, <code>cpu</code> and secret env unconstrained</td><td>F14 and F8.</td></tr>
+<tr><td><code>actAs</code> dropped; parent plans false about <code>functions-build@</code></td><td>M7 (needs Christie's OK); D2-1 Owner step; D2-2 corrects both parent plans.</td></tr>
+<tr><td><code>access=unclassified</code> undefined; the header makes the bootstrap unnecessary</td><td>D2-5 step 2 is expected to verify; O2 demoted.</td></tr>
+<tr><td>A stale clock refusing has no escape</td><td>F1 states why, and the escape is in <code>FUNCTIONS-ROLLBACK.md</code>, with a test.</td></tr>
+<tr><td>The guard's own codebase check wasn't stated</td><td>F1.</td></tr>
+<tr><td><code>--reconcile</code> evidence is free text; M2 can be met through the revision name</td><td>F9 fixed-shape evidence (build id, latest ready revision); M2 updated.</td></tr>
+<tr><td>Where the discovery manifest is written; a second env var</td><td>F5: a temp dir outside the worktree, <code>TINKER_DEPLOY_MANIFEST_PATH</code>, a pre-existing <code>functions.yaml</code> test.</td></tr>
+<tr><td><code>functions:secrets:access</code> and <code>functions:config:export</code></td><td>F12.</td></tr>
+<tr><td>Stale <code>npm test</code> descriptions</td><td>F10 and D2-2.</td></tr>
+<tr><td>Nits: K2 env (not inherited), K11 update path, smuggled <code>allUsers</code>, stale declaration, <code>--clear-inflight</code> stamp, lock duration, discovery timeout</td><td>K2; K11; F2; F2; F9; F1; F5.</td></tr>
+</table>
+
 <h2 id="log">Decisions log (append-only)</h2>
 <ul>
   <li><strong>Sep 29:</strong> Plan written after a source-level read of firebase-tools 15.22.3 (K1–K14). Christie chose the anonymous probe over installing gcloud, and my-clay-hub now with the tinker-hq-apps copy in Phase E. C5 (a dedicated build account) is replaced by F7, because the Firebase CLI cannot choose the build account (K12).</li>
@@ -501,6 +537,7 @@ Christie's phrase is 'approved to change firebase &lt;full sha&gt;' … (rest un
   <li><strong>Sep 29:</strong> Christie, after round 2: <strong>simplify to HTTP functions only</strong> (schedules move to the D-4 plan) and <strong>require Node 22</strong> (new phase D2-0). Round-2 rewrite applied (Reviews, round 2 table). Round 3 next.</li>
   <li><strong>Sep 29:</strong> Round 3: Codex "not ready", Claude "ready after fixes". All findings applied (round 3 table). Christie asked, in the reviewer, what "for both projects" means (answered: each project gets its own separate guard; M1 reworded), whether gcloud is needed (answered: no; recommendation unchanged), and what M5 means (M5 reworded; nothing for her to do). <strong>Next:</strong> Christie's OK on M1–M6, the choices and Appendix A, then a confirming round 4.</li>
   <li><strong>Sep 29:</strong> Christie: <strong>"approve M1–M6, run round 4"</strong>. Amendments M1–M6 are approved. They get written into the foundation plan in D2-2, as planned. The choices (F1–F14) and Appendix A are not yet explicitly approved. Round 4 started.</li>
+  <li><strong>Sep 29:</strong> Round 4: Codex couldn't run (workspace out of credits again, after six Codex reviews today); Claude "not ready". Fixes applied (round 4 table). New amendment <strong>M7</strong> (<code>functions-build@</code> deleted, <code>actAs</code> via Owner) needs Christie's OK. <strong>Next:</strong> Christie's OK on M7; a Codex confirming pass when its limit resets; then the choices and Appendix A.</li>
 </ul>
 
 </body>
