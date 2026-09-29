@@ -34,7 +34,7 @@
   <strong>App:</strong> tinker-spring-curriculum (The Classbook): <code>js/app.js</code>, <code>js/firebase-data.js</code>, one new e2e spec. <strong>No</strong> Firestore rules change, no new collection.<br>
   <strong>Context:</strong> Created Sep 29, 2026. Christie asked how to move "active" from Spring 2026 to Fall 2026 and found there is no UI for it. She is doing a one-time console switch meanwhile (<code>await updateAppData({ activeSemester: 'fall-2026' })</code>). Her answer to "want me to plan it?": <em>"yes we should do this."</em><br>
   <strong>Line numbers</strong> are at <code>2ef2e62</code> (main, live on Netlify).<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Christie answered Q1/Q2. Three Claude rounds, then Codex's independent review: NOT ready (5 findings). Revision 4 addresses them; a Codex confirmation round is next.
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span>. Christie answered Q1/Q2. Three Claude rounds, then Codex's independent review: NOT ready (5 findings). Revisions 4–5 address them; Codex confirmation round 3 is next.
 </div>
 
 <h2 id="open-questions">Christie's decisions (Sep 29)</h2>
@@ -101,12 +101,12 @@
   <li>Re-render set after success or failure: header options, Teacher View selector, <code>renderSemesterSelector()</code>, <code>loadSettingsForm()</code>. The header's <code>change</code> listener gets the attach-once guard Teacher View already uses (<code>dataset.listenerAttached</code>), so re-rendering doesn't stack handlers.</li>
   <li><code>deleteSemester</code>, weekly branch only, in this order:
     <ol>
-      <li>Forced-server reads: <code>readServerSemesterLessonMap(key)</code> plus the semester's <code>cutProjects[key]</code> and <code>changeLog[key]</code>. Any rejection refuses. <code>null</code> means 0 lessons and proceeds.</li>
+      <li>Forced-server reads of everything keyed by the semester: <code>readServerSemesterLessonMap(key)</code>, <code>cutProjects[key]</code>, <code>changeLog[key]</code>, <code>prepData[key]</code>, <code>lessonData_backup[key]</code>, <code>diagnosticDismissals[key]</code> (<code>firebase-data.js:551, 979-995, 1212, 1267, 1286-1308</code>). Any rejection refuses. <code>null</code> means none and proceeds.</li>
       <li>The modal (count, truthful text, typed name).</li>
-      <li>A JSON snapshot download: <code>classbook-&lt;key&gt;-snapshot-&lt;ISO&gt;.json</code> through a Blob link, containing <code>{ appDataEntry, lessons, cutProjects, changeLog, takenAt, takenBy }</code>.</li>
-      <li>New <code>deleteWeeklySemesterTx(key)</code> in <code>firebase-data.js</code>: one <code>runTransaction</code> (the house pattern, e.g. <code>firebase-data.js:2452</code>) that re-reads appData and verifies <code>semesters[key]</code> still exists and <code>activeSemester !== key</code>. It then <code>tx.update</code>s appData (<code>semesters.&lt;key&gt;</code> delete, plus <code>lastUpdated</code>/<code>lastUpdatedBy</code>) and lessonData (<code>&lt;key&gt;</code> delete). It honours <code>updateAppData</code>'s guards (<code>configLoadFailed</code>, season registry).</li>
+      <li>A JSON snapshot download: <code>classbook-&lt;key&gt;-snapshot-&lt;ISO&gt;.json</code> through a Blob link, containing <code>{ appDataEntry, lessons, cutProjects, changeLog, prepData, lessonDataBackup, diagnosticDismissals, takenAt, takenBy }</code>.</li>
+      <li>New <code>deleteWeeklySemesterTx(key)</code> in <code>firebase-data.js</code>: one <code>runTransaction</code> (the house pattern, e.g. <code>firebase-data.js:2452</code>) that re-reads <strong>both</strong> appData and lessonData, and verifies that <code>semesters[key]</code> still exists, <code>activeSemester !== key</code>, and <code>lessonData[key]</code> is deep-equal to the snapshot just downloaded. If anyone saved a lesson in that semester since, it refuses ("lessons changed while you were deleting — reload and try again"), so the snapshot always matches exactly what was deleted. Saves to <em>other</em> semesters touch the same document, so Firestore may retry the transaction. Its built-in retries are fine for a rare manual delete, and if they run out, nothing is deleted and the alert says so. It then <code>tx.update</code>s appData (<code>semesters.&lt;key&gt;</code> delete, plus <code>lastUpdated</code>/<code>lastUpdatedBy</code>) and lessonData (<code>&lt;key&gt;</code> delete). It honours <code>updateAppData</code>'s guards (<code>configLoadFailed</code>, season registry).</li>
     </ol>
-    The old two-write path and its warn-only catch are removed for weekly semesters. Details: (<code>firebase-data.js:973-977</code>, already used by <code>createNewSemester</code>'s pre-check), and a failed read (a rejection) refuses. <code>null</code> means the doc or key is absent, which is 0 lessons: the delete proceeds, and an empty semester isn't blocked. The two <code>confirm()</code>s become <strong>one modal</strong>, the same component Phase 2 uses (<code>confirmModal({ title, body, checkbox?, typeToConfirm? })</code> built on <code>simple-modal</code>): one confirmation idiom, no <code>prompt()</code>. Its text is corrected as above. Camp and SDOC branches keep their current dialogs. <strong>Three existing tests change in the same commit:</strong> <code>data-safety.spec.js</code> around 8537 (asserts two confirms), around 7778-7790 (delete payload shape), and "a refused delete or publish toggle reverts this tab" (asserts the <code>Could not remove</code> alert). All three stub <code>window.confirm</code> and <code>await deleteSemester(...)</code> inside one <code>page.evaluate</code>. Each must be split: start the call, drive the modal from Playwright, then await the result.</li>
+    The old two-write path and its warn-only catch are removed for weekly semesters. <strong>Stale open tabs (accepted, defined):</strong> a lesson editor left open on the deleted semester can still save per-field paths into <code>lessonData.&lt;key&gt;</code> afterwards (<code>firebase-data.js:1429-1437</code>). That recreates an orphan fragment with no appData entry, so it's invisible in the app and loses nothing. If the key is ever reused, <code>createNewSemester</code>'s existing server pre-check (<code>app.js:4913-4916</code>) detects the leftover content and says so. Blocking it outright would mean a server read before every lesson save, which this plan doesn't take on. Details: (<code>firebase-data.js:973-977</code>, already used by <code>createNewSemester</code>'s pre-check), and a failed read (a rejection) refuses. <code>null</code> means the doc or key is absent, which is 0 lessons: the delete proceeds, and an empty semester isn't blocked. The two <code>confirm()</code>s become <strong>one modal</strong>, the same component Phase 2 uses (<code>confirmModal({ title, body, checkbox?, typeToConfirm? })</code> built on <code>simple-modal</code>): one confirmation idiom, no <code>prompt()</code>. Its text is corrected as above. Camp and SDOC branches keep their current dialogs. <strong>Three existing tests change in the same commit:</strong> <code>data-safety.spec.js</code> around 8537 (asserts two confirms), around 7778-7790 (delete payload shape), and "a refused delete or publish toggle reverts this tab" (asserts the <code>Could not remove</code> alert). All three stub <code>window.confirm</code> and <code>await deleteSemester(...)</code> inside one <code>page.evaluate</code>. Each must be split: start the call, drive the modal from Playwright, then await the result.</li>
   <li>Left alone on purpose: <code>app.js:5069-5074</code> and the <code>caCurrentSemester</code> assignment at <code>:4590</code> are dead code (round 2 confirmed that nothing reads them). This plan doesn't touch them.</li>
   <li>The Curriculum Admin bar stays read-only for "active" (it's the same audience, but one place to change it is enough).</li>
 </ul>
@@ -186,10 +186,21 @@ Scenario: the delete is all-or-nothing (failure) — real transaction, manager s
   When the transaction is made to fail (e.g. the appData entry is removed by a second writer between the read and the commit, or a stubbed commit rejects)
   Then both curriculum/appData.semesters.<key> and curriculum/lessonData.<key> read back unchanged
 
+Scenario: lessons edited during the delete (failure, Codex round 2)
+  Given the snapshot was downloaded, then a lesson in that semester is saved by another tab before the commit
+  When the transaction runs
+  Then it refuses, nothing is deleted, and the alert asks for a reload
+
+Scenario: a stale tab saves into a deleted semester (accepted, defined)
+  Given the weekly semester was deleted
+  When a stale tab saves a lesson field under its key
+  Then an orphan fragment exists in lessonData but no appData entry, so the semester does not reappear in any selector;
+   and creating a semester with that key shows the existing "Lesson content already exists" alert
+
 Scenario: a snapshot is taken first (safety)
   When the manager confirms a weekly delete
   Then a download named classbook-<key>-snapshot-*.json happens before the transaction
-   And it contains the appData entry, the lessons, cutProjects and changeLog for that key
+   And it contains the appData entry, lessons, cutProjects, changeLog, prepData, lessonData_backup and diagnosticDismissals for that key
 
 Scenario: a stale tab can't activate a deleted semester (failure, Codex finding 4)
   Given tab A loaded Fall; the Fall entry is then deleted on the server
@@ -338,6 +349,9 @@ Scenario: deploy alone moves nobody (safety)
 </ol>
 
 <h2 id="decisions">Decisions Log (append-only)</h2>
+<div class="decision">
+  <strong>Sep 29, 2026: revision 5, after Codex confirmation round 2 (<code>…-codex-r2.md</code>).</strong> Findings 1, 2, 4, 5 and the tab-handler item are confirmed resolved. Finding 3 had two gaps, both taken. (a) The snapshot also includes <code>prepData</code>, <code>lessonData_backup</code> and <code>diagnosticDismissals</code> for the key. (b) The delete transaction re-reads lessonData and refuses unless the semester's lessons deep-equal the downloaded snapshot. Retries from other semesters' saves are accepted. Stale-tab re-saves after a delete are defined as an accepted, invisible orphan that the existing <code>createNewSemester</code> pre-check catches, with a test.
+</div>
 <div class="decision">
   <strong>Sep 29, 2026: revision 4, after Codex's independent review (<code>thoughts/reviews/2026-09-29-plan-review-make-active-semester-codex.md</code>): NOT execution-ready, 5 findings, all verified and taken.</strong>
   <ul>
