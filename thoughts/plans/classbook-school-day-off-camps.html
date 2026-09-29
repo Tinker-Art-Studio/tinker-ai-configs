@@ -605,9 +605,54 @@ Then: refused ("changed by someone else"); B's links are intact (forced read)</d
   <p><strong>Not in 2C:</strong> link labels (the URL is shown as-is), rich text, photos in details, details per day.</p>
 </div>
 
-<div class="phase">
-  <h3>Phase 3 — Admin overview (plan status on the planner's cards)</h3>
-  <p><strong>Acceptance:</strong> the planner's camp cards show each project's plan status and Plan complete; Christie can open any plan from there (the 2B editor, which already lets planners edit). <em>Q&amp;A dropped Sep 25 (Christie: "skip the help queue entirely for SDOCs").</em></p>
+<div class="phase" id="phase-3">
+  <h3>Phase 3 — Planner's plan overview (status per project + per-event roll-up) — DESIGN, revision 1 (Sep 29, 2026; line numbers @ <code>2ef2e62</code>) — <span class="status-tag not-ready">execution-ready: false</span></h3>
+  <p><strong>Christie, Sep 29:</strong> "yes design it with the roll-up" — the core (status per project, open any plan) plus a per-event roll-up; the "not started and camp is under two weeks away" warning was offered and left out. Q&amp;A was dropped from Phase 3 on Sep 25.</p>
+  <p><strong>Acceptance (user outcomes):</strong></p>
+  <ul>
+    <li>In Curriculum Admin for an SDOC year, each camp row gains a <strong>Plans</strong> column listing each of its projects (the <code>dayOffCampTitles()</code> order — unused and no-plan blocks excluded): title, a status pill — <em>Not started</em> / <em>In progress</em> / <em>Complete</em>, from the same <code>calculateLessonProgress()</code> (app.js:914) the teachers' list uses, so both views always agree — and "last edited by <em>name</em>, <em>Mon Oct 5</em>" when the plan has an edit stamp, plus an <strong>Open plan</strong> button.</li>
+    <li><strong>Open plan</strong> opens the 2B editor (<code>openPlanEditor(yearKey, lessonKey, { onClosed })</code>, app.js:11506) — editable for planners and Kathy/Allie (<code>canEditDayOffPlan</code>), read-only otherwise, exactly as from Teacher View; it reads the plan fresh on open. On close the camp list redraws with the new status.</li>
+    <li>Each event card's header gains a <strong>roll-up</strong>: "Plans: <em>c</em> of <em>n</em> complete" and, when any, "· <em>k</em> not started" (<em>n</em> = the event's plannable projects across its camps; a project that runs on two days counts once). No roll-up on an event with no projects.</li>
+    <li>The figures are as fresh as the page's data, and say so: the SDOC header shows "Plan status as of 10:42 AM" with a <strong>↻ Refresh</strong> button, and the year's data is re-read from the server when Curriculum Admin is opened (tab entry or switching to the SDOC year) — teachers' saves happen on other devices and this page has no live listener on the SDOC collections.</li>
+    <li>Visible to everyone who sees the SDOC camp list today (planners and Kathy/Allie); nothing new for teachers.</li>
+  </ul>
+  <p><strong>Data — read-only.</strong> No new fields, collections, writers or rules. Everything is computed from the slots <code>buildDayOffSlots()</code> already builds from <code>currentDayOffPlans</code> (plan text, <code>planComplete</code>, <code>lastEditedBy</code>/<code>lastEditedAt</code>).</p>
+  <p><strong>Refresh.</strong> A new <code>refreshDayOffYear(yearKey)</code>: <code>loadDayOffCampData({ yearKey })</code> (three queries; it already protects plans verified after its queries began — 2B), then <code>mergeSummerReload()</code> + <code>healDayOffYearAfterReload()</code> exactly as the listener path does, then records the time and redraws. Called on Curriculum Admin entry for an SDOC year and by the button; <strong>not</strong> from <code>renderAdminGrid()</code>, which runs after every tick. A refresh that fails shows its message beside the button and keeps the previous figures (never blanks them); it does not trip the app-wide load guard any differently from today's loads. Concurrent refreshes: the button is disabled while one runs; a refresh racing the listener's reload is harmless (both are server reads, and the install-sequence protection covers verified saves either way).</p>
+  <p><strong>Editor from Curriculum Admin.</strong> <code>openPlanEditor</code>'s <code>finishClose</code> (app.js:12180) always calls <code>renderTeacherView()</code> — harmless while Teacher View is hidden (it renders into its own panel), but it must not steal state: the SDOC branch's <code>syncDayOffTeacherPicker()</code> may reset <code>tvCurrentTeacher</code> for a planner; acceptable (the picker re-resolves on next visit). <code>onClosed</code> redraws the admin grid. The editor's year comes from its argument, never <code>getTvSemKey()</code> — check the one fallback in <code>canEditDayOffPlan</code> (<code>slot.yearKey</code> is set on every SDOC slot since 2B).</p>
+  <p><strong>Rendering/safety:</strong> titles and names via <code>sdocEsc</code>; the plan key only in a <code>data-</code> attribute read by the handler (never interpolated into <code>onclick</code>); dates via <code>formatDayOffDate</code>; a malformed <code>lastEditedAt</code> is simply not shown.</p>
+  <div class="bdd">Given: Thanksgiving has Clay Creatures (Clay Creatures: intro + steps written; Glaze Day: nothing) and Paint Party (Canvas: Plan complete)
+When: Christie opens Curriculum Admin on the SDOC year
+Then: Clay Creatures → "In progress", Glaze Day → "Not started", Canvas → "Complete"; the Thanksgiving header reads "Plans: 1 of 3 complete · 1 not started"; each shows its last editor/date when it has one
+
+Given: a camp day with "n/a", "—" and Open Studio blocks, and a title that runs Monday and Wednesday
+When: the list renders
+Then: only plannable projects are listed, the repeated title once, and the roll-up counts it once
+
+Given: Mariah saves a plan on her own device after Christie's page loaded
+When: Christie presses ↻ Refresh (or re-enters Curriculum Admin)
+Then: that project's status and "last edited by Mariah" update; the "as of" time moves; nothing is written (spy)
+
+Given: the refresh's read fails
+When: she presses ↻ Refresh
+Then: an error shows beside the button; the previous figures stay on screen
+
+Given: Christie presses Open plan on Glaze Day, types a closure, and closes
+When: the editor closes
+Then: the plan is saved through the 2B path (identity + lastEditId, forced read-back) and the row now reads "In progress"
+
+Given: Allie (prep) views the list
+When: she presses Open plan
+Then: she can edit (Christie's Sep 25 decision); a curriculum-admin user without classbook gets the read-only editor
+
+Given: project titles and teacher names containing quotes and &lt;img onerror&gt;
+When: the list and roll-up render
+Then: nothing executes; Open plan still opens the right plan
+
+Given: an event whose camps have no projects yet
+When: the list renders
+Then: no roll-up is shown for it</div>
+  <p><strong>Tests (emulator, red first):</strong> new cases P1–P8 in <code>e2e/day-off-camps.spec.js</code> or a new <code>e2e/day-off-overview.spec.js</code> (planner + prep sessions; a direct write stands in for the teacher's other-device save); write spy on render and refresh; full suite before the dual implementation review.</p>
+  <p><strong>Not in 3:</strong> the "not started, camp soon" warning (offered, declined for now); filtering or sorting by status; emailing teachers.</p>
 </div>
 
 <div class="phase">
@@ -640,6 +685,7 @@ Then: refused ("changed by someone else"); B's links are intact (forced read)</d
 
 <h2 id="decisions-log">Decisions Log</h2>
 <ul>
+  <li><strong>Sep 29, 2026 (Phase 3 designed, revision 1 — not yet reviewed):</strong> Christie: "yes design it with the roll-up". Read-only overview in the planner's camp list: per-project status (same <code>calculateLessonProgress</code> as Teacher View), last editor, Open plan (the 2B editor), a per-event roll-up, and an explicit "as of" time with ↻ Refresh + re-read on Curriculum Admin entry (no live listener on SDOC collections). No data, rules or writer changes. Next: review round.</li>
   <li><strong>Sep 28, 2026 (Phase 2C DEPLOYED):</strong> Christie ran <code>npm run deploy</code> at <code>1745e95</code> (also ships <code>44a5159</code>, the Teacher Mapping fix). Claude re-ran <code>scripts/check-live.sh</code>: every file byte-identical, every dev path 404, <code>[check-live] ok</code>. Next for Christie: discard the Northern Lights "n/a" leftover list; publish the SDOC year when ready. Then Phase 3 and the follow-ups listed in the 2B/2C entries.</li>
   <li><strong>Sep 28, 2026 (Phase 2C BUILT — <code>main</code> @ <code>1745e95</code>, pushed; awaiting "okay to deploy", which also ships another session's <code>44a5159</code> Teacher Mapping fix):</strong> Built as designed (revision 6). Build-time live-data check found a real "n/a" record on Northern Lights holding Canvas + Uniposcas; Christie copied them onto Canvas Painting part 1 / part 2 before deploy (verified in the 17:58 backup); the n/a record surfaces as a discardable leftover list (pinned in D10). Dual implementation review (Codex + Claude), 2 rounds, READY from both: round 1 — links/details of an unexpected stored shape could crash the teacher editor and escape the user-data guards → type guards, malformed values count as content, the writer refuses a malformed stored shape; Done blocked during a save; inputs locked during a save; the details error box got its own class (it collided with 2A's tests M9/M15); several test names tightened and cases added (D8 links allow-list, D10 n/a → real title, D11 malformed shapes, T22 ordinary teacher save keeps details, T23 Teacher View unused blocks). Test-environment note: two full runs were disturbed by another session's emulators in this shared checkout (22 then 11 timeouts, all green when re-run alone; an orphaned test server of theirs on 8097 was stopped); the final full suite is 321/321.</li>
   <li><strong>Sep 28, 2026 (Phase 2C review round 5, Claude targeted; revision 6):</strong> round-4 fix confirmed; the last gap was the view token covering only the successful read — now a superseded open does nothing on success <em>or</em> failure (BDD extended). LOWs: citations 13032/13090; the details read-back's record-gone case reports "renamed or removed" like 2B's <code>renamed</code>. Review converged (Codex READY at round 3; Claude's rounds 3–5 each found one narrower spec gap in the previous fix, all folded). <strong>Design complete — awaiting Christie's go.</strong> The implementation review will check the built code against it.</li>
