@@ -1,0 +1,11 @@
+1. **HIGH — `js/app.js:535-548`, `443-476`.** A camp can still be stamped with a visible co-teacher change unsaved. The save snapshots/disables existing controls, but `loadCoTeachersForEditor()` may insert enabled checkboxes afterward. While `saveCurriculumNow()` awaits dependency checks or `CampAdmin.saveCamp`, the user can change a newly visible checkbox after `sharedWith` was collected; the original payload saves, then the review stamp succeeds. Fix: prevent review/save until the list finishes loading, or disable newly rendered controls while `curriculumManualSaving` and collect them only after the form is fully frozen.
+
+2. **MED — `js/app.js:375-419`, `574-613`.** “Save & mark reviewed” introduces a data-corruption path the old stamp-only approach did not trigger. Open Studio inputs are deliberately not reset; sparse records overwrite only their stored days, leaving defaults or values from the previously opened camp visible. Marking reviewed now saves those stale values into every Open Studio day. Fix: reset all Open Studio inputs to the canonical default before populating the selected camp.
+
+3. **MED — `js/app.js:499-503`, `526-544`.** The old review flow abandoned a hung offline auto-save after 20 seconds; the new flow awaits `curriculumAutoSaveChain` indefinitely while the editor is locked. Fix: provide a bounded, safe failure path for Save itself, without allowing the pending auto-save to later read another camp’s form.
+
+4. **LOW — `e2e/camp-review.spec.js:106-188`.** Several rewritten tests do not fully prove their names. The “form saves” test changes nothing; “Undo saves nothing else” stages no unsaved edit; “editor cannot be closed” checks only ×, not Cancel/backdrop/switching. There is also no delayed co-teacher-load, sparse Open Studio, declined-rename/dependents-error, second-click, or hung-auto-save coverage. Add discriminating cases, especially a checkbox inserted during the save.
+
+The `true`, `'needs-name'`, `undefined`, and `false` return gates themselves stamp only on strict `true`; rename cancellation/errors and second clicks therefore fail closed. The post-close stamp, delayed reload, cache-object reconciliation, and Undo operation token appear sound.
+
+**not safe to ship: a late-loading co-teacher control can be changed visibly after the saved payload is captured, yet the camp is still marked reviewed.**

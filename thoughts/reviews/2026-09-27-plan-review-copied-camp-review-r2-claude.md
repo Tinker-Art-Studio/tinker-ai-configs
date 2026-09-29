@@ -1,0 +1,21 @@
+Verified the plan, both round‑1 reviews, the rules file, and every cited code site.
+
+## 1 · MED · `e2e/helpers/emulator-admin.js` cannot register 2028 — the fold-in's new test can't be written as cited
+The helper exports only `registerSeason2027` (hardcoded source `2026`, doc id `2027`, 2027 dates — `e2e/helpers/emulator-admin.js:27-37`) and `setCurrentSeason(season)` (`:39-41`). `setCurrentSeason('2028')` with no 2028 registry doc makes `Season.load` reject `season-doc-missing` (`js/season.js:189-193`) — the app won't boot, so the plan's "2028 current viewing 2027" case (plan:100, 105) fails for the wrong reason. The existing past-view pattern only ever moves `_current` to an *already registered* season (`e2e/season-read-only.spec.js:167-172`).
+**Fix:** Phase 1's test list must include generalising the helper — `registerSeason(id, { from = prevYear, makeCurrent, overrides })`, with `registerSeason2027` kept as a wrapper (7 call sites) — then register 2028 *and* move `_current`.
+
+## 2 · MED · New problem from the fold-in: `settleCurriculumAutoSave()` **cancels** a pending auto-save, it doesn't flush it
+`clearTimeout(curriculumAutoSaveTimer); curriculumAutoSaveTimer = null;` runs before the await (`js/app.js:361-365`). `saveCurriculum` can do that safely because `saveCurriculumNow()` then writes the whole form (`js/app.js:404-405`). Mark reviewed writes only two fields — so grid keystrokes inside the 2s debounce are silently discarded, and the field still shows the typed text. The listed Race BDD (plan:98) asserts only that `reviewedAt` is present, so a partial implementation passes green while losing an edit.
+**Fix:** in the handler, flush instead of cancel — `queueCurriculumAutoSave(); await curriculumAutoSaveChain;` — and add the assertion "type in the grid, click Mark reviewed, reload → the typed block value is saved."
+
+## 3 · LOW · Header-count behaviour in a past view (and for staff/prep) is unspecified and untested
+Design says the count shows whenever copies exist (plan:73); Acceptance says "Viewing Summer 2026 … no button and **no count**" (plan:89) — vacuous, since 2026 has no copies. The "Past view with copies" BDD (plan:100) asserts badge + no button only. Also unstated: the only existing curriculum header container is `.curriculum-controls.admin-manager-only` (`index.html:73`), which `applyRoleRestrictions` hides from staff/prep — putting the count there silently contradicts plan:90.
+**Fix:** state "the count shows in a past view; only the button is hidden," put it outside `.curriculum-controls`, and assert the count in both the 2028/2027 and the staff/prep cases.
+
+## Q1 — fold-in completeness
+All 13 Claude and 7 Codex findings are folded in or correctly rejected; none dropped. **Claude #4's rejection is correct and provable:** `firestore.rules:827-830` is `allow read: …` / `allow create, update, delete: if isManagerOrAbove()` (`:829`), with `isManagerOrAbove()` = `role in ['admin','manager']` (`:36-38`) — no field allow-list, no `request.resource.data` key constraint anywhere in the block. Claude's *premise* was also wrong: the e2e emulators load that exact file by absolute path (`e2e/emulators/config.js:59, 136`), so the staff/prep "writes nothing" BDD does exercise the real rule. Worth adding that sentence to the Decisions log — it's the reason no studio-hub test is owed.
+
+## Q2 — citations
+Accurate: `canManageSchedule` `app.js:4009` (role + `isViewingCurrent()` at `:4011`), `settleCurriculumAutoSave` `:361`, `curriculumManualSaving` `:353`, `PAST_SEASON_HIDE` `:5634`, disable list `:395-397`, `window.CURRICULUM_CAMPS` `:160`, copied-from line `:206`, `loadMaterialsHub` `:652`, `loadProjectDetails` `:694`, `loadLessonPlans` `:2823` (three-collection `Promise.all` at `:2827-2832`), auto-save update `:9236`, `carry-forward.js:159/169/177/195`, `FIELDS.curriculum:39-46`, fixture/assertions `test/carry-forward.emulator.test.js:72,158-169`, `index.html:49/1123`. Only `tinker-spring-curriculum/js/firebase-data.js:1664` is unverified — outside the granted dirs.
+
+not execution-ready: fix #1 (helper can't register 2028) and #2 (flush, don't cancel, the pending auto-save — plus the assertion that catches it); #3 is a one-line clarification.

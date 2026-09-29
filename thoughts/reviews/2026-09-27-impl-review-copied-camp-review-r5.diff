@@ -1,0 +1,127 @@
+commit e7fbb767bf2baa23b5c42aa8ec7a5e355569b324
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Mon Sep 28 10:09:39 2026 -0600
+
+    fix: copied-camp review — implementation review round 4 (Claude + Codex)
+    
+    - Open Studio inputs reset to their template ("Open Studio") on every editor opening — they used to
+      keep the previous camp's text for any day the next camp doesn't store, and Save wrote it (pre-existing,
+      now also reached by "Save & mark reviewed") (Codex 2, Claude 3)
+    - "Save & mark reviewed" waits until the co-teacher list has loaded: Save omits sharedWith until then,
+      so a box ticked late would be on screen but unsaved (Codex 1)
+    - a Save that stops (no name, declined rename, error) re-queues the grid auto-save it had cancelled,
+      so typing isn't dropped (Claude 1); a declined rename under "Save & mark reviewed" now says nothing
+      was marked (Claude 2)
+    - production check (fresh local backup, 2026-09-28T16:03Z): all 23 copied 2027 camps store every weekday
+      for block1-3 + openStudio, no other block keys, no co-teachers — so a review sweep rewrites exactly
+      what is stored (Claude 3's pre-ship check)
+    - tests: failed save keeps the typing (auto-save) and stays unreviewed; co-teacher wait; Open Studio
+      template per camp. e2e 145/145.
+    
+    Not taken: a timeout for Save's own wait on a hung offline write (pre-existing Save behaviour, same lock
+    as before this feature — Codex 3 / Claude 4).
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/e2e/camp-review.spec.js b/e2e/camp-review.spec.js
+index 58f9fb3..d4f53c1 100644
+--- a/e2e/camp-review.spec.js
++++ b/e2e/camp-review.spec.js
+@@ -188,7 +188,7 @@ test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)'
+     await closeEditor(page);
+   });
+ 
+-  test('if the save fails, the camp is NOT marked reviewed', async () => {
++  test('if the save fails, the camp is NOT marked reviewed — and the typing still auto-saves', async () => {
+     await openEditor(page, 'Fixture Sculptors');
+     await page.evaluate(() => {
+       window.__origSaveCamp = CampAdmin.saveCamp;
+@@ -199,9 +199,8 @@ test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)'
+     await expect(page.locator('body')).toContainText('Failed to save curriculum: simulated failure');
+     await expect(page.locator('#curriculum-editor-modal')).toBeVisible();
+     await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
+-    const d = await curDoc(SCULPTORS_2027);
+-    expect(d.reviewedAt).toBeUndefined();
+-    expect(d.blocks.block3.monday).not.toBe('Never Saved');
++    await expect.poll(async () => (await curDoc(SCULPTORS_2027)).blocks.block3.monday, { timeout: 10_000 }).toBe('Never Saved');
++    expect((await curDoc(SCULPTORS_2027)).reviewedAt).toBeUndefined();
+     await page.evaluate(() => { CampAdmin.saveCamp = window.__origSaveCamp; });
+     await closeEditor(page);
+   });
+@@ -233,6 +232,30 @@ test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)'
+     await expect(card(page, 'Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible();
+   });
+ 
++  test('Save & mark reviewed waits for the co-teacher list (a box ticked late would not be saved)', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.evaluate(() => { coTeacherListLoadedFor = null; });   // as if the list were still loading
++    await spyWrites(page);
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('body')).toContainText('Still loading co-teachers');
++    expect(await page.evaluate(() => window.__writeRefCalls)).toBe(0);
++    await expect(page.locator('#curriculum-editor-modal')).toBeVisible();
++    expect((await curDoc(SCULPTORS_2027)).reviewedAt).toBeUndefined();
++    await closeEditor(page);
++  });
++
++  test('Open Studio starts from its template for each camp — never the last camp\'s text', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.fill('.grid-input[data-block="openStudio"][data-day="monday"]', 'Sculptors Only');
++    await closeEditor(page);
++    await expect(async () => {   // stores no Open Studio days at all (and has no review band)
++      await card(page, 'Fixture Newcomers').click();
++      await expect(page.locator('#curriculum-editor-title')).toContainText('Fixture Newcomers', { timeout: 500 });
++    }).toPass({ timeout: 10_000 });
++    await expect(page.locator('.grid-input[data-block="openStudio"][data-day="monday"]')).toHaveValue('Open Studio');
++    await closeEditor(page);
++  });
++
+   test('an empty camp name stops the save — and the review with it', async () => {
+     await openEditor(page, 'Fixture Sculptors');
+     await page.fill('#curr-camp-name', '');
+diff --git a/js/app.js b/js/app.js
+index 3322356..45d0fdc 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -244,7 +244,13 @@ async function setCampReviewed(reviewed) {
+   const id = window.CURRICULUM_EDIT_ID;
+   if (!camp || !id || camp.id !== id || !canReviewCamp() || curriculumManualSaving || campReviewWriting) return;
+   if (campReviewState(camp) === 'new') return;
+-  if (reviewed) { await saveCurriculum({ markReviewed: true }); return; }
++  if (reviewed) {
++    // Save writes co-teachers only once their list has loaded; a box ticked after that would be
++    // on screen but not saved — so wait for it rather than stamp a camp over an unsaved change.
++    if (coTeacherListLoadedFor !== coTeacherListOpenId) { showError('Still loading co-teachers — try again in a moment.'); return; }
++    await saveCurriculum({ markReviewed: true });
++    return;
++  }
+   const op = ++campReviewOp;
+   campReviewWriting = true;
+   renderCurriculumReviewBand();
+@@ -373,10 +379,10 @@ async function openCurriculumEditor(mode, campData = null) {
+   document.getElementById('curr-co-teachers-list').innerHTML = '';
+ 
+   // Clear grid
++  // Open Studio starts from its template text ("Open Studio"), not whatever the last camp opened had:
++  // a camp that doesn't store every day would otherwise show — and Save write — the previous camp's.
+   document.querySelectorAll('.grid-input').forEach(input => {
+-    if (!input.dataset.block || input.dataset.block !== 'openStudio') {
+-      input.value = '';
+-    }
++    input.value = input.dataset.block === 'openStudio' ? input.defaultValue : '';
+   });
+ 
+   // Setup auto-save BEFORE populating grid — cloneNode(true) copies attributes not .value properties,
+@@ -560,6 +566,12 @@ async function saveCurriculum({ markReviewed = false } = {}) {
+     renderCurriculumReviewBand();   // a review button drawn during the save was drawn disabled
+     if (!Season.isViewingCurrent()) lockPastSeasonFields(document.getElementById('curriculum-editor-modal'));
+   }
++  if (saved !== true) {
++    // Save stopped (no name, a declined rename, an error). It had cancelled the pending grid
++    // auto-save to write the whole form instead — put it back so the typing isn't dropped.
++    queueCurriculumAutoSave();
++    if (reviewId && saved === undefined) showError('Nothing was saved, so the camp was not marked reviewed.');
++  }
+   if (saved === 'needs-name') {
+     document.getElementById('curr-camp-name').focus();
+     return;

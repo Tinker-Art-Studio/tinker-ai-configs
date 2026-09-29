@@ -1,0 +1,833 @@
+diff --git a/css/styles.css b/css/styles.css
+index 577782f..a273cf7 100644
+--- a/css/styles.css
++++ b/css/styles.css
+@@ -2630,6 +2630,45 @@ mark.note-highlight {
+   border: 1px solid var(--warning);
+ }
+ 
++/* Copied-camp review (plan summer-camp-copied-camp-review) */
++.camp-unreviewed-badge {
++  font-size: 0.75rem;
++  font-weight: 700;
++  padding: 0.375rem 0.75rem;
++  border-radius: 0.25rem;
++  white-space: nowrap;
++  background: #FFEDD5;
++  color: #9A3412;
++  border: 1px solid #FB923C;
++}
++
++.curriculum-review-count {
++  font-size: 0.875rem;
++  color: #9A3412;
++  font-weight: 600;
++  margin: 0 0 1rem;
++}
++
++.curriculum-review-band {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 0.75rem;
++  align-items: center;
++  justify-content: space-between;
++  padding: 0.75rem 1rem;
++  margin-bottom: 1.25rem;
++  border-radius: 0.375rem;
++  background: #FFEDD5;
++  color: #7C2D12;
++  border: 1px solid #FB923C;
++}
++
++.curriculum-review-band.is-reviewed {
++  background: #DCFCE7;
++  color: #14532D;
++  border-color: #4ADE80;
++}
++
+ .curriculum-camp-meta {
+   font-size: 0.875rem;
+   color: var(--gray-600);
+diff --git a/e2e/camp-review.spec.js b/e2e/camp-review.spec.js
+new file mode 100644
+index 0000000..697037d
+--- /dev/null
++++ b/e2e/camp-review.spec.js
+@@ -0,0 +1,364 @@
++const { test, expect } = require('@playwright/test');
++const { login } = require('./helpers/login');
++const { adminDb, registerSeason, registerSeason2027, resetToSeed } = require('./helpers/emulator-admin');
++
++// Plan summer-camp-copied-camp-review — a camp copied from an earlier summer says "Not yet reviewed
++// for Summer 2027" until a manager or admin clicks "Mark reviewed" in its curriculum editor. Real
++// dialog-free copies (CarryForward through the page), real rules on the emulators.
++
++const C = { curriculum: 'summerCamps_curriculum' };
++const PAINTERS_2027 = 'season-2027|||carried|||2026|||camp-painters';
++const SCULPTORS_2027 = 'season-2027|||carried|||2026|||camp-sculptors';
++
++const card = (page, name) => page.locator('.curriculum-camp-card', { has: page.locator('.curriculum-camp-name', { hasText: new RegExp(`^${name}$`) }) });
++const curDoc = async id => (await adminDb().collection(C.curriculum).doc(id).get()).data();
++
++async function openCurriculum(page) {
++  await page.click('.tab-btn[data-tab="curriculum"]');
++  await expect(page.locator('.curriculum-camp-card').first()).toBeVisible({ timeout: 15_000 });
++}
++async function openEditor(page, name) {
++  await card(page, name).click();
++  await expect(page.locator('#curriculum-editor-modal')).toBeVisible();
++  await expect(page.locator('#curriculum-review-band')).toBeVisible();
++}
++async function closeEditor(page) {
++  await page.click('#curriculum-editor-close');
++  await expect(page.locator('#curriculum-editor-modal')).toBeHidden();
++}
++// A copied camp written straight to the emulator, in the shape carry-forward writes.
++async function seedCopied({ to, from, sourceId, name }) {
++  const base = (await adminDb().collection(C.curriculum).doc('camp-painters').get()).data();
++  const id = `season-${to}|||carried|||${from}|||${sourceId}`;
++  await adminDb().collection(C.curriculum).doc(id).set({
++    ...base, campTopic: name, season: String(to), completeOverride: false, needsAttention: false,
++    carriedForwardFrom: { season: String(from), id: sourceId }, createdAt: new Date(), createdBy: 'e2e'
++  });
++  return id;
++}
++// Counts Season.writeRef calls from here on — so "writes nothing" can't pass just because the rules said no.
++async function spyWrites(page) {
++  await page.evaluate(() => {
++    if (window.__writeRefSpy) { window.__writeRefCalls = 0; return; }
++    const orig = Season.writeRef;
++    window.__writeRefCalls = 0;
++    Season.writeRef = function () { window.__writeRefCalls++; return orig.apply(this, arguments); };
++    window.__writeRefSpy = true;
++  });
++}
++
++test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)', () => {
++  test.describe.configure({ mode: 'serial' });
++  let page;
++  const errors = [];
++
++  test.beforeAll(async ({ browser }) => {
++    await resetToSeed();
++    await registerSeason2027({ makeCurrent: true });
++    await adminDb().collection('backupStatus').doc('latest').set({ lastSuccessAt: new Date().toISOString() });
++    page = await browser.newPage();
++    page.on('pageerror', e => errors.push(e.message));
++    page.on('dialog', d => d.accept());
++    await login(page);
++    // Copy two camps the real way (the module the dialog uses), and make one camp fresh by hand.
++    await page.evaluate(async () => {
++      const plan = await buildCopyPlan('2026');
++      for (const name of ['Fixture Painters', 'Fixture Sculptors']) {
++        await CarryForward.copyCamp(db, plan.camps.find(c => c.name === name).planned);
++      }
++    });
++    await adminDb().collection(C.curriculum).doc('season-2027|||fresh-camp').set({ campTopic: 'Fixture Newcomers', blocks: {}, season: '2027' });
++    await openCurriculum(page);
++  });
++  test.afterAll(async () => { await page.close(); await resetToSeed(); });
++
++  test('copies say "Not yet reviewed for Summer 2027" instead of a status; a fresh camp does not; the header counts them', async () => {
++    for (const name of ['Fixture Painters', 'Fixture Sculptors']) {
++      await expect(card(page, name).locator('.camp-unreviewed-badge')).toHaveText('Not yet reviewed for Summer 2027');
++      await expect(card(page, name).locator('.curriculum-status-badge')).toHaveCount(0);
++    }
++    await expect(card(page, 'Fixture Newcomers').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await expect(card(page, 'Fixture Newcomers').locator('.curriculum-status-badge')).toHaveCount(1);
++    await expect(page.locator('#curriculum-review-count')).toHaveText('2 copied camps · 2 not yet reviewed');
++  });
++
++  test('a fresh camp\'s editor has no review band', async () => {
++    await card(page, 'Fixture Newcomers').click();
++    await expect(page.locator('#curriculum-editor-modal')).toBeVisible();
++    await expect(page.locator('#curriculum-review-band')).toBeHidden();
++    await closeEditor(page);
++  });
++
++  test('editing a copy (grid auto-save) does not mark it reviewed', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.fill('.grid-input[data-block="block1"][data-day="monday"]', 'Edited Without Review');
++    await expect.poll(async () => (await curDoc(SCULPTORS_2027)).blocks.block1.monday, { timeout: 10_000 }).toBe('Edited Without Review');
++    expect((await curDoc(SCULPTORS_2027)).reviewedAt).toBeUndefined();
++    await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++    await closeEditor(page);
++  });
++
++  test('Mark reviewed: only the two fields change, and the count drops at once — no reload, no close', async () => {
++    const before = await curDoc(PAINTERS_2027);
++    await openEditor(page, 'Fixture Painters');
++    await expect(page.locator('#curriculum-review-band')).toContainText('Copied from Summer 2026 and not yet reviewed for Summer 2027');
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('#curriculum-review-band')).toContainText('Reviewed for Summer 2027');
++    await expect(page.locator('#curriculum-review-count')).toHaveText('2 copied camps · 1 not yet reviewed');
++    const after = await curDoc(PAINTERS_2027);
++    expect(after.reviewedBy).toBe('e2e-admin-uid');
++    expect(typeof after.reviewedAt.toDate).toBe('function');
++    const strip = d => { const o = { ...d }; ['reviewedAt', 'reviewedBy', 'updatedAt', 'updatedBy'].forEach(k => delete o[k]); return o; };
++    expect(strip(after)).toEqual(strip(before));
++  });
++
++  test('closing shows the card already updated: its status is back, with who reviewed it', async () => {
++    await closeEditor(page);
++    const painters = card(page, 'Fixture Painters');
++    await expect(painters.locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await expect(painters.locator('.curriculum-status-badge')).toHaveCount(1);
++    await expect(painters).toContainText(/Copied from Summer 2026 · reviewed .+ by E2E Admin/);
++  });
++
++  test('Undo puts it back; marking again works', async () => {
++    await openEditor(page, 'Fixture Painters');
++    await page.click('.camp-review-btn[data-review="undo"]');
++    await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++    await expect(page.locator('#curriculum-review-count')).toHaveText('2 copied camps · 2 not yet reviewed');
++    const undone = await curDoc(PAINTERS_2027);
++    expect('reviewedAt' in undone || 'reviewedBy' in undone).toBe(false);
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('#curriculum-review-band')).toContainText('Reviewed for Summer 2027');
++    expect((await curDoc(PAINTERS_2027)).reviewedAt).toBeDefined();
++  });
++
++  test('Save with the name unchanged keeps it reviewed; so does a rename', async () => {
++    const saveBtn = page.locator('#curriculum-editor-modal .save-curriculum-btn').first();
++    await saveBtn.click();
++    await expect(page.locator('#curriculum-editor-modal')).toBeHidden({ timeout: 15_000 });   // Save closes the editor
++    expect((await curDoc(PAINTERS_2027)).reviewedAt).toBeDefined();
++    await expect(card(page, 'Fixture Painters').locator('.camp-unreviewed-badge')).toHaveCount(0, { timeout: 15_000 });
++    await openEditor(page, 'Fixture Painters');
++    await page.fill('#curr-camp-name', 'Fixture Painters Renamed');
++    await saveBtn.click();
++    await expect.poll(async () => (await curDoc(PAINTERS_2027)).campTopic, { timeout: 15_000 }).toBe('Fixture Painters Renamed');
++    expect((await curDoc(PAINTERS_2027)).reviewedAt).toBeDefined();
++    await expect(page.locator('#curriculum-editor-modal')).toBeHidden({ timeout: 15_000 });
++    await expect(card(page, 'Fixture Painters Renamed').locator('.camp-unreviewed-badge')).toHaveCount(0, { timeout: 15_000 });
++    await expect(card(page, 'Fixture Painters Renamed')).toContainText(/reviewed .+ by E2E Admin/, { timeout: 15_000 });
++  });
++
++  test('race: typing then clicking Mark reviewed at once saves BOTH the typing and the review', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.fill('.grid-input[data-block="block2"][data-day="friday"]', 'Typed Just Before Review');
++    await page.click('.camp-review-btn[data-review="mark"]');   // inside the 2 s auto-save debounce
++    await expect(page.locator('#curriculum-review-band')).toContainText('Reviewed for Summer 2027', { timeout: 10_000 });
++    const d = await curDoc(SCULPTORS_2027);
++    expect(d.blocks.block2.friday).toBe('Typed Just Before Review');
++    expect(d.reviewedAt).toBeDefined();
++    await page.click('.camp-review-btn[data-review="undo"]');
++    await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++  });
++
++  test('while a manual Save runs the button is disabled and the handler writes nothing', async () => {
++    // Hold the save open so its "in progress" state can be looked at.
++    await page.evaluate(() => {
++      window.__origSaveNow = saveCurriculumNow;
++      saveCurriculumNow = () => new Promise(resolve => { window.__releaseSave = () => resolve(false); });
++    });
++    await page.locator('#curriculum-editor-modal .save-curriculum-btn').first().click();
++    await expect(page.locator('.camp-review-btn')).toBeDisabled();
++    await spyWrites(page);
++    await page.evaluate(() => window.setCampReviewed(true));
++    expect(await page.evaluate(() => window.__writeRefCalls)).toBe(0);
++    await page.evaluate(() => { window.__releaseSave(); saveCurriculumNow = window.__origSaveNow; });
++    await expect(page.locator('.camp-review-btn')).toBeEnabled();
++    expect((await curDoc(SCULPTORS_2027)).reviewedAt).toBeUndefined();
++    await closeEditor(page);
++  });
++
++  test('the Mark reviewed button is on the past-season hide list', async () => {
++    expect(await page.evaluate(() => PAST_SEASON_HIDE.includes('.camp-review-btn'))).toBe(true);
++  });
++
++  test('no page errors', async () => {
++    expect(errors).toEqual([]);
++  });
++});
++
++test.describe('Staff and prep see the marker but never the button (2027 current)', () => {
++  test.use({ storageState: { cookies: [], origins: [] } });   // signed out — sign in as each role
++  test.beforeAll(async () => {
++    await resetToSeed();
++    await registerSeason2027({ makeCurrent: true });
++    await seedCopied({ to: 2027, from: 2026, sourceId: 'camp-painters', name: 'Fixture Painters' });
++  });
++  test.afterAll(async () => { await resetToSeed(); });
++
++  for (const role of ['staff', 'prep']) {
++    test(`${role}: badge, count and band shown; no button; the handler makes no write`, async ({ page }) => {
++      const errors = [];
++      page.on('pageerror', e => errors.push(e.message));
++      await login(page, role);
++      await openCurriculum(page);
++      await expect(card(page, 'Fixture Painters').locator('.camp-unreviewed-badge')).toBeVisible();
++      await expect(page.locator('#curriculum-review-count')).toHaveText('1 copied camp · 1 not yet reviewed');
++      await openEditor(page, 'Fixture Painters');
++      await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++      await expect(page.locator('.camp-review-btn')).toHaveCount(0);
++      await spyWrites(page);
++      await page.evaluate(() => window.setCampReviewed(true));
++      expect(await page.evaluate(() => window.__writeRefCalls)).toBe(0);
++      expect((await curDoc(PAINTERS_2027)).reviewedAt).toBeUndefined();
++      expect(errors).toEqual([]);
++    });
++  }
++});
++
++test.describe('A later summer: mixed sources, and a past view that has copies (2028 current)', () => {
++  test.describe.configure({ mode: 'serial' });
++  let page;
++  const errors = [];
++
++  test.beforeAll(async ({ browser }) => {
++    await resetToSeed();
++    await registerSeason2027();
++    await registerSeason(2028, { makeCurrent: true });
++    await seedCopied({ to: 2027, from: 2026, sourceId: 'camp-painters', name: 'Fixture Painters' });
++    await seedCopied({ to: 2028, from: 2026, sourceId: 'camp-sculptors', name: 'Fixture Sculptors' });
++    await seedCopied({ to: 2028, from: 2027, sourceId: 'season-2027|||carried|||2026|||camp-painters', name: 'Fixture Painters' });
++    page = await browser.newPage();
++    page.on('pageerror', e => errors.push(e.message));
++    await login(page);
++    await openCurriculum(page);
++  });
++  test.afterAll(async () => { await page.close(); await resetToSeed(); });
++
++  test('2028 holds copies from two summers: a source-neutral count, and each card names its own source', async () => {
++    await expect(page.locator('#curriculum-review-count')).toHaveText('2 copied camps · 2 not yet reviewed');
++    await expect(card(page, 'Fixture Sculptors')).toContainText('Copied from Summer 2026');
++    await expect(card(page, 'Fixture Painters')).toContainText('Copied from Summer 2027');
++    await expect(card(page, 'Fixture Painters').locator('.camp-unreviewed-badge')).toHaveText('Not yet reviewed for Summer 2028');
++  });
++
++  test('viewing 2027 (past): badge and count show, the button does not, and the handler makes no write', async () => {
++    await page.selectOption('#season-switcher', '2027');
++    await page.waitForFunction(() => window.APP_STATE?.initialized === true && document.body.classList.contains('season-read-only'), null, { timeout: 20_000 });
++    await openCurriculum(page);
++    await expect(card(page, 'Fixture Painters').locator('.camp-unreviewed-badge')).toHaveText('Not yet reviewed for Summer 2027');
++    await expect(page.locator('#curriculum-review-count')).toHaveText('1 copied camp · 1 not yet reviewed');
++    await openEditor(page, 'Fixture Painters');
++    await expect(page.locator('.camp-review-btn')).toHaveCount(0);
++    await spyWrites(page);
++    await page.evaluate(() => window.setCampReviewed(true));
++    expect(await page.evaluate(() => window.__writeRefCalls)).toBe(0);
++    expect((await curDoc(PAINTERS_2027)).reviewedAt).toBeUndefined();
++  });
++
++  test('no page errors', async () => {
++    expect(errors).toEqual([]);
++  });
++});
++
++// Phase 2 — the same badge wherever someone prepares a camp: Lesson Plans, Project Details, Materials.
++test.describe('The marker in Lesson Plans, Project Details and Materials (2027 current)', () => {
++  test.describe.configure({ mode: 'serial' });
++  let page;
++  const errors = [];
++  const lessonCard = name => page.locator('#lesson-camps-list .camp-card', { has: page.locator('.camp-name', { hasText: new RegExp(`^${name}$`) }) });
++  const materialsCard = name => page.locator('.materials-topic-card', { has: page.locator('.materials-topic-name', { hasText: new RegExp(`^${name}$`) }) });
++  const detailsGroup = name => page.locator('.camp-details-group', { has: page.locator('.camp-details-name', { hasText: new RegExp(`^${name}$`) }) });
++
++  test.beforeAll(async ({ browser }) => {
++    await resetToSeed();
++    await registerSeason2027({ makeCurrent: true });
++    await adminDb().collection('backupStatus').doc('latest').set({ lastSuccessAt: new Date().toISOString() });
++    page = await browser.newPage();
++    page.on('pageerror', e => errors.push(e.message));
++    page.on('dialog', d => d.accept());
++    await login(page);
++    await page.evaluate(async () => {
++      const plan = await buildCopyPlan('2026');
++      for (const name of ['Fixture Painters', 'Fixture Sculptors']) {
++        await CarryForward.copyCamp(db, plan.camps.find(c => c.name === name).planned);
++      }
++    });
++    // A hand-made 2027 camp, with its own Lesson Plans entry — never badged.
++    await adminDb().collection(C.curriculum).doc('season-2027|||fresh-camp').set({ campTopic: 'Fixture Newcomers', blocks: { block1: { monday: 'Newcomer Project' } }, season: '2027' });
++    await adminDb().collection('summerCamps_projectLibrary').doc('season-2027|||fresh-topic').set({ name: 'Fixture Newcomers', ageRange: '6-9', description: '', prepStatus: 'Not Started', season: '2027' });
++  });
++  test.afterAll(async () => { await page.close(); await resetToSeed(); });
++
++  async function tab(name) {
++    await page.click(`.tab-btn[data-tab="${name}"]`);
++    await page.waitForTimeout(300);
++  }
++
++  test('before review: each copy is badged in all three tabs; the fresh camp is not', async () => {
++    await tab('projects');
++    await expect(lessonCard('Fixture Painters').locator('.camp-unreviewed-badge')).toHaveText('Not yet reviewed for Summer 2027', { timeout: 15_000 });
++    await expect(lessonCard('Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible();
++    await expect(lessonCard('Fixture Newcomers').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await tab('project-details');
++    await expect(detailsGroup('Fixture Painters').locator('.camp-unreviewed-badge')).toBeVisible({ timeout: 15_000 });
++    await expect(detailsGroup('Fixture Newcomers').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await tab('materials');
++    await expect(materialsCard('Fixture Painters').locator('.camp-unreviewed-badge')).toBeVisible({ timeout: 15_000 });
++    await expect(materialsCard('Fixture Newcomers').locator('.camp-unreviewed-badge')).toHaveCount(0);
++  });
++
++  test('after Painters is reviewed and renamed (its details and materials keep the old name), the badge follows the curriculum', async () => {
++    await tab('curriculum');
++    await openEditor(page, 'Fixture Painters');
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('#curriculum-review-band')).toContainText('Reviewed for Summer 2027');
++    await page.fill('#curr-camp-name', 'Fixture Painters Renamed');
++    await page.locator('#curriculum-editor-modal .save-curriculum-btn').first().click();
++    await expect(page.locator('#curriculum-editor-modal')).toBeHidden({ timeout: 15_000 });
++    await tab('projects');
++    await expect(lessonCard('Fixture Painters Renamed')).toBeVisible({ timeout: 15_000 });
++    await expect(lessonCard('Fixture Painters Renamed').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await expect(lessonCard('Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible();
++    await tab('project-details');
++    await expect(detailsGroup('Fixture Painters Renamed').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await expect(detailsGroup('Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible({ timeout: 15_000 });
++    await tab('materials');
++    await expect(materialsCard('Fixture Painters Renamed').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await expect(materialsCard('Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible({ timeout: 15_000 });
++  });
++
++  test('two curriculum docs with one name: a warning is logged and neither gets a guessed badge', async () => {
++    await adminDb().collection(C.curriculum).doc('season-2027|||dup-sculptors').set({ campTopic: 'Fixture Sculptors', blocks: {}, season: '2027' });
++    const warnings = [];
++    const onConsole = m => { if (m.type() === 'warning' && /same name/i.test(m.text())) warnings.push(m.text()); };
++    page.on('console', onConsole);
++    await tab('curriculum');
++    await tab('projects');
++    await expect(lessonCard('Fixture Sculptors')).toBeVisible({ timeout: 15_000 });
++    await expect(lessonCard('Fixture Sculptors').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    await tab('project-details');
++    await expect(page.locator('.camp-details-group').first()).toBeVisible({ timeout: 15_000 });
++    await expect(detailsGroup('Fixture Sculptors').locator('.camp-unreviewed-badge')).toHaveCount(0);
++    page.off('console', onConsole);
++    expect(warnings.length).toBeGreaterThan(0);
++    await adminDb().collection(C.curriculum).doc('season-2027|||dup-sculptors').delete();
++  });
++
++  test('if Lesson Plans\' curriculum read fails, the tab still loads — just without badges', async () => {
++    await page.route('**/*', route => {
++      const req = route.request();
++      const body = req.postData() || '';
++      if (/runQuery|Listen\/channel/.test(req.url()) && /summerCamps_curriculum/.test(body)) return route.abort();
++      return route.continue();
++    });
++    await tab('curriculum');
++    await tab('projects');
++    await expect(lessonCard('Fixture Sculptors')).toBeVisible({ timeout: 15_000 });
++    await expect(page.locator('#lesson-camps-list .camp-unreviewed-badge')).toHaveCount(0);
++    await page.unroute('**/*');
++  });
++
++  test('no page errors', async () => {
++    expect(errors).toEqual([]);
++  });
++});
+diff --git a/e2e/helpers/emulator-admin.js b/e2e/helpers/emulator-admin.js
+index 2ae0dd5..b4f1070 100644
+--- a/e2e/helpers/emulator-admin.js
++++ b/e2e/helpers/emulator-admin.js
+@@ -22,18 +22,30 @@ function adminDb() {
+ 
+ const SEASONS = 'summerCamps_seasons';
+ 
+-// Registers Summer 2027 as a copy of 2026's shape (dates shifted a year) and, optionally,
+-// makes it current.
+-async function registerSeason2027({ makeCurrent = false, overrides = {} } = {}) {
++// Registers a summer as a copy of the previous summer's shape (dates shifted a year) and,
++// optionally, makes it current. The previous summer must already be registered.
++async function registerSeason(year, { makeCurrent = false, overrides = {} } = {}) {
+   const db = adminDb();
+-  const s2026 = (await db.collection(SEASONS).doc('2026').get()).data();
+-  await db.collection(SEASONS).doc('2027').set({
+-    ...s2026, season: '2027', name: 'Summer 2027',
+-    startDate: '2027-06-01', endDate: '2027-08-13', week1Monday: '2027-05-31',
++  const id = String(year);
++  const prev = (await db.collection(SEASONS).doc(String(Number(year) - 1)).get()).data();
++  if (!prev) throw new Error(`registerSeason(${id}): Summer ${Number(year) - 1} is not registered`);
++  // 52 weeks, not a calendar year: week1Monday must stay a Monday or Season.load() refuses it.
++  const shift = d => (d ? new Date(Date.parse(`${d}T00:00:00Z`) + 364 * 86400000).toISOString().slice(0, 10) : d);
++  await db.collection(SEASONS).doc(id).set({
++    ...prev, season: id, name: `Summer ${id}`,
++    startDate: shift(prev.startDate), endDate: shift(prev.endDate), week1Monday: shift(prev.week1Monday),
+     createdAt: new Date().toISOString(),
+     ...overrides
+   });
+-  if (makeCurrent) await db.collection(SEASONS).doc('_current').set({ season: '2027', setAt: new Date().toISOString(), setBy: 'e2e' });
++  if (makeCurrent) await setCurrentSeason(id);
++}
++
++// Summer 2027 with its original fixed dates (the specs written against it rely on them).
++async function registerSeason2027({ makeCurrent = false, overrides = {} } = {}) {
++  await registerSeason(2027, {
++    makeCurrent,
++    overrides: { startDate: '2027-06-01', endDate: '2027-08-13', week1Monday: '2027-05-31', ...overrides }
++  });
+ }
+ 
+ async function setCurrentSeason(season) {
+@@ -44,4 +56,4 @@ async function resetToSeed() {
+   await seed({ log: () => {} });
+ }
+ 
+-module.exports = { adminDb, registerSeason2027, setCurrentSeason, resetToSeed };
++module.exports = { adminDb, registerSeason, registerSeason2027, setCurrentSeason, resetToSeed };
+diff --git a/index.html b/index.html
+index 94bf21d..c125630 100644
+--- a/index.html
++++ b/index.html
+@@ -8,7 +8,7 @@
+   <link rel="preconnect" href="https://fonts.googleapis.com">
+   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+-  <link rel="stylesheet" href="css/styles.css?v=6">
++  <link rel="stylesheet" href="css/styles.css?v=7">
+ </head>
+ <body>
+   <!-- Auth Guard Overlay -->
+@@ -77,6 +77,9 @@
+         <button class="btn btn-secondary" id="copy-camps-btn" style="display:none;">Copy camps from an earlier summer…</button>
+       </div>
+ 
++      <!-- Copied-camp review: information for every role, so it sits outside the admin-only controls -->
++      <p class="curriculum-review-count" id="curriculum-review-count" style="display:none;"></p>
++
+       <div class="curriculum-camps-grid" id="curriculum-camps-grid">
+         <div class="loading-message">Loading curriculum...</div>
+       </div>
+@@ -1127,6 +1130,9 @@
+         <button class="modal-close" id="curriculum-editor-close">&times;</button>
+       </div>
+       <div class="modal-body">
++        <!-- Copied-camp review band: filled by renderCurriculumReviewBand() -->
++        <div class="curriculum-review-band" id="curriculum-review-band" style="display:none;"></div>
++
+         <!-- Weekly Structure Grid -->
+         <div class="curriculum-grid-section">
+           <h3 style="margin-bottom: 1rem; color: var(--purple);">Weekly Project Structure</h3>
+@@ -1767,13 +1773,13 @@
+   <script src="js/season-admin.js?v=1"></script>
+   <script src="js/camp-admin.js?v=1"></script>
+   <script src="js/team-seasons.js?v=1"></script>
+-  <script src="js/carry-forward.js?v=1"></script>
++  <script src="js/carry-forward.js?v=2"></script>
+   <script src="js/session-bootstrap.js?v=1"></script>
+   <script src="js/auth.js?v=3"></script>
+   <script src="js/data-safety.js?v=2"></script>
+   <script src="js/kid-notes-import.js?v=1"></script>
+   <script src="js/kid-notes-season.js?v=1"></script>
+-  <script src="js/app.js?v=57"></script>
++  <script src="js/app.js?v=58"></script>
+ 
+   <!-- Session Detail Modal -->
+   <div class="modal" id="session-detail-modal" style="display: none;">
+diff --git a/js/app.js b/js/app.js
+index eb0d927..e452f3f 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -137,17 +137,139 @@ async function loadTabData(tabName) {
+ // CURRICULUM BUILDER
+ // ==============================================
+ 
++// ─── COPIED-CAMP REVIEW (plan summer-camp-copied-camp-review) ────────────────
++// A camp copied from an earlier summer is "not yet reviewed" for its own summer until a manager or
++// admin marks it reviewed in its curriculum editor. CURRICULUM DOCS ONLY: carriedForwardFrom is also
++// on copied topics, details and materials, and a rename carries it onto a new topic doc — so no tab
++// derives review state from its own records' provenance.
++function campReviewState(curriculum) {
++  if (!curriculum || typeof curriculum.campTopic !== 'string' || !curriculum.blocks) return 'new';
++  if (!curriculum.carriedForwardFrom || !curriculum.carriedForwardFrom.season) return 'new';
++  return curriculum.reviewedAt ? 'reviewed' : 'unreviewed';
++}
++function canReviewCamp() {
++  const role = window.APP_STATE.currentUserData?.role;
++  return (role === 'admin' || role === 'manager') && Season.isViewingCurrent();
++}
++function campUnreviewedBadgeHtml() {
++  return `<span class="camp-unreviewed-badge" title="Copied from an earlier summer — a manager marks it reviewed in its curriculum editor">Not yet reviewed for ${escapeSeasonText(seasonLabel(Season.viewing()))}</span>`;
++}
++function campReviewedByText(camp) {
++  const at = camp.reviewedAt && typeof camp.reviewedAt.toDate === 'function'
++    ? camp.reviewedAt.toDate().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
++  const who = (window.STAFF_NAMES && window.STAFF_NAMES[camp.reviewedBy]) || 'a manager';
++  return `reviewed${at ? ` ${at}` : ''} by ${who}`;
++}
++function renderCurriculumReviewCount(camps) {
++  const el = document.getElementById('curriculum-review-count');
++  if (!el) return;
++  const copies = camps.filter(c => campReviewState(c) !== 'new');
++  if (!copies.length) { el.style.display = 'none'; el.textContent = ''; return; }
++  const open = copies.filter(c => campReviewState(c) === 'unreviewed').length;
++  el.textContent = `${copies.length} copied camp${copies.length === 1 ? '' : 's'} · ${open} not yet reviewed`;
++  el.style.display = '';
++}
++
++// Exact camp names whose ONE curriculum doc is unreviewed — for the tabs that join by name (Lesson
++// Plans, Project Details). A name held by two curriculum docs is logged and never guessed at.
++function unreviewedCampNames(curriculum) {
++  const byName = new Map();
++  curriculum.forEach(c => {
++    if (typeof c.campTopic !== 'string') return;
++    byName.set(c.campTopic, (byName.get(c.campTopic) || []).concat([c]));
++  });
++  const names = new Set();
++  byName.forEach((docs, name) => {
++    if (docs.length > 1) {
++      if (docs.some(c => campReviewState(c) !== 'new')) console.warn(`Copied-camp review: ${docs.length} curriculum records share the same name "${name}" — no review badge shown for it`);
++      return;
++    }
++    if (campReviewState(docs[0]) === 'unreviewed') names.add(name);
++  });
++  return names;
++}
++
++// The camp the editor's review band belongs to (the same object as its window.CURRICULUM_CAMPS entry).
++let campReviewEditing = null;
++let campReviewWriting = false;
++
++function renderCurriculumReviewBand() {
++  const band = document.getElementById('curriculum-review-band');
++  if (!band) return;
++  const camp = campReviewEditing;
++  const state = campReviewState(camp);
++  if (state === 'new') { band.style.display = 'none'; band.innerHTML = ''; return; }
++  const viewing = escapeSeasonText(seasonLabel(Season.viewing()));
++  const source = escapeSeasonText(seasonLabel(camp.carriedForwardFrom.season));
++  const disabled = (campReviewWriting || curriculumManualSaving) ? ' disabled' : '';
++  const button = !canReviewCamp() ? '' : state === 'unreviewed'
++    ? `<button type="button" class="btn btn-primary camp-review-btn" data-review="mark" onclick="setCampReviewed(true)"${disabled}>Mark reviewed for ${viewing}</button>`
++    : `<button type="button" class="btn btn-secondary camp-review-btn" data-review="undo" onclick="setCampReviewed(false)"${disabled}>Undo</button>`;
++  band.classList.toggle('is-reviewed', state === 'reviewed');
++  band.innerHTML = state === 'unreviewed'
++    ? `<span>Copied from ${source} and not yet reviewed for ${viewing}.</span>${button}`
++    : `<span>Reviewed for ${viewing} · ${escapeSeasonText(campReviewedByText(camp).replace(/^reviewed /, ''))}</span>${button}`;
++  band.style.display = '';
++}
++
++// Mark (true) or un-mark (false) the open camp as reviewed for its summer. Addressed by doc id, never
++// by name. Refuses unless a manager/admin is viewing the current summer, while Save runs, or while
++// its own last write is still in flight. A pending grid auto-save is FLUSHED first — not cancelled
++// (settleCurriculumAutoSave cancels it, which only Save may do, since Save then writes the whole form).
++async function setCampReviewed(reviewed) {
++  const camp = campReviewEditing;
++  const id = window.CURRICULUM_EDIT_ID;
++  if (!camp || !id || camp.id !== id || !canReviewCamp() || curriculumManualSaving || campReviewWriting) return;
++  if (campReviewState(camp) === 'new') return;
++  const uid = window.APP_STATE.currentUser?.uid;
++  if (reviewed && !uid) { showError('Could not tell who is signed in — reload and try again.'); return; }
++  campReviewWriting = true;
++  renderCurriculumReviewBand();
++  try {
++    if (curriculumAutoSaveTimer) {
++      clearTimeout(curriculumAutoSaveTimer);
++      curriculumAutoSaveTimer = null;
++      queueCurriculumAutoSave();
++    }
++    await curriculumAutoSaveChain;
++    const FV = firebase.firestore.FieldValue;
++    const now = firebase.firestore.Timestamp.now();
++    await Season.writeRef('summerCampsCurriculum').doc(id).update(Season.patch(reviewed
++      ? { reviewedAt: now, reviewedBy: uid }
++      : { reviewedAt: FV.delete(), reviewedBy: FV.delete() }));
++    const targets = [camp].concat((window.CURRICULUM_CAMPS || []).filter(c => c.id === id && c !== camp));
++    targets.forEach(c => {
++      if (reviewed) { c.reviewedAt = now; c.reviewedBy = uid; }
++      else { delete c.reviewedAt; delete c.reviewedBy; }
++    });
++    if (window.CURRICULUM_CAMPS) renderCurriculumGrid(window.CURRICULUM_CAMPS);
++  } catch (err) {
++    console.error('Marking the camp reviewed failed:', err);
++    showError(reviewed ? 'Could not mark this camp reviewed — nothing was changed.' : 'Could not undo — the camp is still marked reviewed.');
++  } finally {
++    campReviewWriting = false;
++    renderCurriculumReviewBand();
++  }
++}
++window.setCampReviewed = setCampReviewed;
++// ─────────────────────────────────────────────────────────────────────────────
++
+ async function loadCurriculum() {
+   console.log('📚 Loading Curriculum...');
+ 
+   try {
++    // Only managers and admins may list users (studio-hub rules); for staff and prep that read is
++    // refused, and it must not take the whole tab down with it — names just fall back.
+     const [curriculumSnapshot, usersSnapshot] = await Promise.all([
+       Season.query('summerCampsCurriculum').get(),
+-      db.collection('users').get()
++      db.collection('users').get().catch(err => {
++        console.warn('Curriculum: staff names unavailable for this role', err.code || err);
++        return null;
++      })
+     ]);
+ 
+     window.STAFF_NAMES = {};
+-    usersSnapshot.forEach(doc => {
++    if (usersSnapshot) usersSnapshot.forEach(doc => {
+       const u = doc.data();
+       if (u.name) window.STAFF_NAMES[doc.id] = u.name;
+     });
+@@ -170,6 +292,8 @@ function renderCurriculumGrid(camps) {
+   const container = document.getElementById('curriculum-camps-grid');
+   if (!container) return;
+ 
++  renderCurriculumReviewCount(camps);
++
+   if (camps.length === 0) {
+     container.innerHTML = `
+       <div class="empty-state">
+@@ -190,20 +314,21 @@ function renderCurriculumGrid(camps) {
+ 
+     // Count non-empty projects (exclude standard/default entries)
+     const projectCount = countProjects(camp.blocks);
++    const reviewState = campReviewState(camp);
+ 
+     html += `
+       <div class="curriculum-camp-card" data-camp-id="${camp.id}">
+         <div class="curriculum-camp-header">
+-          <h3 class="curriculum-camp-name">${camp.campTopic || 'Untitled Camp'}</h3>
++          <h3 class="curriculum-camp-name">${escapeSeasonText(camp.campTopic || 'Untitled Camp')}</h3>
+           <div style="display: flex; gap: 0.5rem; align-items: center;">
+-            <span class="curriculum-status-badge status-${statusClass}">${curriculumStatus}</span>
++            ${reviewState === 'unreviewed' ? campUnreviewedBadgeHtml() : `<span class="curriculum-status-badge status-${statusClass}">${curriculumStatus}</span>`}
+             ${camp.needsAttention ? `<span class="curriculum-needs-attention-badge">⚠️ Needs Attention</span>` : ''}
+           </div>
+         </div>
+         ${camp.teacher ? `<div class="curriculum-camp-meta"><strong>Teacher:</strong> ${camp.teacher}</div>` : ''}
+         ${(Array.isArray(camp.sharedWith) && camp.sharedWith.length > 0) ? `<div class="curriculum-camp-meta" style="color: var(--gray-500);"><strong>Co-Teachers:</strong> ${camp.sharedWith.map(uid => (window.STAFF_NAMES?.[uid] || uid)).join(', ')}</div>` : ''}
+         ${camp.ageRange ? `<div class="curriculum-camp-meta"><strong>Ages:</strong> ${camp.ageRange}</div>` : ''}
+-        ${camp.carriedForwardFrom && camp.carriedForwardFrom.season ? `<div class="curriculum-camp-meta" style="color: var(--gray-500);">Copied from ${escapeSeasonText(seasonLabel(camp.carriedForwardFrom.season))}</div>` : ''}
++        ${camp.carriedForwardFrom && camp.carriedForwardFrom.season ? `<div class="curriculum-camp-meta" style="color: var(--gray-500);">Copied from ${escapeSeasonText(seasonLabel(camp.carriedForwardFrom.season))}${reviewState === 'reviewed' ? ` · ${escapeSeasonText(campReviewedByText(camp))}` : ''}</div>` : ''}
+         ${projectCount > 0 ? `<span class="curriculum-projects-badge">✓ ${projectCount} project${projectCount !== 1 ? 's' : ''} defined</span>` : ''}
+       </div>
+     `;
+@@ -250,6 +375,9 @@ async function openCurriculumEditor(mode, campData = null) {
+   // so it must run on empty inputs or it wipes whatever was just populated
+   setupGridAutoSave();
+ 
++  campReviewEditing = mode === 'edit' ? campData : null;
++  renderCurriculumReviewBand();
++
+   if (mode === 'add') {
+     title.textContent = 'Build New Camp Curriculum';
+     window.CURRICULUM_EDIT_ID = null;
+@@ -393,7 +521,7 @@ async function saveCurriculum() {
+   // during the save is silently dropped — it simply can't be typed.
+   if (curriculumManualSaving) return;
+   curriculumManualSaving = true;
+-  const fields = [...document.querySelectorAll('#curriculum-editor-modal input, #curriculum-editor-modal textarea, #curriculum-editor-modal select, #curriculum-editor-modal .save-curriculum-btn')]
++  const fields = [...document.querySelectorAll('#curriculum-editor-modal input, #curriculum-editor-modal textarea, #curriculum-editor-modal select, #curriculum-editor-modal .save-curriculum-btn, #curriculum-editor-modal .camp-review-btn')]
+     .filter(el => !el.disabled);
+   fields.forEach(el => { el.disabled = true; });
+   const saveBtns = [...document.querySelectorAll('#curriculum-editor-modal .save-curriculum-btn')];
+@@ -2820,10 +2948,17 @@ function filterPrepMaterials(materials, filter, searchTerm = '') {
+   renderPrepMaterials(filtered);
+ }
+ 
++let lessonUnreviewedNames = new Set();   // set by loadLessonPlans; read by renderLessonCampsList
++
+ async function loadLessonPlans() {
+   console.log('📚 Loading Lesson Plans Dashboard...');
+ 
+   try {
++    // Curriculum only feeds the "not yet reviewed" badges — read on its own, so a failure there
++    // leaves the tab working without badges instead of failing it.
++    const reviewRead = Season.query('summerCampsCurriculum').get()
++      .then(snap => unreviewedCampNames(snap.docs.map(d => Object.assign({ id: d.id }, d.data()))))
++      .catch(err => { console.warn('Lesson Plans: review badges unavailable', err.code || err); return new Set(); });
+     // Fetch camp topics, sessions, and camp-complete signals from Classbook
+     const [topicsSnapshot, sessionsSnapshot, campCompleteSnapshot] = await Promise.all([
+       Season.query('summerCampsProjects').get(),
+@@ -2851,6 +2986,8 @@ async function loadLessonPlans() {
+       }
+     });
+ 
++    lessonUnreviewedNames = await reviewRead;
++
+     if (topics.length === 0) {
+       showEmptyLessonState();
+       return;
+@@ -5633,7 +5770,7 @@ let daysOffGroupBy = 'teacher';   // 'teacher' | 'date'
+ // anything this list misses.
+ const PAST_SEASON_HIDE = [
+   // Curriculum
+-  '#add-camp-btn', '#copy-curriculum-btn', '#copy-camps-btn', '.save-curriculum-btn', '[onclick^="confirmLessonDataReassignments"]',
++  '#add-camp-btn', '#copy-curriculum-btn', '#copy-camps-btn', '.save-curriculum-btn', '.camp-review-btn', '[onclick^="confirmLessonDataReassignments"]',
+   // Open Studio
+   '#os-add-override-btn', '.os-seed-btn', '.os-camp-edit-btn', '#os-override-save-btn', '#os-override-delete-btn', '#os-offsite-save-btn',
+   // Project Details
+@@ -9638,6 +9775,7 @@ function renderLessonCampsList(topics, sessions, filter = 'all', campCompleteByN
+       <div class="camp-card">
+         <div class="camp-card-header">
+           <h4 class="camp-name">${topic.name}</h4>
++          ${lessonUnreviewedNames.has(topic.name) ? campUnreviewedBadgeHtml() : ''}
+           ${statusBadge}
+         </div>
+         <div class="camp-card-details">
+@@ -9868,6 +10006,7 @@ function renderMaterialsHub(curriculum, materials) {
+         <div class="materials-topic-header">
+           <h4 class="materials-topic-name">${camp.campTopic}</h4>
+           <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
++            ${campReviewState(camp) === 'unreviewed' ? campUnreviewedBadgeHtml() : ''}
+             <span class="materials-count-badge">${materialCount} material${materialCount !== 1 ? 's' : ''}</span>
+             ${hasOrphanedMaterials ? `<span style="background: #FEF3C7; color: #92400E; border: 1px solid #F59E0B; border-radius: 999px; padding: 0.125rem 0.5rem; font-size: 0.75rem; font-weight: 600;">⚠️ Needs Review</span>` : ''}
+             ${isPublished ? `<span class="publish-badge" style="font-size: 0.75rem; padding: 0.25rem 0.5rem;">✅ Published</span>` : ''}
+@@ -12659,6 +12798,7 @@ function renderProjectDetails(curriculum, projectDetails) {
+   const sortedCamps = Object.entries(projectsByCamp).sort(([a], [b]) => a.localeCompare(b));
+ 
+   // Render each camp's projects
++  const unreviewed = unreviewedCampNames(curriculum);
+   sortedCamps.forEach(([campTopic, projects]) => {
+     projects.sort((a, b) => (a.isOpenStudio ? 1 : 0) - (b.isOpenStudio ? 1 : 0));
+     const campId = campTopic.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+@@ -12686,10 +12826,11 @@ function renderProjectDetails(curriculum, projectDetails) {
+     `;
+ 
+     html += `
+-      <div class="project-details-camp-section" style="margin-bottom: 2rem;">
++      <div class="project-details-camp-section camp-details-group" style="margin-bottom: 2rem;">
+         <div class="project-details-camp-header" onclick="toggleProjectDetailsCamp('${campId}')" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: var(--gray-100); border-radius: var(--radius); margin-bottom: 0.5rem;">
+           <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+-            <h4 id="project-camp-${campId}" style="color: var(--purple); margin: 0;">${campTopic}</h4>
++            <h4 id="project-camp-${campId}" class="camp-details-name" style="color: var(--purple); margin: 0;">${campTopic}</h4>
++            ${unreviewed.has(campTopic) ? campUnreviewedBadgeHtml() : ''}
+             ${campTeacher ? `<span style="font-size: 0.8125rem; color: var(--gray-500); font-weight: 400;">${campTeacher}</span>` : ''}
+             <span class="curriculum-status-badge status-${campStatus}">${getProjectStatusLabel(campStatus)}</span>
+             <span style="font-size: 0.8125rem; color: var(--gray-600); font-weight: 500;">${completeCount}/${totalCount} complete</span>
+diff --git a/js/carry-forward.js b/js/carry-forward.js
+index 14ff18a..b9db7a4 100644
+--- a/js/carry-forward.js
++++ b/js/carry-forward.js
+@@ -43,7 +43,8 @@
+       reset: { completeOverride: false, needsAttention: false },
+       dropped: ['curriculumStatus', 'totalPrepQ', 'binsOnSite', 'binsStorageUnit', 'publishedToClassbook',
+         'publishedToClassbookAt', 'publishedMaterials', 'publishedAt', 'publishedBy', 'lastUpdated', 'importedAt',
+-        'createdAt', 'createdBy', 'updatedAt', 'updatedBy']
++        'createdAt', 'createdBy', 'updatedAt', 'updatedBy',
++        'reviewedAt', 'reviewedBy']   // reviewed for ITS summer — a copy starts unreviewed
+     },
+     topic: {
+       // name and ageRange come from the curriculum; description from the source topic
+diff --git a/test/carry-forward.emulator.test.js b/test/carry-forward.emulator.test.js
+index a223a31..1d59511 100644
+--- a/test/carry-forward.emulator.test.js
++++ b/test/carry-forward.emulator.test.js
+@@ -74,6 +74,7 @@ const FULL_CURRICULUM = {
+   notes: 'Kiln Tuesday', needsAttention: true, completeOverride: true, curriculumStatus: 'Complete', totalPrepQ: 18,
+   binsOnSite: 2, binsStorageUnit: 1, publishedToClassbook: true, publishedToClassbookAt: 'x', publishedMaterials: { a: [] },
+   publishedAt: 'x', publishedBy: 'x', lastUpdated: 'x', importedAt: 'x', createdAt: 'x', createdBy: 'x', updatedAt: 'x', updatedBy: 'x',
++  reviewedAt: 'x', reviewedBy: 'uid-christie',   // "reviewed for this summer" — never carried into the next one
+   blocks: {
+     block1: { monday: 'Pinch Pots', tuesday: 'Pinch Pots', wednesday: 'Coil Mugs', thursday: 'Coil Mugs', friday: 'Glaze Day' },
+     block2: { monday: 'Slab Tiles', tuesday: 'Slab Tiles', wednesday: '', thursday: 'Open Studio', friday: '' },
+@@ -363,6 +364,15 @@ async function main() {
+     assert.match(f.reason, /same place/);
+   });
+ 
++  await runTest('a camp reviewed for its summer is copied UNreviewed, with no unknown-field warning', async () => {
++    await world();
++    await seedFiredUp();   // FULL_CURRICULUM carries reviewedAt / reviewedBy
++    const f = camp(await plan(), 'Fired Up!');
++    assert.strictEqual(f.state, 'ready', f.reason);
++    assert.ok(!('reviewedAt' in f.planned.curriculum.payload) && !('reviewedBy' in f.planned.curriculum.payload));
++    assert.strictEqual(f.unknownFields.curriculum, undefined, JSON.stringify(f.unknownFields));
++  });
++
+   await runTest('a hand-made 2027 camp with the same name (any case/spacing) blocks the copy', async () => {
+     await world();
+     await seedFiredUp();

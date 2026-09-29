@@ -1,0 +1,13 @@
+The taken round-1 findings are correctly addressed except for the edge cases below. Both “not taken” decisions are justified: the escaping issue is pre-existing/out of scope, and valid carry-forward curriculum documents always include `blocks`.
+
+1. **MED** — [js/app.js:9357](/Users/christiehubley/summer-camp-app/js/app.js:9357), [js/app.js:243](/Users/christiehubley/summer-camp-app/js/app.js:243). `autoSaveCurriculum()` can return without writing while leaving `curriculumAutoSaveFailed === false`. Clear the camp-name field, change a grid cell, then click Mark reviewed: the forced auto-save returns at line 9359, but the review succeeds with the grid change unsaved. Fix: have auto-save return an explicit success result and require successful persistence for a forced review flush; treat every early return other than “nothing pending” as failure.
+
+2. **LOW** — [js/app.js:393](/Users/christiehubley/summer-camp-app/js/app.js:393), [js/app.js:9404](/Users/christiehubley/summer-camp-app/js/app.js:9404). `curriculumAutoSaveFailed` is global rather than tied to an editor/camp. If camp A’s ordinary auto-save is pending, the editor can be closed and camp B opened, resetting the flag; if A subsequently fails, it sets the flag for B and incorrectly prevents B from being reviewed. Fix: associate the result with the captured document ID/editor generation, or wait for ordinary auto-save completion before switching.
+
+3. **LOW** — [js/app.js:392](/Users/christiehubley/summer-camp-app/js/app.js:392), [js/app.js:262](/Users/christiehubley/summer-camp-app/js/app.js:262). Resetting `campReviewWriting` permits overlapping review writes. Open B while A’s review update is pending, begin reviewing B, then let A finish: A’s `finally` clears B’s lock and enables B’s button while B’s write remains pending. This permits duplicate/interleaved writes and misleading failure/UI results. Fix: use an operation token or per-editor/per-document write state instead of one resettable boolean.
+
+4. **LOW — test gap** — [e2e/camp-review.spec.js:223](/Users/christiehubley/summer-camp-app/e2e/camp-review.spec.js:223). The test named “cannot be closed or switched” proves only that the close button is refused; it never attempts to switch camps. Add a direct `openCurriculumEditor()` attempt for another camp and assert the original ID/form remains active. The failure, review-write, computed-style, and persisted carry-forward tests otherwise prove their stated behavior.
+
+`campReviewFlushing` itself cannot remain true through a settled/rejected chain because its assignment is enclosed by `finally`; the close guard releases with it.
+
+not safe to ship: an early-returning forced auto-save can still allow review with an unsaved grid change.

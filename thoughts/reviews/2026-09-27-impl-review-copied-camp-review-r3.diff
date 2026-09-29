@@ -1,0 +1,194 @@
+commit 735ddf815aba38f5a822d406bc309040c1683306
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Sun Sep 27 23:14:26 2026 -0600
+
+    fix: copied-camp review — implementation review round 2 (Codex + Claude)
+    
+    Both: an auto-save that SKIPS (empty camp name, or a concurrent-save early return) wrote nothing but
+    left the failure flag clear, so Mark reviewed could still succeed with the grid change unsaved.
+    
+    - curriculumAutoSaveUnsavedId replaces the global failure flag: set by the auto-save that failed OR
+      skipped, keyed by camp doc id (another camp is never blocked — r2 LOW), cleared by that camp's next
+      successful auto-save and on opening the editor (the form is refilled from the stored camp)
+    - autoSaveCurriculum writes to the id it captured at its start
+    - Mark/Undo and each editor opening take an operation number; only the latest clears the in-flight
+      lock, so camp A's finishing write can't re-enable camp B's button mid-write
+    - the flush gives up after 20 s (offline writes never settle) and says so, instead of holding the
+      editor open for good; refused close / Cancel now say "Finishing the last save — one moment."
+    - tests: empty-name skip blocks the review (red on the previous commit); the "cannot be switched"
+      test now really tries to open another camp
+    
+    e2e 144/144.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/e2e/camp-review.spec.js b/e2e/camp-review.spec.js
+index 8662301..26cae71 100644
+--- a/e2e/camp-review.spec.js
++++ b/e2e/camp-review.spec.js
+@@ -220,6 +220,19 @@ test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)'
+     await expect(card(page, 'Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible();
+   });
+ 
++  test('an auto-save that skips (empty camp name) also blocks the review — the grid change was not saved', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.fill('#curr-camp-name', '');
++    await page.fill('.grid-input[data-block="block3"][data-day="wednesday"]', 'Skipped Change');
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('body')).toContainText('did not save, so it was not marked reviewed');
++    await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++    const d = await curDoc(SCULPTORS_2027);
++    expect(d.reviewedAt).toBeUndefined();
++    expect(d.blocks.block3.wednesday).not.toBe('Skipped Change');
++    await closeEditor(page);
++  });
++
+   test('while Mark reviewed waits for the pending auto-save, the editor cannot be closed or switched', async () => {
+     await openEditor(page, 'Fixture Sculptors');
+     await page.evaluate(() => {   // hold the auto-save open
+@@ -231,6 +244,9 @@ test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)'
+     await page.click('#curriculum-editor-close');
+     await expect(page.locator('#curriculum-editor-modal')).toBeVisible();
+     expect(await page.evaluate(() => campReviewFlushing)).toBe(true);
++    await page.evaluate(() => openCurriculumEditor('edit', window.CURRICULUM_CAMPS.find(c => c.campTopic === 'Fixture Newcomers')));
++    await expect(page.locator('#curriculum-editor-title')).toContainText('Fixture Sculptors');
++    expect(await page.evaluate(() => window.CURRICULUM_EDIT_ID)).toBe('season-2027|||carried|||2026|||camp-sculptors');
+     await page.evaluate(() => window.__releaseAuto());
+     await expect(page.locator('#curriculum-review-band')).toContainText('Reviewed for Summer 2027', { timeout: 10_000 });
+     await page.evaluate(() => { autoSaveCurriculum = window.__origAutoSave; });
+diff --git a/js/app.js b/js/app.js
+index 718da63..f07d12d 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -192,6 +192,8 @@ function unreviewedCampNames(curriculum) {
+ // The camp the editor's review band belongs to (the same object as its window.CURRICULUM_CAMPS entry).
+ let campReviewEditing = null;
+ let campReviewWriting = false;
++let campReviewOp = 0;   // each Mark/Undo and each editor opening takes a new number; only the latest clears the lock
++const CAMP_REVIEW_FLUSH_TIMEOUT_MS = 20000;
+ // True while Mark reviewed waits for the grid's pending auto-save: the editor can't be closed or
+ // switched to another camp then, or the queued auto-save would read the NEXT camp's form.
+ let campReviewFlushing = false;
+@@ -226,22 +228,32 @@ async function setCampReviewed(reviewed) {
+   if (campReviewState(camp) === 'new') return;
+   const uid = window.APP_STATE.currentUser?.uid;
+   if (reviewed && !uid) { showError('Could not tell who is signed in — reload and try again.'); return; }
++  const op = ++campReviewOp;
+   campReviewWriting = true;
+   renderCurriculumReviewBand();
+   try {
+     campReviewFlushing = true;
++    let flushed = true;
+     try {
+       if (curriculumAutoSaveTimer) {
+         clearTimeout(curriculumAutoSaveTimer);
+         curriculumAutoSaveTimer = null;
+         queueCurriculumAutoSave();
+       }
+-      await curriculumAutoSaveChain;
++      // Offline, a write never settles: give up rather than hold the editor open for good.
++      let timer;
++      flushed = await Promise.race([
++        curriculumAutoSaveChain.then(() => true),
++        new Promise(resolve => { timer = setTimeout(() => resolve(false), CAMP_REVIEW_FLUSH_TIMEOUT_MS); })
++      ]);
++      clearTimeout(timer);
+     } finally {
+       campReviewFlushing = false;
+     }
+-    if (reviewed && curriculumAutoSaveFailed) {
+-      showError('Your last change to this camp did not save, so it was not marked reviewed. Check your connection, then try again.');
++    if (reviewed && (!flushed || curriculumAutoSaveUnsavedId === id)) {
++      showError(flushed
++        ? 'Your last change to this camp did not save, so it was not marked reviewed. Check the camp name and your connection, then try again.'
++        : 'Still saving your last change, so the camp was not marked reviewed. Check your connection, then try again.');
+       return;
+     }
+     const FV = firebase.firestore.FieldValue;
+@@ -259,7 +271,7 @@ async function setCampReviewed(reviewed) {
+     console.error('Marking the camp reviewed failed:', err);
+     showError(reviewed ? 'Could not mark this camp reviewed — nothing was changed.' : 'Could not undo — the camp is still marked reviewed.');
+   } finally {
+-    campReviewWriting = false;
++    if (op === campReviewOp) campReviewWriting = false;
+     renderCurriculumReviewBand();
+   }
+ }
+@@ -389,8 +401,9 @@ async function openCurriculumEditor(mode, campData = null) {
+   setupGridAutoSave();
+ 
+   campReviewEditing = mode === 'edit' ? campData : null;
+-  campReviewWriting = false;   // a write still pending from another opening must not lock this one
+-  curriculumAutoSaveFailed = false;
++  campReviewOp++;                // a write still pending from another opening must not lock — or unlock — this one
++  campReviewWriting = false;
++  curriculumAutoSaveUnsavedId = null;   // the form is refilled from the stored camp, so nothing unsaved is on it
+   renderCurriculumReviewBand();
+ 
+   if (mode === 'add') {
+@@ -494,9 +507,10 @@ async function loadCoTeachersForEditor(existingSharedWith, openId) {
+ let curriculumAutoSaveTimer = null;
+ let curriculumAutoSaveChain = Promise.resolve();
+ let curriculumManualSaving = false;
+-// Did the last grid auto-save fail? Mark reviewed refuses while it did — a camp must never be marked
+-// reviewed with its latest change unsaved (implementation review, Codex). Reset per editor opening.
+-let curriculumAutoSaveFailed = false;
++// The camp whose last grid auto-save did NOT write (it failed, or skipped — e.g. an empty camp name).
++// Mark reviewed refuses for that camp: a camp must never be marked reviewed with its latest change
++// unsaved (implementation review, Codex r1 + r2). Keyed by doc id, so another camp is never blocked.
++let curriculumAutoSaveUnsavedId = null;
+ 
+ function queueCurriculumAutoSave() {
+   curriculumAutoSaveChain = curriculumAutoSaveChain
+@@ -9160,7 +9174,7 @@ function setupCurriculumHandlers() {
+   const cancelCurriculumBtn = document.getElementById('cancel-curriculum-btn');
+   if (cancelCurriculumBtn) {
+     cancelCurriculumBtn.addEventListener('click', () => {
+-      if (curriculumManualSaving || campReviewFlushing) return;   // a save is finishing — the editor stays until it does
++      if (curriculumManualSaving || campReviewFlushing) { showError('Finishing the last save — one moment.'); return; }   // the editor stays until it does
+       document.getElementById('curriculum-editor-modal').style.display = 'none';
+     });
+   }
+@@ -9169,7 +9183,7 @@ function setupCurriculumHandlers() {
+   const closeCurriculumBtn = document.getElementById('curriculum-editor-close');
+   if (closeCurriculumBtn) {
+     closeCurriculumBtn.addEventListener('click', () => {
+-      if (curriculumManualSaving || campReviewFlushing) return;
++      if (curriculumManualSaving || campReviewFlushing) { showError('Finishing the last save — one moment.'); return; }
+       document.getElementById('curriculum-editor-modal').style.display = 'none';
+     });
+   }
+@@ -9353,10 +9367,11 @@ async function autoSaveCurriculum() {
+     return;
+   }
+ 
++  const editId = window.CURRICULUM_EDIT_ID;
+   // Prevent concurrent saves
+-  if (window.CURRICULUM_AUTO_SAVING) return;
++  if (window.CURRICULUM_AUTO_SAVING) { curriculumAutoSaveUnsavedId = editId; return; }
+   const campName = document.getElementById('curr-camp-name').value.trim();
+-  if (!campName) return;   // (checked before taking the flag — it used to stay stuck on)
++  if (!campName) { curriculumAutoSaveUnsavedId = editId; return; }   // (checked before taking the flag — it used to stay stuck on)
+   window.CURRICULUM_AUTO_SAVING = true;
+ 
+   showAutoSaveIndicator('Saving...');
+@@ -9392,16 +9407,16 @@ async function autoSaveCurriculum() {
+ 
+   try {
+     await Season.writeRef('summerCampsCurriculum')
+-      .doc(window.CURRICULUM_EDIT_ID)
++      .doc(editId)
+       .update(Season.patch({
+         ...curriculumData,
+         updatedAt: firebase.firestore.Timestamp.now()
+       }));
+-    curriculumAutoSaveFailed = false;
++    if (curriculumAutoSaveUnsavedId === editId) curriculumAutoSaveUnsavedId = null;
+     showAutoSaveIndicator('✓ Saved');
+     setTimeout(() => hideAutoSaveIndicator(), 2000);
+   } catch (error) {
+-    curriculumAutoSaveFailed = true;
++    curriculumAutoSaveUnsavedId = editId;
+     console.error('Auto-save error:', error);
+     showAutoSaveIndicator('Save failed');
+   } finally {

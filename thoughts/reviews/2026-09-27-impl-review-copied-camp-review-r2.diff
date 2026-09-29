@@ -1,0 +1,319 @@
+commit f0a2fca9242f1308b6e772d0ba6dfcf56c58fb24
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Sun Sep 27 23:04:34 2026 -0600
+
+    fix: copied-camp review — implementation review round 1 (Codex + Claude)
+    
+    Codex: "not safe" — a camp could be marked reviewed after its latest grid change silently failed to
+    save. Verified and fixed, with the rest:
+    
+    - autoSaveCurriculum records whether it failed; Mark reviewed refuses (and says why) when the flushed
+      auto-save failed (Codex 2)
+    - while Mark reviewed waits for the pending auto-save, the editor can't be closed, re-opened on another
+      camp, or Saved — the queued auto-save reads the open form (Codex 1)
+    - closeModal: the generic × / backdrop handlers closed the curriculum editor even mid-Save —
+      pre-existing, it made the Save lock's "editor stays" guard dead; found by the new test
+    - Save re-renders the review band when it ends (a button drawn mid-save stayed disabled) (Claude 3);
+      opening the editor resets a stale in-flight flag and the auto-save failure flag (Claude 4)
+    - staff/prep: co-teachers show as a count when names can't be read, not raw uids (Claude 2)
+    - Lesson Plans: the badge sits with the status badge and wraps (Claude 1)
+    - tests: flush failure, review-write failure (band/card/count stay unreviewed), close refused while
+      flushing, the read-only stylesheet really hides the button (computed style), carry-forward asserts
+      the WRITTEN copy has no reviewedAt/reviewedBy (Codex 4); seedCopied comment/fields (Claude 7)
+    
+    Not taken: escaping camp names in the other tabs (pre-existing, untouched here — Claude 9); dropping
+    the blocks check from campReviewState (the round-1 plan review asked for it; carry-forward never
+    writes a copy without blocks — Claude 5).
+    
+    e2e 143/143; carry-forward 27; season 57; migration 32; data-safety 11; completeness clean.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/e2e/camp-review.spec.js b/e2e/camp-review.spec.js
+index 697037d..8662301 100644
+--- a/e2e/camp-review.spec.js
++++ b/e2e/camp-review.spec.js
+@@ -26,9 +26,11 @@ async function closeEditor(page) {
+   await page.click('#curriculum-editor-close');
+   await expect(page.locator('#curriculum-editor-modal')).toBeHidden();
+ }
+-// A copied camp written straight to the emulator, in the shape carry-forward writes.
++// A copied camp written straight to the emulator — the fields the review marker reads
++// (carriedForwardFrom, no reviewedAt) on a 2026 fixture camp's grid.
+ async function seedCopied({ to, from, sourceId, name }) {
+   const base = (await adminDb().collection(C.curriculum).doc('camp-painters').get()).data();
++  ['curriculumStatus', 'lastUpdated', 'updatedAt', 'updatedBy'].forEach(k => delete base[k]);
+   const id = `season-${to}|||carried|||${from}|||${sourceId}`;
+   await adminDb().collection(C.curriculum).doc(id).set({
+     ...base, campTopic: name, season: String(to), completeOverride: false, needsAttention: false,
+@@ -177,6 +179,67 @@ test.describe('Copied camps are marked "not yet reviewed" (2027 current, admin)'
+     await closeEditor(page);
+   });
+ 
++  test('if the last grid change fails to save, the camp is NOT marked reviewed and says why', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.evaluate(() => {   // every curriculum update fails (offline, a rules refusal…)
++      window.__origWriteRef = Season.writeRef;
++      Season.writeRef = function (key) {
++        const ref = window.__origWriteRef.apply(this, arguments);
++        if (key !== 'summerCampsCurriculum') return ref;
++        return { doc: id => Object.assign(Object.create(ref.doc(id)), { update: () => Promise.reject(new Error('simulated failure')) }) };
++      };
++    });
++    await page.fill('.grid-input[data-block="block3"][data-day="monday"]', 'Never Saved');
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++    await expect(page.locator('body')).toContainText('did not save, so it was not marked reviewed');
++    const d = await curDoc(SCULPTORS_2027);
++    expect(d.reviewedAt).toBeUndefined();
++    expect(d.blocks.block3.monday).not.toBe('Never Saved');
++    await page.evaluate(() => { Season.writeRef = window.__origWriteRef; });
++    await closeEditor(page);
++  });
++
++  test('if the review write itself fails, nothing claims success: band, card and count stay unreviewed', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.evaluate(() => {
++      window.__origWriteRef = Season.writeRef;
++      Season.writeRef = function (key) {
++        const ref = window.__origWriteRef.apply(this, arguments);
++        if (key !== 'summerCampsCurriculum') return ref;
++        return { doc: id => Object.assign(Object.create(ref.doc(id)), { update: () => Promise.reject(new Error('simulated failure')) }) };
++      };
++    });
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await expect(page.locator('body')).toContainText('Could not mark this camp reviewed');
++    await expect(page.locator('#curriculum-review-band')).toContainText('not yet reviewed');
++    await expect(page.locator('#curriculum-review-count')).toHaveText('2 copied camps · 1 not yet reviewed');
++    expect((await curDoc(SCULPTORS_2027)).reviewedAt).toBeUndefined();
++    await page.evaluate(() => { Season.writeRef = window.__origWriteRef; });
++    await closeEditor(page);
++    await expect(card(page, 'Fixture Sculptors').locator('.camp-unreviewed-badge')).toBeVisible();
++  });
++
++  test('while Mark reviewed waits for the pending auto-save, the editor cannot be closed or switched', async () => {
++    await openEditor(page, 'Fixture Sculptors');
++    await page.evaluate(() => {   // hold the auto-save open
++      window.__origAutoSave = autoSaveCurriculum;
++      autoSaveCurriculum = () => new Promise(resolve => { window.__releaseAuto = () => window.__origAutoSave().then(resolve); });
++    });
++    await page.fill('.grid-input[data-block="block3"][data-day="tuesday"]', 'Held Change');
++    await page.click('.camp-review-btn[data-review="mark"]');
++    await page.click('#curriculum-editor-close');
++    await expect(page.locator('#curriculum-editor-modal')).toBeVisible();
++    expect(await page.evaluate(() => campReviewFlushing)).toBe(true);
++    await page.evaluate(() => window.__releaseAuto());
++    await expect(page.locator('#curriculum-review-band')).toContainText('Reviewed for Summer 2027', { timeout: 10_000 });
++    await page.evaluate(() => { autoSaveCurriculum = window.__origAutoSave; });
++    const d = await curDoc(SCULPTORS_2027);
++    expect(d.blocks.block3.tuesday).toBe('Held Change');
++    expect(d.reviewedAt).toBeDefined();
++    await closeEditor(page);
++  });
++
+   test('the Mark reviewed button is on the past-season hide list', async () => {
+     expect(await page.evaluate(() => PAST_SEASON_HIDE.includes('.camp-review-btn'))).toBe(true);
+   });
+@@ -253,6 +316,16 @@ test.describe('A later summer: mixed sources, and a past view that has copies (2
+     await page.evaluate(() => window.setCampReviewed(true));
+     expect(await page.evaluate(() => window.__writeRefCalls)).toBe(0);
+     expect((await curDoc(PAINTERS_2027)).reviewedAt).toBeUndefined();
++    // …and even if one were drawn, the read-only stylesheet hides it.
++    const hidden = await page.evaluate(() => {
++      const b = document.createElement('button');
++      b.className = 'camp-review-btn';
++      document.getElementById('curriculum-review-band').appendChild(b);
++      const d = getComputedStyle(b).display;
++      b.remove();
++      return d;
++    });
++    expect(hidden).toBe('none');
+   });
+ 
+   test('no page errors', async () => {
+diff --git a/js/app.js b/js/app.js
+index e452f3f..718da63 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -192,6 +192,9 @@ function unreviewedCampNames(curriculum) {
+ // The camp the editor's review band belongs to (the same object as its window.CURRICULUM_CAMPS entry).
+ let campReviewEditing = null;
+ let campReviewWriting = false;
++// True while Mark reviewed waits for the grid's pending auto-save: the editor can't be closed or
++// switched to another camp then, or the queued auto-save would read the NEXT camp's form.
++let campReviewFlushing = false;
+ 
+ function renderCurriculumReviewBand() {
+   const band = document.getElementById('curriculum-review-band');
+@@ -226,12 +229,21 @@ async function setCampReviewed(reviewed) {
+   campReviewWriting = true;
+   renderCurriculumReviewBand();
+   try {
+-    if (curriculumAutoSaveTimer) {
+-      clearTimeout(curriculumAutoSaveTimer);
+-      curriculumAutoSaveTimer = null;
+-      queueCurriculumAutoSave();
++    campReviewFlushing = true;
++    try {
++      if (curriculumAutoSaveTimer) {
++        clearTimeout(curriculumAutoSaveTimer);
++        curriculumAutoSaveTimer = null;
++        queueCurriculumAutoSave();
++      }
++      await curriculumAutoSaveChain;
++    } finally {
++      campReviewFlushing = false;
++    }
++    if (reviewed && curriculumAutoSaveFailed) {
++      showError('Your last change to this camp did not save, so it was not marked reviewed. Check your connection, then try again.');
++      return;
+     }
+-    await curriculumAutoSaveChain;
+     const FV = firebase.firestore.FieldValue;
+     const now = firebase.firestore.Timestamp.now();
+     await Season.writeRef('summerCampsCurriculum').doc(id).update(Season.patch(reviewed
+@@ -269,6 +281,7 @@ async function loadCurriculum() {
+     ]);
+ 
+     window.STAFF_NAMES = {};
++    window.STAFF_NAMES_UNAVAILABLE = !usersSnapshot;
+     if (usersSnapshot) usersSnapshot.forEach(doc => {
+       const u = doc.data();
+       if (u.name) window.STAFF_NAMES[doc.id] = u.name;
+@@ -326,7 +339,7 @@ function renderCurriculumGrid(camps) {
+           </div>
+         </div>
+         ${camp.teacher ? `<div class="curriculum-camp-meta"><strong>Teacher:</strong> ${camp.teacher}</div>` : ''}
+-        ${(Array.isArray(camp.sharedWith) && camp.sharedWith.length > 0) ? `<div class="curriculum-camp-meta" style="color: var(--gray-500);"><strong>Co-Teachers:</strong> ${camp.sharedWith.map(uid => (window.STAFF_NAMES?.[uid] || uid)).join(', ')}</div>` : ''}
++        ${(Array.isArray(camp.sharedWith) && camp.sharedWith.length > 0) ? `<div class="curriculum-camp-meta" style="color: var(--gray-500);"><strong>Co-Teachers:</strong> ${window.STAFF_NAMES_UNAVAILABLE ? `${camp.sharedWith.length}` : camp.sharedWith.map(uid => (window.STAFF_NAMES?.[uid] || uid)).join(', ')}</div>` : ''}
+         ${camp.ageRange ? `<div class="curriculum-camp-meta"><strong>Ages:</strong> ${camp.ageRange}</div>` : ''}
+         ${camp.carriedForwardFrom && camp.carriedForwardFrom.season ? `<div class="curriculum-camp-meta" style="color: var(--gray-500);">Copied from ${escapeSeasonText(seasonLabel(camp.carriedForwardFrom.season))}${reviewState === 'reviewed' ? ` · ${escapeSeasonText(campReviewedByText(camp))}` : ''}</div>` : ''}
+         ${projectCount > 0 ? `<span class="curriculum-projects-badge">✓ ${projectCount} project${projectCount !== 1 ? 's' : ''} defined</span>` : ''}
+@@ -350,7 +363,7 @@ function renderCurriculumGrid(camps) {
+ 
+ async function openCurriculumEditor(mode, campData = null) {
+   // The editor's form and CURRICULUM_EDIT_ID/NAME belong to a save until it finishes (review round 4).
+-  if (curriculumManualSaving) { showError('Finishing the last save — one moment.'); return; }
++  if (curriculumManualSaving || campReviewFlushing) { showError('Finishing the last save — one moment.'); return; }
+   const modal = document.getElementById('curriculum-editor-modal');
+   const title = document.getElementById('curriculum-editor-title');
+ 
+@@ -376,6 +389,8 @@ async function openCurriculumEditor(mode, campData = null) {
+   setupGridAutoSave();
+ 
+   campReviewEditing = mode === 'edit' ? campData : null;
++  campReviewWriting = false;   // a write still pending from another opening must not lock this one
++  curriculumAutoSaveFailed = false;
+   renderCurriculumReviewBand();
+ 
+   if (mode === 'add') {
+@@ -479,6 +494,9 @@ async function loadCoTeachersForEditor(existingSharedWith, openId) {
+ let curriculumAutoSaveTimer = null;
+ let curriculumAutoSaveChain = Promise.resolve();
+ let curriculumManualSaving = false;
++// Did the last grid auto-save fail? Mark reviewed refuses while it did — a camp must never be marked
++// reviewed with its latest change unsaved (implementation review, Codex). Reset per editor opening.
++let curriculumAutoSaveFailed = false;
+ 
+ function queueCurriculumAutoSave() {
+   curriculumAutoSaveChain = curriculumAutoSaveChain
+@@ -519,7 +537,7 @@ async function saveCurriculum() {
+   // The lock is taken and released HERE ONLY (review round 3: a second release after the cosmetic
+   // wait could clear a later save's lock). The form is disabled while it's held, so nothing typed
+   // during the save is silently dropped — it simply can't be typed.
+-  if (curriculumManualSaving) return;
++  if (curriculumManualSaving || campReviewFlushing) return;
+   curriculumManualSaving = true;
+   const fields = [...document.querySelectorAll('#curriculum-editor-modal input, #curriculum-editor-modal textarea, #curriculum-editor-modal select, #curriculum-editor-modal .save-curriculum-btn, #curriculum-editor-modal .camp-review-btn')]
+     .filter(el => !el.disabled);
+@@ -536,6 +554,7 @@ async function saveCurriculum() {
+     fields.forEach(el => { if (!el.hasAttribute('data-season-locked')) el.disabled = false; });
+     saveBtns.forEach((b, i) => { b.textContent = saveLabels[i]; });
+     curriculumManualSaving = false;
++    renderCurriculumReviewBand();   // a review button drawn during the save was drawn disabled
+     if (!Season.isViewingCurrent()) lockPastSeasonFields(document.getElementById('curriculum-editor-modal'));
+   }
+   if (saved === 'needs-name') {
+@@ -9004,6 +9023,9 @@ function openModal(modal) {
+ }
+ 
+ function closeModal(modal) {
++  // The generic × / backdrop handlers reach the curriculum editor too: it stays open while a save —
++  // or Mark reviewed's wait for the pending auto-save — is finishing, as its own handlers intend.
++  if (modal && modal.id === 'curriculum-editor-modal' && (curriculumManualSaving || campReviewFlushing)) return;
+   modal.style.display = 'none';
+ }
+ 
+@@ -9138,7 +9160,7 @@ function setupCurriculumHandlers() {
+   const cancelCurriculumBtn = document.getElementById('cancel-curriculum-btn');
+   if (cancelCurriculumBtn) {
+     cancelCurriculumBtn.addEventListener('click', () => {
+-      if (curriculumManualSaving) return;   // a save is finishing — the editor stays until it does
++      if (curriculumManualSaving || campReviewFlushing) return;   // a save is finishing — the editor stays until it does
+       document.getElementById('curriculum-editor-modal').style.display = 'none';
+     });
+   }
+@@ -9147,7 +9169,7 @@ function setupCurriculumHandlers() {
+   const closeCurriculumBtn = document.getElementById('curriculum-editor-close');
+   if (closeCurriculumBtn) {
+     closeCurriculumBtn.addEventListener('click', () => {
+-      if (curriculumManualSaving) return;
++      if (curriculumManualSaving || campReviewFlushing) return;
+       document.getElementById('curriculum-editor-modal').style.display = 'none';
+     });
+   }
+@@ -9156,7 +9178,7 @@ function setupCurriculumHandlers() {
+   const curriculumModal = document.getElementById('curriculum-editor-modal');
+   if (curriculumModal) {
+     curriculumModal.addEventListener('click', (e) => {
+-      if (e.target === curriculumModal && !curriculumManualSaving) {
++      if (e.target === curriculumModal && !curriculumManualSaving && !campReviewFlushing) {
+         curriculumModal.style.display = 'none';
+       }
+     });
+@@ -9375,9 +9397,11 @@ async function autoSaveCurriculum() {
+         ...curriculumData,
+         updatedAt: firebase.firestore.Timestamp.now()
+       }));
++    curriculumAutoSaveFailed = false;
+     showAutoSaveIndicator('✓ Saved');
+     setTimeout(() => hideAutoSaveIndicator(), 2000);
+   } catch (error) {
++    curriculumAutoSaveFailed = true;
+     console.error('Auto-save error:', error);
+     showAutoSaveIndicator('Save failed');
+   } finally {
+@@ -9775,8 +9799,10 @@ function renderLessonCampsList(topics, sessions, filter = 'all', campCompleteByN
+       <div class="camp-card">
+         <div class="camp-card-header">
+           <h4 class="camp-name">${topic.name}</h4>
+-          ${lessonUnreviewedNames.has(topic.name) ? campUnreviewedBadgeHtml() : ''}
+-          ${statusBadge}
++          <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
++            ${lessonUnreviewedNames.has(topic.name) ? campUnreviewedBadgeHtml() : ''}
++            ${statusBadge}
++          </div>
+         </div>
+         <div class="camp-card-details">
+           ${teachers ? `<div class="camp-detail"><strong>Teacher:</strong> ${teachers}</div>` : ''}
+@@ -10006,7 +10032,7 @@ function renderMaterialsHub(curriculum, materials) {
+         <div class="materials-topic-header">
+           <h4 class="materials-topic-name">${camp.campTopic}</h4>
+           <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+-            ${campReviewState(camp) === 'unreviewed' ? campUnreviewedBadgeHtml() : ''}
++            ${/* per curriculum doc, so two docs sharing a name are badged separately here */ campReviewState(camp) === 'unreviewed' ? campUnreviewedBadgeHtml() : ''}
+             <span class="materials-count-badge">${materialCount} material${materialCount !== 1 ? 's' : ''}</span>
+             ${hasOrphanedMaterials ? `<span style="background: #FEF3C7; color: #92400E; border: 1px solid #F59E0B; border-radius: 999px; padding: 0.125rem 0.5rem; font-size: 0.75rem; font-weight: 600;">⚠️ Needs Review</span>` : ''}
+             ${isPublished ? `<span class="publish-badge" style="font-size: 0.75rem; padding: 0.25rem 0.5rem;">✅ Published</span>` : ''}
+diff --git a/test/carry-forward.emulator.test.js b/test/carry-forward.emulator.test.js
+index 1d59511..4065a10 100644
+--- a/test/carry-forward.emulator.test.js
++++ b/test/carry-forward.emulator.test.js
+@@ -239,6 +239,7 @@ async function main() {
+     assert.strictEqual(cur.teacher, 'Teacher Ash');
+     assert.strictEqual(cur.completeOverride, false);
+     assert.ok(!('publishedToClassbook' in cur) && !('totalPrepQ' in cur));
++    assert.ok(!('reviewedAt' in cur) && !('reviewedBy' in cur), 'the source was reviewed for 2026; the written 2027 copy is not');
+     const topicId = Season.docId(await CampAdmin.topicLegacyId('Fired Up!'), '2027');
+     const topic = (await db.collection(C.topics).doc(topicId).get()).data();
+     assert.deepStrictEqual(topic, { name: 'Fired Up!', ageRange: '6-9', description: 'Clay week', prepStatus: 'Not Started',

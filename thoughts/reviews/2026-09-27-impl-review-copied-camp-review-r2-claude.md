@@ -1,0 +1,21 @@
+## Round-2 confirmation — copied-camp review (f0a2fca)
+
+**Taken items all land.** Codex 1 (flush lock across close/reopen/Save, `js/app.js:232-241`, `366`, `540`, `9028`, `9163-9181`), Codex 2 (`curriculumAutoSaveFailed`, `9400/9404` + gate at `243`), Codex 4 (`test/carry-forward.emulator.test.js:242` — non-vacuous: the fixture sets `reviewedAt` at line 77, and `buildCurriculum` is a whitelist), Claude 1 (wrapper div, `9799`), Claude 2 (`STAFF_NAMES_UNAVAILABLE`, `284`/`342`), Claude 3 (`556`, correctly ordered *before* `lockPastSeasonFields`), Claude 4, 6, 7, 8. The `closeModal` guard is scoped to `#curriculum-editor-modal`; the bare `closeModal()` calls at `10788`/`11973`/etc. are shadowed local consts — no regression there.
+
+**Both "not taken" are justified.** Claude 9: the four raw renderers are untouched pre-existing paths; the new band/badge/source line do escape. Claude 5: `Season.sanitize` (`js/season.js:136`) *throws* on `undefined`, so carry-forward cannot write a blockless copy — the copy is refused, not silently unbadged. (`blocks: null` would slip past, but nothing writes that.)
+
+### Findings
+
+1. **MED — `js/app.js:232-241`, with `9028`, `9163`, `9172`, `9181`, `366`, `540`.** `campReviewFlushing` cannot get stuck by an exception (the assignment can't throw and the inner `finally` always runs), but it can stay `true` indefinitely: `await curriculumAutoSaveChain` never settles when the compat SDK's `update()` gets no server ack. *Scenario:* manager types in a grid cell, loses Wi-Fi, clicks Mark reviewed → ×, Cancel, backdrop and `closeModal` all refuse, `openCurriculumEditor` refuses, Save returns silently, nothing times out and no message appears (the band button is merely disabled). The editor is unclosable until a page reload. Same class as the pre-existing `curriculumManualSaving` lock, so no data is at risk. *Fix:* race the flush against a timeout, clearing the flag and `showError`-ing on expiry; and make the close handlers `showError('Finishing the last save — one moment.')` instead of returning silently (same for `saveCurriculum:540`).
+
+2. **LOW — `js/app.js:393` + `9404`.** `curriculumAutoSaveFailed` is global, not per camp, so it can refuse a legitimate review. *Scenario:* type in camp A (auto-save in flight) → close the editor (permitted; neither lock is held) → open camp B (reset clears the flag) → A's write rejects, setting the flag → Mark reviewed on B is refused with "Your last change to this camp did not save," and retrying keeps failing until a successful auto-save on B or a reopen. Fails safe, but the message is false. *Fix:* store the failing doc id (`curriculumAutoSaveFailedId`) and compare with `id` at `243`.
+
+3. **LOW — `js/app.js:9350-9358`.** The Codex-2 invariant is enforced for a *failed* write, not for an auto-save that never wrote: the `!CURRICULUM_EDIT_ID`, `CURRICULUM_AUTO_SAVING` and `if (!campName) return` early returns leave the flag `false`. *Scenario:* manager clears the camp-topic field, edits a grid cell, clicks Mark reviewed → the flushed auto-save returns having written nothing, the review write succeeds, and the camp is reviewed with that change lost. *Fix:* set the flag (or a distinct "didn't write" flag) on those early returns.
+
+4. **LOW — `js/app.js:392` vs `259`.** Resetting `campReviewWriting` on open isn't keyed to the opening. Mark camp A, close mid-review-write (nothing blocks it once flushing ends), open B and click Mark reviewed; A's `finally` clears the flag and re-renders B's band enabled while B's write is in flight → B can be clicked twice. Both writes are identical `{reviewedAt, reviewedBy}` on the same doc id, so this is cosmetic. *Fix (optional):* capture an opening id and only clear when it still matches.
+
+5. **LOW — `e2e/camp-review.spec.js:220`.** The name says "cannot be closed **or switched**"; only the close is exercised. *Fix:* also attempt `openCurriculumEditor('edit', …)` and assert the title still names Fixture Sculptors. The other three new tests do prove their names — test 1 discriminates the flush branch by its unique message, test 2 checks band/count/doc/card, and the computed-style assertion runs with `body.season-read-only` confirmed and reads the element's own `display`.
+
+*Not run:* node/npm needed Bash approval this session — findings are from reading HEAD.
+
+safe to ship
