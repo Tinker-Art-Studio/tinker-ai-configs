@@ -1,0 +1,161 @@
+commit 4b785ca6ac7e5a16de7124c2100a3d5917a75a3c
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Tue Sep 29 22:48:09 2026 -0600
+
+    deploy: publish only the app's files (dist/ allow-list), never the repo root
+    
+    netlify.toml said publish = "." and deploys ran from the repo folder, so every file on
+    disk went public, tracked or not. Verified live Sep 30 2026: setup/migration-log.txt
+    (staff names + Firebase uids), firebase-agent-defense-hardening.md, CLAUDE.md,
+    firestore.rules, test scripts, firestore-debug.log, node_modules/. (No service-account
+    key exists on disk; those paths return the index.html fallback.)
+    
+    Same fix as the Classbook's (Sep 25): scripts/build-dist.sh copies an explicit
+    allow-list (index.html, assets/, css/, js/, shared/) into dist/; netlify.toml publishes
+    dist; npm run deploy refuses a dirty tree or unpushed HEAD, deploys only dist/ with the
+    full sha as the message, then scripts/check-live.sh verifies every live file
+    byte-for-byte, that every referenced file is in dist/, and that the private paths are
+    gone (404, or the SPA fallback serving index.html). CLAUDE.md's deploy section updated.
+    
+    Checked locally: every file index.html / js / css references is in dist/ (51 files);
+    the built site served from dist/ loads with all requests 200 and no console errors.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/.gitignore b/.gitignore
+index 2b91843..6eae650 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -11,3 +11,4 @@ service-account*.json
+ setup/node_modules/
+ firestore-debug.log
+ .deploy-guard-last/
++dist/
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 9c91388..6642549 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -52,6 +52,12 @@ If data appears missing or blank, check Firestore rules before assuming data los
+ 
+ ## Deployment
+ - Platform: Netlify
+-- Deploy: `netlify deploy --prod` from `/Users/christiehubley/studio-hub/`
++- Deploy: `npm run deploy` — refuses a dirty tree or unpushed HEAD, builds `dist/` (a pure copy of
++  `index.html`, `assets/`, `css/`, `js/`, `shared/`), deploys ONLY `dist/` with the full sha as the message,
++  then `scripts/check-live.sh` verifies every live file byte-for-byte and that private paths are gone.
++  Never `netlify deploy` the repo root: until Sep 30 2026 that published everything on disk —
++  `setup/migration-log.txt` (staff names + uids), `firebase-agent-defense-hardening.md`, this file,
++  the rules, test scripts, `firestore-debug.log`, `node_modules/`. A new file the app loads must be
++  added to `scripts/build-dist.sh`. From a worktree, pass `NETLIFY_SITE_ID` (see the main checkout's `.netlify/state.json`).
+ - Live URL: https://tinker-hq.netlify.app
+ - ⚠️ Always ask Christie before running `netlify deploy` — each build costs credits
+diff --git a/netlify.toml b/netlify.toml
+index 42096ac..172ab21 100644
+--- a/netlify.toml
++++ b/netlify.toml
+@@ -1,5 +1,5 @@
+ [build]
+-  publish = "."
++  publish = "dist"   # built by scripts/build-dist.sh — an allow-list; never the repo root (Sep 30 2026)
+ 
+ [[redirects]]
+   from = "/*"
+diff --git a/package.json b/package.json
+index 630f0a4..cf53ce9 100644
+--- a/package.json
++++ b/package.json
+@@ -3,7 +3,10 @@
+     "test": "npm run test:rules && npm run test:guard",
+     "test:rules": "firebase emulators:exec --only firestore \"node --experimental-vm-modules node_modules/.bin/jest rules.test.js archive-helpers.test.js archive-transaction.test.js classbook-qa-alerts.test.js alerts-classbook.test.js\"",
+     "test:guard": "bash scripts/deploy-rules.test.sh",
+-    "deploy:rules": "bash scripts/deploy-rules.sh"
++    "deploy:rules": "bash scripts/deploy-rules.sh",
++    "deploy": "sh scripts/deploy.sh",
++    "build:dist": "sh scripts/build-dist.sh",
++    "check-live": "sh scripts/check-live.sh"
+   },
+   "dependencies": {
+     "firebase-admin": "^13.7.0"
+diff --git a/scripts/build-dist.sh b/scripts/build-dist.sh
+new file mode 100755
+index 0000000..dd76598
+--- /dev/null
++++ b/scripts/build-dist.sh
+@@ -0,0 +1,16 @@
++#!/bin/sh
++# Builds dist/ — the ONLY thing Netlify publishes for Studio Hub.
++#
++# netlify.toml used to say publish = "." and deploys ran from the repo folder, so
++# EVERY file on disk went public — tracked or not: setup/migration-log.txt (staff
++# names + Firebase uids), firebase-agent-defense-hardening.md, CLAUDE.md, the rules,
++# test scripts, firestore-debug.log, even node_modules/ (found Sep 30 2026). This is a
++# pure copy of an explicit allow-list: no transformation, so every deployed byte is
++# a byte of the committed source.
++set -eu
++cd "$(dirname "$0")/.."
++rm -rf dist
++mkdir -p dist
++cp index.html dist/
++cp -R assets css js shared dist/
++echo "[build-dist] dist/: $(find dist -type f | wc -l | tr -d ' ') files (index.html, assets/, css/, js/, shared/)"
+diff --git a/scripts/check-live.sh b/scripts/check-live.sh
+new file mode 100755
+index 0000000..60328f5
+--- /dev/null
++++ b/scripts/check-live.sh
+@@ -0,0 +1,33 @@
++#!/bin/sh
++# After a deploy: every file in dist/ must be byte-identical on the live site, and
++# paths that must never be public must not serve their own content. Studio Hub's
++# netlify.toml sends every unknown path to index.html (200), so "gone" means: 404, or
++# the body IS index.html. Exit 1 on any mismatch.
++set -u
++cd "$(dirname "$0")/.."
++BASE=https://tinker-hq.netlify.app
++fail=0
++# Complete, not just faithful: every local file index.html, the JS or the CSS references
++# must be IN dist/ (a missing one would fall through to index.html live yet pass below).
++for ref in $( (grep -oE '(src|href)="[^"#:]+"' dist/index.html | sed -E 's/^(src|href)="//; s/"$//'; \
++              grep -ohE "['\"](assets|css|js|shared)/[^'\"]+['\"]" dist/js/*.js | tr -d "'\""; \
++              grep -ohE 'url\([^)]+\)' dist/css/*.css | sed -E "s/^url\(['\"]?//; s/['\"]?\)$//" | grep -v '^data:\|^https\?:') | sed 's/?.*//' | sort -u); do
++  if [ -f "dist/$ref" ]; then echo "  REF    $ref"; else echo "  MISSING $ref   ← referenced but not in dist/"; fail=1; fi
++done
++for f in $(cd dist && find . -type f | sed 's#^\./##'); do
++  a=$(shasum < "dist/$f" | cut -c1-40)
++  b=$(curl -s "$BASE/$f?nocache=$(date +%s)" | shasum | cut -c1-40)
++  if [ "$a" = "$b" ]; then echo "  MATCH  $f"; else echo "  DIFF   $f"; fail=1; fi
++done
++INDEX=$(shasum < dist/index.html | cut -c1-40)
++for p in CLAUDE.md AGENTS.md firebase-agent-defense-hardening.md setup/migration-log.txt setup/create-users.js \
++         firestore.rules storage.rules firebase.json .firebaserc firestore-debug.log package.json rules.test.js \
++         test-alerts.js test-alerts-browser.html TESTING-GUIDE.md scripts/deploy-rules.sh node_modules/.package-lock.json \
++         seasonal-preview.html; do
++  tmp=$(mktemp)
++  code=$(curl -s -o "$tmp" -w "%{http_code}" "$BASE/$p?nocache=$(date +%s)")
++  body=$(shasum < "$tmp" | cut -c1-40); rm -f "$tmp"
++  if [ "$code" = "404" ] || [ "$body" = "$INDEX" ]; then echo "  GONE   $p"; else echo "  $code    $p   ← must not be public"; fail=1; fi
++done
++[ $fail -eq 0 ] && echo "[check-live] ok" || echo "[check-live] FAILED"
++exit $fail
+diff --git a/scripts/deploy.sh b/scripts/deploy.sh
+new file mode 100755
+index 0000000..044fd05
+--- /dev/null
++++ b/scripts/deploy.sh
+@@ -0,0 +1,16 @@
++#!/bin/sh
++# The Studio Hub Netlify deploy ritual in one place (~/.claude/CLAUDE.md → NETLIFY).
++# ASK CHRISTIE FIRST — every Netlify deploy costs credits. This script does not ask.
++#
++#   1. refuse unless the tree is clean and HEAD is on the remote
++#   2. build dist/ (pure copy of an allow-list)   3. deploy ONLY dist/ with the full sha as the message
++#   4. check the live site: every deployed file byte-identical, private paths gone
++set -eu
++cd "$(dirname "$0")/.."
++if [ -n "$(git status --porcelain)" ]; then echo "[deploy] refusing: working tree is not clean"; git status --short; exit 1; fi
++git fetch -q
++if [ -n "$(git rev-list @{u}..HEAD)" ]; then echo "[deploy] refusing: HEAD has commits not on the remote — push first"; exit 1; fi
++SHA=$(git rev-parse HEAD)
++sh scripts/build-dist.sh
++netlify deploy --prod --dir dist --message "$SHA"
++sh scripts/check-live.sh

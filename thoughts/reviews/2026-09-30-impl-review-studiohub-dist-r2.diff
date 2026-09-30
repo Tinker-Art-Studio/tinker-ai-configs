@@ -1,0 +1,125 @@
+commit 943d7606a81cdf153df6ebff2ef46a0a635d84ca
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Tue Sep 29 22:51:32 2026 -0600
+
+    deploy: review fixes — dist from the commit, spaces in filenames, pinned site
+    
+    Codex review of 4b785ca (NOT safe to deploy):
+    - build-dist copied whole folders from disk, so an untracked/ignored file inside
+      assets/css/js/shared could still be published. dist/ now comes from
+      `git archive HEAD` for the allow-listed paths: only committed bytes.
+    - check-live split filenames on spaces (assets/shapes/Asset 1.svg); loops now read
+      line by line and URL-encode spaces. Its reference scan is documented as a backstop:
+      runtime-built paths (assets/shapes/*) are covered by shipping whole folders.
+    - deploy.sh pins Studio Hub's Netlify site id (--site) and refuses a different
+      NETLIFY_SITE_ID, so it can't publish to another site.
+    
+    Dry run of check-live against today's live site: Asset 1.svg MATCH, exactly the three
+    changed files DIFF, every private path flagged (as expected until the deploy).
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 6642549..0257f41 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -58,6 +58,6 @@ If data appears missing or blank, check Firestore rules before assuming data los
+   Never `netlify deploy` the repo root: until Sep 30 2026 that published everything on disk —
+   `setup/migration-log.txt` (staff names + uids), `firebase-agent-defense-hardening.md`, this file,
+   the rules, test scripts, `firestore-debug.log`, `node_modules/`. A new file the app loads must be
+-  added to `scripts/build-dist.sh`. From a worktree, pass `NETLIFY_SITE_ID` (see the main checkout's `.netlify/state.json`).
++  added to `scripts/build-dist.sh`. The script pins Studio Hub's Netlify site id, so it works from any worktree. `dist/` comes from `git archive HEAD` — untracked or ignored files are never published.
+ - Live URL: https://tinker-hq.netlify.app
+ - ⚠️ Always ask Christie before running `netlify deploy` — each build costs credits
+diff --git a/scripts/build-dist.sh b/scripts/build-dist.sh
+index dd76598..a6bc508 100755
+--- a/scripts/build-dist.sh
++++ b/scripts/build-dist.sh
+@@ -4,13 +4,14 @@
+ # netlify.toml used to say publish = "." and deploys ran from the repo folder, so
+ # EVERY file on disk went public — tracked or not: setup/migration-log.txt (staff
+ # names + Firebase uids), firebase-agent-defense-hardening.md, CLAUDE.md, the rules,
+-# test scripts, firestore-debug.log, even node_modules/ (found Sep 30 2026). This is a
+-# pure copy of an explicit allow-list: no transformation, so every deployed byte is
+-# a byte of the committed source.
++# test scripts, firestore-debug.log, even node_modules/ (found Sep 30 2026).
++#
++# dist/ is extracted from the COMMITTED tree (git archive HEAD) for an explicit
++# allow-list of paths — so an untracked or git-ignored file sitting in one of these
++# folders can never be published, and every deployed byte is a byte of the commit.
+ set -eu
+ cd "$(dirname "$0")/.."
+ rm -rf dist
+ mkdir -p dist
+-cp index.html dist/
+-cp -R assets css js shared dist/
+-echo "[build-dist] dist/: $(find dist -type f | wc -l | tr -d ' ') files (index.html, assets/, css/, js/, shared/)"
++git archive --format=tar HEAD index.html assets css js shared | tar -x -C dist
++echo "[build-dist] dist/: $(find dist -type f | wc -l | tr -d ' ') files from HEAD $(git rev-parse --short HEAD) (index.html, assets/, css/, js/, shared/)"
+diff --git a/scripts/check-live.sh b/scripts/check-live.sh
+index 60328f5..acb8f0f 100755
+--- a/scripts/check-live.sh
++++ b/scripts/check-live.sh
+@@ -3,22 +3,36 @@
+ # paths that must never be public must not serve their own content. Studio Hub's
+ # netlify.toml sends every unknown path to index.html (200), so "gone" means: 404, or
+ # the body IS index.html. Exit 1 on any mismatch.
++#
++# Completeness: dist/ holds WHOLE folders (assets/, css/, js/, shared/) from the commit,
++# so files the JS picks at runtime (e.g. assets/shapes/*) are included by construction;
++# the reference scan below is a backstop for literal paths, not a proof.
+ set -u
+ cd "$(dirname "$0")/.."
+ BASE=https://tinker-hq.netlify.app
+ fail=0
+-# Complete, not just faithful: every local file index.html, the JS or the CSS references
+-# must be IN dist/ (a missing one would fall through to index.html live yet pass below).
+-for ref in $( (grep -oE '(src|href)="[^"#:]+"' dist/index.html | sed -E 's/^(src|href)="//; s/"$//'; \
+-              grep -ohE "['\"](assets|css|js|shared)/[^'\"]+['\"]" dist/js/*.js | tr -d "'\""; \
+-              grep -ohE 'url\([^)]+\)' dist/css/*.css | sed -E "s/^url\(['\"]?//; s/['\"]?\)$//" | grep -v '^data:\|^https\?:') | sed 's/?.*//' | sort -u); do
++urlpath() { printf '%s' "$1" | sed 's/ /%20/g'; }   # filenames with spaces (assets/shapes/Asset 1.svg)
++
++refs=$(mktemp)
++{ grep -oE '(src|href)="[^"#:]+"' dist/index.html | sed -E 's/^(src|href)="//; s/"$//'
++  grep -ohE "['\"](assets|css|js|shared)/[^'\"\$]+['\"]" dist/js/*.js | tr -d "'\""
++  grep -ohE 'url\([^)]+\)' dist/css/*.css | sed -E "s/^url\(['\"]?//; s/['\"]?\)$//" | grep -v '^data:\|^https\?:'
++} | sed 's/?.*//' | sort -u > "$refs"
++while IFS= read -r ref; do
++  [ -z "$ref" ] && continue
+   if [ -f "dist/$ref" ]; then echo "  REF    $ref"; else echo "  MISSING $ref   ← referenced but not in dist/"; fail=1; fi
+-done
+-for f in $(cd dist && find . -type f | sed 's#^\./##'); do
++done < "$refs"
++rm -f "$refs"
++
++files=$(mktemp)
++(cd dist && find . -type f | sed 's#^\./##') > "$files"
++while IFS= read -r f; do
+   a=$(shasum < "dist/$f" | cut -c1-40)
+-  b=$(curl -s "$BASE/$f?nocache=$(date +%s)" | shasum | cut -c1-40)
++  b=$(curl -s "$BASE/$(urlpath "$f")?nocache=$(date +%s)" | shasum | cut -c1-40)
+   if [ "$a" = "$b" ]; then echo "  MATCH  $f"; else echo "  DIFF   $f"; fail=1; fi
+-done
++done < "$files"
++rm -f "$files"
++
+ INDEX=$(shasum < dist/index.html | cut -c1-40)
+ for p in CLAUDE.md AGENTS.md firebase-agent-defense-hardening.md setup/migration-log.txt setup/create-users.js \
+          firestore.rules storage.rules firebase.json .firebaserc firestore-debug.log package.json rules.test.js \
+diff --git a/scripts/deploy.sh b/scripts/deploy.sh
+index 044fd05..827396f 100755
+--- a/scripts/deploy.sh
++++ b/scripts/deploy.sh
+@@ -10,7 +10,11 @@ cd "$(dirname "$0")/.."
+ if [ -n "$(git status --porcelain)" ]; then echo "[deploy] refusing: working tree is not clean"; git status --short; exit 1; fi
+ git fetch -q
+ if [ -n "$(git rev-list @{u}..HEAD)" ]; then echo "[deploy] refusing: HEAD has commits not on the remote — push first"; exit 1; fi
++# Pinned: this script can only ever deploy to Studio Hub's own Netlify site
++# (tinker-hq.netlify.app), whatever NETLIFY_SITE_ID or a folder link says.
++SITE_ID=bba574ab-3f47-44b9-8d51-7f4bf319aaf3
++if [ -n "${NETLIFY_SITE_ID:-}" ] && [ "$NETLIFY_SITE_ID" != "$SITE_ID" ]; then echo "[deploy] refusing: NETLIFY_SITE_ID is not Studio Hub's site"; exit 1; fi
+ SHA=$(git rev-parse HEAD)
+ sh scripts/build-dist.sh
+-netlify deploy --prod --dir dist --message "$SHA"
++netlify deploy --prod --dir dist --site "$SITE_ID" --message "$SHA"
+ sh scripts/check-live.sh
