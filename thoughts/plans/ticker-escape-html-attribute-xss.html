@@ -77,13 +77,89 @@ ship in one commit, and a wiring test pins it.</div>
 staff member can write a name that runs script in an admin's session of the payroll source-of-truth app. Nothing
 indicates it has happened (names in the roster today are ordinary), and every staff member is a known employee &mdash;
 but the fix should not wait.</p>
-<div class="warn"><strong>Separate, not in this plan:</strong> the roster doc being writable in full by every staff member
-is itself a rules gap (a staff member can rename, archive or re-point anyone's roster entry). That is a
-<code>studio-hub/firestore.rules</code> change with its own plan, tests and sha-approval. This plan makes the display safe
-whatever the rules allow.</div>
+<div class="warn"><strong>Separate, not in this plan (each needs its own plan):</strong>
+<ol>
+  <li><b>Rules:</b> every staff member can write the whole roster doc, so they can rename, archive or re-point anyone's
+  entry. Staff can also write any field on their own entries, time-off and streak docs (<code>name</code>,
+  <code>type</code>, <code>status</code>, <code>coverageStatus</code>, streak counts). That is payroll-relevant on its
+  own. Fixing it is a <code>studio-hub/firestore.rules</code> change, with its own tests and sha-approval.</li>
+  <li><b><code>applyTimeOffOverrides</code></b> (<code>js/timeoff-schedule.js:71</code>) keys schedule overrides on
+  <code>dates[].date</code> without checking it against <code>YMD_RE</code>.</li>
+  <li><b><code>user-import.html</code></b> has the named staff members' initial passwords hard-coded (9 accounts; commit
+  <code>5143de8</code>). It prints them to the page, and it is inside the deployed folder, so it is <b>confirmed served</b>
+  publicly at <code>tinker-timeclock.netlify.app/user-import.html</code> (Sep 29: the live response is byte-identical to the repo file, not the SPA fallback). Christie should decide on rotation
+  and on removing the file. This is urgent and does not wait on this plan.</li>
+</ol>
+This plan makes the display safe whatever the rules allow.</div>
 
 <h2>Audit &mdash; every place to change</h2>
-<p id="audit">(filled in below from the full sweep)</p>
+<p>A full read-only sweep of <code>js/app.js</code> and the root HTML pages (Sep 29). The spot checks
+(<code>1357</code>, <code>2273</code>, <code>2676</code>, <code>6883</code>, <code>7027</code>, <code>getEntryLabel</code>, the
+<code>log()</code> helpers) were confirmed by hand. <strong>The problem is wider than the escaper:</strong> many
+staff-writable fields go into manager views with <em>no</em> escaping at all. The rules let a staff member create and
+update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</code> docs with any fields (only
+<code>uid</code> is checked), and <code>set()</code> their own <code>timeclock_streaks</code> doc.</p>
+
+<h3>Group 1 &mdash; <code>escapeHtml</code> in a quoted attribute (fixed by the new escaper alone)</h3>
+<p><code>3215, 3359, 3367, 5068, 5513, 7041, 9939</code> (<code>value</code>/<code>title</code>/<code>data-*</code>);
+<code>5115, 5352, 10414, 10446, 10449</code> (<code>id="prefix-${escapeHtml(…)}"</code>); <code>7308, 7604</code>
+(<code>href="mailto:${escapeHtml(email)}"</code>).</p>
+
+<h3>Group 2 &mdash; strings in an <code>on…</code> handler (all move to <code>jsArg</code>)</h3>
+<table>
+  <tr><th>Lines</th><th>Today</th></tr>
+  <tr><td>2242&ndash;2252</td><td><code>openAdminEntryEditor('${safeUid}','${safeName}',…)</code>. The no-op <code>.replace</code>,
+  and no HTML escaping. <code>safeName</code> is <code>entries.name</code>/roster, so it is staff-writable.</td></tr>
+  <tr><td>2273</td><td><code>editStreaksInline('${escapeHtml}','${escapeHtml}', ${streakData.clockInStreak ?? 0}, …)</code>.
+  <b>The two streak values go in as raw JS</b>, and the streak doc is staff-<code>set()</code>. This is the worst line in the
+  file. Fix: <code>Number(x) || 0</code>.</td></tr>
+  <tr><td>4154, 5106&ndash;5112, 5342, 10415, 10451</td><td><code>'${escapeHtml(x)}'</code></td></tr>
+  <tr><td>6522, 6524, 6528, 6532, 6564, 6621, 6688, 6690</td><td><code>'${emp.id}'</code> (raw) and
+  <code>'${escapeHtml(name).replace(/'/g,"\\'")}'</code>. A <code>"</code> or <code>\</code> still breaks it.</td></tr>
+  <tr><td>4142, 4148, 4153</td><td><code>'${sched.uid}'</code> (raw; the id is a schedule doc id, written by managers)</td></tr>
+  <tr><td>3574, 3575, 3602, 3603</td><td><code>'${dateStr}'</code>, an override key. <code>applyTimeOffOverrides</code>
+  keys it on the staff-submitted <code>dates[].date</code>, with no <code>YMD_RE</code> check, once a manager approves.</td></tr>
+  <tr><td>1134, 10058</td><td><code>'${e.timestamp}'</code> (in the staff member's own view) and <code>'${scheduledEnd}'</code>
+  (kiosk, from the schedule).</td></tr>
+  <tr><td>Safe, left as is</td><td><code>'${e.id}'</code>, <code>'${r.id}'</code>, <code>'${timeoffId}'</code> (Firestore
+  auto-ids) and numeric <code>${idx}</code>/<code>${i}</code>. The test's allow-list names each one.</td></tr>
+</table>
+
+<h3>Group 3 &mdash; no escaping at all, staff-writable, shown to managers (HIGH)</h3>
+<table>
+  <tr><th>Lines</th><th>Value &rarr; view</th></tr>
+  <tr><td>1357, 1368, 1399</td><td><code>entries.name</code> &rarr; Live dashboard, activity log</td></tr>
+  <tr><td>1400, 2682, 2806, 2823 (+913, 1140 own view)</td><td><code>getEntryLabel(e.type)</code>, which returns an unknown
+  <code>type</code> unchanged. Fix: escape inside the fallback.</td></tr>
+  <tr><td>2676, 2678, 2685</td><td><code>value="${req.requestedTime…}"</code>, a change request &rarr; pending changes</td></tr>
+  <tr><td>2694, 2823</td><td><code>${e.date}</code> (a stored field)</td></tr>
+  <tr><td>5120</td><td><code>${a.message}</code>, which embeds <code>e.minutesLate</code></td></tr>
+  <tr><td>2271&ndash;2272, 10414 (<code>value=</code>), 10500&ndash;10501</td><td>streak counts</td></tr>
+  <tr><td>4896</td><td><code>timeclock_hfwa.hours</code></td></tr>
+  <tr><td>6883&ndash;6885, 6903, 7566, 7568</td><td>time-off <code>coverageStatus</code>/<code>status</code>, in both a
+  <code>class</code> attribute and text</td></tr>
+  <tr><td>7583</td><td>time-off <code>partialStart/End</code></td></tr>
+  <tr><td>7027</td><td><code>appConfig.timeoffCategories</code> (<code>value="${c}"</code> + text). <code>timeclock_settings</code>
+  is manager-write except <code>employees</code>, so this row is really MEDIUM. It gets escaped anyway.</td></tr>
+  <tr><td>6005, 4198</td><td><code>value="${emp.id}"</code> / <code>value="${o.uid}"</code>, from the staff-writable roster</td></tr>
+</table>
+<p><b>Own view only (MEDIUM, same fix):</b> <code>915, 1142</code> (<code>subNote</code>, <code>extensionMinutes</code>),
+<code>1030</code>, <code>7118&ndash;7127</code>.<br>
+<b>Manager-only sources (LOW, same fix for consistency):</b> <code>studio</code> text (<code>1489, 2670, 3081, 3592,
+4168, 4314, 4343, 4384</code>), <code>3536</code> start/end <code>value=</code>, <code>4141, 4206</code> ids,
+<code>2096</code> <code>lockedBy</code>, <code>6307, 6328</code> CSV preview.<br>
+<b>Confirmed safe:</b> Firestore auto-ids, <code>formatTimeStr()</code> output, <code>toLocaleDateString</code> labels,
+numeric indexes, and <code>showToast</code> (it uses <code>textContent</code>).</p>
+
+<h3>Group 4 &mdash; the standalone admin pages</h3>
+<ul>
+  <li><code>summer-camp-sync.html</code>: its own <code>esc()</code> (line 440) only handles <code>&amp; &lt; &gt;</code> and
+  throws on a non-string. It is used in <code>value="…"</code> at 504, 505, 514 and 515 (Summer Camps
+  <code>scheduleGroups[].start/end</code>).</li>
+  <li><code>grant-timeclock-access.html</code> (<code>log()</code> line 38) and <code>schedule-import.html</code> (line 44) do
+  <code>innerHTML +=</code> with <code>users.name</code>/<code>role</code> and roster <code>emp.name</code>. Fix:
+  <code>textContent</code> spans, the way <code>summer-camp-sync.html</code>'s <code>log()</code> already does.</li>
+</ul>
 
 <h2>Design</h2>
 <ol>
@@ -167,7 +243,31 @@ the wiring test fails in <code>npm test</code>.</div>
 </div>
 
 <div class="phase">
-<h3>Phase 3 &mdash; Verify locally, review, then ask to deploy</h3>
+<h3>Phase 3 &mdash; Escape the unescaped (Group 3) and the standalone pages (Group 4)</h3>
+<p><b>Acceptance:</b> no string from Firestore reaches <code>innerHTML</code> in app.js without <code>escapeHtml</code>
+(or a <code>Number()</code> coercion for counts); the admin pages log with <code>textContent</code>.</p>
+<ul>
+  <li>Wrap every Group 3 line (HIGH, MEDIUM and LOW) in <code>escapeHtml</code>. Coerce counts and minutes
+  (<code>minutesLate</code>, streaks, <code>hours</code>) with <code>Number(x) || 0</code>, so the display stays numeric.
+  Make <code>getEntryLabel</code>'s fallback <code>escapeHtml(type)</code> (it is only used in HTML; check every caller
+  first).</li>
+  <li><code>summer-camp-sync.html</code> <code>esc()</code> → the same five-entity encoder, with a
+  <code>String(s ?? '')</code> guard.</li>
+  <li><code>grant-timeclock-access.html</code> and <code>schedule-import.html</code> <code>log()</code> → create a span and
+  set its <code>textContent</code>.</li>
+  <li>Separate commit from Phase 2 (it can land on its own: every change is an added escape, never a removed one).</li>
+</ul>
+<div class="bdd"><b>Given</b> a clock entry whose <code>name</code> is <code>&lt;img src=x onerror=alert(1)&gt;</code>
+<b>When</b> a manager opens the Live dashboard and the activity log <b>Then</b> the text is shown literally and no
+<code>img</code> element exists.</div>
+<div class="bdd"><b>Given</b> a streak doc with <code>clockInStreak: "1);alert(1);("</code> <b>When</b> the admin row
+renders <b>Then</b> the Edit button's handler receives <code>0</code>.</div>
+<div class="bdd"><b>Edge:</b> ordinary data (all of today's) renders character-for-character the same as before. Compare
+the Live dashboard, the pending change requests and the time-off list before and after, on the emulator.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 4 &mdash; Verify locally, review, then ask to deploy</h3>
 <ul>
   <li><code>npm test</code> green (emulator; report the printed count).</li>
   <li>Local check on <code>npx http-server . -p 8093</code> against the emulator or with an in-memory roster entry
