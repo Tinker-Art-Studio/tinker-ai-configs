@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: Ticker never lets a stored name or note run as code</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026 &middot;
-<strong>v2</strong> after design review round 1 (Codex + Claude, both "not yet"; every finding verified and folded in) &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
+<strong>v3</strong> after design review rounds 1&ndash;2 (Codex + Claude each round, all "not yet"; every finding verified against the code and folded in) &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
 written approval to edit the repo (Tinker Ticker rule).</em></p>
 
 <div class="status">
@@ -115,9 +115,9 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
   and no HTML escaping. <code>safeName</code> is <code>entries.name</code>/roster, so it is staff-writable.</td></tr>
   <tr><td>2273</td><td><code>editStreaksInline('${escapeHtml}','${escapeHtml}', ${streakData.clockInStreak ?? 0}, …)</code>.
   <b>The two streak values go in as raw JS</b>, and the streak doc is staff-<code>set()</code>. This is the worst line in the
-  file. Fix: <code>Number(x) || 0</code>.</td></tr>
+  file. Fix: <code>${finiteOr(x, 0)}</code> (matches today's <code>?? 0</code>).</td></tr>
   <tr><td>4154, 5106&ndash;5112, 5342, 10415, 10451</td><td><code>'${escapeHtml(x)}'</code></td></tr>
-  <tr><td>6620&ndash;6621</td><td>a handler whose attribute spans two lines (the test must see it)</td></tr>
+  <tr><td>2097</td><td><code>'…onclick="handleUnlockPeriod(\'' + period.key + '\')"…'</code>, a handler built by string concatenation. Rewritten as a template with <code>${jsArg(period.key)}</code>.</td></tr>
   <tr><td>6522, 6524, 6528, 6532, 6564, 6621, 6688, 6690</td><td><code>'${emp.id}'</code> (raw) and
   <code>'${escapeHtml(name).replace(/'/g,"\\'")}'</code>. A <code>"</code> or <code>\</code> still breaks it.</td></tr>
   <tr><td>4142, 4148, 4153</td><td><code>'${sched.uid}'</code> (raw; the id is a schedule doc id, written by managers)</td></tr>
@@ -142,7 +142,7 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
   <tr><td>2238</td><td><code>${lateInMins}m late</code>, from the stored <code>minutesLate</code> &rarr; admin timesheets (round 1; the computed one at 1841 is safe)</td></tr>
   <tr><td>3359</td><td><code>data-date="${r.date}" data-layer="${r.layer}"</code> raw on the Reminders checkbox (round 1). An existing test pins this text verbatim (<code>schedule-editor-wiring.test.js:2013</code>) and is updated with it.</td></tr>
   <tr><td>2271&ndash;2272, 10414 (<code>value=</code>), 10500&ndash;10501</td><td>streak counts</td></tr>
-  <tr><td>4896</td><td><code>timeclock_hfwa.hours</code></td></tr>
+  <tr><td>4896, 4648</td><td><code>timeclock_hfwa.hours</code> (manager dashboard; 4648 the HFWA card list, round 2)</td></tr>
   <tr><td>6883&ndash;6885, 6903, 7566, 7568</td><td>time-off <code>coverageStatus</code>/<code>status</code>, in both a
   <code>class</code> attribute and text</td></tr>
   <tr><td>7583</td><td>time-off <code>partialStart/End</code></td></tr>
@@ -154,7 +154,7 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
 <code>1030</code>, <code>7118&ndash;7127</code>.<br>
 <b>Manager-only sources (LOW, same fix for consistency):</b> <code>studio</code> text (<code>1489, 2670, 3081, 3592,
 4168, 4314, 4343, 4384</code>), <code>4297, 4299</code> <code>earlyClockInMinutes</code> (round 1), <code>3536</code> start/end <code>value=</code>, <code>4141, 4206</code> ids,
-<code>2096</code> <code>lockedBy</code>, <code>6307, 6328</code> CSV preview.<br>
+<code>2096</code> <code>lockedBy</code> (string concatenation, not a template &mdash; the audit greps don't show it), <code>6306, 6328</code> CSV preview. <code>10446/10449</code> <code>value="${currentCi}"</code> are safe only because 2273 now passes finite numbers; they get <code>finiteOr</code> too.<br>
 <b>Confirmed safe:</b> Firestore auto-ids, <code>formatTimeStr()</code> output, <code>toLocaleDateString</code> labels,
 numeric indexes, <code>showToast</code> (it uses <code>textContent</code>), <code>reversalBadgeTitle</code> (6867 &rarr; 6889, literal output) and the <code>title=</code> at 3587/3594. No <code>insertAdjacentHTML</code>/<code>outerHTML</code>/<code>document.write</code>/<code>eval</code>/<code>setAttribute('on…')</code>/<code>javascript:</code> anywhere under <code>js/</code>, and no single-quoted or unquoted <code>on…=</code> attribute in app.js (round 1, Claude).</p>
 
@@ -190,10 +190,20 @@ function jsArg(v) { return escapeAttr(JSON.stringify(v == null ? '' : String(v))
   <li><b>A third helper for numbers shown as numbers:</b>
 <pre>// A finite number, or the caller's own fallback — never a coerced 0 that hides a placeholder.
 function finiteOr(v, fallback) { const n = Number(v); return (v !== '' &amp;&amp; v != null &amp;&amp; Number.isFinite(n)) ? n : fallback; }</pre>
-  Each site keeps what it shows today when the value is missing: streaks <code>finiteOr(x, '—')</code> (2269&ndash;2270),
+  Each site keeps what it shows today when the value is missing: streaks <code>finiteOr(x, '—')</code> (2265&ndash;2266; a stored <code>''</code> changes from blank to <code>—</code>, accepted),
   the restore input <code>finiteOr(previousStreak, '')</code> (10414, so the placeholder still shows), handler args
   <code>finiteOr(x, 0)</code> (2273). <code>Number(x) || 0</code> is not used: it turns "no streak" into 0 and accepts
-  <code>"Infinity"</code> (round 1, both reviewers).</li>
+  <code>"Infinity"</code> (round 1, both reviewers). Every site, with its fallback named (round 2):
+  <table>
+    <tr><th>Line</th><th>Today</th><th>After</th></tr>
+    <tr><td>1393</td><td><code>+${e.extensionMinutes}m</code> (missing &rarr; <code>+undefinedm</code>)</td><td><code>+${finiteOr(e.extensionMinutes, 0)}m</code></td></tr>
+    <tr><td>2238</td><td><code>${lateInMins ? lateInMins + 'm late' : 'late'}</code></td><td>coerce first, <code>const lateN = finiteOr(lateInMins, 0)</code>, then the same ternary on <code>lateN</code> (so the test is not on the raw value)</td></tr>
+    <tr><td>5030</td><td><code>e.minutesLate ? ` (${e.minutesLate} min late)` : ''</code></td><td>same shape on <code>finiteOr(e.minutesLate, 0)</code></td></tr>
+    <tr><td>4648, 4896</td><td><code>${e.hours}h</code></td><td><code>${finiteOr(e.hours, 0)}h</code></td></tr>
+    <tr><td>10500&ndash;10501</td><td><code>${r.clockInStreak}</code></td><td><code>${finiteOr(r.clockInStreak, 0)}</code></td></tr>
+    <tr><td>4297, 4299</td><td><code>${sched.earlyClockInMinutes || 15}</code></td><td><code>${finiteOr(sched.earlyClockInMinutes, 15) || 15}</code> &mdash; keeps today's display exactly, 0 included. (A stored 0 already shows 15 here while the clock-in gate at 450&ndash;451 honours 0; that pre-existing mismatch is not changed by this plan.)</td></tr>
+    <tr><td>10446, 10449</td><td><code>value="${currentCi}"</code></td><td><code>value="${finiteOr(currentCi, 0)}"</code></td></tr>
+  </table></li>
   <li><b><code>escapeHtml</code> becomes <code>escapeAttr</code></b> (same body, kept by name so the ~100 text-context
   callers don't change). Encoding quotes in text is invisible. Every context-A line is fixed by this alone.</li>
   <li><b>Every context-B handler switches to <code>jsArg</code></b>, dropping its hand-written quotes and any
@@ -205,8 +215,9 @@ function finiteOr(v, fallback) { const n = Number(v); return (v !== '' &amp;&amp
   allow-list with a reason.</li>
   <li><b><code>getEntryLabel</code> stays raw.</b> It also feeds <code>showToast</code> (2574, 2593, 2631) and
   <code>confirm()</code> (2588), and 2473 already escapes it; escaping inside it would show <code>&amp;amp;</code> in
-  toasts and double-encode 2473. Its HTML call sites are escaped instead: 895, 913, 1107, 1140, 1161, 1390, 1400, 2682,
-  2806, 2823 (re-find by grep; lines drift).</li>
+  toasts and double-encode 2473. It is escaped where it lands in HTML instead: sinks 913, 1140, 1165, 1400, 2682, 2806,
+  2823 (from the assignments at 895, 1107, 1161, 1390, 2663, 2799; 2470&rarr;2473 is already escaped). Both reviewers
+  confirmed this set is complete. Re-find by grep, because line numbers drift.</li>
   <li><b><code>summer-camp-sync.html</code>'s own <code>esc()</code></b> gets the same five-entity encoding and a
   <code>String(s ?? '')</code> guard.</li>
 </ol>
@@ -249,22 +260,40 @@ that row still works; no value passed through <code>escapeHtml</code> or into a 
 Group 3 values are still open until Phase 3 &mdash; the two phases ship in the same deploy.)</p>
 <ul>
   <li><code>escapeHtml</code> body → <code>return escapeAttr(str);</code></li>
-  <li>Every audited context-B handler → <code>jsArg</code>. Every audited raw attribute interpolation of a stored
-  string → <code>escapeHtml</code>.</li>
+  <li>Every audited context-B handler → <code>jsArg</code> (or <code>finiteOr</code> for a number), including 2097's
+  concatenated one. Raw Group 3 attribute interpolations are <b>Phase 3</b>, not here.</li>
   <li>Wiring tests in <code>schedule-editor-wiring.test.js</code> (source-level, the only way to reach app.js):
     <ul>
       <li>no <code>escapeHtml(…).replace(</code> anywhere;</li>
-      <li>extract every complete <code>on[a-z]+="…"</code> attribute from the source <b>across line breaks</b> (match to
-      the closing <code>"</code>, not end of line); inside each, every <code>${…}</code> must be <code>${jsArg(…)}</code>,
-      <code>${finiteOr(…)}</code>, or on a named allow-list with a reason (auto-ids <code>e.id</code>, <code>r.id</code>,
-      <code>timeoffId</code>; numeric <code>idx</code>/<code>i</code>). Bare <code>${x}</code>, <code>'${x}'</code> and
-      <code>"${x}"</code> all fail;</li>
+      <li>extract every <code>on[a-z]+="…"</code> attribute in a template literal, ending it at the <code>"</code> that is
+      followed by whitespace, <code>&gt;</code> or <code>/&gt;</code>, not at the first <code>"</code>. Today's
+      <code>.replace(/'/g, "\'")</code> bodies (6522&hellip;6690) and a <code>"${x}"</code> both contain a literal
+      <code>"</code>, and a naive <code>[^"]*</code> stops inside them (round 2, both reviewers). As a backstop, any
+      extracted body that contains <code>"</code> <b>fails</b>. Inside each attribute, every <code>${…}</code> must be
+      <code>${jsArg(…)}</code>, <code>${finiteOr(…)}</code>, or an allow-listed expression:
+      <table>
+        <tr><th>Expression</th><th>Why it's safe</th><th>Where (today)</th></tr>
+        <tr><td><code>e.id</code>, <code>r.id</code>, <code>req.id</code>, <code>timeoffId</code></td><td>Firestore auto-ids (<code>.doc()</code>)</td><td>1134, 2476&ndash;2705, 4328, 4338, 4898, 4941, 7610, 7697&ndash;7741</td></tr>
+        <tr><td><code>idx</code>, <code>i</code>, <code>daysFromToday</code>, <code>pastOverrideDates.length</code></td><td>locally computed numbers</td><td>5419, 5513, 6319, 6893, 7120&ndash;7136, 7318, 7321, 5516, 4358</td></tr>
+        <tr><td><code>id</code> (4870)</td><td>a literal section key, <code>'hfwa'</code>/<code>'changes'</code>/<code>'timeoff'</code> (4903, 4924, 4945)</td><td>4870</td></tr>
+        <tr><td><code>k</code> (9487)</td><td>the literal keypad array</td><td>9487</td></tr>
+      </table>
+      The list is keyed by expression text <em>and</em> function, so <code>${id}</code> in another function is not let
+      through. On the first run, anything else that fails is either converted or added with a reason in the Decisions
+      log. Bare <code>${x}</code>, <code>'${x}'</code> and <code>"${x}"</code> all fail;</li>
       <li>no handler built by concatenation: no <code>on[a-z]+=</code> inside a quoted JS string next to <code>+</code>,
       and no prebuilt handler fragment variable (<code>clickAttr</code> at 1134, 4328, 4338) that interpolates anything
       but <code>jsArg</code>;</li>
-      <li>no single-quoted or unquoted <code>on…=</code> attribute;</li>
-      <li>a self-test: the checker is run against a few bad snippets (bare, multi-line, quoted) and must reject each,
-      so a regex that silently matches nothing cannot pass;</li>
+      <li>no single-quoted or unquoted <code>on…=</code> attribute <em>inside a string or template literal</em>. A DOM
+      property assignment, <code>el.onclick = () =&gt; …</code> (4218, 4219, 4436), is the safe pattern and must not be
+      flagged; the check skips anything with a <code>.</code> before it (round 2, Claude);</li>
+      <li>a self-test: the checker must reject each of these bad snippets: bare <code>${x}</code>, <code>'${x}'</code>,
+      <code>"${x}"</code>, a body containing <code>"\'"</code>, a two-line attribute, a concatenated
+      <code>'onclick="f(\'' + x</code>, and an allow-listed name used in the wrong function. It must accept
+      <code>${jsArg(x)}</code> and <code>el.onclick = …</code>. That way a regex that silently matches nothing cannot
+      pass;</li>
+      <li>a count check: the checker must find at least as many handler attributes as a plain <code>on[a-z]+="</code>
+      count over the file (71 interpolating today), so it cannot skip one silently;</li>
       <li><code>escapeHtml</code> delegates to <code>escapeAttr</code>.</li>
     </ul></li>
   <li>Lands <b>after</b> <code>fix/sub-confirm-manager-only</code> merges to main (both edit <code>js/app.js</code>);
@@ -344,7 +373,8 @@ apostrophe names; <code>jsArg</code> without the attribute fix leaves context A 
   landed (<code>grep -n "function escapeAttr" js/schedule-helpers.js</code>)?</li>
   <li>Re-run the audit greps on the current <code>js/app.js</code>:
 <pre>grep -n '="[^"]*\${escapeHtml' js/app.js
-grep -nE 'on[a-z]+="[^"]*\$\{' js/app.js</pre></li>
+grep -nE 'on[a-z]+="[^"]*\$\{' js/app.js
+grep -nE "innerHTML\s*[+]?=\s*'|' \+ [a-zA-Z_.]+ \+ '" js/app.js   # concatenation-built HTML (2096, 2097)</pre></li>
 </ol>
 
 <h2>Decisions log (append-only)</h2>
@@ -359,6 +389,15 @@ grep -nE 'on[a-z]+="[^"]*\$\{' js/app.js</pre></li>
   sinks 1393, 2238, 3359 data-date/layer, 4297/4299, 1134 <code>e.type</code>, 6620&ndash;6621; the 2013 test to update;
   kiosk as a writer; one-pass entity decoder and more edge cases; the <code>undefined</code> claim corrected (to be
   measured).</li>
+  <li><b>Sep 29, round 2 → v3</b> (Codex + Claude, both "no"; all verified): 2273's table cell now matches the Design
+  (<code>finiteOr</code>, not <code>Number||0</code>) (Claude B1); the allow-list is complete for today's 71
+  interpolating handlers (<code>req.id</code>, <code>daysFromToday</code>, <code>pastOverrideDates.length</code>,
+  literal <code>id</code>/<code>k</code>) and is keyed by function (both, BLOCKING); the attribute matcher ends at a
+  context-aware closing quote, rejects bodies containing <code>"</code>, and has a count check (both, BLOCKING); 2097's
+  concatenated handler added; 4648 HFWA sink added (Codex B); per-site <code>finiteOr</code> fallbacks named, and
+  4297/4299 keep <code>|| 15</code> exactly (both); DOM <code>.onclick =</code> is not flagged; the getEntryLabel sink
+  list is corrected (1165 added) and confirmed complete; the Phase 2/3 attribute split is made consistent; the
+  "6620&ndash;6621 spans two lines" claim is removed (it doesn't); line refs fixed (2265&ndash;2266, 6306).</li>
 </ul>
 </body>
 </html>
