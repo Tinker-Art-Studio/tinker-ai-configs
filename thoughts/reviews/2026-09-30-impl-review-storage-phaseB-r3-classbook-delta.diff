@@ -1,0 +1,173 @@
+diff --git a/e2e/data-safety.spec.js b/e2e/data-safety.spec.js
+index 6037ce7..85e7285 100644
+--- a/e2e/data-safety.spec.js
++++ b/e2e/data-safety.spec.js
+@@ -8699,7 +8699,9 @@ test.describe('Data Safety — camp seasons Phase 1: implementation-review regre
+         // weekly semester: the seeded spring-2026 is view-only while it moves to
+         // its own storage (Spring 2026 storage move), and saveSettings refuses it.
+         const previousGlobal = globalSemesterKey;
+-        currentConfig.semesters['e2e-settings-weekly'] = { ...JSON.parse(JSON.stringify(currentConfig.semesters['spring-2026'])), name: 'E2E Settings Weekly' };
++        // Empty roster: saveSettings' slot creation then writes nothing to the shared
++        // emulator lessonData (the real updateAppData is stubbed below).
++        currentConfig.semesters['e2e-settings-weekly'] = { ...JSON.parse(JSON.stringify(currentConfig.semesters['spring-2026'])), name: 'E2E Settings Weekly', classRoster: {} };
+         setGlobalSemester('e2e-settings-weekly');
+         loadSettingsForm();
+         const semKey = getSettingsSemKey();
+diff --git a/e2e/spring-own-doc.spec.js b/e2e/spring-own-doc.spec.js
+index 7ca2a71..2220f4b 100644
+--- a/e2e/spring-own-doc.spec.js
++++ b/e2e/spring-own-doc.spec.js
+@@ -277,4 +277,126 @@ test.describe('Spring 2026 storage move — Phase B', () => {
+     expect(cards.indexOf('refuseIfWeeklySemesterPaused(')).toBeGreaterThan(-1);
+     expect(cards.indexOf('refuseIfWeeklySemesterPaused(')).toBeLessThan(cards.indexOf('{ planComplete: cb.checked }'));
+   });
++
++  test('while paused, the real Spring editors refuse before any upload or write (teacher + admin with photos, Plan Complete, all Q&A)', async ({ page }) => {
++    await openApp(page);
++    await page.evaluate(() => setGlobalSemester('spring-2026'));
++    const alerts = [];
++    page.on('dialog', d => { alerts.push(d.message()); d.accept(); });
++    const before = await SM.readCurriculumDoc('lessonData');
++    await page.evaluate(() => { window.__uploads = 0; window.uploadLessonPhoto = async () => { window.__uploads++; return { url: 'x', path: 'x' }; }; });
++    const photo = path.join(__dirname, 'fixtures', 'test-image.jpg');
++    const expectPaused = async (label) => {
++      await expect.poll(() => alerts.join(' | '), { message: label, timeout: 5_000 }).toMatch(PAUSED);
++      alerts.length = 0;
++    };
++
++    // Teacher editor: a text change + a new photo, then Save.
++    await page.evaluate(({ LESSON }) => openTeacherEditModal(LESSON), { LESSON });
++    await page.locator('#te-shortDetails').fill('Edited while paused');
++    await page.locator('#te-photo-input').setInputFiles(photo);
++    await page.locator('#te-save-btn').click();
++    await expectPaused('teacher save');
++    // Teacher Q&A from the same editor.
++    await page.locator('#te-qa-input').fill('A question while paused');
++    await page.locator('#te-qa-send-btn').click();
++    await expectPaused('teacher Q&A');
++    await page.evaluate(() => document.querySelectorAll('.te-modal-overlay, .te-modal').forEach(e => e.remove()));
++
++    // Admin editor: title + photo, then save.
++    await page.evaluate(({ LESSON }) => showAdminEdit(LESSON, 'Fixture Teacher', 'Fixture Class', 1), { LESSON });
++    await page.locator('#ca-edit-title').fill('Admin edit while paused');
++    await page.locator('#ca-edit-photo-input').setInputFiles(photo);
++    await page.evaluate(({ LESSON }) => saveAdminEdit(LESSON, 'Fixture Teacher', 'Fixture Class', 1), { LESSON });
++    await expectPaused('admin save');
++
++    // Admin help response + Q&A reply (their real input elements).
++    await page.evaluate(({ LESSON }) => {
++      for (const id of [`ca-help-input-${LESSON}`, `qa-reply-${LESSON}`]) {
++        const t = document.createElement('textarea'); t.id = id; t.value = 'Reply while paused'; document.body.appendChild(t);
++      }
++    }, { LESSON });
++    await page.evaluate(({ LESSON }) => sendHelpResponse(LESSON), { LESSON });
++    await expectPaused('help response');
++    await page.evaluate(({ LESSON }) => sendQaReply(LESSON), { LESSON });
++    await expectPaused('Q&A reply');
++
++    // Plan Complete checkbox on a real Teacher View card.
++    await page.evaluate(() => { closeAdminModal?.(true); switchTab('teacher-view'); });
++    await page.locator('#tv-teacher-select').selectOption('Fixture Teacher');
++    await page.locator('.tv-toggle-btn[data-tv-view="by-class"]').click();   // the card layout that carries Plan Complete
++    const cb = page.locator(`#pc-${LESSON}`);
++    await expect(cb).toHaveCount(1);
++    if (!(await cb.isVisible())) await page.locator('.tv-class-section.tv-collapsed .tv-collapse-toggle').first().click();   // open the collapsed class section
++    await expect(cb).toBeVisible();
++    const wasChecked = await cb.isChecked();
++    await cb.click();
++    await expectPaused('plan complete');
++    expect(await cb.isChecked()).toBe(wasChecked);
++
++    expect(await page.evaluate(() => window.__uploads)).toBe(0);
++    expect(await SM.readCurriculumDoc('lessonData')).toEqual(before);
++  });
++
++  test('a real overlapping move → undo while a recheck is in flight leaves Spring on its legacy copy, with no false notice', async ({ page }) => {
++    await openApp(page);   // legacy state
++    // Hold the recheck's server read of the own doc for 2 s, so the undo lands while it's in flight.
++    await page.evaluate(() => {
++      const DR = firebase.firestore.DocumentReference.prototype;
++      const orig = DR.get;
++      DR.get = function (opts) {
++        if (this.path === 'curriculum/lessons_spring-2026' && opts?.source === 'server') {
++          return new Promise(r => setTimeout(r, 2000)).then(() => orig.call(this, opts));
++        }
++        return orig.call(this, opts);
++      };
++    });
++    await watchMinSpring(page);
++    // 1. Spring leaves lessonData (legacy loss → recheck starts, held)…
++    const fixtureLessonData = await SM.readCurriculumDoc('lessonData');
++    const withoutSpring = { ...fixtureLessonData }; delete withoutSpring['spring-2026'];
++    await SM.writeCurriculumDoc('lessonData', withoutSpring);
++    await page.waitForTimeout(300);
++    // 2. …then comes straight back (the undo), before the held read returns.
++    await SM.writeCurriculumDoc('lessonData', fixtureLessonData);
++    await page.waitForTimeout(3000);   // the held read resolves (own doc absent) — must be ignored
++    expect(await source(page)).toBe('legacy');
++    expect(await springKeys(page)).toEqual(fixtureKeys());
++    expect(await minSpring(page)).toBe(fixtureKeys().length);
++    expect(await page.evaluate(() => { const el = document.getElementById('storage-notice-banner'); return !!el && !el.classList.contains('hidden'); })).toBe(false);
++  });
++
++  test('verified: the real teacher editor saves Spring into its own doc', async ({ page }) => {
++    await SM.stageMoved({ verified: true });
++    await openApp(page);
++    await page.waitForFunction(() => ownDocSource['spring-2026'] === 'ownDoc' && storageMigrationState?.['spring-2026']?.verified === true);
++    await page.evaluate(() => setGlobalSemester('spring-2026'));
++    await expect(page.locator('#own-doc-paused-notice')).toHaveCount(0);
++    const alerts = [];
++    page.on('dialog', d => { alerts.push(d.message()); d.accept(); });
++    await page.evaluate(({ LESSON }) => openTeacherEditModal(LESSON), { LESSON });
++    await page.locator('#te-shortDetails').fill('Saved through the real editor');
++    await page.locator('#te-save-btn').click();
++    await expect.poll(async () => (await SM.readCurriculumDoc(SM.SPRING_DOC))?.[LESSON]?.shortDetails, { timeout: 10_000 }).toBe('Saved through the real editor');
++    expect(alerts.join(' | ')).not.toMatch(PAUSED);
++    expect((await SM.readCurriculumDoc('lessonData'))['spring-2026']).toBeUndefined();
++  });
++
++  test('Lesson Storage warns above 85%, and is a manager-only section', async ({ page, browser }) => {
++    await openApp(page);   // the suite's account: staff (curriculum-admin)
++    await expect(page.locator('.ca-lesson-storage-section')).toBeHidden();
++    const text = await page.evaluate(() => {
++      lastLegacyLessonData = { big: 'x'.repeat(900 * 1024) };
++      renderLessonStorage();
++      return document.getElementById('ca-lesson-storage-content').textContent;
++    });
++    expect(text).toMatch(/nearly full/);
++    const { MANAGER_STATE_PATH } = require('./helpers/login');
++    const ctx = await browser.newContext({ storageState: MANAGER_STATE_PATH });
++    const mgr = await ctx.newPage();
++    await login(mgr, 'manager');
++    await mgr.waitForFunction(() => lessonDataLoadedSuccessfully === true, null, { timeout: 25_000 });
++    await expect(mgr.locator('.ca-lesson-storage-section')).toBeVisible();
++    await ctx.close();
++  });
+ });
+diff --git a/js/app.js b/js/app.js
+index af3745d..f5dce8c 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -325,6 +325,9 @@ function setupRoleAccess() {
+   // Manager+: full access to all tabs including Settings
+   if (user.role === 'admin' || user.role === 'manager') return;
+ 
++  // Lesson Storage headroom (Spring 2026 storage move) is a manager readout.
++  document.querySelector('.ca-lesson-storage-section')?.style.setProperty('display', 'none');
++
+   // classbook-admin / curriculum-admin / prep role: all tabs EXCEPT Settings
+   // Settings is manager+ only — classbook admins can't change semester config
+   if (hasCurriculumAdminAccess() || hasPrepAccess()) {
+diff --git a/js/firebase-data.js b/js/firebase-data.js
+index 656abef..3138c56 100644
+--- a/js/firebase-data.js
++++ b/js/firebase-data.js
+@@ -1425,7 +1425,7 @@ function setupLessonDataListener(callback) {
+       if (snap.metadata.fromCache && !snap.metadata.hasPendingWrites) return;
+       storageMigrationState = snap.exists ? (snap.data() || {}) : {};
+       updateOwnDocPausedNotice();
+-    }, err => { console.warn('⚠️ storageMigrations listener error — own-doc semesters stay read-only:', err); storageMigrationState = {}; }));
++    }, err => { console.warn('⚠️ storageMigrations listener error — own-doc semesters stay read-only:', err); storageMigrationState = {}; updateOwnDocPausedNotice(); }));
+   for (const semKey of OWN_DOC_SEMESTERS) {
+     ownDocUnsubscribes.push(curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey))
+       .onSnapshot({ includeMetadataChanges: false }, snap => {

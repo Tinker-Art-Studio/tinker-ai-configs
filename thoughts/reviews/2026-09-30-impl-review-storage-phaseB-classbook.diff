@@ -1,0 +1,831 @@
+diff --git a/e2e/helpers/storage-move.js b/e2e/helpers/storage-move.js
+new file mode 100644
+index 0000000..670fa3f
+--- /dev/null
++++ b/e2e/helpers/storage-move.js
+@@ -0,0 +1,62 @@
++/**
++ * EMULATOR-ONLY state staging for the Spring 2026 storage move specs.
++ *
++ * The Phase A rules deliberately make a verified move impossible to undo from any
++ * client (no delete of lessons_spring-2026, verified is one-way), so these specs
++ * reset curriculum/lessonData, curriculum/lessons_spring-2026 and
++ * curriculum/storageMigrations with firebase-admin — exactly as
++ * e2e/emulators/seed.js does: it refuses to initialise unless the emulator env
++ * vars point at loopback, the project is a demo- id, and it never reads a
++ * credential file.
++ */
++const { PROJECT_ID, requireEmulatorEnv } = require('../emulators/config');
++const { loadFixtures } = require('../emulators/seed');
++
++const SPRING = 'spring-2026';
++const SPRING_DOC = 'lessons_spring-2026';
++
++let db = null;
++function adminDb() {
++  if (db) return db;
++  requireEmulatorEnv('storage-move helper');
++  if (!PROJECT_ID.startsWith('demo-')) throw new Error(`[storage-move] PROJECT_ID must be a demo- project (got ${PROJECT_ID})`);
++  const admin = require('firebase-admin');
++  const app = admin.apps.find(a => a && a.name === 'storage-move') || admin.initializeApp({ projectId: PROJECT_ID }, 'storage-move');
++  db = app.firestore();
++  return db;
++}
++
++const fixtureLessonData = () => JSON.parse(JSON.stringify(loadFixtures().curriculum.lessonData));
++const springFixture = () => fixtureLessonData()[SPRING];
++
++// Back to the seeded state: Spring inside lessonData, no own doc, no record.
++async function resetStorageMove() {
++  const d = adminDb();
++  await d.collection('curriculum').doc('lessonData').set(fixtureLessonData());
++  await d.collection('curriculum').doc(SPRING_DOC).delete();
++  await d.collection('curriculum').doc('storageMigrations').delete();
++}
++
++// As if the Phase C transaction ran: Spring in its own doc, gone from lessonData.
++async function stageMoved({ verified }) {
++  const d = adminDb();
++  const lessonData = fixtureLessonData();
++  const spring = lessonData[SPRING];
++  delete lessonData[SPRING];
++  await d.collection('curriculum').doc('lessonData').set(lessonData);
++  await d.collection('curriculum').doc(SPRING_DOC).set({ ...spring, lastUpdated: 'staged', lastUpdatedBy: 'e2e' });
++  await d.collection('curriculum').doc('storageMigrations').set({ [SPRING]: { verified, lessonCount: Object.keys(spring).length, sha256: 'staged' } });
++}
++
++async function readCurriculumDoc(docId) {
++  const snap = await adminDb().collection('curriculum').doc(docId).get();
++  return snap.exists ? snap.data() : null;
++}
++async function writeCurriculumDoc(docId, data, { merge = false } = {}) {
++  await adminDb().collection('curriculum').doc(docId).set(data, { merge });
++}
++async function deleteCurriculumDoc(docId) {
++  await adminDb().collection('curriculum').doc(docId).delete();
++}
++
++module.exports = { SPRING, SPRING_DOC, springFixture, resetStorageMove, stageMoved, readCurriculumDoc, writeCurriculumDoc, deleteCurriculumDoc };
+diff --git a/e2e/spring-own-doc.spec.js b/e2e/spring-own-doc.spec.js
+new file mode 100644
+index 0000000..8f71503
+--- /dev/null
++++ b/e2e/spring-own-doc.spec.js
+@@ -0,0 +1,199 @@
++/**
++ * Spring 2026 storage move — Phase B: the Classbook reads and writes Spring from
++ * curriculum/lessons_spring-2026 once it exists, and never blanks it in between.
++ * Plan: tinker-ai-configs/thoughts/plans/classbook-per-semester-lesson-storage.html (Phase B).
++ *
++ * EMULATOR ONLY, against the deployed Phase A rules (studio-hub 0caf415): Spring's
++ * key in lessonData is fenced, the own doc is editable only once
++ * storageMigrations.spring-2026.verified is true. States are staged with the
++ * emulator-only admin helper (e2e/helpers/storage-move.js) because a verified move
++ * can't be undone from a client, and every test starts from — and the file ends
++ * at — the seeded state.
++ */
++const fs = require('fs');
++const path = require('path');
++const { test, expect } = require('@playwright/test');
++const { login } = require('./helpers/login');
++const SM = require('./helpers/storage-move');
++
++const LESSON = 'fixtureteacher-fixtureclass-1';
++const PAUSED = /editing it is paused/;
++
++test.describe.configure({ mode: 'serial' });
++test.beforeEach(async () => { await SM.resetStorageMove(); });
++test.afterAll(async () => { await SM.resetStorageMove(); });
++
++async function openApp(page) {
++  await login(page);
++  await page.waitForFunction(() => lessonDataLoadedSuccessfully === true
++    && currentLessonData && currentLessonData['spring-2026']
++    && Object.keys(currentLessonData['spring-2026']).length > 0, null, { timeout: 25_000 });
++}
++const springKeys = (page) => page.evaluate(() => Object.keys(currentLessonData?.['spring-2026'] || {}).filter(k => !k.startsWith('last')).sort());
++const source = (page) => page.evaluate(() => ownDocSource['spring-2026']);
++const call = (page, fnSrc, arg) => page.evaluate(async ({ fnSrc, arg }) => {
++  try { await (0, eval)(`(${fnSrc})`)(arg); return 'ok'; } catch (e) { return e.message; }
++}, { fnSrc: fnSrc.toString(), arg });
++// Records the smallest Spring lesson count seen, every 25 ms, from now on.
++const watchMinSpring = (page) => page.evaluate(() => {
++  window.__minSpring = Infinity;
++  window.__springWatch = setInterval(() => {
++    const n = Object.keys(currentLessonData?.['spring-2026'] || {}).length;
++    if (n < window.__minSpring) window.__minSpring = n;
++  }, 25);
++});
++const minSpring = (page) => page.evaluate(() => { clearInterval(window.__springWatch); return window.__minSpring; });
++
++const fixtureKeys = () => Object.keys(SM.springFixture()).sort();
++
++test.describe('Spring 2026 storage move — Phase B', () => {
++
++  test('before the move: Spring is viewable, every Spring write is paused, other semesters save', async ({ page }) => {
++    await openApp(page);
++    expect(await source(page)).toBe('legacy');
++    expect(await springKeys(page)).toEqual(fixtureKeys());
++
++    expect(await call(page, ({ LESSON }) => saveSingleLesson('spring-2026', LESSON, { shortDetails: 'E2E' }), { LESSON })).toMatch(PAUSED);
++    expect(await call(page, ({ LESSON }) => saveMultipleLessonFields('spring-2026', [{ lessonKey: LESSON, lessonData: { shortDetails: 'E2E' } }]), { LESSON })).toMatch(PAUSED);
++    expect(await call(page, ({ LESSON }) => deleteLessonKey('spring-2026', LESSON), { LESSON })).toMatch(PAUSED);
++    expect(await call(page, () => saveLessonData('spring-2026', {}))).toMatch(PAUSED);
++
++    const ld = await SM.readCurriculumDoc('lessonData');
++    expect(ld['spring-2026']).toEqual(SM.springFixture());
++
++    // Another weekly semester still saves to lessonData, exactly as before.
++    expect(await call(page, () => saveSingleLesson('e2e-other-semester', 'e2e-lesson', { shortDetails: 'Other' }))).toBe('ok');
++    expect((await SM.readCurriculumDoc('lessonData'))['e2e-other-semester']['e2e-lesson'].shortDetails).toBe('Other');
++  });
++
++  test('moved but not yet verified: Spring shows from its own doc; edits are still paused', async ({ page }) => {
++    await SM.stageMoved({ verified: false });
++    await openApp(page);
++    expect(await source(page)).toBe('ownDoc');
++    expect(await springKeys(page)).toEqual(fixtureKeys());
++    expect(await call(page, ({ LESSON }) => saveSingleLesson('spring-2026', LESSON, { shortDetails: 'E2E' }), { LESSON })).toMatch(PAUSED);
++    expect((await SM.readCurriculumDoc(SM.SPRING_DOC))[LESSON]).toEqual(SM.springFixture()[LESSON]);
++  });
++
++  test('moved and verified: every Spring write lands in its own doc at lessonKey paths; lessonData untouched', async ({ page }) => {
++    await SM.stageMoved({ verified: true });
++    await openApp(page);
++    await page.waitForFunction(() => storageMigrationState?.['spring-2026']?.verified === true);
++    const before = await SM.readCurriculumDoc('lessonData');
++
++    expect(await call(page, ({ LESSON }) => saveSingleLesson('spring-2026', LESSON, { shortDetails: 'Saved to own doc' }), { LESSON })).toBe('ok');
++    expect(await call(page, ({ LESSON }) => saveMultipleLessonFields('spring-2026', [{ lessonKey: LESSON, lessonData: { processStep1: 'Step' } }]), { LESSON })).toBe('ok');
++    const own = await SM.readCurriculumDoc(SM.SPRING_DOC);
++    expect(own[LESSON].shortDetails).toBe('Saved to own doc');
++    expect(own[LESSON].processStep1).toBe('Step');
++    expect(own[LESSON].teacher).toBe(SM.springFixture()[LESSON].teacher);   // a per-field write, not a replace
++
++    const readBack = await page.evaluate(({ LESSON }) => readAdminLessonDoc('spring-2026', LESSON, { source: 'server' }), { LESSON });
++    expect(readBack.shortDetails).toBe('Saved to own doc');
++
++    const other = fixtureKeys().find(k => k !== LESSON);
++    expect(await call(page, ({ other }) => deleteLessonKey('spring-2026', other), { other })).toBe('ok');
++    expect((await SM.readCurriculumDoc(SM.SPRING_DOC))[other]).toBeUndefined();
++
++    const after = await SM.readCurriculumDoc('lessonData');
++    expect(after['spring-2026']).toBeUndefined();
++    expect(after).toEqual(before);
++  });
++
++  test('the move happening while a tab is open: Spring switches to its own doc and is never blank', async ({ page }) => {
++    await openApp(page);
++    expect(await source(page)).toBe('legacy');
++    await watchMinSpring(page);
++    await SM.stageMoved({ verified: true });
++    await page.waitForFunction(() => ownDocSource['spring-2026'] === 'ownDoc', null, { timeout: 15_000 });
++    await page.waitForTimeout(500);
++    expect(await minSpring(page)).toBe(fixtureKeys().length);
++    expect(await springKeys(page)).toEqual(fixtureKeys());
++    expect(await page.locator('#storage-notice-banner:not(.hidden)').count()).toBe(0);
++  });
++
++  test('a later lessonData snapshot (another semester saved) does not blank Spring', async ({ page }) => {
++    await SM.stageMoved({ verified: true });
++    await openApp(page);
++    await watchMinSpring(page);
++    await SM.writeCurriculumDoc('lessonData', { 'e2e-bump': { x: { teacher: 'T' } } }, { merge: true });
++    await page.waitForFunction(() => !!currentLessonData?.['e2e-bump'], null, { timeout: 15_000 });
++    await page.waitForTimeout(300);
++    expect(await minSpring(page)).toBe(fixtureKeys().length);
++    expect(await springKeys(page)).toEqual(fixtureKeys());
++  });
++
++  test('a rollback (own doc removed, Spring back in lessonData) falls back without blanking', async ({ page }) => {
++    await SM.stageMoved({ verified: false });
++    await openApp(page);
++    expect(await source(page)).toBe('ownDoc');
++    await watchMinSpring(page);
++    await SM.writeCurriculumDoc('lessonData', { 'spring-2026': SM.springFixture() }, { merge: true });
++    await SM.deleteCurriculumDoc(SM.SPRING_DOC);
++    await page.waitForFunction(() => ownDocSource['spring-2026'] === 'legacy', null, { timeout: 15_000 });
++    await page.waitForTimeout(500);
++    expect(await minSpring(page)).toBe(fixtureKeys().length);
++    expect(await springKeys(page)).toEqual(fixtureKeys());
++  });
++
++  test('deleting Spring 2026 is refused while its storage is changing', async ({ page }) => {
++    await openApp(page);
++    const alerts = [];
++    page.on('dialog', d => { alerts.push(d.message()); d.dismiss(); });
++    const before = await SM.readCurriculumDoc('appData');
++    await page.evaluate(() => deleteSemester('spring-2026'));
++    expect(alerts.join('\n')).toMatch(/can't be deleted while its storage is being changed/);
++    expect((await SM.readCurriculumDoc('appData')).semesters['spring-2026']).toEqual(before.semesters['spring-2026']);
++  });
++
++  test('content counts: one source per semester — the same before and after the move', async ({ page }) => {
++    await openApp(page);
++    const legacyCounts = await page.evaluate(() => computeLiveContentCountByTeacher());
++    await SM.stageMoved({ verified: true });
++    const movedCounts = await page.evaluate(() => computeLiveContentCountByTeacher());
++    expect(movedCounts).toEqual(legacyCounts);
++  });
++
++  test('Lesson Storage readout shows an approximate size of 1,024 KB', async ({ page }) => {
++    await openApp(page);
++    await page.evaluate(() => { document.getElementById('ca-lesson-storage-content').style.display = 'none'; toggleLessonStorage(); });
++    await expect(page.locator('#ca-lesson-storage-content')).toContainText(/approx\. \d+ KB of 1,024 KB \(\d+%\)/);
++    await expect(page.locator('#ca-lesson-storage-content')).toContainText('spring-2026: still in the shared document');
++    const kb = await page.evaluate(() => approxLessonDataSizeKB());
++    expect(kb).toBeGreaterThan(0);
++    expect(kb).toBeLessThan(1024);
++  });
++
++  test('ratchet: every curriculum/lessonData access is in an allowed function; every weekly writer routes through weeklyLessonTarget', () => {
++    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
++    const scripts = [...html.matchAll(/<script[^>]+src="(js\/[^"]+)"/g)].map(m => m[1]);
++    const ALLOWED = new Set([
++      'weeklyLessonTarget',          // the routing helper itself (legacy branch)
++      'readWeeklySemesterMap',       // reads, routed
++      'loadLessonData',              // the legacy load
++      'saveLessonData',              // legacy branch; own-doc semesters route above it
++      'deleteLessonData',            // refuses own-doc semesters first
++      'setupLessonDataListener',     // the legacy listener
++      'computeLiveContentCountByTeacher', // counts, one source per semester
++    ]);
++    const offenders = [];
++    const bodies = {};
++    for (const file of scripts) {
++      const lines = fs.readFileSync(path.join(__dirname, '..', file), 'utf8').split('\n');
++      let current = null;
++      lines.forEach((line, i) => {
++        const m = line.match(/^(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/);
++        if (m) current = m[1];
++        if (current) bodies[current] = (bodies[current] || '') + line + '\n';
++        if (/doc\(\s*['"]lessonData['"]\s*\)/.test(line) && !ALLOWED.has(current)) offenders.push(`${file}:${i + 1} in ${current}`);
++      });
++    }
++    expect(offenders, `curriculum/lessonData touched outside the allowed functions:\n${offenders.join('\n')}`).toEqual([]);
++    for (const fn of ['saveSingleLesson', 'saveMultipleLessonFields', 'deleteLessonKey', 'sendTeacherQaMessage', 'sendHelpResponse', 'sendQaReply']) {
++      expect(bodies[fn], `${fn} not found`).toBeTruthy();
++      expect(bodies[fn], `${fn} must route through weeklyLessonTarget`).toMatch(/weeklyLessonTarget\(/);
++    }
++    expect(bodies.saveLessonData).toMatch(/isOwnDocSemester\(semesterKey\)[\s\S]*weeklyLessonTarget\(/);
++    expect(bodies.deleteLessonData).toMatch(/isOwnDocSemester\(semesterKey\)/);
++  });
++});
+diff --git a/index.html b/index.html
+index b99d2d5..9c50106 100644
+--- a/index.html
++++ b/index.html
+@@ -351,6 +351,15 @@
+         <div class="ca-section-content" id="ca-content-count-content" style="display:none"></div>
+       </section>
+ 
++      <!-- Lesson storage headroom (Spring 2026 storage move, Phase B) -->
++      <section class="ca-section ca-lesson-storage-section">
++        <button class="ca-section-toggle" id="ca-lesson-storage-toggle" onclick="toggleLessonStorage()">
++          <span>Lesson Storage</span>
++          <span class="ca-toggle-arrow">&#9660;</span>
++        </button>
++        <div class="ca-section-content" id="ca-lesson-storage-content" style="display:none"></div>
++      </section>
++
+       <!-- Backup Health (Data Safety Plan Stage 4B) -->
+       <section class="ca-section ca-backup-health-section">
+         <button class="ca-section-toggle" id="ca-backup-health-toggle" onclick="toggleBackupHealth()">
+diff --git a/js/app.js b/js/app.js
+index ca92b37..f2a48a3 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -3728,18 +3728,25 @@ async function sendTeacherQaMessage(lessonKey, modalSemKey) {
+   const editedAt = new Date().toISOString();
+   const editedBy = user?.name || 'Unknown';
+ 
++  let target;
++  try {
++    target = weeklyLessonTarget(semKey);   // own-doc semester: its own doc, or "editing is paused"
++  } catch (err) {
++    alert(err.message);
++    return;
++  }
++  const p = `${target.prefix}${lessonKey}`;
+   const updates = {
+-    [`${semKey}.${lessonKey}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(...entriesToAdd),
+-    [`${semKey}.${lessonKey}.lastEditedBy`]: editedBy,
+-    [`${semKey}.${lessonKey}.lastEditedAt`]: editedAt,
++    [`${p}.qaThread`]: firebase.firestore.FieldValue.arrayUnion(...entriesToAdd),
++    [`${p}.lastEditedBy`]: editedBy,
++    [`${p}.lastEditedAt`]: editedAt,
+   };
+   // Legacy mirror fields, kept for compatibility with older readers.
+   const legacyField = isAdmin ? 'adminResponse' : 'teacherNotes';
+-  updates[`${semKey}.${lessonKey}.${legacyField}`] = message;
++  updates[`${p}.${legacyField}`] = message;
+ 
+   try {
+-    if (!curriculumDb) initCurriculumFirestore();
+-    await curriculumDb.collection('curriculum').doc('lessonData').update(updates);
++    await target.ref.update(updates);
+   } catch (err) {
+     console.error('Error sending Q&A message:', err);
+     alert('Error sending message: ' + err.message);
+@@ -4579,6 +4586,12 @@ function renderSemesterSelector() {
+ async function deleteSemester(key) {
+   const sem = currentConfig?.semesters?.[key];
+   if (!sem) return;
++  // Spring 2026 storage move: deleting an own-doc semester is disabled until the
++  // follow-up plan routes it (its lessons may live in their own document).
++  if (isOwnDocSemester(key)) {
++    alert(`"${sem.name}" can't be deleted while its storage is being changed.`);
++    return;
++  }
+   if (key === currentConfig.activeSemester) {
+     alert('Cannot delete the active semester.');
+     return;
+@@ -5884,8 +5897,8 @@ function cancelGridAction() {
+ async function readAdminLessonDoc(semKey, lessonKey, opts = {}) {
+   if (!curriculumDb) initCurriculumFirestore();
+   const getOpts = opts.source === 'server' ? { source: 'server' } : undefined;
+-  const snap = await curriculumDb.collection('curriculum').doc('lessonData').get(getOpts);
+-  return snap.exists ? (snap.data()?.[semKey]?.[lessonKey] || null) : null;
++  const map = await readWeeklySemesterMap(semKey, getOpts);   // own-doc semesters read their own document
++  return map?.[lessonKey] || null;
+ }
+ 
+ // Backtracking audit, Phase 8: shared by cutProject() below and Phase 11's
+@@ -7236,6 +7249,10 @@ async function sendHelpResponse(key) {
+   if (!curriculumDb) initCurriculumFirestore();
+   const isSummer = lessonStore === 'camp';
+   const updates = {};
++  let weekly = null;
++  if (!isSummer) {
++    try { weekly = weeklyLessonTarget(semKey); } catch (err) { alert(err.message); return; }
++  }
+   if (isSummer) {
+     updates.qaThread = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
+     updates.adminResponse = response;
+@@ -7243,15 +7260,15 @@ async function sendHelpResponse(key) {
+     updates.lastUpdated = new Date().toISOString();
+     updates.lastUpdatedBy = user?.name || 'Unknown';
+   } else {
+-    updates[`${semKey}.${key}.qaThread`] = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
+-    updates[`${semKey}.${key}.adminResponse`] = response;
+-    updates[`${semKey}.${key}.status`] = 'In Progress';
++    updates[`${weekly.prefix}${key}.qaThread`] = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
++    updates[`${weekly.prefix}${key}.adminResponse`] = response;
++    updates[`${weekly.prefix}${key}.status`] = 'In Progress';
+     updates.lastUpdated = new Date().toISOString();
+     updates.lastUpdatedBy = user?.name || 'Unknown';
+   }
+   const docRef = isSummer
+     ? curriculumDb.collection('summerCamps_lessonData').doc(summerDocIdFor(semKey, key))
+-    : curriculumDb.collection('curriculum').doc('lessonData');
++    : weekly.ref;
+ 
+   try {
+     await docRef.update(updates);
+@@ -7321,20 +7338,24 @@ async function sendQaReply(key) {
+   if (!curriculumDb) initCurriculumFirestore();
+   const isSummer = lessonStore === 'camp';
+   const updates = {};
++  let weekly = null;
++  if (!isSummer) {
++    try { weekly = weeklyLessonTarget(semKey); } catch (err) { alert(err.message); return; }
++  }
+   if (isSummer) {
+     updates.qaThread = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
+     updates.adminResponse = message;
+     updates.lastUpdated = new Date().toISOString();
+     updates.lastUpdatedBy = user?.name || 'Unknown';
+   } else {
+-    updates[`${semKey}.${key}.qaThread`] = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
+-    updates[`${semKey}.${key}.adminResponse`] = message;
++    updates[`${weekly.prefix}${key}.qaThread`] = firebase.firestore.FieldValue.arrayUnion(...entriesToAdd);
++    updates[`${weekly.prefix}${key}.adminResponse`] = message;
+     updates.lastUpdated = new Date().toISOString();
+     updates.lastUpdatedBy = user?.name || 'Unknown';
+   }
+   const docRef = isSummer
+     ? curriculumDb.collection('summerCamps_lessonData').doc(summerDocIdFor(semKey, key))
+-    : curriculumDb.collection('curriculum').doc('lessonData');
++    : weekly.ref;
+ 
+   try {
+     await docRef.update(updates);
+@@ -7569,7 +7590,17 @@ async function computeLiveContentCountByTeacher() {
+ 
+   const lessonDataSnap = await curriculumDb.collection('curriculum').doc('lessonData').get();
+   const lessonDataDoc = lessonDataSnap.exists ? lessonDataSnap.data() : {};
+-  for (const semesterLessons of Object.values(lessonDataDoc)) {
++  // One source per semester (Spring 2026 storage move): an own-doc semester is
++  // counted from its own document when that exists, and then skipped here.
++  const countedFromOwnDoc = new Set();
++  for (const semKey of OWN_DOC_SEMESTERS) {
++    const own = await curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey)).get();
++    if (!own.exists) continue;
++    countedFromOwnDoc.add(semKey);
++    for (const lesson of Object.values(ownDocLessonMap(own.data()))) if (lesson && typeof lesson === 'object') tally(lesson);
++  }
++  for (const [semKey, semesterLessons] of Object.entries(lessonDataDoc)) {
++    if (countedFromOwnDoc.has(semKey)) continue;
+     if (!semesterLessons || typeof semesterLessons !== 'object') continue;
+     for (const lesson of Object.values(semesterLessons)) tally(lesson);
+   }
+@@ -7651,6 +7682,27 @@ async function renderContentCount() {
+   }
+ }
+ 
++// Lesson storage headroom (Spring 2026 storage move, Phase B): curriculum/lessonData
++// holds every weekly semester in one document under Firestore's 1 MiB cap. The
++// size is an estimate from the last snapshot this page received — no extra read.
++function renderLessonStorage() {
++  const container = document.getElementById('ca-lesson-storage-content');
++  if (!container) return;
++  const kb = approxLessonDataSizeKB();
++  if (kb === null) { container.innerHTML = '<p class="ca-empty-hint">Lesson storage size isn\'t available yet — reload the page.</p>'; return; }
++  const pct = Math.round((kb / 1024) * 100);
++  const warn = pct > 85;
++  container.innerHTML = `<p class="${warn ? 'ca-backup-flag' : 'ca-empty-hint'}">${warn ? '⚠️ ' : ''}Lesson storage: approx. ${kb} KB of 1,024 KB (${pct}%)${warn ? ' — nearly full. When it fills, lesson saves stop working; tell Christie.' : ''}</p>`
++    + `<p class="ca-empty-hint">All Fall/Spring semesters still stored in the shared document. ${OWN_DOC_SEMESTERS.map(k => `${escHtml(k)}: ${ownDocSource[k] === 'ownDoc' ? 'in its own document' : ownDocSource[k] === 'error' ? 'couldn\'t be checked' : 'still in the shared document'}`).join(' · ')}</p>`;
++}
++
++function toggleLessonStorage() {
++  const content = document.getElementById('ca-lesson-storage-content');
++  const wasHidden = content.style.display === 'none';
++  content.style.display = wasHidden ? 'block' : 'none';
++  if (wasHidden) renderLessonStorage();
++}
++
+ function toggleContentCount() {
+   const content = document.getElementById('ca-content-count-content');
+   const wasHidden = content.style.display === 'none';
+diff --git a/js/firebase-data.js b/js/firebase-data.js
+index c562679..5afb04d 100644
+--- a/js/firebase-data.js
++++ b/js/firebase-data.js
+@@ -12,6 +12,7 @@ let curriculumDb = null;
+ let configUnsubscribe = null;
+ let prepDataUnsubscribe = null;
+ let lessonDataUnsubscribe = null;
++let ownDocUnsubscribes = [];   // own-doc semester + storageMigrations listeners (Spring 2026 storage move)
+ 
+ // The content fields a lesson's stripping/hasContent/wipe-detection logic
+ // treats as "real plan content" (as opposed to metadata like teacher/weekNum).
+@@ -71,6 +72,106 @@ function lessonStoreFor(semKey) {
+   }
+ }
+ 
++// ─── Own-document weekly semesters (Spring 2026 storage move, Sep 2026) ──────
++// curriculum/lessonData holds every weekly semester in ONE Firestore document,
++// and it reached 95% of the 1 MiB document cap (Sep 29 2026). A finished weekly
++// semester moves to its own document, curriculum/lessons_<semKey>, in one manager
++// transaction. Plan: tinker-ai-configs/thoughts/plans/classbook-per-semester-lesson-storage.html
++// (Phase B). The studio-hub rules (Phase A, deployed 0caf415) fence the key in
++// lessonData, and allow edits to the new document only once
++// curriculum/storageMigrations says the move is verified.
++//
++// Changed only by a code deploy, just as the rules fence changes only by a rules deploy.
++const OWN_DOC_SEMESTERS = ['spring-2026'];
++const OWN_DOC_PAUSED_MESSAGE = 'Spring 2026 is being moved to new storage — editing it is paused for a few days. Viewing works as normal.';
++
++function isOwnDocSemester(semKey) { return OWN_DOC_SEMESTERS.includes(semKey); }
++function ownDocIdFor(semKey) { return `lessons_${semKey}`; }
++
++// Where each own-doc semester's lessons are served from right now:
++// 'legacy' (still inside lessonData), 'ownDoc' (its own document), or 'error'
++// (its document couldn't be read — shown from whatever we have, never writable).
++const ownDocSource = {};
++// curriculum/storageMigrations as last read ({} when absent; null = not yet known).
++let storageMigrationState = null;
++// The last legacy lessonData snapshot, so a rollback (own doc disappears) can fall
++// back to it, and the headroom readout can size it without another read.
++let lastLegacyLessonData = null;
++
++function ownDocMoveVerified(semKey) {
++  return storageMigrationState?.[semKey]?.verified === true;
++}
++function ownDocLessonMap(data) {
++  const map = { ...(data || {}) };
++  delete map.lastUpdated;
++  delete map.lastUpdatedBy;
++  return map;
++}
++
++// The ONE place a weekly lesson write learns where to go. Returns the document
++// and the dotted-path prefix for a lesson inside it:
++//   legacy semester → curriculum/lessonData, '<semKey>.'
++//   own-doc semester → curriculum/lessons_<semKey>, '' — only once the move is
++//                      verified; before that it throws the "editing is paused" message
++//                      (the rules refuse those writes anyway).
++function weeklyLessonTarget(semKey) {
++  if (!curriculumDb) initCurriculumFirestore();
++  if (!isOwnDocSemester(semKey)) {
++    return { ref: curriculumDb.collection('curriculum').doc('lessonData'), prefix: `${semKey}.` };
++  }
++  if (ownDocSource[semKey] !== 'ownDoc' || !ownDocMoveVerified(semKey)) {
++    throw new Error(OWN_DOC_PAUSED_MESSAGE);
++  }
++  return { ref: curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey)), prefix: '' };
++}
++
++// Forced-server (or cache-permitting) read of one weekly semester's lesson map,
++// wherever it lives. An own-doc semester is read from its own document when that
++// exists, otherwise from lessonData — independent of this tab's in-memory state.
++async function readWeeklySemesterMap(semKey, getOpts) {
++  if (!curriculumDb) initCurriculumFirestore();
++  if (isOwnDocSemester(semKey)) {
++    const own = await curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey)).get(getOpts);
++    if (own.exists) return ownDocLessonMap(own.data());
++  }
++  const legacy = await curriculumDb.collection('curriculum').doc('lessonData').get(getOpts);
++  return legacy.exists ? (legacy.data()?.[semKey] ?? null) : null;
++}
++
++// Approximate Firestore size of a value in bytes — the documented storage-size
++// rules (string = UTF-8 bytes + 1, number 8, boolean 1, null 1, map = sum of
++// key + value). Used for the headroom readout; the SDK doesn't expose the real size.
++function approxFirestoreSize(v) {
++  const str = (x) => new TextEncoder().encode(x).length + 1;
++  if (v === null || v === undefined) return 1;
++  if (typeof v === 'string') return str(v);
++  if (typeof v === 'number') return 8;
++  if (typeof v === 'boolean') return 1;
++  if (v && typeof v.toDate === 'function') return 8;
++  if (Array.isArray(v)) return v.reduce((t, x) => t + approxFirestoreSize(x), 0);
++  if (typeof v === 'object') return Object.entries(v).reduce((t, [k, x]) => t + str(k) + approxFirestoreSize(x), 0);
++  return 8;
++}
++function approxLessonDataSizeKB() {
++  if (!lastLegacyLessonData) return null;
++  const docName = 'projects/tinker-hq-apps/databases/(default)/documents/curriculum/lessonData';
++  return Math.round((approxFirestoreSize(lastLegacyLessonData) + new TextEncoder().encode(docName).length + 1 + 32) / 1024);
++}
++
++function showStorageNotice(message) {
++  let el = document.getElementById('storage-notice-banner');
++  if (!el) {
++    el = document.createElement('div');
++    el.id = 'storage-notice-banner';
++    el.className = 'lesson-load-error-banner';
++    const anchorEl = document.getElementById('lesson-load-error-banner');
++    if (anchorEl?.parentNode) anchorEl.parentNode.insertBefore(el, anchorEl.nextSibling);
++    else document.body.prepend(el);
++  }
++  el.textContent = message;
++  el.classList.remove('hidden');
++}
++
+ // ─── Summer document IDs (camp seasons Phase 1, 1.5) ─────────────────────────
+ // The cross-app contract, shared with the Summer Camp App: 2026 documents keep
+ // every existing ID unchanged; any other season prefixes the ENTIRE legacy ID
+@@ -756,11 +857,63 @@ async function loadOneCampSeason(plan, opts = {}) {
+   return await loadSummerCampData({ ...opts, season: plan.season, semKey: plan.semKey });
+ }
+ 
++// Initial load for own-doc semesters and the migration record (called by
++// loadLessonData, after the legacy document). A failed read of the record is
++// treated as "not verified" (edits stay paused); a failed read of a semester's own
++// document marks it 'error' — shown from whatever lessonData still holds, never
++// writable, with a visible notice.
++async function loadOwnDocSemesters() {
++  if (!curriculumDb) initCurriculumFirestore();
++  try {
++    const m = await curriculumDb.collection('curriculum').doc('storageMigrations').get();
++    storageMigrationState = m.exists ? (m.data() || {}) : {};
++  } catch (err) {
++    console.warn('⚠️ Could not read curriculum/storageMigrations — own-doc semesters stay read-only:', err);
++    storageMigrationState = {};
++  }
++  for (const semKey of OWN_DOC_SEMESTERS) {
++    try {
++      const own = await curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey)).get();
++      if (own.exists) {
++        ownDocSource[semKey] = 'ownDoc';
++        currentLessonData[semKey] = ownDocLessonMap(own.data());
++      } else {
++        ownDocSource[semKey] = 'legacy';
++      }
++    } catch (err) {
++      console.error(`❌ Could not read curriculum/${ownDocIdFor(semKey)}:`, err);
++      ownDocSource[semKey] = 'error';
++      showStorageNotice(`⚠️ ${semKey} lessons couldn't be loaded from their new storage — please reload the page.`);
++    }
++  }
++}
++
++// The legacy snapshot no longer holds an own-doc semester this tab was showing
++// from lessonData: the move just happened (or the page is stale). Never blank it —
++// keep the lessons on screen, look for its own document, and if that isn't there
++// either, say so.
++async function recheckOwnDocAfterLegacyLoss(semKey, callback) {
++  try {
++    const own = await curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey)).get({ source: 'server' });
++    if (own.exists) {
++      ownDocSource[semKey] = 'ownDoc';
++      currentLessonData[semKey] = ownDocLessonMap(own.data());
++      if (callback) callback(currentLessonData);
++      return;
++    }
++  } catch (err) {
++    console.warn(`⚠️ Could not check curriculum/${ownDocIdFor(semKey)}:`, err);
++  }
++  showStorageNotice(`⚠️ ${semKey} moved to new storage — please reload the page to see its latest lessons.`);
++}
++
+ async function loadLessonData() {
+   if (!curriculumDb) initCurriculumFirestore();
+   try {
+     const doc = await curriculumDb.collection('curriculum').doc('lessonData').get();
+     currentLessonData = doc.exists ? doc.data() : {};
++    lastLegacyLessonData = doc.exists ? doc.data() : {};
++    await loadOwnDocSemesters();
+ 
+     // Every camp season gets its own map (Phase 1, 1.4) — no literal key.
+     try {
+@@ -812,12 +965,18 @@ async function saveLessonData(semesterKey, lessons) {
+     return await saveSummerCampLessonData(semesterKey, lessons);
+   }
+ 
+-  // Regular semester: save to curriculum/lessonData
++  // Regular semester: save to curriculum/lessonData — or, for an own-doc
++  // semester, to its own document (the whole map at the top level).
+   const user = getAuthUser();
++  const stamp = { lastUpdated: new Date().toISOString(), lastUpdatedBy: user?.name || 'Unknown' };
++  if (isOwnDocSemester(semesterKey)) {
++    const { ref } = weeklyLessonTarget(semesterKey);   // throws "editing is paused" until verified
++    await ref.set({ ...lessons, ...stamp }, { merge: true });
++    return;
++  }
+   await curriculumDb.collection('curriculum').doc('lessonData').set({
+     [semesterKey]: lessons,
+-    lastUpdated: new Date().toISOString(),
+-    lastUpdatedBy: user?.name || 'Unknown'
++    ...stamp
+   }, { merge: true });
+ }
+ 
+@@ -827,8 +986,9 @@ async function saveLessonData(semesterKey, lessons) {
+ async function deleteLessonKey(semesterKey, lessonKey) {
+   if (!curriculumDb) initCurriculumFirestore();
+   const user = getAuthUser();
+-  await curriculumDb.collection('curriculum').doc('lessonData').update({
+-    [`${semesterKey}.${lessonKey}`]: firebase.firestore.FieldValue.delete(),
++  const { ref, prefix } = weeklyLessonTarget(semesterKey);
++  await ref.update({
++    [`${prefix}${lessonKey}`]: firebase.firestore.FieldValue.delete(),
+     lastUpdated: new Date().toISOString(),
+     lastUpdatedBy: user?.name || 'Unknown'
+   });
+@@ -960,6 +1120,9 @@ async function sendSummerLessonQaMessage(semKey, lessonKey, lesson, newMsg) {
+ 
+ async function deleteLessonData(semesterKey) {
+   if (!curriculumDb) initCurriculumFirestore();
++  // An own-doc semester's lessons aren't in lessonData (and the rules fence the
++  // key); deleting it is disabled until the follow-up plan routes it.
++  if (isOwnDocSemester(semesterKey)) throw new Error(`"${semesterKey}" can't be deleted while its storage is being changed.`);
+   await curriculumDb.collection('curriculum').doc('lessonData').update({
+     [semesterKey]: firebase.firestore.FieldValue.delete()
+   });
+@@ -972,8 +1135,7 @@ async function deleteLessonData(semesterKey) {
+ // when its server-side delete failed). Backtracking audit, Phase 11.
+ async function readServerSemesterLessonMap(semesterKey) {
+   if (!curriculumDb) initCurriculumFirestore();
+-  const snap = await curriculumDb.collection('curriculum').doc('lessonData').get({ source: 'server' });
+-  return snap.exists ? (snap.data()?.[semesterKey] ?? null) : null;
++  return await readWeeklySemesterMap(semesterKey, { source: 'server' });
+ }
+ 
+ async function backupLessonData(semesterKey) {
+@@ -1114,6 +1276,8 @@ function setupLessonDataListener(callback) {
+   if (!curriculumDb) initCurriculumFirestore();
+   globalListenerGeneration++; // whatever the previous listener still has in flight is now stale
+   if (lessonDataUnsubscribe) lessonDataUnsubscribe();
++  // The own-doc listeners (Spring 2026 storage move) are torn down together.
++  while (ownDocUnsubscribes.length) { try { ownDocUnsubscribes.pop()(); } catch (e) { /* already gone */ } }
+ 
+   // One reload attempt for one snapshot generation. Only the latest
+   // generation may touch the guard, the banner, or the summer cache.
+@@ -1183,8 +1347,24 @@ function setupLessonDataListener(callback) {
+       // in their own collection, so carry their current maps across the swap
+       // and let the reload below refresh each one (Phase 1, 1.4).
+       const previousSummer = snapshotCampSeasons();
++      // Own-doc semesters (Spring 2026 storage move): their lessons aren't in this
++      // document once moved, so carry them across the swap like the camp seasons —
++      // their own listeners below keep them current.
++      const previousOwn = {};
++      for (const semKey of OWN_DOC_SEMESTERS) if (currentLessonData?.[semKey]) previousOwn[semKey] = currentLessonData[semKey];
+       currentLessonData = doc.data();
++      lastLegacyLessonData = doc.data();
+       for (const [semKey, map] of Object.entries(previousSummer)) currentLessonData[semKey] = map;
++      for (const semKey of OWN_DOC_SEMESTERS) {
++        if (ownDocSource[semKey] === 'ownDoc' || ownDocSource[semKey] === 'error') {
++          if (previousOwn[semKey]) currentLessonData[semKey] = previousOwn[semKey];
++        } else if (!(semKey in currentLessonData) && previousOwn[semKey]) {
++          currentLessonData[semKey] = previousOwn[semKey];   // never blank it
++          recheckOwnDocAfterLegacyLoss(semKey, callback);
++        } else if (semKey in currentLessonData) {
++          document.getElementById('storage-notice-banner')?.classList.add('hidden');
++        }
++      }
+       console.log('📚 Loaded lesson data for semesters:', Object.keys(currentLessonData));
+ 
+       const outcome = await reloadSummer(myGeneration, previousSummer, 0);
+@@ -1193,6 +1373,42 @@ function setupLessonDataListener(callback) {
+       // one still renders: the non-summer semesters in this snapshot are new.
+       if (outcome !== 'stale' && callback) callback(currentLessonData);
+     });
++
++  // Own-doc semesters: one listener per document, plus the migration record.
++  // They never bump globalListenerGeneration and never touch
++  // lessonDataLoadedSuccessfully — an error here is shown on its own and makes
++  // only that semester unwritable.
++  ownDocUnsubscribes.push(curriculumDb.collection('curriculum').doc('storageMigrations')
++    .onSnapshot(snap => {
++      if (snap.metadata.fromCache && !snap.metadata.hasPendingWrites) return;
++      storageMigrationState = snap.exists ? (snap.data() || {}) : {};
++    }, err => { console.warn('⚠️ storageMigrations listener error — own-doc semesters stay read-only:', err); storageMigrationState = {}; }));
++  for (const semKey of OWN_DOC_SEMESTERS) {
++    ownDocUnsubscribes.push(curriculumDb.collection('curriculum').doc(ownDocIdFor(semKey))
++      .onSnapshot({ includeMetadataChanges: false }, snap => {
++        if (snap.metadata.fromCache && !snap.metadata.hasPendingWrites) return;
++        if (snap.exists) {
++          ownDocSource[semKey] = 'ownDoc';
++          currentLessonData = currentLessonData || {};
++          currentLessonData[semKey] = ownDocLessonMap(snap.data());
++          document.getElementById('storage-notice-banner')?.classList.add('hidden');
++        } else if (ownDocSource[semKey] === 'ownDoc') {
++          // Rolled back: the own document is gone — fall back to lessonData.
++          ownDocSource[semKey] = 'legacy';
++          const legacyMap = lastLegacyLessonData?.[semKey];
++          if (legacyMap) currentLessonData[semKey] = legacyMap;
++          else showStorageNotice(`⚠️ ${semKey} storage changed — please reload the page to see its lessons.`);
++        } else {
++          if (ownDocSource[semKey] !== 'error') ownDocSource[semKey] = 'legacy';
++          return;   // nothing changed for this tab
++        }
++        if (callback) callback(currentLessonData);
++      }, err => {
++        console.error(`❌ ${ownDocIdFor(semKey)} listener error:`, err);
++        ownDocSource[semKey] = 'error';
++        showStorageNotice(`⚠️ ${semKey} lessons couldn't be loaded from their new storage — please reload the page.`);
++      }));
++  }
+ }
+ 
+ // ─── Cut Projects (curriculum/cutProjects) ───────────
+@@ -1431,11 +1647,12 @@ async function saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClea
+   // semesterKey.lessonKey path replaces the ENTIRE lesson there — so write
+   // explicit per-field dotted paths instead, touching only the fields
+   // actually present in lessonData (Data Safety Plan Stage 2D).
+-  const updates = buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear);
++  const { ref: weeklyRef, prefix } = weeklyLessonTarget(semesterKey);   // own-doc semester: its own doc (or "editing is paused")
++  const updates = buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear, prefix);
+ 
+-  console.log('💾 Saving to curriculum/lessonData with per-field paths:', Object.keys(updates));
++  console.log(`💾 Saving to curriculum/${weeklyRef.id} with per-field paths:`, Object.keys(updates));
+   try {
+-    await curriculumDb.collection('curriculum').doc('lessonData').update(updates);
++    await weeklyRef.update(updates);
+     console.log('✅ Successfully saved lesson to Firestore!');
+   } catch (error) {
+     console.error('❌ Error saving lesson:', error);
+@@ -1452,7 +1669,7 @@ async function saveSingleLesson(semesterKey, lessonKey, lessonData, fieldsToClea
+ // omitting their dotted path entirely — never sending an explicit empty
+ // string — and applies clears AFTER the JSON sanitization pass, since
+ // FieldValue.delete() is a special sentinel a JSON round-trip would corrupt.
+-function buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear = []) {
++function buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear = [], prefix = `${semesterKey}.`) {
+   // Not restricted to CONTENT_FIELDS — see the fieldsToClear comment above saveSingleLesson().
+   const stripped = { ...lessonData };
+   CONTENT_FIELDS.forEach(f => { if (!stripped[f] || !String(stripped[f]).trim()) delete stripped[f]; });
+@@ -1460,7 +1677,7 @@ function buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToCle
+   fieldsToClear.forEach(f => { cleanData[f] = firebase.firestore.FieldValue.delete(); });
+   const updates = {};
+   for (const [field, value] of Object.entries(cleanData)) {
+-    updates[`${semesterKey}.${lessonKey}.${field}`] = value;
++    updates[`${prefix}${lessonKey}.${field}`] = value;
+   }
+   return updates;
+ }
+@@ -1485,19 +1702,20 @@ async function saveMultipleLessonFields(semesterKey, writes = [], deletes = [])
+     throw new Error('saveMultipleLessonFields() does not support camp seasons — use saveSingleLesson() per lesson instead.');
+   }
+   if (!curriculumDb) initCurriculumFirestore();
++  const { ref: weeklyRef, prefix } = weeklyLessonTarget(semesterKey);
+   const user = getAuthUser();
+   const combined = {};
+   for (const { lessonKey, lessonData, fieldsToClear } of writes) {
+     lessonData.lastEditedBy = user?.name || 'Unknown';
+     lessonData.lastEditedAt = new Date().toISOString();
+-    Object.assign(combined, buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear || []));
++    Object.assign(combined, buildLessonFieldUpdates(semesterKey, lessonKey, lessonData, fieldsToClear || [], prefix));
+   }
+   for (const lessonKey of deletes) {
+-    combined[`${semesterKey}.${lessonKey}`] = firebase.firestore.FieldValue.delete();
++    combined[`${prefix}${lessonKey}`] = firebase.firestore.FieldValue.delete();
+   }
+   combined.lastUpdated = new Date().toISOString();
+   combined.lastUpdatedBy = user?.name || 'Unknown';
+-  await curriculumDb.collection('curriculum').doc('lessonData').update(combined);
++  await weeklyRef.update(combined);
+ }
+ 
+ // ─── Photo Upload (Firebase Storage) ─────────────────

@@ -1,0 +1,522 @@
+diff --git a/alerts-classbook.test.js b/alerts-classbook.test.js
+new file mode 100644
+index 0000000..d76717f
+--- /dev/null
++++ b/alerts-classbook.test.js
+@@ -0,0 +1,151 @@
++/**
++ * Runs the REAL js/alerts.js (AlertEngine) in a vm with a fake Firestore that lets
++ * the test fire each document listener by hand — the Classbook Q&A wiring only
++ * (union of lessonData + lessons_<semKey>, dismissal migration, listener errors).
++ * No emulator, no DOM (a no-op element proxy stands in for the UI).
++ * Run: npm test
++ */
++const vm = require('vm');
++const fs = require('fs');
++
++function loadEngine({ dismissed = [] } = {}) {
++  const el = () => new Proxy(function () {}, {
++    get: (t, k) => (k === 'classList' ? { add() {}, remove() {}, toggle() {}, contains() { return false; } }
++      : k === 'style' ? {} : k === 'children' ? [] : k === 'querySelectorAll' ? () => [] : el()),
++    set: () => true,
++    apply: () => el(),
++  });
++  const handlers = {};
++  const noopQuery = () => ({ onSnapshot: () => () => {}, where: noopQuery, orderBy: noopQuery, limit: noopQuery });
++  const db = {
++    collection: (c) => ({
++      doc: (d) => ({
++        onSnapshot: (next, error) => { handlers[`${c}/${d}`] = { next, error }; return () => {}; },
++        get: async () => ({ exists: false, data: () => ({}) }),
++        set: async () => {},
++        update: async () => {},
++      }),
++      where: noopQuery, orderBy: noopQuery, onSnapshot: () => () => {},
++    }),
++  };
++  const store = { studioHub_dismissedAlerts: JSON.stringify(dismissed) };
++  const ctx = {
++    console: { ...console, error: () => {}, warn: () => {}, log: () => {} },
++    Date, Set, Map, JSON, Math, Promise, setTimeout, clearTimeout, setInterval, clearInterval,
++    document: { getElementById: () => el(), querySelector: () => el(), querySelectorAll: () => [], createElement: () => el(), addEventListener() {} },
++    localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } },
++    window: {},
++    firebase: { firestore: { FieldValue: { serverTimestamp: () => 0, arrayUnion: (...a) => a } } },
++  };
++  vm.createContext(ctx);
++  vm.runInContext(fs.readFileSync('js/classbook-qa-alerts.js', 'utf8'), ctx);
++  vm.runInContext(fs.readFileSync('js/alerts.js', 'utf8') + '\nthis.AlertEngine = AlertEngine;', ctx);
++  const snap = (data) => ({ exists: data !== null, data: () => data });
++  return {
++    engine: ctx.AlertEngine,
++    db,
++    fire: (docPath, data) => handlers[docPath].next(snap(data)),
++    fail: (docPath) => handlers[docPath].error(new Error('permission-denied')),
++    ids: () => ctx.AlertEngine.getAlerts().filter((a) => a.type === 'curriculum').map((a) => a.id).sort(),
++    dismissedIds: () => JSON.parse(store.studioHub_dismissedAlerts || '[]'),
++  };
++}
++
++const q = (message) => ({ teacher: 'T', qaThread: [{ from: 'teacher', message, timestamp: new Date().toISOString() }] });
++const LD = 'curriculum/lessonData';
++const SPRING = 'curriculum/lessons_spring-2026';
++
++describe('AlertEngine — Classbook Q&A across lessonData and own documents', () => {
++  test('nothing until every watched document has reported; then both semesters', async () => {
++    const h = loadEngine();
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': { 'f-1': q('fall') }, lastUpdated: 'x' });
++    expect(h.ids()).toEqual([]);
++    h.fire(SPRING, { 's-1': q('spring'), lastUpdated: 'x' });
++    expect(h.ids()).toEqual(['classbook-qa-fall-2026-f-1', 'classbook-qa-spring-2026-s-1']);
++  });
++
++  test("one document's snapshot never removes the other's alerts", async () => {
++    const h = loadEngine();
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': { 'f-1': q('fall') } });
++    h.fire(SPRING, { 's-1': q('spring') });
++    h.fire(LD, { 'fall-2026': {} });                 // Fall answered
++    expect(h.ids()).toEqual(['classbook-qa-spring-2026-s-1']);
++    h.fire(SPRING, { 's-1': { qaThread: [{ from: 'teacher', message: 'q' }, { from: 'admin', message: 'a' }] } });
++    expect(h.ids()).toEqual([]);
++  });
++
++  test('an own-document listener error keeps its last good alerts', async () => {
++    const h = loadEngine();
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': {} });
++    h.fire(SPRING, { 's-1': q('spring') });
++    h.fail(SPRING);
++    h.fire(LD, { 'fall-2026': { 'f-2': q('new fall') } });
++    expect(h.ids()).toEqual(['classbook-qa-fall-2026-f-2', 'classbook-qa-spring-2026-s-1']);
++  });
++
++  test('an own-document error before its first snapshot still lets the others alert', async () => {
++    const h = loadEngine();
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': { 'f-1': q('fall') } });
++    h.fail(SPRING);
++    expect(h.ids()).toEqual(['classbook-qa-fall-2026-f-1']);
++  });
++
++  test('old-format dismissals migrate once, then are retired (no future question is hidden)', async () => {
++    const h = loadEngine({ dismissed: ['classbook-qa-k-1', 'classbook-qa-k-9'] });
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': { 'k-1': q('fall, dismissed before') } });
++    h.fire(SPRING, { 'k-1': q('spring, same key, dismissed before') });
++    expect(h.ids()).toEqual([]);                       // both still dismissed
++    const d = h.dismissedIds();
++    expect(d).toEqual(expect.arrayContaining(['classbook-qa-fall-2026-k-1', 'classbook-qa-spring-2026-k-1', 'classbook-qa-dismissals-migrated-v2']));
++    expect(d).not.toContain('classbook-qa-k-1');       // retired
++    // A later question on a key whose old dismissal wasn't open at migration time is NOT hidden.
++    h.fire(LD, { 'fall-2026': { 'k-1': q('fall'), 'k-9': q('brand new question') } });
++    expect(h.ids()).toEqual(['classbook-qa-fall-2026-k-9']);
++  });
++
++  test('after migration, an old id added back by an old tab has no effect', async () => {
++    const h = loadEngine({ dismissed: ['classbook-qa-dismissals-migrated-v2', 'classbook-qa-k-1'] });
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': { 'k-1': q('open') } });
++    h.fire(SPRING, null);
++    expect(h.ids()).toEqual(['classbook-qa-fall-2026-k-1']);
++  });
++});
++
++describe('AlertEngine — Classbook dismissal lifecycle (review round 2)', () => {
++  test('a migrated dismissal is forgotten once answered; a new question then alerts', async () => {
++    const h = loadEngine({ dismissed: ['classbook-qa-k-1'] });
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': { 'k-1': q('dismissed before') } });
++    h.fire(SPRING, null);
++    expect(h.ids()).toEqual([]);                                  // still dismissed (migrated)
++    h.fire(LD, { 'fall-2026': { 'k-1': { qaThread: [{ from: 'teacher', message: 'q' }, { from: 'admin', message: 'a' }] } } });
++    expect(h.dismissedIds()).not.toContain('classbook-qa-fall-2026-k-1');   // answered → dismissal forgotten
++    h.fire(LD, { 'fall-2026': { 'k-1': q('a NEW question on the same lesson') } });
++    expect(h.ids()).toEqual(['classbook-qa-fall-2026-k-1']);
++  });
++
++  test('an own-doc error before its first snapshot: no migration marker; a later successful load migrates', async () => {
++    const h = loadEngine({ dismissed: ['classbook-qa-s-1'] });
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': {} });
++    h.fail(SPRING);
++    expect(h.dismissedIds()).not.toContain('classbook-qa-dismissals-migrated-v2');
++    h.fire(SPRING, { 's-1': q('spring question dismissed before') });   // recovers
++    expect(h.ids()).toEqual([]);                                         // migrated, still dismissed
++    expect(h.dismissedIds()).toEqual(expect.arrayContaining(['classbook-qa-spring-2026-s-1', 'classbook-qa-dismissals-migrated-v2']));
++  });
++
++  test('while a source is degraded, dismissals are not pruned', async () => {
++    const h = loadEngine({ dismissed: ['classbook-qa-dismissals-migrated-v2', 'classbook-qa-spring-2026-s-1'] });
++    await h.engine.init({ uid: 'u', role: 'admin' }, h.db);
++    h.fire(LD, { 'fall-2026': {} });
++    h.fail(SPRING);
++    expect(h.dismissedIds()).toContain('classbook-qa-spring-2026-s-1');
++  });
++});
+diff --git a/classbook-qa-alerts.test.js b/classbook-qa-alerts.test.js
+new file mode 100644
+index 0000000..85413a1
+--- /dev/null
++++ b/classbook-qa-alerts.test.js
+@@ -0,0 +1,57 @@
++/**
++ * Pure-function tests for js/classbook-qa-alerts.js — no Firestore, no DOM.
++ * Run: npm test
++ */
++const { buildClassbookQaAlerts } = require('./js/classbook-qa-alerts.js');
++
++const NOW = Date.parse('2026-09-30T12:00:00Z');
++const asked = (hoursAgo, extra = {}) => ({
++  teacher: 'Mariah', className: 'Clay', weekNum: 3,
++  qaThread: [{ from: 'teacher', message: 'Glaze?', timestamp: new Date(NOW - hoursAgo * 3600e3).toISOString() }],
++  ...extra,
++});
++const answered = () => ({ teacher: 'Kathy', qaThread: [{ from: 'teacher', message: 'Q' }, { from: 'admin', message: 'A' }] });
++
++describe('buildClassbookQaAlerts', () => {
++  test('one alert per unanswered question, id qualified by semester, legacy id kept', () => {
++    const out = buildClassbookQaAlerts({ lessonData: { 'fall-2026': { 'mariah-tue-1': asked(2), 'kathy-mon-1': answered() }, lastUpdated: 'x' }, ownDocs: {} }, NOW);
++    expect(out.map(a => a.id)).toEqual(['classbook-qa-fall-2026-mariah-tue-1']);
++    expect(out[0].legacyId).toBe('classbook-qa-mariah-tue-1');
++    expect(out[0].metadata).toEqual({ lessonKey: 'mariah-tue-1', semKey: 'fall-2026' });
++    expect(out[0].priority).toBe('info');
++  });
++
++  test('the same lesson key in two semesters gives two alerts (no collision)', () => {
++    const out = buildClassbookQaAlerts({
++      lessonData: { 'fall-2026': { 'k-1': asked(1) } },
++      ownDocs: { 'spring-2026': { 'k-1': asked(30), lastUpdated: 'x' } },
++    }, NOW);
++    expect(out.map(a => a.id).sort()).toEqual(['classbook-qa-fall-2026-k-1', 'classbook-qa-spring-2026-k-1']);
++    expect(out.find(a => a.metadata.semKey === 'spring-2026').priority).toBe('warning');
++  });
++
++  test('a semester with its own document is taken from there, never also from lessonData', () => {
++    const out = buildClassbookQaAlerts({
++      lessonData: { 'spring-2026': { 'stale-1': asked(1) }, 'fall-2026': {} },
++      ownDocs: { 'spring-2026': { 'fresh-1': asked(60), lastUpdatedBy: 'x' } },
++    }, NOW);
++    expect(out.map(a => a.id)).toEqual(['classbook-qa-spring-2026-fresh-1']);
++    expect(out[0].priority).toBe('urgent');
++  });
++
++  test('before the move (own doc absent) Spring comes from lessonData', () => {
++    const out = buildClassbookQaAlerts({ lessonData: { 'spring-2026': { 's-1': asked(1) } }, ownDocs: { 'spring-2026': null } }, NOW);
++    expect(out.map(a => a.id)).toEqual(['classbook-qa-spring-2026-s-1']);
++  });
++
++  test('either source missing yields the other alone; malformed entries are skipped', () => {
++    expect(buildClassbookQaAlerts({ lessonData: null, ownDocs: { 'spring-2026': { a: asked(1) } } }, NOW)).toHaveLength(1);
++    expect(buildClassbookQaAlerts({ lessonData: { x: 'not a map', y: { bad: null, empty: { qaThread: [] } } }, ownDocs: {} }, NOW)).toEqual([]);
++  });
++
++  test('unknown timestamp → warning', () => {
++    const out = buildClassbookQaAlerts({ lessonData: { f: { k: { qaThread: [{ from: 'teacher', message: 'Q' }] } } }, ownDocs: {} }, NOW);
++    expect(out[0].priority).toBe('warning');
++    expect(out[0].subtitle).toMatch(/Unknown time/);
++  });
++});
+diff --git a/index.html b/index.html
+index 567518f..71bcccb 100644
+--- a/index.html
++++ b/index.html
+@@ -221,6 +221,7 @@
+ 
+   <!-- Scripts -->
+   <script src="js/config.js"></script>
++  <script src="js/classbook-qa-alerts.js"></script>
+   <script src="js/alerts.js"></script>
+   <script src="js/archive-helpers.js"></script>
+   <script src="js/app.js"></script>
+diff --git a/js/alerts.js b/js/alerts.js
+index 74f5b36..e19a047 100644
+--- a/js/alerts.js
++++ b/js/alerts.js
+@@ -557,94 +557,111 @@ const AlertEngine = (() => {
+   // Classbook (Curriculum) Alerts
+   // =====================================================
+ 
+-  function listenToClassbook(db) {
+-    // Teacher questions - ALL unanswered questions (immediate alerts)
+-    const classbookListener = db.collection('curriculum')
+-      .doc('lessonData')
+-      .onSnapshot(doc => {
+-        if (!doc.exists) return;
+-
+-        const data = doc.data();
+-        const now = Date.now();
+-        let unansweredQuestions = [];
+-        const currentClassbookAlertIds = [];
+-
+-        // Iterate through all semesters
+-        for (const [semKey, lessons] of Object.entries(data)) {
+-          // Skip metadata fields
+-          if (semKey === 'lastUpdated' || semKey === 'lastUpdatedBy') continue;
+-          if (!lessons || typeof lessons !== 'object') continue;
+-
+-          // Iterate through all lessons in this semester
+-          for (const [lessonKey, lesson] of Object.entries(lessons)) {
+-            if (!lesson.qaThread || !Array.isArray(lesson.qaThread)) continue;
+-
+-            // Check if last message is from teacher (unanswered)
+-            const thread = lesson.qaThread;
+-            if (thread.length === 0) continue;
+-
+-            const lastMsg = thread[thread.length - 1];
+-            if (lastMsg.from === 'teacher') {
+-              // This is an unanswered question
+-              const questionDate = lastMsg.timestamp?.toMillis ? lastMsg.timestamp.toMillis() :
+-                                  lastMsg.timestamp ? new Date(lastMsg.timestamp).getTime() : 0;
+-
+-              const alertId = `classbook-qa-${lessonKey}`;
+-              currentClassbookAlertIds.push(alertId);
+-
+-              // Calculate priority based on age (or use warning if no timestamp)
+-              let priority = 'warning';
+-              let timeText = 'Unknown time';
+-
+-              if (questionDate > 0) {
+-                const hoursElapsed = Math.floor((now - questionDate) / (1000 * 60 * 60));
+-                timeText = `${hoursElapsed}h ago`;
+-
+-                // Priority based on age: info (0-24h), warning (25-48h), urgent (49h+)
+-                if (hoursElapsed >= 49) {
+-                  priority = 'urgent';
+-                } else if (hoursElapsed >= 25) {
+-                  priority = 'warning';
+-                } else {
+-                  priority = 'info';
+-                }
+-              }
+-
+-              const questionText = lastMsg.message || lastMsg.question || 'Question';
+-              const teacherName = lesson.teacher || lastMsg.name || 'Teacher';
++  // Stored among the dismissed ids once old-format Classbook dismissals are migrated.
++  const CLASSBOOK_QA_DISMISSALS_MIGRATED = 'classbook-qa-dismissals-migrated-v2';
+ 
+-              const alert = {
+-                id: alertId,
+-                type: 'curriculum',
+-                priority: priority,
+-                title: `${teacherName}: ${questionText.substring(0, 50)}${questionText.length > 50 ? '...' : ''}`,
+-                subtitle: `${lesson.className || 'Class'} - Week ${lesson.weekNum || '?'} - ${timeText}`,
+-                timestamp: questionDate > 0 ? new Date(questionDate).toISOString() : new Date().toISOString(),
+-                actionLabel: 'View Classbook',
+-                actionUrl: 'https://tinker-classbook.netlify.app#curriculum-admin',
+-                metadata: { lessonKey, semKey }
+-              };
+-              unansweredQuestions.push(alert);
+-            }
++  function listenToClassbook(db) {
++    // Teacher questions — ALL unanswered questions (immediate alerts).
++    // Weekly lessons live in curriculum/lessonData AND, for semesters moved to their
++    // own document (Classbook storage move, Sep 2026), in curriculum/lessons_<semKey>.
++    // Each document has its own listener; alerts are rebuilt from the UNION of the
++    // latest snapshot of each (buildClassbookQaAlerts, js/classbook-qa-alerts.js), so
++    // one listener's snapshot never removes the other's alerts.
++    const sources = { lessonData: null, ownDocs: {} };
++    const received = new Set();   // which documents have delivered at least one snapshot
++    const failedBeforeFirst = new Set();   // errored before ever delivering one (degraded)
++    const expected = ['lessonData', ...CLASSBOOK_OWN_DOC_SEMESTERS.map(k => `lessons_${k}`)];
++
++    const rebuild = () => {
++      // Don't build (or prune) until every watched document has reported once, so a
++      // semester never flickers out of the alert list while its source is loading.
++      if (!expected.every(id => received.has(id))) return;
++      const unansweredQuestions = buildClassbookQaAlerts(sources, Date.now());
++      const currentClassbookAlertIds = unansweredQuestions.map(a => a.id);
++
++      // One-time migration of dismissals saved under the pre-Sep-2026 id
++      // (classbook-qa-<lessonKey>): each currently-open question whose old id was
++      // dismissed gets its new id dismissed, then the old ids are retired, so an old
++      // dismissal can never hide a FUTURE question on the same lesson key (in any
++      // semester). A marker records that it ran; it only runs once every watched
++      // document has reported (see rebuild's guard above), so "currently open" is complete.
++      // Both steps below decide from the complete set of open questions, so they
++      // are skipped while any watched document failed before its first snapshot.
++      const complete = failedBeforeFirst.size === 0;
++      if (complete && !dismissedAlertIds.has(CLASSBOOK_QA_DISMISSALS_MIGRATED)) {
++        const retired = new Set();
++        unansweredQuestions.forEach(alert => {
++          if (dismissedAlertIds.has(alert.legacyId)) {
++            dismissedAlertIds.add(alert.id);
++            retired.add(alert.legacyId);
+           }
+-        }
++        });
++        retired.forEach(id => dismissedAlertIds.delete(id));
++        dismissedAlertIds.add(CLASSBOOK_QA_DISMISSALS_MIGRATED);
++        saveDismissedAlerts();
++      }
+ 
+-        // Remove old Classbook alerts that are no longer unanswered
+-        alerts.forEach(alert => {
+-          if (alert.type === 'curriculum' && !currentClassbookAlertIds.includes(alert.id)) {
+-            removeAlert(alert.id);
++      // Remove old Classbook alerts that are no longer unanswered
++      alerts.forEach(alert => {
++        if (alert.type === 'curriculum' && !currentClassbookAlertIds.includes(alert.id)) {
++          removeAlert(alert.id);
++        }
++      });
++      // …and forget dismissals of questions that have since been answered, so a NEW
++      // question on the same lesson alerts again (dismissed alerts aren't in
++      // `alerts`, so the loop above never reached them).
++      if (complete) {
++        let prunedDismissals = false;
++        [...dismissedAlertIds].forEach(id => {
++          if (id.startsWith('classbook-qa-') && id !== CLASSBOOK_QA_DISMISSALS_MIGRATED
++              && dismissedAlertIds.has(CLASSBOOK_QA_DISMISSALS_MIGRATED)
++              && !currentClassbookAlertIds.includes(id)) {
++            dismissedAlertIds.delete(id);
++            dismissedAlerts = dismissedAlerts.filter(a => a.id !== id);
++            prunedDismissals = true;
+           }
+         });
++        if (prunedDismissals) saveDismissedAlerts();
++      }
+ 
+-        // Update all Q&A alerts
+-        unansweredQuestions.forEach(alert => addOrUpdateAlert(alert));
++      // Update all Q&A alerts
++      unansweredQuestions.forEach(alert => addOrUpdateAlert(alert));
+ 
+-        updateUI();
++      updateUI();
++    };
++
++    const classbookListener = db.collection('curriculum')
++      .doc('lessonData')
++      .onSnapshot(doc => {
++        sources.lessonData = doc.exists ? doc.data() : null;
++        received.add('lessonData');
++        rebuild();
+       }, error => {
+         console.error('Classbook listener error:', error);
+       });
+-
+     listeners.push(classbookListener);
++
++    CLASSBOOK_OWN_DOC_SEMESTERS.forEach(semKey => {
++      const ownDocListener = db.collection('curriculum')
++        .doc(`lessons_${semKey}`)
++        .onSnapshot(doc => {
++          sources.ownDocs[semKey] = doc.exists ? doc.data() : null;
++          received.add(`lessons_${semKey}`);
++          failedBeforeFirst.delete(`lessons_${semKey}`);
++          rebuild();
++        }, error => {
++          // Keep the last good snapshot of this document (a transient error must not
++          // look like "all of this semester's questions were answered"). If it never
++          // arrived, carry on without it so the other semesters still alert.
++          console.error(`Classbook ${semKey} listener error:`, error);
++          if (!received.has(`lessons_${semKey}`)) {
++            failedBeforeFirst.add(`lessons_${semKey}`);
++            received.add(`lessons_${semKey}`);
++            rebuild();
++          }
++        });
++      listeners.push(ownDocListener);
++    });
+   }
+ 
+   // =====================================================
+diff --git a/js/classbook-qa-alerts.js b/js/classbook-qa-alerts.js
+new file mode 100644
+index 0000000..586ad18
+--- /dev/null
++++ b/js/classbook-qa-alerts.js
+@@ -0,0 +1,78 @@
++// Classbook unanswered-question alerts — pure builder (no Firestore, no DOM).
++//
++// Classbook weekly lessons live in two shapes (Sep 2026, Classbook storage move —
++// tinker-ai-configs/thoughts/plans/classbook-per-semester-lesson-storage.html):
++//   curriculum/lessonData            { <semKey>: { <lessonKey>: lesson }, lastUpdated, … }
++//   curriculum/lessons_<semKey>      { <lessonKey>: lesson, lastUpdated, lastUpdatedBy }
++// Each is watched by its own listener, so the alert set is rebuilt from the union
++// of both — a snapshot from one must never remove the other's alerts. A semester
++// that has its own document is taken from there (its lessonData copy, if any, is
++// ignored). Alert ids carry the semester (the same lesson key exists in every
++// semester); `legacyId` is the pre-Sep-2026 id, so a dismissal saved under it
++// still applies.
++
++const CLASSBOOK_OWN_DOC_SEMESTERS = ['spring-2026'];
++
++function classbookQaAlertsForSemester(semKey, lessons, now) {
++  const out = [];
++  if (!lessons || typeof lessons !== 'object') return out;
++  for (const [lessonKey, lesson] of Object.entries(lessons)) {
++    if (!lesson || typeof lesson !== 'object') continue;
++    const thread = lesson.qaThread;
++    if (!Array.isArray(thread) || thread.length === 0) continue;
++    const lastMsg = thread[thread.length - 1];
++    if (!lastMsg || lastMsg.from !== 'teacher') continue;
++
++    const questionDate = lastMsg.timestamp?.toMillis ? lastMsg.timestamp.toMillis()
++      : lastMsg.timestamp ? new Date(lastMsg.timestamp).getTime() : 0;
++
++    // Priority by age: info (0-24h), warning (25-48h), urgent (49h+); warning if unknown.
++    let priority = 'warning';
++    let timeText = 'Unknown time';
++    if (questionDate > 0) {
++      const hoursElapsed = Math.floor((now - questionDate) / (1000 * 60 * 60));
++      timeText = `${hoursElapsed}h ago`;
++      priority = hoursElapsed >= 49 ? 'urgent' : hoursElapsed >= 25 ? 'warning' : 'info';
++    }
++
++    const questionText = lastMsg.message || lastMsg.question || 'Question';
++    const teacherName = lesson.teacher || lastMsg.name || 'Teacher';
++    out.push({
++      id: `classbook-qa-${semKey}-${lessonKey}`,
++      legacyId: `classbook-qa-${lessonKey}`,
++      type: 'curriculum',
++      priority,
++      title: `${teacherName}: ${questionText.substring(0, 50)}${questionText.length > 50 ? '...' : ''}`,
++      subtitle: `${lesson.className || 'Class'} - Week ${lesson.weekNum || '?'} - ${timeText}`,
++      timestamp: questionDate > 0 ? new Date(questionDate).toISOString() : new Date(now).toISOString(),
++      actionLabel: 'View Classbook',
++      actionUrl: 'https://tinker-classbook.netlify.app#curriculum-admin',
++      metadata: { lessonKey, semKey },
++    });
++  }
++  return out;
++}
++
++// sources: { lessonData: <data | null>, ownDocs: { <semKey>: <data | null> } }
++// (null = that document doesn't exist, or hasn't been received yet).
++function buildClassbookQaAlerts(sources, now) {
++  const ownDocs = sources?.ownDocs || {};
++  const fromOwnDoc = new Set(Object.keys(ownDocs).filter(k => ownDocs[k]));
++  const alerts = [];
++  for (const [semKey, lessons] of Object.entries(sources?.lessonData || {})) {
++    if (semKey === 'lastUpdated' || semKey === 'lastUpdatedBy') continue;
++    if (fromOwnDoc.has(semKey)) continue;
++    alerts.push(...classbookQaAlertsForSemester(semKey, lessons, now));
++  }
++  for (const semKey of fromOwnDoc) {
++    const lessons = { ...ownDocs[semKey] };
++    delete lessons.lastUpdated;
++    delete lessons.lastUpdatedBy;
++    alerts.push(...classbookQaAlertsForSemester(semKey, lessons, now));
++  }
++  return alerts;
++}
++
++if (typeof module !== 'undefined' && module.exports) {
++  module.exports = { CLASSBOOK_OWN_DOC_SEMESTERS, buildClassbookQaAlerts, classbookQaAlertsForSemester };
++}
+diff --git a/package.json b/package.json
+index 45f1582..630f0a4 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "scripts": {
+     "test": "npm run test:rules && npm run test:guard",
+-    "test:rules": "firebase emulators:exec --only firestore \"node --experimental-vm-modules node_modules/.bin/jest rules.test.js archive-helpers.test.js archive-transaction.test.js\"",
++    "test:rules": "firebase emulators:exec --only firestore \"node --experimental-vm-modules node_modules/.bin/jest rules.test.js archive-helpers.test.js archive-transaction.test.js classbook-qa-alerts.test.js alerts-classbook.test.js\"",
+     "test:guard": "bash scripts/deploy-rules.test.sh",
+     "deploy:rules": "bash scripts/deploy-rules.sh"
+   },
