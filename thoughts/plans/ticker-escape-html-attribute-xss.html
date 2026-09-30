@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Ticker never lets a stored name or note run as code</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  pre { background: #f4f4f4; padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Ticker never lets a stored name or note run as code</h1>
+<p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026 &middot;
+<strong>v1</strong> &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
+written approval to edit the repo (Tinker Ticker rule).</em></p>
+
+<div class="status">
+  <strong>Goal:</strong> a name, email, id or note stored in Firestore always shows up on screen as the text it is &mdash;
+  including names like <code>O'Brien</code> and <code>Jo "JJ" Smith</code> &mdash; and can never add a click handler or
+  script to a manager's page.
+  <br><br>
+  <strong>Source:</strong> Codex implementation review of <code>ticker-sub-confirm-only-by-manager</code> (Sep 29).
+  <br><br>
+  <strong>Scope:</strong> <code>js/app.js</code>, <code>js/schedule-helpers.js</code> (new pure encoders), tests. No
+  Firestore write, no data shape change, no rules change, no new collection, nothing the Payroll Tool reads.
+</div>
+
+<h2>What is wrong</h2>
+<p><code>escapeHtml()</code> (<code>js/app.js:4502</code>) is <code>div.textContent = str; return div.innerHTML</code>. That
+encodes <code>&amp; &lt; &gt;</code> but not <code>"</code> or <code>'</code>. It is correct between tags and wrong in two
+other places app.js uses it:</p>
+<table>
+  <tr><th>Context</th><th>Example</th><th>What a stored <code>"</code> or <code>'</code> does</th></tr>
+  <tr><td><b>A.</b> quoted attribute</td><td><code>&lt;option value="${escapeHtml(e.name)}"&gt;</code></td>
+  <td><code>"</code> ends the attribute; the rest becomes new attributes, e.g. <code>onfocus=…</code>. Stored XSS.</td></tr>
+  <tr><td><b>B.</b> JS string inside an <code>on…="…"</code> handler</td>
+  <td><code>onclick="removeEmployee('${emp.id}', '${escapeHtml(emp.name).replace(/'/g, "\\'")}')"</code></td>
+  <td><code>"</code> ends the handler attribute (XSS). <code>'</code> is patched by the trailing <code>.replace</code> on
+  some lines but not others; where it is missing, an apostrophe name breaks the button or ends the JS string.</td></tr>
+</table>
+
+<div class="trap"><strong>Trap &mdash; the obvious one-line fix breaks apostrophe names.</strong> Making
+<code>escapeHtml</code> encode <code>'</code> as <code>&amp;#39;</code> fixes context A everywhere, but in context B the
+browser decodes <code>&amp;#39;</code> back to <code>'</code> <em>before</em> the handler runs, and the trailing
+<code>.replace(/'/g, "\\'")</code> no longer finds anything to escape. <code>O'Brien</code> would turn into a JS syntax
+error on the Remove / PIN / Merge / Assign buttons, which work today. HTML escaping alone can never be right for a JS
+string in an attribute; that context needs <em>JS-string encoding, then HTML-attribute encoding</em>. So both changes
+ship in one commit, and a wiring test pins it.</div>
+
+<h3>Who can write the values (severity)</h3>
+<p>From <code>/Users/christiehubley/studio-hub/firestore.rules</code> (read only; no change proposed here):</p>
+<table>
+  <tr><th>Source</th><th>Who can write it</th><th>Rendered to</th></tr>
+  <tr><td><code>timeclock_settings/employees</code> &mdash; the roster (<code>emp.name</code>, <code>emp.id</code>,
+  <code>claimedBy</code>)</td>
+  <td><b>Any staff member with Ticker access</b> &mdash; <code>allow write: if hasAppAccess('timeclock') &amp;&amp; docId ==
+  'employees'</code> (for name claiming), and it is the whole doc, not their own entry.</td>
+  <td>Manager roster (PIN / Remove / Merge / Assign), schedule list, sub picker, who's working, alerts.</td></tr>
+  <tr><td><code>users/{uid}</code> <code>name</code>, <code>email</code></td>
+  <td>The user themself (self-update pins role/appAccess/studios/active, not name/email); managers.</td>
+  <td>Staff lists, sub email (<code>data-email</code>, <code>mailto:</code>).</td></tr>
+  <tr><td><code>timeclock_timeoff</code> request fields</td><td>The requester (own doc); managers.</td><td>Time-off views.</td></tr>
+  <tr><td><code>timeclock_schedules</code>, <code>timeclock_overrides</code></td><td>Managers only.</td><td>Reminders view, schedule views.</td></tr>
+</table>
+<p><strong>Severity: High.</strong> The roster row means the note "roster names are manager-written" is not true: any
+staff member can write a name that runs script in an admin's session of the payroll source-of-truth app. Nothing
+indicates it has happened (names in the roster today are ordinary), and every staff member is a known employee &mdash;
+but the fix should not wait.</p>
+<div class="warn"><strong>Separate, not in this plan:</strong> the roster doc being writable in full by every staff member
+is itself a rules gap (a staff member can rename, archive or re-point anyone's roster entry). That is a
+<code>studio-hub/firestore.rules</code> change with its own plan, tests and sha-approval. This plan makes the display safe
+whatever the rules allow.</div>
+
+<h2>Audit &mdash; every place to change</h2>
+<p id="audit">(filled in below from the full sweep)</p>
+
+<h2>Design</h2>
+<ol>
+  <li><b>Two pure encoders in <code>js/schedule-helpers.js</code></b> (loaded as a browser global and <code>require()</code>-able
+  by Jest):
+<pre>// Text AND quoted-attribute safe. null/undefined → '' (what escapeHtml returns today).
+function escapeAttr(v) {
+  return (v == null ? '' : String(v))
+    .replace(/&amp;/g, '&amp;amp;').replace(/&lt;/g, '&amp;lt;').replace(/&gt;/g, '&amp;gt;')
+    .replace(/"/g, '&amp;quot;').replace(/'/g, '&amp;#39;');
+}
+// A JS string literal for an inline handler, already attribute-encoded. Used WITHOUT surrounding quotes:
+//   onclick="removeEmployee(${jsArg(emp.id)}, ${jsArg(emp.name)})"
+function jsArg(v) { return escapeAttr(JSON.stringify(v == null ? '' : String(v))); }</pre>
+  <code>JSON.stringify</code> escapes <code>"</code>, <code>\</code> and control characters; the attribute encoding
+  then survives the HTML parser, which hands the handler exactly the JSON literal back.</li>
+  <li><b><code>escapeHtml</code> becomes <code>escapeAttr</code></b> (same body, kept by name so the ~100 text-context
+  callers don't change). Encoding quotes in text is invisible. Every context-A line is fixed by this alone.</li>
+  <li><b>Every context-B handler switches to <code>jsArg</code></b>, dropping its hand-written quotes and any
+  <code>.replace(/'/g, …)</code>, including the raw <code>'${emp.id}'</code> / <code>'${sched.uid}'</code> args and the
+  <code>safeUid</code>/<code>safeName</code> pair at <code>js/app.js:2242</code> (whose <code>.replace(/'/g, "\'")</code>
+  is a no-op &mdash; <code>"\'"</code> is just <code>'</code> &mdash; so today an apostrophe name already breaks the ✏️
+  edit-entries button). Rule: <em>no string goes into an <code>on…</code> attribute except through
+  <code>jsArg</code></em>; numbers and locally built date strings may stay as they are only if listed in the test's
+  allow-list with a reason.</li>
+  <li><b><code>summer-camp-sync.html</code>'s own <code>esc()</code></b> gets the same quote encoding if the audit
+  finds it used in an attribute.</li>
+</ol>
+<p>Considered and not chosen: replacing inline handlers with <code>data-*</code> attributes and event delegation. It is
+the cleaner long-term shape, but it touches every handler's wiring in a 10k-line payroll file; <code>jsArg</code> is a
+mechanical, testable change to the same lines. The Sep 29 sub-confirm plan already builds its new checkboxes with DOM
+APIs, which is the pattern for new code.</p>
+
+<h2>Phases</h2>
+
+<div class="phase">
+<h3>Phase 1 &mdash; Encoders and tests (no behaviour change yet)</h3>
+<p><b>Acceptance:</b> the encoders exist and are proven on hostile input; nothing on screen changes.</p>
+<ul>
+  <li>Add <code>escapeAttr</code> and <code>jsArg</code> to <code>js/schedule-helpers.js</code> and its exports.</li>
+  <li>Unit tests in <code>schedule-helpers.test.js</code> with <code>O'Brien</code>, <code>Jo "JJ" Smith</code>,
+  <code>a\b</code>, <code>&lt;img src=x onerror=alert(1)&gt;</code>, <code>x" onfocus="alert(1)</code>,
+  <code>'); alert(1); ('</code>, <code>null</code>, <code>undefined</code>, <code>0</code>.
+  Round-trip: decode the five entities (the only ones <code>escapeAttr</code> emits) and evaluate with
+  <code>new Function('return ' + decoded)()</code> &mdash; must equal the input exactly.</li>
+</ul>
+<div class="bdd"><b>Given</b> the name <code>x" onfocus="alert(1)</code> <b>When</b> put through <code>escapeAttr</code>
+<b>Then</b> the output contains no <code>"</code> and decodes back to the same name.</div>
+<div class="bdd"><b>Given</b> <code>O'Brien</code> <b>When</b> put through <code>jsArg</code> and decoded as the HTML parser
+would <b>Then</b> it evaluates to the string <code>O'Brien</code>.</div>
+<div class="bdd"><b>Edge:</b> <code>null</code>/<code>undefined</code> give <code>''</code> and <code>'""'</code>; <code>0</code>
+gives <code>'0'</code> (today's <code>textContent</code> behaviour).</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2 &mdash; Switch app.js over, pinned by a wiring test</h3>
+<p><b>Acceptance:</b> a roster name with <code>"</code> or <code>'</code> shows correctly everywhere and every button on
+that row still works; no stored value can add an attribute or handler.</p>
+<ul>
+  <li><code>escapeHtml</code> body → <code>return escapeAttr(str);</code></li>
+  <li>Every audited context-B handler → <code>jsArg</code>. Every audited raw attribute interpolation of a stored
+  string → <code>escapeHtml</code>.</li>
+  <li>Wiring tests in <code>schedule-editor-wiring.test.js</code> (source-level, the only way to reach app.js):
+    <ul>
+      <li>no <code>escapeHtml(…).replace(</code> anywhere;</li>
+      <li>no <code>'${</code> inside any <code>on[a-z]+="…"</code> attribute (allow-list with reasons for provably
+      safe values, e.g. a locally formatted <code>dateStr</code>);</li>
+      <li><code>escapeHtml</code> delegates to <code>escapeAttr</code>.</li>
+    </ul></li>
+  <li>Lands <b>after</b> <code>fix/sub-confirm-manager-only</code> merges to main (both edit <code>js/app.js</code>);
+  rebase and re-run the audit grep on the merged file first, since that branch adds attribute-built HTML.</li>
+</ul>
+<div class="bdd"><b>Given</b> a roster entry named <code>Jo "JJ" O'Brien</code> <b>When</b> an admin opens Manage Team,
+the sub picker, Who's Working (month), the Reminders person filter and the dashboard alerts <b>Then</b> the name shows as
+typed and PIN / Remove / Merge / Assign / Extend / Dismiss / Restore / ✏️ each open with that name.</div>
+<div class="bdd"><b>Given</b> a roster name <code>x" onfocus="alert(1)</code> <b>When</b> any of those views renders
+<b>Then</b> the DOM element has no <code>onfocus</code> attribute (checked in the browser with
+<code>querySelectorAll('[onfocus]')</code>).</div>
+<div class="bdd"><b>Failure path:</b> a future line re-introduces <code>'${escapeHtml(x)}'</code> in an onclick &rarr;
+the wiring test fails in <code>npm test</code>.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 3 &mdash; Verify locally, review, then ask to deploy</h3>
+<ul>
+  <li><code>npm test</code> green (emulator; report the printed count).</li>
+  <li>Local check on <code>npx http-server . -p 8093</code> against the emulator or with an in-memory roster entry
+  (never by writing a hostile name to production).</li>
+  <li><code>/second-model-review</code> implementation review of the diff.</li>
+  <li>Push, then ask Christie before any <code>netlify deploy</code> (clean tree, pushed sha as the message).</li>
+</ul>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<table>
+  <tr><td>Rules changed?</td><td>No. (The roster-write gap is flagged for its own plan.)</td></tr>
+  <tr><td>New collection?</td><td>No.</td></tr>
+  <tr><td>Firestore writes / bulk ops?</td><td>None added or changed. Display-only.</td></tr>
+  <tr><td><code>updateDoc</code> / empty fields</td><td>N/A &mdash; no write paths touched. Handlers receive the same
+  string values they receive today.</td></tr>
+  <tr><td>Payroll Tool</td><td>Unaffected: no field names, entry format or lock logic change.</td></tr>
+</table>
+
+<h2>Completeness &mdash; if interrupted</h2>
+<p>Phase 1 alone is inert (new unused functions). Phase 2 is one commit: <code>escapeHtml</code> and every context-B
+handler change together, because either half alone is worse than today (quotes encoded without <code>jsArg</code> breaks
+apostrophe names; <code>jsArg</code> without the attribute fix leaves context A open). Never commit half of Phase 2.</p>
+
+<h2>Resume instructions</h2>
+<ol>
+  <li>Read this plan and its Decisions log. Confirm Christie's written approval to edit the repo is in the current
+  session.</li>
+  <li><code>git log --oneline origin/main</code> &mdash; has <code>fix/sub-confirm-manager-only</code> merged? Has Phase 1
+  landed (<code>grep -n "function escapeAttr" js/schedule-helpers.js</code>)?</li>
+  <li>Re-run the audit greps on the current <code>js/app.js</code>:
+<pre>grep -n '="[^"]*\${escapeHtml' js/app.js
+grep -nE 'on[a-z]+="[^"]*\$\{' js/app.js</pre></li>
+</ol>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li><b>Sep 29 (draft):</b> fix <code>escapeHtml</code> in place rather than add a separate attribute encoder at ~10
+  call sites &mdash; one function can't be picked wrong. Handlers get <code>jsArg</code>, not delegation (see Design).</li>
+</ul>
+</body>
+</html>
