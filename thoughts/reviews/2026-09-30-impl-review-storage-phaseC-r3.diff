@@ -1,0 +1,130 @@
+commit 126002ab710506386711b2cf3e98343d11f40a9d
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Wed Sep 30 13:44:06 2026 -0600
+
+    Phase C procedure review round 2: refuse reserved keys; never undo from a mismatched copy
+    
+    Codex round 2 (items 1–3 resolved; two new safeguards):
+    - A Spring lesson keyed lastUpdated / lastUpdatedBy would be overwritten by the new
+      document's own stamps: refused before confirmation and again inside the transaction.
+    - Automatic undo only when the new document matches the recorded count + fingerprint
+      (checked in verification AND again inside the undo transaction). Otherwise nothing
+      is touched: Spring stays read-only in its new document and recovery uses the backup.
+    
+    Rehearsal: 15 tests (+ tampered copy is never used to undo; reserved key refused).
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/e2e/spring-move-procedure.spec.js b/e2e/spring-move-procedure.spec.js
+index 70d9849..c216e50 100644
+--- a/e2e/spring-move-procedure.spec.js
++++ b/e2e/spring-move-procedure.spec.js
+@@ -219,4 +219,30 @@ test.describe('Spring 2026 move procedure (Phase C rehearsal)', () => {
+     expect(moved.toMillis()).toBe(Date.parse('2026-03-01T12:00:00Z'));   // still a real Timestamp
+     await ctx.close();
+   });
++
++  test('a new document that does NOT match the record is never used to undo: everything left as is, read-only', async ({ browser }) => {
++    const { ctx, page } = await openAs(browser, 'manager');
++    expect((await runProcedure(page, { opts: { stopAfterMove: true } })).result.stage).toBe('moved');
++    await SM.writeCurriculumDoc(SM.SPRING_DOC, { [LESSON]: { teacher: 'Tampered' } }, { merge: true });   // (admin SDK; the rules forbid this for clients)
++    const before = await snapshotAll();
++    const again = await page.evaluate(() => springMove());
++    expect(again.ok).toBe(false);
++    expect(again.needsRecovery).toBe(true);
++    expect(again.message).toMatch(/NOT used to undo/);
++    expect(await snapshotAll()).toEqual(before);
++    expect(before.migrations['spring-2026'].verified).toBe(false);
++    await ctx.close();
++  });
++
++  test("a lesson named like the new document's own fields is refused before anything changes", async ({ browser }) => {
++    await SM.writeCurriculumDoc('lessonData', { 'spring-2026': { lastUpdated: { teacher: 'X' } } }, { merge: true });
++    const before = await snapshotAll();
++    const { ctx, page } = await openAs(browser, 'manager');
++    const { result, download } = await runProcedure(page);
++    expect(result.ok).toBe(false);
++    expect(result.message).toMatch(/clashes with the new document's own fields/);
++    expect(download).toBeNull();
++    expect(await snapshotAll()).toEqual(before);
++    await ctx.close();
++  });
+ });
+diff --git a/scripts/spring-2026-move.console.js b/scripts/spring-2026-move.console.js
+index bf8a9df..eb7a5b4 100644
+--- a/scripts/spring-2026-move.console.js
++++ b/scripts/spring-2026-move.console.js
+@@ -70,6 +70,10 @@ async function springMove(opts = {}) {
+     return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+   };
+   const lessonsOf = (data) => { const m = { ...(data || {}) }; delete m.lastUpdated; delete m.lastUpdatedBy; return m; };
++  // The new document's own bookkeeping fields — a lesson with one of these keys would be
++  // overwritten, so it's refused up front.
++  const RESERVED = ['lastUpdated', 'lastUpdatedBy'];
++  const reservedIn = (map) => RESERVED.filter(k => Object.prototype.hasOwnProperty.call(map || {}, k));
+   const readAll = () => Promise.all([
+     ref('lessonData').get({ source: 'server' }),
+     ref(TARGET).get({ source: 'server' }),
+@@ -88,6 +92,7 @@ async function springMove(opts = {}) {
+     // ── Not moved yet: validate, back up, confirm, move. ──
+     const springMap = ld.data()[K];
+     if (!springMap || typeof springMap !== 'object' || Array.isArray(springMap)) return stop('Spring 2026 in lessonData is not a map of lessons. Nothing was changed.');
++    if (reservedIn(springMap).length) return stop(`Spring 2026 has a lesson named ${reservedIn(springMap).join(', ')}, which clashes with the new document's own fields. Nothing was changed. Tell Claude.`);
+     const encoded = encode(springMap, K);
+     if (unsupported.length) return stop(`Spring 2026 holds values this procedure can't back up exactly:\n${unsupported.slice(0, 10).join('\n')}${unsupported.length > 10 ? `\n…and ${unsupported.length - 10} more` : ''}\n\nNothing was changed. Tell Claude.`);
+     const count = Object.keys(springMap).length;
+@@ -114,6 +119,7 @@ async function springMove(opts = {}) {
+         if (m.exists && m.data()?.[K]) throw new Error('a move record appeared');
+         const inTx = l.exists ? l.data()?.[K] : null;
+         if (!inTx) throw new Error('Spring 2026 is no longer in lessonData');
++        if (reservedIn(inTx).length) throw new Error(`a lesson named ${reservedIn(inTx).join(', ')} appeared`);
+         unsupported.length = 0;
+         const enc = encode(inTx, K);
+         if (unsupported.length) throw new Error(`unsupported values appeared: ${unsupported[0]}`);
+@@ -137,6 +143,7 @@ async function springMove(opts = {}) {
+   // ── Verify (fresh server reads). ──
+   const problems = [];
+   let l2, t2, rec;
++  let targetIntact = false;   // the new document matches the recorded count + fingerprint
+   try {
+     let m2;
+     [l2, t2, m2] = await readAll();
+@@ -147,14 +154,22 @@ async function springMove(opts = {}) {
+     unsupported.length = 0;
+     const encTarget = encode(targetLessons, TARGET);
+     if (unsupported.length) problems.push(`the new document holds unsupported values (${unsupported[0]})`);
+-    if (rec && Object.keys(targetLessons).length !== rec.lessonCount) problems.push(`lesson count ${Object.keys(targetLessons).length} ≠ recorded ${rec.lessonCount}`);
+-    if (rec && (await sha256Of(encTarget)) !== rec.sha256) problems.push('the new document\'s fingerprint differs from the recorded one');
++    const countOk = !!rec && Object.keys(targetLessons).length === rec.lessonCount;
++    const hashOk = !!rec && !unsupported.length && (await sha256Of(encTarget)) === rec.sha256;
++    if (rec && !countOk) problems.push(`lesson count ${Object.keys(targetLessons).length} ≠ recorded ${rec.lessonCount}`);
++    if (rec && !hashOk) problems.push('the new document\'s fingerprint differs from the recorded one');
++    targetIntact = t2.exists && countOk && hashOk;
+     if (l2.exists && Object.prototype.hasOwnProperty.call(l2.data() || {}, K)) problems.push('Spring 2026 is still in the shared document');
+     if (opts.simulateVerifyFailure) problems.push('simulated failure (rehearsal)');
+   } catch (err) {
+     return stop(`Couldn't read back from the server to verify (${err.message}). Spring is safe in its new document and still read-only. Run this procedure again to finish.`, { stage: 'moved' });
+   }
+ 
++  if (problems.length && !targetIntact) {
++    // Never restore FROM a copy that doesn't match what was moved.
++    console.error('[spring-move] Verification failed and the new document does not match the record:', problems);
++    return stop(`Verification failed (${problems.join('; ')}) and the new document doesn't match what was moved, so it was NOT used to undo anything. Everything is left as it is and Spring stays read-only. Don't retry — tell Claude; recovery uses your backup file.`, { stage: 'moved', needsRecovery: true });
++  }
+   if (problems.length) {
+     // ── Undo — ONE transaction: Spring back, new document and record removed. ──
+     console.error('[spring-move] Verification failed:', problems);
+@@ -166,7 +181,12 @@ async function springMove(opts = {}) {
+         if (!t.exists) throw new Error('the new document is already gone');
+         if (m.data()?.[K]?.verified === true) throw new Error('the move is already verified');
+         if (l.exists && Object.prototype.hasOwnProperty.call(l.data() || {}, K)) throw new Error('Spring 2026 is already back in lessonData');
+-        tx.update(ref('lessonData'), { [K]: lessonsOf(t.data()) });
++        const back = lessonsOf(t.data());
++        unsupported.length = 0;
++        const encBack = encode(back, TARGET);
++        const r = m.data()?.[K];
++        if (!r || unsupported.length || Object.keys(back).length !== r.lessonCount || (await sha256Of(encBack)) !== r.sha256) throw new Error('the new document no longer matches the record');
++        tx.update(ref('lessonData'), { [K]: back });
+         tx.delete(ref(TARGET));
+         tx.update(ref('storageMigrations'), { [K]: DELETE });
+       });

@@ -1,0 +1,446 @@
+commit 058f64f2f88cf1185cf634100dd3b89f9058c5bd
+Author: Christie Hubley <christie@tinkerartstudio.com>
+Date:   Wed Sep 30 13:39:48 2026 -0600
+
+    Phase C procedure review fixes: re-runnable, atomic undo, exact-types only
+    
+    Codex review of 05b159b (NOT safe to run):
+    - Undo is now ONE transaction: Spring back into lessonData, lessons_spring-2026
+      deleted AND the move record removed (the old separate record cleanup could leave a
+      stale record that blocked any re-run).
+    - Re-runnable: the procedure detects the state first — not moved → move; moved but
+      unverified (tab closed, read failure, mark-verified failure) → carries on to verify
+      and mark verified or undo; already verified → says so and changes nothing; anything
+      else → stops. Verification now checks against the server's move record.
+    - Exact types only: before any download or change, every Spring value must be a
+      JSON-exact type (finite non -0 numbers, strings, booleans, null, arrays, plain maps)
+      or a Firestore Timestamp (tagged __firestoreTimestamp in both the fingerprint and
+      the backup); GeoPoint, Bytes, references, NaN/Infinity, or a map already using the
+      tag stop the run with the offending paths listed.
+    
+    Rehearsal (13 tests, deployed rules): + Fall preserved incl. a Fall save while the
+    confirmation is open, resume after an interruption right after the move, resume after
+    a mark-verified failure, re-run after success = no change, GeoPoint / NaN refused
+    before download, Timestamp moved exactly and tagged in the backup.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+diff --git a/e2e/helpers/storage-move.js b/e2e/helpers/storage-move.js
+index 670fa3f..d6e0d5a 100644
+--- a/e2e/helpers/storage-move.js
++++ b/e2e/helpers/storage-move.js
+@@ -59,4 +59,14 @@ async function deleteCurriculumDoc(docId) {
+   await adminDb().collection('curriculum').doc(docId).delete();
+ }
+ 
+-module.exports = { SPRING, SPRING_DOC, springFixture, resetStorageMove, stageMoved, readCurriculumDoc, writeCurriculumDoc, deleteCurriculumDoc };
++// Writes a Firestore-typed value into one Spring lesson in lessonData (for the procedure's
++// "only exactly-representable values" check): 'timestamp' | 'geopoint' | 'nan'.
++async function writeSpringTypedValue(lessonKey, field, kind) {
++  const admin = require('firebase-admin');
++  const value = kind === 'timestamp' ? admin.firestore.Timestamp.fromMillis(Date.parse('2026-03-01T12:00:00Z'))
++    : kind === 'geopoint' ? new admin.firestore.GeoPoint(40.0, -105.3)
++    : kind === 'nan' ? NaN : null;
++  await adminDb().collection('curriculum').doc('lessonData').update({ [`${SPRING}.${lessonKey}.${field}`]: value });
++}
++
++module.exports = { writeSpringTypedValue, SPRING, SPRING_DOC, springFixture, resetStorageMove, stageMoved, readCurriculumDoc, writeCurriculumDoc, deleteCurriculumDoc };
+diff --git a/e2e/spring-move-procedure.spec.js b/e2e/spring-move-procedure.spec.js
+index d74ed9e..70d9849 100644
+--- a/e2e/spring-move-procedure.spec.js
++++ b/e2e/spring-move-procedure.spec.js
+@@ -26,9 +26,13 @@ async function openAs(browser, role) {
+   return { ctx, page };
+ }
+ // Loads the procedure without auto-running; dialogs answered by `answerConfirm`.
+-async function runProcedure(page, { answerConfirm = true, opts = {} } = {}) {
++async function runProcedure(page, { answerConfirm = true, opts = {}, beforeConfirm = null } = {}) {
+   const dialogs = [];
+-  page.on('dialog', d => { dialogs.push(`${d.type()}: ${d.message()}`); d.type() === 'confirm' ? (answerConfirm ? d.accept() : d.dismiss()) : d.accept(); });
++  page.on('dialog', async d => {
++    dialogs.push(`${d.type()}: ${d.message()}`);
++    if (d.type() === 'confirm') { if (beforeConfirm) await beforeConfirm(); return answerConfirm ? d.accept() : d.dismiss(); }
++    return d.accept();
++  });
+   await page.addScriptTag({ content: `window.__SPRING_MOVE_NO_AUTORUN = true;\n${PROCEDURE}` });
+   const downloadPromise = page.waitForEvent('download', { timeout: 15_000 }).catch(() => null);
+   const result = await page.evaluate((o) => springMove(o), opts);
+@@ -112,7 +116,7 @@ test.describe('Spring 2026 move procedure (Phase C rehearsal)', () => {
+     const { ctx, page } = await openAs(browser, 'manager');
+     const { result, download } = await runProcedure(page);
+     expect(result.ok).toBe(false);
+-    expect(result.message).toMatch(/Nothing was changed/);
++    expect(result.message).toMatch(/already been moved and verified.*nothing was changed/i);
+     expect(download).toBeNull();
+     expect(await snapshotAll()).toEqual(before);
+     await ctx.close();
+@@ -141,4 +145,78 @@ test.describe('Spring 2026 move procedure (Phase C rehearsal)', () => {
+     expect((await SM.readCurriculumDoc('lessonData'))['spring-2026']).toBeUndefined();
+     await ctx.close();
+   });
++
++  test('Fall is preserved, including a Fall save made while the confirmation is open', async ({ browser }) => {
++    await SM.writeCurriculumDoc('lessonData', { 'fall-2026': { 'fall-1': { teacher: 'T', shortDetails: 'Fall before' } } }, { merge: true });
++    const { ctx, page } = await openAs(browser, 'manager');
++    const { result } = await runProcedure(page, {
++      beforeConfirm: () => SM.writeCurriculumDoc('lessonData', { 'fall-2026': { 'fall-1': { teacher: 'T', shortDetails: 'Fall edited mid-move' } } }, { merge: true }),
++    });
++    expect(result.ok, JSON.stringify(result)).toBe(true);
++    const ld = await SM.readCurriculumDoc('lessonData');
++    expect(ld['fall-2026']['fall-1'].shortDetails).toBe('Fall edited mid-move');
++    expect(ld['spring-2026']).toBeUndefined();
++    expect(Object.keys(ld).sort()).toEqual(['fall-2026', 'lastUpdated', 'lastUpdatedBy']);
++    await ctx.close();
++  });
++
++  test('interrupted right after the move: re-running finishes it (verify + mark verified)', async ({ browser }) => {
++    const { ctx, page } = await openAs(browser, 'manager');
++    const first = await runProcedure(page, { opts: { stopAfterMove: true } });
++    expect(first.result.stage).toBe('moved');
++    expect((await SM.readCurriculumDoc('storageMigrations'))['spring-2026'].verified).toBe(false);
++    await page.waitForFunction(() => ownDocSource['spring-2026'] === 'ownDoc');
++    expect(await page.evaluate(() => weeklySemesterPausedMessage('spring-2026'))).toMatch(/editing it is paused/);   // read-only meanwhile
++    const again = await page.evaluate(() => springMove());
++    expect(again.ok, JSON.stringify(again)).toBe(true);
++    expect(stripStamps(await SM.readCurriculumDoc(SM.SPRING_DOC))).toEqual(SM.springFixture());
++    expect((await SM.readCurriculumDoc('storageMigrations'))['spring-2026'].verified).toBe(true);
++    await ctx.close();
++  });
++
++  test('marking verified fails: re-running finishes it', async ({ browser }) => {
++    const { ctx, page } = await openAs(browser, 'manager');
++    const first = await runProcedure(page, { opts: { failMarkVerified: true } });
++    expect(first.result.ok).toBe(false);
++    expect(first.result.message).toMatch(/Run this procedure again to finish/);
++    const again = await page.evaluate(() => springMove());
++    expect(again.ok, JSON.stringify(again)).toBe(true);
++    await ctx.close();
++  });
++
++  test('re-running after success says it is already done and changes nothing', async ({ browser }) => {
++    const { ctx, page } = await openAs(browser, 'manager');
++    expect((await runProcedure(page)).result.ok).toBe(true);
++    const before = await snapshotAll();
++    const again = await page.evaluate(() => springMove());
++    expect(again.alreadyDone).toBe(true);
++    expect(await snapshotAll()).toEqual(before);
++    await ctx.close();
++  });
++
++  for (const kind of ['geopoint', 'nan']) {
++    test(`a value that can't be backed up exactly (${kind}) stops it before anything is downloaded or changed`, async ({ browser }) => {
++      await SM.writeSpringTypedValue(LESSON, 'odd', kind);
++      const before = await snapshotAll();
++      const { ctx, page } = await openAs(browser, 'manager');
++      const { result, download } = await runProcedure(page);
++      expect(result.ok).toBe(false);
++      expect(result.message).toMatch(/can't back up exactly/);
++      expect(download).toBeNull();
++      expect(await snapshotAll()).toEqual(before);
++      await ctx.close();
++    });
++  }
++
++  test('a Firestore Timestamp is moved exactly and tagged in the backup', async ({ browser }) => {
++    await SM.writeSpringTypedValue(LESSON, 'reviewedAt', 'timestamp');
++    const { ctx, page } = await openAs(browser, 'manager');
++    const { result, download } = await runProcedure(page);
++    expect(result.ok, JSON.stringify(result)).toBe(true);
++    const backup = JSON.parse(fs.readFileSync(await download.path(), 'utf8'));
++    expect(backup.lessons[LESSON].reviewedAt).toEqual({ __firestoreTimestamp: { seconds: Date.parse('2026-03-01T12:00:00Z') / 1000, nanoseconds: 0 } });
++    const moved = (await SM.readCurriculumDoc(SM.SPRING_DOC))[LESSON].reviewedAt;
++    expect(moved.toMillis()).toBe(Date.parse('2026-03-01T12:00:00Z'));   // still a real Timestamp
++    await ctx.close();
++  });
+ });
+diff --git a/scripts/spring-2026-move.console.js b/scripts/spring-2026-move.console.js
+index da9a3f6..bf8a9df 100644
+--- a/scripts/spring-2026-move.console.js
++++ b/scripts/spring-2026-move.console.js
+@@ -5,31 +5,32 @@
+ // browser console (⌥⌘J), paste this WHOLE file, press Enter. It never runs on its own
+ // from the site — this file isn't deployed (dist/ holds only the app).
+ //
+-// What it does, in order — stopping with "nothing was changed" at the first problem:
+-//   1. Checks you're a manager and reads curriculum/lessonData, lessons_spring-2026 and
+-//      storageMigrations fresh from the server: Spring must be in lessonData, its own
+-//      document must not exist yet, and there must be no earlier move record.
+-//   2. Downloads a JSON backup of Spring's lessons and asks you to confirm.
+-//   3. ONE transaction: creates lessons_spring-2026 from the lessons read inside the
+-//      transaction, removes spring-2026 from lessonData, and records the move
+-//      (lesson count + SHA-256 fingerprint, verified: false). All or nothing.
+-//   4. Verifies from fresh server reads: the new document's lessons have the same count
+-//      and fingerprint, and lessonData no longer holds Spring. Spring edits are paused by
+-//      the rules throughout, so nothing can change in between.
+-//   5a. Passed → marks the move verified (Spring becomes editable again) and reports the
+-//       new lessonData size.
+-//   5b. Failed → one transaction puts Spring back into lessonData and removes the new
+-//       document and the record (only allowed while unverified), exactly as before.
++// SAFE TO RE-RUN. It first works out which state the data is in:
++//   • not moved yet      → checks every value is a plain type it can back up exactly, downloads
++//                          a JSON backup, asks you to confirm, then moves Spring in ONE
++//                          transaction (create lessons_spring-2026 from the lessons read inside
++//                          the transaction, remove spring-2026 from lessonData, record count +
++//                          SHA-256 fingerprint with verified: false) — all or nothing;
++//   • moved, not verified (a previous run was interrupted) → carries on from here;
++//   • moved and verified  → says so and stops;
++//   • anything else       → stops without changing anything.
++// Then it VERIFIES from fresh server reads (the new document's lessons match the recorded
++// count and fingerprint, and lessonData no longer holds Spring — Spring edits are paused by the
++// rules throughout, so nothing can change in between), and either
++//   • marks the move verified (Spring becomes editable again), or
++//   • UNDOES it in ONE transaction: Spring back into lessonData, the new document and the move
++//     record removed — exactly the state before (allowed by the rules only while unverified).
+ //
+ // The Phase A rules (studio-hub 0caf415) allow exactly these writes and nothing else.
+ async function springMove(opts = {}) {
+   const K = 'spring-2026';
+   const TARGET = 'lessons_spring-2026';
++  const TS_TAG = '__firestoreTimestamp';
+   const say = (...a) => console.log('%c[spring-move]', 'color:#6052C8;font-weight:bold', ...a);
+-  const stop = (msg) => {
++  const stop = (msg, extra = {}) => {
+     console.error('[spring-move] STOPPED:', msg);
+     alert(`Spring 2026 move STOPPED.\n\n${msg}`);
+-    return { ok: false, message: msg };
++    return { ok: false, message: msg, ...extra };
+   };
+ 
+   const user = getAuthUser();
+@@ -38,127 +39,155 @@ async function springMove(opts = {}) {
+   const db = curriculumDb;
+   const ref = (id) => db.collection('curriculum').doc(id);
+   const by = user.name || user.email || 'Unknown';
++  const DELETE = firebase.firestore.FieldValue.delete();
+ 
+-  // A fingerprint independent of key order: sorted keys, Timestamps as seconds/nanos.
+-  const canon = (v) => {
+-    if (v === null || typeof v !== 'object') return v;
+-    if (typeof v.toDate === 'function' && 'seconds' in v) return { __ts: [v.seconds, v.nanoseconds] };
+-    if (Array.isArray(v)) return v.map(canon);
+-    const out = {};
+-    for (const k of Object.keys(v).sort()) out[k] = canon(v[k]);
+-    return out;
++  // Only values that round-trip exactly through JSON (plus Timestamps, tagged) are allowed —
++  // anything else (NaN, ±Infinity, -0, GeoPoint, Bytes, DocumentReference, a map already using
++  // the tag key…) is reported and the run stops before anything is downloaded or changed.
++  const unsupported = [];
++  const isTimestamp = (v) => v && typeof v === 'object' && typeof v.toDate === 'function' && typeof v.seconds === 'number' && typeof v.nanoseconds === 'number';
++  const encode = (v, where) => {
++    if (v === null || typeof v === 'string' || typeof v === 'boolean') return v;
++    if (typeof v === 'number') {
++      if (!Number.isFinite(v) || Object.is(v, -0)) unsupported.push(`${where}: number ${String(v)}`);
++      return v;
++    }
++    if (isTimestamp(v)) return { [TS_TAG]: { seconds: v.seconds, nanoseconds: v.nanoseconds } };
++    if (Array.isArray(v)) return v.map((x, i) => encode(x, `${where}[${i}]`));
++    if (typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
++      const out = {};
++      for (const k of Object.keys(v).sort()) {
++        if (k === TS_TAG) unsupported.push(`${where}: a field named ${TS_TAG}`);
++        out[k] = encode(v[k], `${where}.${k}`);
++      }
++      return out;
++    }
++    unsupported.push(`${where}: ${v?.constructor?.name || typeof v}`);
++    return null;
+   };
+-  const sha256 = async (obj) => {
+-    const bytes = new TextEncoder().encode(JSON.stringify(canon(obj)));
+-    const digest = await crypto.subtle.digest('SHA-256', bytes);
++  const sha256Of = async (encoded) => {
++    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(encoded)));
+     return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
+   };
+   const lessonsOf = (data) => { const m = { ...(data || {}) }; delete m.lastUpdated; delete m.lastUpdatedBy; return m; };
++  const readAll = () => Promise.all([
++    ref('lessonData').get({ source: 'server' }),
++    ref(TARGET).get({ source: 'server' }),
++    ref('storageMigrations').get({ source: 'server' }),
++  ]);
+ 
+-  // 1. Preflight — forced server reads.
++  // ── Which state are we in? ──
+   let ld, tgt, mig;
+-  try {
+-    [ld, tgt, mig] = await Promise.all([
+-      ref('lessonData').get({ source: 'server' }),
+-      ref(TARGET).get({ source: 'server' }),
+-      ref('storageMigrations').get({ source: 'server' }),
+-    ]);
+-  } catch (err) {
++  try { [ld, tgt, mig] = await readAll(); } catch (err) {
+     return stop(`Couldn't read the current data from the server (${err.message}). Nothing was changed.`);
+   }
+-  const springMap = ld.exists ? ld.data()?.[K] : null;
+-  if (!springMap || typeof springMap !== 'object') return stop('Spring 2026 is not in the shared lesson document — it may already have been moved. Nothing was changed.');
+-  if (tgt.exists) return stop(`${TARGET} already exists. Nothing was changed.`);
+-  if (mig.exists && mig.data()?.[K]) return stop('There is already a Spring 2026 move record. Nothing was changed.');
+-  const count = Object.keys(springMap).length;
+-  const fingerprint = await sha256(springMap);
+-  say(`Spring 2026: ${count} lessons, fingerprint ${fingerprint.slice(0, 12)}…`);
++  const inLessonData = ld.exists && Object.prototype.hasOwnProperty.call(ld.data() || {}, K);
++  const record = mig.exists ? mig.data()?.[K] : undefined;
+ 
+-  // 2. Backup download, then confirm.
+-  const fileName = `classbook-${K}-lessons-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+-  const backup = JSON.stringify({ semester: K, takenAt: new Date().toISOString(), takenBy: by, lessonCount: count, sha256: fingerprint, lessons: springMap }, null, 2);
+-  const link = document.createElement('a');
+-  link.href = URL.createObjectURL(new Blob([backup], { type: 'application/json' }));
+-  link.download = fileName;
+-  document.body.appendChild(link); link.click(); link.remove();
+-  if (!confirm(`A backup of Spring 2026 (${count} lessons) was just downloaded:\n\n${fileName}\n\nCheck it's in your Downloads folder, then press OK to move Spring 2026 into its own storage.\n\nCancel stops here — nothing is changed.`)) {
+-    return stop('Cancelled before the move. Nothing was changed.');
+-  }
++  if (inLessonData && !tgt.exists && !record) {
++    // ── Not moved yet: validate, back up, confirm, move. ──
++    const springMap = ld.data()[K];
++    if (!springMap || typeof springMap !== 'object' || Array.isArray(springMap)) return stop('Spring 2026 in lessonData is not a map of lessons. Nothing was changed.');
++    const encoded = encode(springMap, K);
++    if (unsupported.length) return stop(`Spring 2026 holds values this procedure can't back up exactly:\n${unsupported.slice(0, 10).join('\n')}${unsupported.length > 10 ? `\n…and ${unsupported.length - 10} more` : ''}\n\nNothing was changed. Tell Claude.`);
++    const count = Object.keys(springMap).length;
++    const fingerprint = await sha256Of(encoded);
++    say(`Spring 2026: ${count} lessons, fingerprint ${fingerprint.slice(0, 12)}…`);
+ 
+-  // 3. The move — one transaction.
+-  const movedAt = new Date().toISOString();
+-  let moved;
+-  try {
+-    await db.runTransaction(async (tx) => {
+-      const l = await tx.get(ref('lessonData'));
+-      const t = await tx.get(ref(TARGET));
+-      const m = await tx.get(ref('storageMigrations'));
+-      if (t.exists) throw new Error(`${TARGET} appeared`);
+-      if (m.exists && m.data()?.[K]) throw new Error('a move record appeared');
+-      const inTx = l.exists ? l.data()?.[K] : null;
+-      if (!inTx) throw new Error('Spring 2026 is no longer in lessonData');
+-      moved = { lessons: inTx, count: Object.keys(inTx).length, sha256: await sha256(inTx) };
+-      tx.set(ref(TARGET), { ...inTx, lastUpdated: movedAt, lastUpdatedBy: by });
+-      tx.update(ref('lessonData'), { [K]: firebase.firestore.FieldValue.delete() });
+-      tx.set(ref('storageMigrations'), { [K]: { movedAt, movedBy: by, lessonCount: moved.count, sha256: moved.sha256, verified: false } }, { merge: true });
+-    });
+-  } catch (err) {
+-    return stop(`The move transaction didn't go through (${err.message}). It's all-or-nothing, so nothing was changed.`);
++    const fileName = `classbook-${K}-lessons-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
++    const backup = JSON.stringify({ semester: K, takenAt: new Date().toISOString(), takenBy: by, lessonCount: count, sha256: fingerprint, timestampTag: TS_TAG, lessons: encoded }, null, 2);
++    const link = document.createElement('a');
++    link.href = URL.createObjectURL(new Blob([backup], { type: 'application/json' }));
++    link.download = fileName;
++    document.body.appendChild(link); link.click(); link.remove();
++    if (!confirm(`A backup of Spring 2026 (${count} lessons) was just downloaded:\n\n${fileName}\n\nCheck it's in your Downloads folder, then press OK to move Spring 2026 into its own storage.\n\nCancel stops here — nothing is changed.`)) {
++      return stop('Cancelled before the move. Nothing was changed.');
++    }
++
++    const movedAt = new Date().toISOString();
++    try {
++      await db.runTransaction(async (tx) => {
++        const l = await tx.get(ref('lessonData'));
++        const t = await tx.get(ref(TARGET));
++        const m = await tx.get(ref('storageMigrations'));
++        if (t.exists) throw new Error(`${TARGET} appeared`);
++        if (m.exists && m.data()?.[K]) throw new Error('a move record appeared');
++        const inTx = l.exists ? l.data()?.[K] : null;
++        if (!inTx) throw new Error('Spring 2026 is no longer in lessonData');
++        unsupported.length = 0;
++        const enc = encode(inTx, K);
++        if (unsupported.length) throw new Error(`unsupported values appeared: ${unsupported[0]}`);
++        tx.set(ref(TARGET), { ...inTx, lastUpdated: movedAt, lastUpdatedBy: by });
++        tx.update(ref('lessonData'), { [K]: DELETE });
++        tx.set(ref('storageMigrations'), { [K]: { movedAt, movedBy: by, lessonCount: Object.keys(inTx).length, sha256: await sha256Of(enc), backupFile: fileName, verified: false } }, { merge: true });
++      });
++    } catch (err) {
++      return stop(`The move transaction didn't go through (${err.message}). It's all-or-nothing, so nothing was changed.`);
++    }
++    say('Moved. Verifying from the server…');
++    if (opts.stopAfterMove) return { ok: false, message: 'stopped after the move (rehearsal)', stage: 'moved' };
++  } else if (!inLessonData && tgt.exists && record && record.verified !== true) {
++    say('Found a move that was interrupted before it was verified — carrying on from there.');
++  } else if (!inLessonData && tgt.exists && record?.verified === true) {
++    return stop('Spring 2026 has already been moved and verified. Nothing to do; nothing was changed.', { alreadyDone: true });
++  } else {
++    return stop(`Unexpected state (in lessonData: ${inLessonData}, own document: ${tgt.exists}, record: ${record ? (record.verified ? 'verified' : 'unverified') : 'none'}). Nothing was changed. Tell Claude.`);
+   }
+-  say('Moved. Verifying from the server…');
+ 
+-  // 4. Verify — fresh server reads.
++  // ── Verify (fresh server reads). ──
+   const problems = [];
+-  let l2, t2, m2;
++  let l2, t2, rec;
+   try {
+-    [l2, t2, m2] = await Promise.all([
+-      ref('lessonData').get({ source: 'server' }),
+-      ref(TARGET).get({ source: 'server' }),
+-      ref('storageMigrations').get({ source: 'server' }),
+-    ]);
+-    const rec = m2.data()?.[K];
++    let m2;
++    [l2, t2, m2] = await readAll();
++    rec = m2.data()?.[K];
++    if (!rec) problems.push('the move record is missing');
+     if (!t2.exists) problems.push('the new document is missing');
+     const targetLessons = lessonsOf(t2.data());
+-    if (Object.keys(targetLessons).length !== moved.count) problems.push(`lesson count ${Object.keys(targetLessons).length} ≠ ${moved.count}`);
+-    if ((await sha256(targetLessons)) !== moved.sha256) problems.push('fingerprint of the new document differs');
+-    if (!rec || rec.sha256 !== moved.sha256 || rec.lessonCount !== moved.count) problems.push('the move record doesn\'t match');
+-    if (l2.exists && K in (l2.data() || {})) problems.push('Spring 2026 is still in the shared document');
++    unsupported.length = 0;
++    const encTarget = encode(targetLessons, TARGET);
++    if (unsupported.length) problems.push(`the new document holds unsupported values (${unsupported[0]})`);
++    if (rec && Object.keys(targetLessons).length !== rec.lessonCount) problems.push(`lesson count ${Object.keys(targetLessons).length} ≠ recorded ${rec.lessonCount}`);
++    if (rec && (await sha256Of(encTarget)) !== rec.sha256) problems.push('the new document\'s fingerprint differs from the recorded one');
++    if (l2.exists && Object.prototype.hasOwnProperty.call(l2.data() || {}, K)) problems.push('Spring 2026 is still in the shared document');
+     if (opts.simulateVerifyFailure) problems.push('simulated failure (rehearsal)');
+   } catch (err) {
+-    problems.push(`couldn't read back from the server (${err.message})`);
++    return stop(`Couldn't read back from the server to verify (${err.message}). Spring is safe in its new document and still read-only. Run this procedure again to finish.`, { stage: 'moved' });
+   }
+ 
+   if (problems.length) {
+-    // 5b. Undo — one transaction, allowed by the rules only while unverified.
++    // ── Undo — ONE transaction: Spring back, new document and record removed. ──
+     console.error('[spring-move] Verification failed:', problems);
+     try {
+       await db.runTransaction(async (tx) => {
+         const l = await tx.get(ref('lessonData'));
+         const t = await tx.get(ref(TARGET));
+-        await tx.get(ref('storageMigrations'));
++        const m = await tx.get(ref('storageMigrations'));
+         if (!t.exists) throw new Error('the new document is already gone');
+-        if (l.exists && K in (l.data() || {})) throw new Error('Spring 2026 is already back in lessonData');
+-        tx.update(ref('lessonData'), { [K]: moved.lessons });
++        if (m.data()?.[K]?.verified === true) throw new Error('the move is already verified');
++        if (l.exists && Object.prototype.hasOwnProperty.call(l.data() || {}, K)) throw new Error('Spring 2026 is already back in lessonData');
++        tx.update(ref('lessonData'), { [K]: lessonsOf(t.data()) });
+         tx.delete(ref(TARGET));
++        tx.update(ref('storageMigrations'), { [K]: DELETE });
+       });
+-      await ref('storageMigrations').update({ [K]: firebase.firestore.FieldValue.delete() });
+     } catch (err) {
+-      return stop(`Verification failed (${problems.join('; ')}) AND the automatic undo failed (${err.message}). Don't retry — tell Claude. Spring's lessons are safe in the backup file ${fileName} and in the new document.`);
++      return stop(`Verification failed (${problems.join('; ')}), and the automatic undo didn't go through (${err.message}). The undo is all-or-nothing, so Spring is still safe in its new document (read-only), and it's in your backup file. Don't retry — tell Claude.`, { stage: 'moved' });
+     }
+-    return stop(`Verification failed (${problems.join('; ')}), so the move was undone: Spring 2026 is back in the shared document exactly as before. Nothing was lost.`);
++    return stop(`Verification failed (${problems.join('; ')}), so the move was undone: Spring 2026 is back in the shared document exactly as before. Nothing was lost.`, { undone: true });
+   }
+ 
+-  // 5a. Mark verified — Spring becomes editable again.
++  // ── Mark verified — Spring becomes editable again. ──
+   try {
++    if (opts.failMarkVerified) throw new Error('simulated failure (rehearsal)');
+     await ref('storageMigrations').update({ [`${K}.verified`]: true, [`${K}.verifiedAt`]: new Date().toISOString(), [`${K}.verifiedBy`]: by });
+   } catch (err) {
+-    return stop(`The move is done and checked, but marking it verified failed (${err.message}). Spring is safe and viewable; its edits stay paused. Tell Claude — this can be retried safely.`);
++    return stop(`The move is done and checked, but marking it verified failed (${err.message}). Spring is safe and viewable; its edits stay paused. Run this procedure again to finish.`, { stage: 'moved' });
+   }
+   const kb = typeof approxFirestoreSize === 'function' ? Math.round(approxFirestoreSize(l2.data() || {}) / 1024) : null;
+-  const msg = `Spring 2026 moved and verified: ${moved.count} lessons, fingerprint ${moved.sha256.slice(0, 12)}…` + (kb !== null ? `\nShared lesson storage is now about ${kb} KB of 1,024 KB.` : '');
++  const msg = `Spring 2026 moved and verified: ${rec.lessonCount} lessons, fingerprint ${String(rec.sha256).slice(0, 12)}…` + (kb !== null ? `\nShared lesson storage is now about ${kb} KB of 1,024 KB.` : '');
+   say(msg);
+-  alert(`Done ✓\n\n${msg}\n\nSpring 2026 is editable again. Keep the backup file ${fileName}.`);
+-  return { ok: true, message: msg, count: moved.count, sha256: moved.sha256, lessonDataKB: kb, fileName };
++  alert(`Done ✓\n\n${msg}\n\nSpring 2026 is editable again. Keep the backup file${rec.backupFile ? ` ${rec.backupFile}` : ''}.`);
++  return { ok: true, message: msg, count: rec.lessonCount, sha256: rec.sha256, lessonDataKB: kb, fileName: rec.backupFile };
+ }
+ 
+ // Pasted into the console: run it. (The e2e rehearsal sets __SPRING_MOVE_NO_AUTORUN and calls springMove() itself.)
