@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: Ticker never lets a stored name or note run as code</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026 &middot;
-<strong>v1</strong> &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
+<strong>v2</strong> after design review round 1 (Codex + Claude, both "not yet"; every finding verified and folded in) &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
 written approval to edit the repo (Tinker Ticker rule).</em></p>
 
 <div class="status">
@@ -69,8 +69,11 @@ ship in one commit, and a wiring test pins it.</div>
   <td>Manager roster (PIN / Remove / Merge / Assign), schedule list, sub picker, who's working, alerts.</td></tr>
   <tr><td><code>users/{uid}</code> <code>name</code>, <code>email</code></td>
   <td>The user themself (self-update pins role/appAccess/studios/active, not name/email); managers.</td>
-  <td>Staff lists, sub email (<code>data-email</code>, <code>mailto:</code>).</td></tr>
+  <td>Staff lists; sub email in a <b>manager's</b> time-off detail (<code>data-email</code>, <code>href="mailto:…"</code> at 7308/7604 &mdash; the <code>mailto:</code> prefix blocks <code>javascript:</code>, so the attribute break is the only vector).</td></tr>
   <tr><td><code>timeclock_timeoff</code> request fields</td><td>The requester (own doc); managers.</td><td>Time-off views.</td></tr>
+  <tr><td><code>timeclock_entries</code> (all fields but <code>uid</code>), own <code>timeclock_streaks</code>, <code>timeclock_hfwa</code></td>
+  <td>The staff member; also the <b>kiosk</b> account (creates any entry, reads/writes every streak doc, <code>firestore.rules:409-410, 462-468</code>).</td>
+  <td>Live dashboard, activity log, admin timesheets, pending changes, streak rows.</td></tr>
   <tr><td><code>timeclock_schedules</code>, <code>timeclock_overrides</code></td><td>Managers only.</td><td>Reminders view, schedule views.</td></tr>
 </table>
 <p><strong>Severity: High.</strong> The roster row means the note "roster names are manager-written" is not true: any
@@ -114,12 +117,13 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
   <b>The two streak values go in as raw JS</b>, and the streak doc is staff-<code>set()</code>. This is the worst line in the
   file. Fix: <code>Number(x) || 0</code>.</td></tr>
   <tr><td>4154, 5106&ndash;5112, 5342, 10415, 10451</td><td><code>'${escapeHtml(x)}'</code></td></tr>
+  <tr><td>6620&ndash;6621</td><td>a handler whose attribute spans two lines (the test must see it)</td></tr>
   <tr><td>6522, 6524, 6528, 6532, 6564, 6621, 6688, 6690</td><td><code>'${emp.id}'</code> (raw) and
   <code>'${escapeHtml(name).replace(/'/g,"\\'")}'</code>. A <code>"</code> or <code>\</code> still breaks it.</td></tr>
   <tr><td>4142, 4148, 4153</td><td><code>'${sched.uid}'</code> (raw; the id is a schedule doc id, written by managers)</td></tr>
   <tr><td>3574, 3575, 3602, 3603</td><td><code>'${dateStr}'</code>, an override key. <code>applyTimeOffOverrides</code>
   keys it on the staff-submitted <code>dates[].date</code>, with no <code>YMD_RE</code> check, once a manager approves.</td></tr>
-  <tr><td>1134, 10058</td><td><code>'${e.timestamp}'</code> (in the staff member's own view) and <code>'${scheduledEnd}'</code>
+  <tr><td>1134, 10058</td><td><code>'${e.type}'</code>, <code>'${e.timestamp}'</code> (in the staff member's own view) and <code>'${scheduledEnd}'</code>
   (kiosk, from the schedule).</td></tr>
   <tr><td>Safe, left as is</td><td><code>'${e.id}'</code>, <code>'${r.id}'</code>, <code>'${timeoffId}'</code> (Firestore
   auto-ids) and numeric <code>${idx}</code>/<code>${i}</code>. The test's allow-list names each one.</td></tr>
@@ -134,6 +138,9 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
   <tr><td>2676, 2678, 2685</td><td><code>value="${req.requestedTime…}"</code>, a change request &rarr; pending changes</td></tr>
   <tr><td>2694, 2823</td><td><code>${e.date}</code> (a stored field)</td></tr>
   <tr><td>5120</td><td><code>${a.message}</code>, which embeds <code>e.minutesLate</code></td></tr>
+  <tr><td>1393</td><td><code>Extended +${e.extensionMinutes}m</code> &rarr; <b>manager</b> activity log (round 1)</td></tr>
+  <tr><td>2238</td><td><code>${lateInMins}m late</code>, from the stored <code>minutesLate</code> &rarr; admin timesheets (round 1; the computed one at 1841 is safe)</td></tr>
+  <tr><td>3359</td><td><code>data-date="${r.date}" data-layer="${r.layer}"</code> raw on the Reminders checkbox (round 1). An existing test pins this text verbatim (<code>schedule-editor-wiring.test.js:2013</code>) and is updated with it.</td></tr>
   <tr><td>2271&ndash;2272, 10414 (<code>value=</code>), 10500&ndash;10501</td><td>streak counts</td></tr>
   <tr><td>4896</td><td><code>timeclock_hfwa.hours</code></td></tr>
   <tr><td>6883&ndash;6885, 6903, 7566, 7568</td><td>time-off <code>coverageStatus</code>/<code>status</code>, in both a
@@ -149,7 +156,7 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
 4168, 4314, 4343, 4384</code>), <code>4297, 4299</code> <code>earlyClockInMinutes</code> (round 1), <code>3536</code> start/end <code>value=</code>, <code>4141, 4206</code> ids,
 <code>2096</code> <code>lockedBy</code>, <code>6307, 6328</code> CSV preview.<br>
 <b>Confirmed safe:</b> Firestore auto-ids, <code>formatTimeStr()</code> output, <code>toLocaleDateString</code> labels,
-numeric indexes, and <code>showToast</code> (it uses <code>textContent</code>).</p>
+numeric indexes, <code>showToast</code> (it uses <code>textContent</code>), <code>reversalBadgeTitle</code> (6867 &rarr; 6889, literal output) and the <code>title=</code> at 3587/3594. No <code>insertAdjacentHTML</code>/<code>outerHTML</code>/<code>document.write</code>/<code>eval</code>/<code>setAttribute('on…')</code>/<code>javascript:</code> anywhere under <code>js/</code>, and no single-quoted or unquoted <code>on…=</code> attribute in app.js (round 1, Claude).</p>
 
 <h3>Group 4 &mdash; the standalone admin pages</h3>
 <ul>
@@ -158,14 +165,16 @@ numeric indexes, and <code>showToast</code> (it uses <code>textContent</code>).<
   <code>scheduleGroups[].start/end</code>).</li>
   <li><code>grant-timeclock-access.html</code> (<code>log()</code> line 38) and <code>schedule-import.html</code> (line 44) do
   <code>innerHTML +=</code> with <code>users.name</code>/<code>role</code> and roster <code>emp.name</code>. Fix:
-  <code>textContent</code> spans, the way <code>summer-camp-sync.html</code>'s <code>log()</code> already does.</li>
+  <code>textContent</code> spans, the way <code>summer-camp-sync.html</code>'s <code>log()</code> already does. No caller passes intended markup.</li>
+  <li>These pages do not load <code>js/schedule-helpers.js</code>; their fixes are inline, on purpose.</li>
 </ul>
 
 <h2>Design</h2>
 <ol>
   <li><b>Two pure encoders in <code>js/schedule-helpers.js</code></b> (loaded as a browser global and <code>require()</code>-able
   by Jest):
-<pre>// Text AND quoted-attribute safe. null/undefined → '' (what escapeHtml returns today).
+<pre>// Text AND quoted-attribute safe. null/undefined → ''. (Both reviewers say today's escapeHtml(undefined)
+// returns the string "undefined"; Phase 1 measures it in a browser and logs it. '' is the intended value.)
 function escapeAttr(v) {
   return (v == null ? '' : String(v))
     .replace(/&amp;/g, '&amp;amp;').replace(/&lt;/g, '&amp;lt;').replace(/&gt;/g, '&amp;gt;')
@@ -175,7 +184,16 @@ function escapeAttr(v) {
 //   onclick="removeEmployee(${jsArg(emp.id)}, ${jsArg(emp.name)})"
 function jsArg(v) { return escapeAttr(JSON.stringify(v == null ? '' : String(v))); }</pre>
   <code>JSON.stringify</code> escapes <code>"</code>, <code>\</code> and control characters; the attribute encoding
-  then survives the HTML parser, which hands the handler exactly the JSON literal back.</li>
+  then survives the HTML parser, which hands the handler exactly the JSON literal back. Both reviewers confirmed this for
+  backticks, <code>${</code>, <code>&lt;/script&gt;</code>, lone surrogates and U+2028/2029 (legal in string literals since
+  ES2019).</li>
+  <li><b>A third helper for numbers shown as numbers:</b>
+<pre>// A finite number, or the caller's own fallback — never a coerced 0 that hides a placeholder.
+function finiteOr(v, fallback) { const n = Number(v); return (v !== '' &amp;&amp; v != null &amp;&amp; Number.isFinite(n)) ? n : fallback; }</pre>
+  Each site keeps what it shows today when the value is missing: streaks <code>finiteOr(x, '—')</code> (2269&ndash;2270),
+  the restore input <code>finiteOr(previousStreak, '')</code> (10414, so the placeholder still shows), handler args
+  <code>finiteOr(x, 0)</code> (2273). <code>Number(x) || 0</code> is not used: it turns "no streak" into 0 and accepts
+  <code>"Infinity"</code> (round 1, both reviewers).</li>
   <li><b><code>escapeHtml</code> becomes <code>escapeAttr</code></b> (same body, kept by name so the ~100 text-context
   callers don't change). Encoding quotes in text is invisible. Every context-A line is fixed by this alone.</li>
   <li><b>Every context-B handler switches to <code>jsArg</code></b>, dropping its hand-written quotes and any
@@ -185,8 +203,12 @@ function jsArg(v) { return escapeAttr(JSON.stringify(v == null ? '' : String(v))
   edit-entries button). Rule: <em>no string goes into an <code>on…</code> attribute except through
   <code>jsArg</code></em>; numbers and locally built date strings may stay as they are only if listed in the test's
   allow-list with a reason.</li>
-  <li><b><code>summer-camp-sync.html</code>'s own <code>esc()</code></b> gets the same quote encoding if the audit
-  finds it used in an attribute.</li>
+  <li><b><code>getEntryLabel</code> stays raw.</b> It also feeds <code>showToast</code> (2574, 2593, 2631) and
+  <code>confirm()</code> (2588), and 2473 already escapes it; escaping inside it would show <code>&amp;amp;</code> in
+  toasts and double-encode 2473. Its HTML call sites are escaped instead: 895, 913, 1107, 1140, 1161, 1390, 1400, 2682,
+  2806, 2823 (re-find by grep; lines drift).</li>
+  <li><b><code>summer-camp-sync.html</code>'s own <code>esc()</code></b> gets the same five-entity encoding and a
+  <code>String(s ?? '')</code> guard.</li>
 </ol>
 <p>Considered and not chosen: replacing inline handlers with <code>data-*</code> attributes and event delegation. It is
 the cleaner long-term shape, but it touches every handler's wiring in a 10k-line payroll file; <code>jsArg</code> is a
@@ -202,22 +224,29 @@ APIs, which is the pattern for new code.</p>
   <li>Add <code>escapeAttr</code> and <code>jsArg</code> to <code>js/schedule-helpers.js</code> and its exports.</li>
   <li>Unit tests in <code>schedule-helpers.test.js</code> with <code>O'Brien</code>, <code>Jo "JJ" Smith</code>,
   <code>a\b</code>, <code>&lt;img src=x onerror=alert(1)&gt;</code>, <code>x" onfocus="alert(1)</code>,
-  <code>'); alert(1); ('</code>, <code>null</code>, <code>undefined</code>, <code>0</code>.
-  Round-trip: decode the five entities (the only ones <code>escapeAttr</code> emits) and evaluate with
+  <code>'); alert(1); ('</code>, <code>`${x}`</code>, <code>&lt;/script&gt;</code>, a literal <code>&amp;quot;</code>,
+  U+2028, U+2029, a lone surrogate, <code>null</code>, <code>undefined</code>, <code>0</code>; <code>finiteOr</code> with
+  <code>''</code>, <code>null</code>, <code>'1.5'</code>, <code>-3</code>, <code>0</code>, <code>'Infinity'</code>,
+  <code>'1);alert(1);('</code>.
+  Round-trip: decode the five entities in <b>one pass</b> (a single regex with a lookup &mdash; decoding
+  <code>&amp;amp;</code> first would double-decode a literal <code>&amp;quot;</code>) and evaluate with
   <code>new Function('return ' + decoded)()</code> &mdash; must equal the input exactly.</li>
 </ul>
 <div class="bdd"><b>Given</b> the name <code>x" onfocus="alert(1)</code> <b>When</b> put through <code>escapeAttr</code>
 <b>Then</b> the output contains no <code>"</code> and decodes back to the same name.</div>
 <div class="bdd"><b>Given</b> <code>O'Brien</code> <b>When</b> put through <code>jsArg</code> and decoded as the HTML parser
 would <b>Then</b> it evaluates to the string <code>O'Brien</code>.</div>
-<div class="bdd"><b>Edge:</b> <code>null</code>/<code>undefined</code> give <code>''</code> and <code>'""'</code>; <code>0</code>
-gives <code>'0'</code> (today's <code>textContent</code> behaviour).</div>
+<div class="bdd"><b>Edge:</b> <code>null</code>/<code>undefined</code> give <code>''</code> (escapeAttr) and <code>'""'</code>
+as decoded JS (jsArg); <code>0</code> gives <code>'0'</code>. Where today showed the text <code>undefined</code> (e.g.
+<code>escapeHtml(emp.name)</code> at 2279, 6536, 6567 for a nameless entry) it will now show blank &mdash; intended, and
+logged.</div>
 </div>
 
 <div class="phase">
 <h3>Phase 2 &mdash; Switch app.js over, pinned by a wiring test</h3>
 <p><b>Acceptance:</b> a roster name with <code>"</code> or <code>'</code> shows correctly everywhere and every button on
-that row still works; no stored value can add an attribute or handler.</p>
+that row still works; no value passed through <code>escapeHtml</code> or into a handler can add an attribute. (Raw
+Group 3 values are still open until Phase 3 &mdash; the two phases ship in the same deploy.)</p>
 <ul>
   <li><code>escapeHtml</code> body → <code>return escapeAttr(str);</code></li>
   <li>Every audited context-B handler → <code>jsArg</code>. Every audited raw attribute interpolation of a stored
@@ -225,8 +254,17 @@ that row still works; no stored value can add an attribute or handler.</p>
   <li>Wiring tests in <code>schedule-editor-wiring.test.js</code> (source-level, the only way to reach app.js):
     <ul>
       <li>no <code>escapeHtml(…).replace(</code> anywhere;</li>
-      <li>no <code>'${</code> inside any <code>on[a-z]+="…"</code> attribute (allow-list with reasons for provably
-      safe values, e.g. a locally formatted <code>dateStr</code>);</li>
+      <li>extract every complete <code>on[a-z]+="…"</code> attribute from the source <b>across line breaks</b> (match to
+      the closing <code>"</code>, not end of line); inside each, every <code>${…}</code> must be <code>${jsArg(…)}</code>,
+      <code>${finiteOr(…)}</code>, or on a named allow-list with a reason (auto-ids <code>e.id</code>, <code>r.id</code>,
+      <code>timeoffId</code>; numeric <code>idx</code>/<code>i</code>). Bare <code>${x}</code>, <code>'${x}'</code> and
+      <code>"${x}"</code> all fail;</li>
+      <li>no handler built by concatenation: no <code>on[a-z]+=</code> inside a quoted JS string next to <code>+</code>,
+      and no prebuilt handler fragment variable (<code>clickAttr</code> at 1134, 4328, 4338) that interpolates anything
+      but <code>jsArg</code>;</li>
+      <li>no single-quoted or unquoted <code>on…=</code> attribute;</li>
+      <li>a self-test: the checker is run against a few bad snippets (bare, multi-line, quoted) and must reject each,
+      so a regex that silently matches nothing cannot pass;</li>
       <li><code>escapeHtml</code> delegates to <code>escapeAttr</code>.</li>
     </ul></li>
   <li>Lands <b>after</b> <code>fix/sub-confirm-manager-only</code> merges to main (both edit <code>js/app.js</code>);
@@ -238,8 +276,8 @@ typed and PIN / Remove / Merge / Assign / Extend / Dismiss / Restore / ✏️ ea
 <div class="bdd"><b>Given</b> a roster name <code>x" onfocus="alert(1)</code> <b>When</b> any of those views renders
 <b>Then</b> the DOM element has no <code>onfocus</code> attribute (checked in the browser with
 <code>querySelectorAll('[onfocus]')</code>).</div>
-<div class="bdd"><b>Failure path:</b> a future line re-introduces <code>'${escapeHtml(x)}'</code> in an onclick &rarr;
-the wiring test fails in <code>npm test</code>.</div>
+<div class="bdd"><b>Failure path:</b> a future line re-introduces <code>'${escapeHtml(x)}'</code>, a bare
+<code>${count}</code>, or a two-line handler with a raw value &rarr; the wiring test fails in <code>npm test</code>.</div>
 </div>
 
 <div class="phase">
@@ -247,21 +285,27 @@ the wiring test fails in <code>npm test</code>.</div>
 <p><b>Acceptance:</b> no string from Firestore reaches <code>innerHTML</code> in app.js without <code>escapeHtml</code>
 (or a <code>Number()</code> coercion for counts); the admin pages log with <code>textContent</code>.</p>
 <ul>
-  <li>Wrap every Group 3 line (HIGH, MEDIUM and LOW) in <code>escapeHtml</code>. Coerce counts and minutes
-  (<code>minutesLate</code>, streaks, <code>hours</code>) with <code>Number(x) || 0</code>, so the display stays numeric.
-  Make <code>getEntryLabel</code>'s fallback <code>escapeHtml(type)</code> (it is only used in HTML; check every caller
-  first).</li>
+  <li>Wrap every Group 3 line (HIGH, MEDIUM and LOW) in <code>escapeHtml</code>. Numbers shown as numbers
+  (<code>minutesLate</code>, <code>extensionMinutes</code>, streaks, <code>hours</code>, <code>earlyClockInMinutes</code>)
+  go through <code>finiteOr</code> with that site's current fallback.</li>
+  <li>Escape at each <code>getEntryLabel</code> HTML call site, not inside it (Design 5).</li>
   <li><code>summer-camp-sync.html</code> <code>esc()</code> → the same five-entity encoder, with a
   <code>String(s ?? '')</code> guard.</li>
   <li><code>grant-timeclock-access.html</code> and <code>schedule-import.html</code> <code>log()</code> → create a span and
   set its <code>textContent</code>.</li>
-  <li>Separate commit from Phase 2 (it can land on its own: every change is an added escape, never a removed one).</li>
+  <li>Separate commit, <b>after</b> Phase 2: its attribute fixes (2676&ndash;2685, 6005, 4198, 6884, 7568, 7027) only
+  work once <code>escapeHtml</code> encodes quotes. It never regresses anything alone, but it is only effective on top of
+  Phase 2. Both ship in one deploy.</li>
 </ul>
 <div class="bdd"><b>Given</b> a clock entry whose <code>name</code> is <code>&lt;img src=x onerror=alert(1)&gt;</code>
 <b>When</b> a manager opens the Live dashboard and the activity log <b>Then</b> the text is shown literally and no
 <code>img</code> element exists.</div>
 <div class="bdd"><b>Given</b> a streak doc with <code>clockInStreak: "1);alert(1);("</code> <b>When</b> the admin row
-renders <b>Then</b> the Edit button's handler receives <code>0</code>.</div>
+renders <b>Then</b> the Edit button's handler receives <code>0</code> and the row shows <code>—</code>.</div>
+<div class="bdd"><b>Given</b> a person with no streak doc <b>When</b> the admin row renders <b>Then</b> it still shows
+<code>—</code> (not 0), and the Restore input still shows its placeholder.</div>
+<div class="bdd"><b>Given</b> a manual entry of type <code>O'Brien &amp; co</code> <b>When</b> a manager saves it <b>Then</b>
+the toast reads <code>O'Brien &amp; co</code>, not <code>&amp;#39;</code>/<code>&amp;amp;</code>.</div>
 <div class="bdd"><b>Edge:</b> ordinary data (all of today's) renders character-for-character the same as before. Compare
 the Live dashboard, the pending change requests and the time-off list before and after, on the emulator.</div>
 </div>
@@ -307,6 +351,14 @@ grep -nE 'on[a-z]+="[^"]*\$\{' js/app.js</pre></li>
 <ul>
   <li><b>Sep 29 (draft):</b> fix <code>escapeHtml</code> in place rather than add a separate attribute encoder at ~10
   call sites &mdash; one function can't be picked wrong. Handlers get <code>jsArg</code>, not delegation (see Design).</li>
+  <li><b>Sep 29, round 1 → v2</b> (Codex + Claude, both "execution-ready: no"; every item verified against the code):
+  getEntryLabel stays raw and its HTML sinks are escaped (both, BLOCKING); the handler test now extracts whole
+  attributes across lines, rejects bare/quoted/concatenated interpolation, and self-tests (both, BLOCKING);
+  <code>Number(x)||0</code> replaced by <code>finiteOr</code> with per-site fallbacks, keeping <code>—</code> and the
+  restore placeholder (Claude BLOCKING, Codex MEDIUM); Phase 3 declared dependent on Phase 2, same deploy (both); added
+  sinks 1393, 2238, 3359 data-date/layer, 4297/4299, 1134 <code>e.type</code>, 6620&ndash;6621; the 2013 test to update;
+  kiosk as a writer; one-pass entity decoder and more edge cases; the <code>undefined</code> claim corrected (to be
+  measured).</li>
 </ul>
 </body>
 </html>
