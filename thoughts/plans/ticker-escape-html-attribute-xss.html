@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: Ticker never lets a stored name or note run as code</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 29 2026 &middot;
-<strong>v3</strong> after design review rounds 1&ndash;2 (Codex + Claude each round, all "not yet"; every finding verified against the code and folded in) &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
+<strong>v4</strong> after design review rounds 1&ndash;3 (Codex + Claude each round, all "not yet"; round 3 was wording only, no design change; every finding verified against the code and folded in) &middot; <strong>execution-ready: false</strong> &mdash; <em>waits for a design review and for Christie's
 written approval to edit the repo (Tinker Ticker rule).</em></p>
 
 <div class="status">
@@ -142,7 +142,7 @@ update their own <code>timeclock_entries</code> and <code>timeclock_timeoff</cod
   <tr><td>2238</td><td><code>${lateInMins}m late</code>, from the stored <code>minutesLate</code> &rarr; admin timesheets (round 1; the computed one at 1841 is safe)</td></tr>
   <tr><td>3359</td><td><code>data-date="${r.date}" data-layer="${r.layer}"</code> raw on the Reminders checkbox (round 1). An existing test pins this text verbatim (<code>schedule-editor-wiring.test.js:2013</code>) and is updated with it.</td></tr>
   <tr><td>2271&ndash;2272, 10414 (<code>value=</code>), 10500&ndash;10501</td><td>streak counts</td></tr>
-  <tr><td>4896, 4648</td><td><code>timeclock_hfwa.hours</code> (manager dashboard; 4648 the HFWA card list, round 2)</td></tr>
+  <tr><td>4896, 4648</td><td><code>timeclock_hfwa.hours</code> (4896 manager dashboard; 4648 the employee's own <code>renderMyHfwa()</code> view)</td></tr>
   <tr><td>6883&ndash;6885, 6903, 7566, 7568</td><td>time-off <code>coverageStatus</code>/<code>status</code>, in both a
   <code>class</code> attribute and text</td></tr>
   <tr><td>7583</td><td>time-off <code>partialStart/End</code></td></tr>
@@ -199,10 +199,12 @@ function finiteOr(v, fallback) { const n = Number(v); return (v !== '' &amp;&amp
     <tr><td>1393</td><td><code>+${e.extensionMinutes}m</code> (missing &rarr; <code>+undefinedm</code>)</td><td><code>+${finiteOr(e.extensionMinutes, 0)}m</code></td></tr>
     <tr><td>2238</td><td><code>${lateInMins ? lateInMins + 'm late' : 'late'}</code></td><td>coerce first, <code>const lateN = finiteOr(lateInMins, 0)</code>, then the same ternary on <code>lateN</code> (so the test is not on the raw value)</td></tr>
     <tr><td>5030</td><td><code>e.minutesLate ? ` (${e.minutesLate} min late)` : ''</code></td><td>same shape on <code>finiteOr(e.minutesLate, 0)</code></td></tr>
-    <tr><td>4648, 4896</td><td><code>${e.hours}h</code></td><td><code>${finiteOr(e.hours, 0)}h</code></td></tr>
+    <tr><td>4648, 4896</td><td><code>${e.hours}h</code></td><td><code>${formatHfwaHours(e.hours)}h</code>, the helper the sibling cards already use (4796, 4815). Its body (4774) changes from <code>Number(hours) || 0</code> to <code>finiteOr(hours, 0)</code>, so <code>'Infinity'</code> no longer shows as <code>Infinityh</code>. Rounding is unchanged.</td></tr>
+    <tr><td>900, 1126</td><td><code>'Extended +' + e.extensionMinutes + 'm'</code> (own view)</td><td><code>finiteOr(e.extensionMinutes, 0)</code></td></tr>
+    <tr><td>1029&ndash;1030</td><td><code>streakNum != null ? `…${streakNum}…` : …</code> (own view)</td><td>coerce first, <code>const n = finiteOr(streakNum, null)</code>, then the same <code>!= null</code> test on <code>n</code></td></tr>
     <tr><td>10500&ndash;10501</td><td><code>${r.clockInStreak}</code></td><td><code>${finiteOr(r.clockInStreak, 0)}</code></td></tr>
     <tr><td>4297, 4299</td><td><code>${sched.earlyClockInMinutes || 15}</code></td><td><code>${finiteOr(sched.earlyClockInMinutes, 15) || 15}</code> &mdash; keeps today's display exactly, 0 included. (A stored 0 already shows 15 here while the clock-in gate at 450&ndash;451 honours 0; that pre-existing mismatch is not changed by this plan.)</td></tr>
-    <tr><td>10446, 10449</td><td><code>value="${currentCi}"</code></td><td><code>value="${finiteOr(currentCi, 0)}"</code></td></tr>
+    <tr><td>10446, 10449</td><td><code>value="${currentCi}"</code>, <code>value="${currentCo}"</code></td><td><code>finiteOr(currentCi, 0)</code>, <code>finiteOr(currentCo, 0)</code></td></tr>
   </table></li>
   <li><b><code>escapeHtml</code> becomes <code>escapeAttr</code></b> (same body, kept by name so the ~100 text-context
   callers don't change). Encoding quotes in text is invisible. Every context-A line is fixed by this alone.</li>
@@ -261,7 +263,9 @@ Group 3 values are still open until Phase 3 &mdash; the two phases ship in the s
 <ul>
   <li><code>escapeHtml</code> body → <code>return escapeAttr(str);</code></li>
   <li>Every audited context-B handler → <code>jsArg</code> (or <code>finiteOr</code> for a number), including 2097's
-  concatenated one. Raw Group 3 attribute interpolations are <b>Phase 3</b>, not here.</li>
+  concatenated one. 2096&ndash;2097 are one statement. Phase 2 rewrites the whole statement as a template and escapes
+  <code>lockInfo.lockedBy</code> in the same edit, so Phase 3 has nothing left there. Raw Group 3 attribute
+  interpolations are <b>Phase 3</b>, not here.</li>
   <li>Wiring tests in <code>schedule-editor-wiring.test.js</code> (source-level, the only way to reach app.js):
     <ul>
       <li>no <code>escapeHtml(…).replace(</code> anywhere;</li>
@@ -273,27 +277,36 @@ Group 3 values are still open until Phase 3 &mdash; the two phases ship in the s
       <code>${jsArg(…)}</code>, <code>${finiteOr(…)}</code>, or an allow-listed expression:
       <table>
         <tr><th>Expression</th><th>Why it's safe</th><th>Where (today)</th></tr>
-        <tr><td><code>e.id</code>, <code>r.id</code>, <code>req.id</code>, <code>timeoffId</code></td><td>Firestore auto-ids (<code>.doc()</code>)</td><td>1134, 2476&ndash;2705, 4328, 4338, 4898, 4941, 7610, 7697&ndash;7741</td></tr>
-        <tr><td><code>idx</code>, <code>i</code>, <code>daysFromToday</code>, <code>pastOverrideDates.length</code></td><td>locally computed numbers</td><td>5419, 5513, 6319, 6893, 7120&ndash;7136, 7318, 7321, 5516, 4358</td></tr>
+        <tr><td><code>e.id</code>, <code>r.id</code>, <code>req.id</code>, <code>timeoffId</code></td><td>Firestore auto-ids (<code>.doc()</code>)</td><td>1134, 2476&ndash;2705, 4328, 4338, 4898, 4941, 6893, 7610, 7697&ndash;7741</td></tr>
+        <tr><td><code>idx</code>, <code>i</code>, <code>daysFromToday</code>, <code>pastOverrideDates.length</code></td><td>locally computed numbers</td><td>5419, 5513, 6319, 7120&ndash;7136, 7318, 7321, 5516, 4358</td></tr>
         <tr><td><code>id</code> (4870)</td><td>a literal section key, <code>'hfwa'</code>/<code>'changes'</code>/<code>'timeoff'</code> (4903, 4924, 4945)</td><td>4870</td></tr>
         <tr><td><code>k</code> (9487)</td><td>the literal keypad array</td><td>9487</td></tr>
       </table>
-      The list is keyed by expression text <em>and</em> function, so <code>${id}</code> in another function is not let
-      through. On the first run, anything else that fails is either converted or added with a reason in the Decisions
+      The list is keyed by expression text <em>and</em> the <b>innermost</b> enclosing function, nested ones included:
+      <code>${id}</code> is allowed only in <code>pendingSection</code> (declared inside
+      <code>renderDashboardPending</code>, 4867), not anywhere in its 127-line parent. The auto-id row lists each
+      function it is allowed in, e.g. <code>r.id</code> in <code>renderDashboardPending</code> (4941) and
+      <code>renderTimeOffCard</code> (6893). <code>${…}</code> bodies are extracted brace-balanced, not with
+      <code>[^}]*</code>, so a nested template cannot hide a raw value after an inner <code>}</code>. On the first run, anything else that fails is either converted or added with a reason in the Decisions
       log. Bare <code>${x}</code>, <code>'${x}'</code> and <code>"${x}"</code> all fail;</li>
       <li>no handler built by concatenation: no <code>on[a-z]+=</code> inside a quoted JS string next to <code>+</code>,
-      and no prebuilt handler fragment variable (<code>clickAttr</code> at 1134, 4328, 4338) that interpolates anything
-      but <code>jsArg</code>;</li>
+      and no prebuilt handler fragment (<code>clickAttr</code> at 1134, 4328, 4338) that interpolates anything but
+      <code>jsArg</code>, <code>finiteOr</code> or the same function-keyed allow-list. Those three keep
+      <code>e.id</code>/<code>timeoffId</code>, and 1134's <code>e.type</code>/<code>e.timestamp</code> move to
+      <code>jsArg</code>;</li>
       <li>no single-quoted or unquoted <code>on…=</code> attribute <em>inside a string or template literal</em>. A DOM
       property assignment, <code>el.onclick = () =&gt; …</code> (4218, 4219, 4436), is the safe pattern and must not be
       flagged; the check skips anything with a <code>.</code> before it (round 2, Claude);</li>
       <li>a self-test: the checker must reject each of these bad snippets: bare <code>${x}</code>, <code>'${x}'</code>,
       <code>"${x}"</code>, a body containing <code>"\'"</code>, a two-line attribute, a concatenated
-      <code>'onclick="f(\'' + x</code>, and an allow-listed name used in the wrong function. It must accept
+      <code>'onclick="f(\'' + x</code>, an allow-listed name used in the wrong (or the parent) function, and
+      <code>${jsArg(`${a}`) + raw}</code>, a nested template followed by a raw value. It must accept
       <code>${jsArg(x)}</code> and <code>el.onclick = …</code>. That way a regex that silently matches nothing cannot
       pass;</li>
-      <li>a count check: the checker must find at least as many handler attributes as a plain <code>on[a-z]+="</code>
-      count over the file (71 interpolating today), so it cannot skip one silently;</li>
+      <li>a count check, <b>derived in the test, not hardcoded</b>: the number of attributes the extractor returns must
+      <b>equal</b> the number of <code>on[a-z]+="</code> starts a plain regex finds in the file. Today that is 93 starts,
+      66 of them interpolating, and 67 after Phase 2 because of 2097. Those numbers are here for orientation only; the
+      test never names them;</li>
       <li><code>escapeHtml</code> delegates to <code>escapeAttr</code>.</li>
     </ul></li>
   <li>Lands <b>after</b> <code>fix/sub-confirm-manager-only</code> merges to main (both edit <code>js/app.js</code>);
@@ -398,6 +411,15 @@ grep -nE "innerHTML\s*[+]?=\s*'|' \+ [a-zA-Z_.]+ \+ '" js/app.js   # concatenati
   4297/4299 keep <code>|| 15</code> exactly (both); DOM <code>.onclick =</code> is not flagged; the getEntryLabel sink
   list is corrected (1165 added) and confirmed complete; the Phase 2/3 attribute split is made consistent; the
   "6620&ndash;6621 spans two lines" claim is removed (it doesn't); line refs fixed (2265&ndash;2266, 6306).</li>
+  <li><b>Sep 29, round 3 → v4</b> (Codex + Claude, both "no", wording only; all verified): the count check is derived in
+  the test and compared for equality (93 starts / 66 interpolating today, not "71") (Claude B, Codex M); the clickAttr
+  rule accepts the same allow-list (Codex B); 6893 <code>r.id</code> moved to the auto-id row; function keying is to
+  the innermost function, nested included; <code>${…}</code> extraction is brace-balanced, with a self-test for it;
+  2096&ndash;2097 are handled as one statement in Phase 2; HFWA hours reuse <code>formatHfwaHours</code>, now built on
+  <code>finiteOr</code>; the own-view numbers at 900, 1029 and 1126 are named; 4648 is relabelled as the employee's view;
+  the <code>currentCo</code> slip is fixed. Both reviewers confirmed that every one of today's 66 interpolating handlers
+  is either converted or allow-listed, the <code>finiteOr</code> table keeps ordinary displays unchanged, and the
+  getEntryLabel sinks are complete.</li>
 </ul>
 </body>
 </html>
