@@ -20,8 +20,8 @@
 <body>
 <h1>Plan: Tinker Ticker publishes only the app</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 30 2026 &middot;
-<strong>v2</strong> after design review round 1 (Claude + Codex: both "not ready"; every finding folded in, see the Decisions Log)
-&middot; <strong>execution-ready: false</strong> &mdash; <em>awaiting round 2. Christie's go to make this change: Sep 30 ("can we do
+<strong>v3</strong> after design review rounds 1&ndash;2 (round 2: Codex "not ready", 2 BLOCKING, folded in; Claude's round-2 run
+returned nothing and is re-run on v3) &middot; <strong>execution-ready: false</strong> &mdash; <em>awaiting round 3. Christie's go to make this change: Sep 30 ("can we do
 this here").</em> Ships in the same deploy as <code>ticker-sub-confirm-only-by-manager</code>. (<code>plan-review</code> is broken on
 this Mac, with a missing Homebrew library, so this plan is not registered in the viewer.)</p>
 
@@ -62,8 +62,10 @@ and it doesn't replace the reset.</div>
   <li>The app works exactly as before after the deploy: sign-in, clock, schedules, time off, reminders, offline, install icons.
   All nine functions are still deployed, including the hourly reminder job.</li>
   <li>Every path in the table above serves the app shell (or Netlify's own 404), never its content. This is checked on every deploy.</li>
-  <li>A new file anywhere, including inside <code>js/</code>, <code>css/</code> or <code>assets/</code>, is NOT published until it is added
-  to the allowlist on purpose. The build refuses rather than silently publishing it (round 1, both).</li>
+  <li>A new file is never published by accident. A new tracked file in the <strong>public-candidate set</strong> (<code>js/**</code>,
+  <code>css/**</code>, <code>assets/**</code>, and root <code>*.html</code>, <code>*.json</code>, <code>sw.js</code>) makes the build refuse
+  until it's listed as public or private on purpose. Any other file, e.g. a root <code>notes.md</code>, simply isn't in <code>dist/</code>,
+  because only listed files are archived (round 1, both; wording narrowed per round 2, Codex M3).</li>
   <li>Every published byte is a committed byte. Ignored or untracked files, e.g. <code>.DS_Store</code>, can't reach <code>dist/</code>.</li>
   <li>Nothing is uploaded until a local preflight has passed and Christie has approved the exact sha (round 1, both).</li>
 </ul>
@@ -72,6 +74,9 @@ and it doesn't replace the reset.</div>
   <li><strong>Delete</strong> <code>user-import.html</code>, <code>grant-timeclock-access.html</code>, <code>schedule-import.html</code>,
   <code>summer-camp-sync.html</code> (Christie, Sep 30). They stay in git history; <code>summer-camp-sync.html</code> is recoverable from
   <code>f53788d</code> for Summer 2027.</li>
+  <li><strong><code>scripts/dist-private.txt</code></strong>: tracked files in the public-candidate set that are deliberately NOT
+  published: <code>firebase.json</code>, <code>package.json</code>, <code>package-lock.json</code> (round 2, Codex B1: without this, the
+  rule below refuses the current tree).</li>
   <li><strong><code>scripts/dist-manifest.txt</code></strong>: the file-level allowlist, one path per line, sorted:
   <code>index.html</code>, <code>manifest.json</code>, <code>sw.js</code>, the 2 css files, the 7 js files, the 6 asset files (all 16
   <code>APP_SHELL</code> paths, <code>sw.js</code> itself, and both maskable icons; 18 files).</li>
@@ -79,9 +84,9 @@ and it doesn't replace the reset.</div>
   <code>git archive HEAD -- $(cat scripts/dist-manifest.txt) | tar -x -C dist</code>. That's committed bytes only, with no dot-files and no
   transformation. Then it <strong>refuses</strong> (exit 1, naming the file) if:
     <ul>
-      <li><code>find dist -type f</code> ≠ the manifest;</li>
-      <li>any tracked file under <code>js/</code>, <code>css/</code>, <code>assets/</code> or the root <code>*.html</code>/<code>*.json</code>/<code>sw.js</code>
-      set is NOT in the manifest ("add it to dist-manifest.txt on purpose, or move it out");</li>
+      <li><code>(cd dist &amp;&amp; find . -type f | sed 's#^\./##' | sort)</code> ≠ the sorted manifest (round 2, Codex L1);</li>
+      <li>the tracked public-candidate set (<code>git ls-files</code> filtered to the set above) ≠ manifest ∪ private list, or the two
+      lists overlap ("list js/debug.js in dist-manifest.txt or dist-private.txt on purpose");</li>
       <li>the <strong>completeness check</strong> fails: every local <code>src</code>/<code>href</code> in <code>index.html</code>, every
       <code>sw.js</code> <code>APP_SHELL</code> entry (<code>/</code> → <code>index.html</code>), every <code>manifest.json</code> icon, and
       <code>sw.js</code> itself must exist in <code>dist/</code>.</li>
@@ -92,22 +97,28 @@ and it doesn't replace the reset.</div>
   <li><strong><code>scripts/preflight.sh</code></strong> (<code>npm run deploy:check</code>): the clean-tree guard, <code>build-dist.sh</code>,
   then <code>npm test</code> (full suite, emulator). It prints the sha and the exact approval sentence to ask Christie for. It never
   uploads. Claude runs it <strong>before</strong> asking "okay to deploy?" (round 1, Codex B2: build and test locally first).</li>
-  <li><strong><code>scripts/deploy.sh</code></strong> (<code>npm run deploy -- --approved &lt;full sha&gt;</code>). It refuses unless all of these hold:
+  <li><strong><code>scripts/deploy.sh</code></strong> (<code>npm run deploy -- --approved &lt;full sha&gt;</code>). It refuses, with a plain
+  message, unless all of these hold:
     <ul>
       <li><code>--approved</code> equals <code>git rev-parse HEAD</code>. Bare <code>npm run deploy</code> prints what would ship and stops (round 1, Claude M4);</li>
       <li>the tree is clean;</li>
-      <li>the branch has an upstream (a plain "push it first" message, not a git fatal; round 1, Claude B2);</li>
-      <li>after <code>git fetch</code>, <code>@{u}..HEAD</code> is empty.</li>
+      <li>the current branch is exactly <code>main</code>, its upstream is exactly <code>origin/main</code> (a missing upstream gets "push it
+      first", not a git fatal), and after <code>git fetch</code>, <code>HEAD</code> == <code>@{u}</code> in both directions, neither ahead nor
+      behind (round 1, Claude B2; round 2, Codex M1). So <code>origin/main</code> is exactly what's live.</li>
     </ul>
-  Then <code>build-dist.sh</code> (deterministic, same bytes as preflight), <code>netlify deploy --prod --dir dist --message "$SHA"</code>,
-  and <code>check-live.sh</code>. <strong>Ship from <code>main</code></strong>: merge the branch, push, deploy. That way <code>origin/main</code> is what's live.</li>
-  <li><strong><code>scripts/check-live.sh</code></strong>. Every request uses <code>curl --fail-with-body -sS</code> with an explicit status
-  check, and hashes only a successful body (round 1, Codex M3). In order:
+  Then it <strong>re-runs the whole preflight</strong> (build + completeness + <code>npm test</code>) itself, so an approved sha can't be
+  uploaded untested (round 2, Codex B2). Then <code>netlify deploy --prod --dir dist --message "$SHA"</code>, then <code>check-live.sh</code>.</li>
+  <li><strong><code>scripts/check-live.sh</code></strong>. Every request is <code>curl -sS --location -o &lt;fresh temp file&gt; -w '%{http_code}
+  %{content_type}'</code>, with curl's exit code captured. Any transport failure (DNS, TLS, timeout, connection: non-zero exit) is fatal.
+  The HTTP status is then compared with what that check expects (200, or an expected 401/403/404/405), and a body is hashed only on an
+  expected 200. No <code>--fail</code>, so an expected 4xx isn't turned into a curl error; no <code>set -e</code> around probes (round 1,
+  Codex M3; round 2, Codex M2). In order:
     <ol>
       <li><em>Shell first:</em> live <code>/index.html</code> must equal <code>dist/index.html</code>; otherwise stop with "private results
       unreliable" (round 1, Claude L1).</li>
-      <li><em>Faithful:</em> every manifest file is byte-identical live, and each JS/CSS file comes back with a JS/CSS <code>content-type</code>,
-      not HTML. One retry on a mismatch absorbs CDN lag (Claude L7).</li>
+      <li><em>Faithful:</em> every manifest file is byte-identical live, and its media type (ignoring parameters like <code>charset</code>) is
+      <code>text/css</code> for CSS, <code>application/javascript</code> or <code>text/javascript</code> for JS (including <code>sw.js</code>),
+      and not <code>text/html</code> for any non-HTML file (round 2, Codex L2). One retry on a mismatch absorbs CDN lag (Claude L7).</li>
       <li><em>Private:</em> each path in the table (the four deleted pages kept forever as a memorial, notes, tests,
       <code>firestore-debug.log</code>, <code>package*.json</code>, <code>firebase.json</code>, <code>deno.lock</code>,
       <code>netlify/functions/send-shift-reminders.js</code>) must return a body equal to <code>dist/index.html</code>, or a 404.
@@ -126,9 +137,10 @@ and it doesn't replace the reset.</div>
   <li><strong>Docs</strong>: <code>CLAUDE.md</code> Deployment gets <code>npm run deploy:check</code> → ask → <code>npm run deploy -- --approved &lt;sha&gt;</code>,
   plus "<code>netlify dev</code> serves <code>dist/</code>; build first" (the <code>http-server .</code> line is unchanged). <code>AGENTS.md:12</code>'s
   mention of "the standalone import pages" is updated, since they're gone (round 1, Claude L4).</li>
-  <li><strong>Tests</strong> (source-level, no writes; the scripts themselves run in preflight): the manifest equals the set the build
-  would archive; the manifest ⊇ <code>APP_SHELL</code> ∪ index.html refs ∪ manifest icons ∪ <code>sw.js</code>; every tracked file under
-  js/css/assets is in the manifest (and vice versa); the four pages don't exist; <code>netlify.toml</code> publishes <code>dist</code>;
+  <li><strong>Tests</strong> (source-level, no writes; the scripts themselves run in preflight): the manifest ⊇ <code>APP_SHELL</code> ∪
+  index.html refs ∪ manifest icons ∪ <code>sw.js</code>; the tracked public-candidate set (the same filter the build uses) == manifest ∪
+  private list, with no overlap; every manifest path is tracked; the four pages don't exist; <code>deploy.sh</code> enforces
+  <code>main</code>/<code>origin/main</code>/HEAD==@{u} and re-runs preflight; <code>netlify.toml</code> publishes <code>dist</code>;
   <code>deploy.sh</code> requires <code>--approved</code> == HEAD plus the upstream/clean/pushed guards; <code>check-live.sh</code> compares
   bodies (never a bare status) for private paths and asserts each function's exact status.</li>
 </ul>
@@ -139,8 +151,10 @@ dist-manifest.txt". Nothing is uploaded.</div>
 <div class="bdd"><strong>Edge:</strong> a <code>.DS_Store</code> in <code>assets/</code> → never archived (it's untracked) → nothing to report.</div>
 <div class="bdd"><strong>Edge (offline):</strong> an installed app on v24 → the next load installs v25 and caches all 16 shell files as their
 real types (completeness passed before upload; content types checked after).</div>
-<div class="bdd"><strong>Failure:</strong> bare <code>npm run deploy</code>, a wrong sha, a dirty tree, no upstream, or unpushed commits → a
-plain refusal before anything is built or uploaded.</div>
+<div class="bdd"><strong>Failure:</strong> bare <code>npm run deploy</code>, a wrong sha, a dirty tree, not on <code>main</code>, no upstream,
+ahead of or behind <code>origin/main</code>, or a failing test → a plain refusal before anything is uploaded.</div>
+<div class="bdd"><strong>Edge:</strong> the first build on today's tree (after the four deletions) → passes: <code>firebase.json</code> and the
+package files are in <code>dist-private.txt</code>.</div>
 <div class="bdd"><strong>Failure:</strong> check-live finds a mismatch, a leak, or a missing function → exit 1, naming it. The deploy is
 live, so the fix is to republish the previous deploy in Netlify's UI (instant), then investigate.</div>
 </div>
@@ -172,6 +186,10 @@ are reversible from git history.</p>
       functions checked (Codex M1); <code>curl --fail</code> + explicit status (Codex M3).</li>
       <li>LOW, folded in: shell-first check, private list, AGENTS.md:12, <code>netlify dev</code> note, <code>mkdir -p</code>, retry.</li>
     </ul></li>
+  <li><strong>Sep 30, round 2 (Codex) → v3:</strong> B1 a public/private partition of the candidate set (<code>dist-private.txt</code>)
+  so today's tree passes; B2 <code>deploy.sh</code> re-runs the preflight itself; M1 enforce <code>main</code> = <code>origin/main</code> exactly;
+  M2 curl without <code>--fail</code>, with transport errors fatal and expected 4xx compared explicitly; M3 acceptance wording narrowed; L1 path
+  normalization; L2 exact media types. Claude's round-2 output was empty (the process was cut off), so Claude reviews v3.</li>
 </ul>
 </body>
 </html>
