@@ -20,122 +20,158 @@
 <body>
 <h1>Plan: Tinker Ticker publishes only the app</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 30 2026 &middot;
-<strong>v1</strong> &middot; <strong>execution-ready: false</strong> &mdash; <em>awaiting design review. Christie's go to make this change:
-Sep 30 ("can we do this here").</em> Ships in the same deploy as <code>ticker-sub-confirm-only-by-manager</code>.</p>
+<strong>v2</strong> after design review round 1 (Claude + Codex: both "not ready"; every finding folded in, see the Decisions Log)
+&middot; <strong>execution-ready: false</strong> &mdash; <em>awaiting round 2. Christie's go to make this change: Sep 30 ("can we do
+this here").</em> Ships in the same deploy as <code>ticker-sub-confirm-only-by-manager</code>. (<code>plan-review</code> is broken on
+this Mac, with a missing Homebrew library, so this plan is not registered in the viewer.)</p>
 
 <div class="status">
-  <strong>Goal:</strong> the live site serves the app's own files and nothing else. No staff passwords, internal notes, tests,
-  logs or stray copies of the app, now or when a new file lands in the repo later.
+  <strong>Goal:</strong> the live site serves the app's own committed files and nothing else, now and when a new file lands in the
+  repo later. Every deploy proves it, and proves the app and all nine functions came through intact.
   <br><br>
-  <strong>Not in scope:</strong> changing the app, its functions or its rules. Resetting the 8 exposed passwords is Christie's
-  action in the Firebase Console, and it is the step that actually closes that exposure (see below).
+  <strong>Done means</strong> (a) this change is deployed and its live check passes, AND (b) Christie confirms the 8 exposed
+  passwords were reset. (b) is the step that actually closes the exposure (see the red box).
 </div>
 
-<h2>What is wrong today (verified Sep 30 against the live site)</h2>
-<p><code>netlify.toml</code> has <code>publish = "."</code>, and a CLI <code>netlify deploy</code> uploads the whole repo folder
-(<code>.netlifyignore</code> is not honoured for CLI deploys; proven Sep 29 against deploy <code>6abbfeeb</code>). All of these
-answer with their real content at <code>https://tinker-timeclock.netlify.app/…</code>:</p>
+<h2>What is wrong today (verified Sep 30 by exact byte size; round 1, Claude)</h2>
+<p><code>netlify.toml</code> has <code>publish = "."</code>, and the CLI uploads the repo folder. These serve their real content live:</p>
 <table>
   <tr><th>Path</th><th>What it is</th></tr>
-  <tr><td><code>user-import.html</code></td><td>One-time account-creation tool (Apr 13). <strong>Lists 8 staff emails with their temporary
-  passwords.</strong> Live bytes match the repo file.</td></tr>
-  <tr><td><code>grant-timeclock-access.html</code>, <code>schedule-import.html</code>, <code>summer-camp-sync.html</code></td><td>One-time
-  admin tools (Apr&ndash;May). Nothing in the app, tests or functions references any of them.</td></tr>
+  <tr><td><code>user-import.html</code></td><td>One-time account tool (Apr 13). <strong>8 staff emails with temporary passwords.</strong></td></tr>
+  <tr><td><code>grant-timeclock-access.html</code>, <code>schedule-import.html</code>, <code>summer-camp-sync.html</code></td><td>One-time admin tools. Nothing references them.</td></tr>
   <tr><td><code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>KIOSK-PLANNING.md</code></td><td>Internal notes</td></tr>
-  <tr><td><code>*.test.js</code>, <code>firestore-debug.log</code>, <code>package*.json</code>, <code>netlify/functions/*</code> sources</td><td>Tests, logs, tooling</td></tr>
-  <tr><td><code>.claude/worktrees/…</code></td><td>381 MB second copy of the app (now in use by another session, so its in-progress code would be published too)</td></tr>
+  <tr><td><code>*.test.js</code>, <code>firestore-debug.log</code> (1.2 MB), <code>package.json</code>, <code>package-lock.json</code>, <code>firebase.json</code>, <code>deno.lock</code></td><td>Tests, logs, tooling</td></tr>
+  <tr><td><code>netlify/functions/*.js</code></td><td>Function source code</td></tr>
 </table>
-<div class="trap"><strong>Removing the page does not un-expose the passwords.</strong> Netlify keeps every old deploy at its own
-permanent URL (the Classbook's <code>create-users.html</code> is still served that way). The 8 accounts must have their passwords
-reset in the Firebase Console (<code>tinker-hq-apps</code> → Authentication). Christie's action; it can't be done in code.</div>
+<div class="warn"><strong>Correction to the Sep 29 record.</strong> <code>.claude/</code> (the 381 MB worktree) and <code>node_modules/</code>
+were <em>never</em> published. netlify-cli drops every dot-path from the upload (<code>deploy.js:186</code>) and skips
+<code>node_modules</code> when the deploy folder is the site root (<code>:176</code>). The Sep 29 "still answered HTTP 200" was the
+single-page fallback (<code>/* → /index.html 200</code>) answering for a missing file. Verified Sep 30: <code>/.claude/settings.json</code>
+returns the 76,689-byte app shell. The lesson that matters: <strong>on this site a status code proves nothing; compare bodies.</strong></div>
+<div class="trap"><strong>Removing the page does not un-expose the passwords.</strong> Netlify keeps every old deploy at a permanent
+<code>&lt;hash&gt;--tinker-timeclock.netlify.app</code> URL, and those keep serving everything above. The 8 accounts must be reset in the
+Firebase Console (<code>tinker-hq-apps</code> → Authentication): Cate Keifer, Erica Podwoiski, Grey Grimm, Leah Trumble, Lindsay Ternes,
+Mackenzie Reinhart, Sonia Kumar and Cris Conklin. That's Christie's action. Old deploys can also be deleted in the Netlify UI; that's optional,
+and it doesn't replace the reset.</div>
 
 <h2>The change (one phase, one commit)</h2>
 <div class="phase">
-<h3>Phase 1: publish an allowlisted <code>dist/</code>, delete the four admin tools, check the live site after every deploy</h3>
+<h3>Phase 1: build <code>dist/</code> from committed files on a file-level allowlist, delete the four tools, gate and check every deploy</h3>
 <p><strong>Acceptance (user outcomes):</strong></p>
 <ul>
-  <li>After the deploy, the app works exactly as before: sign-in, clock in/out, schedules, time off, reminders view, offline
-  (service worker), install icons. The Netlify functions still run (the hourly reminder job, emails, the preview endpoint).</li>
-  <li>The four admin pages, the notes, tests, logs, <code>package.json</code>, function sources and the worktree copy no longer serve
-  their content on the live site. With the single-page fallback (<code>/* → /index.html 200</code>) they return the app's own
-  <code>index.html</code>. This is checked on every deploy.</li>
-  <li>A file added to the repo root later is not published unless it is deliberately added to the allowlist.</li>
-  <li>Deploying is one command, <code>npm run deploy</code>. It refuses on a dirty or unpushed tree and uses the full sha as the
-  deploy message, as the deploy rules require.</li>
+  <li>The app works exactly as before after the deploy: sign-in, clock, schedules, time off, reminders, offline, install icons.
+  All nine functions are still deployed, including the hourly reminder job.</li>
+  <li>Every path in the table above serves the app shell (or Netlify's own 404), never its content. This is checked on every deploy.</li>
+  <li>A new file anywhere, including inside <code>js/</code>, <code>css/</code> or <code>assets/</code>, is NOT published until it is added
+  to the allowlist on purpose. The build refuses rather than silently publishing it (round 1, both).</li>
+  <li>Every published byte is a committed byte. Ignored or untracked files, e.g. <code>.DS_Store</code>, can't reach <code>dist/</code>.</li>
+  <li>Nothing is uploaded until a local preflight has passed and Christie has approved the exact sha (round 1, both).</li>
 </ul>
 <p><strong>Changes:</strong></p>
 <ul>
   <li><strong>Delete</strong> <code>user-import.html</code>, <code>grant-timeclock-access.html</code>, <code>schedule-import.html</code>,
-  <code>summer-camp-sync.html</code> (Christie, Sep 30: "these were things written to get info into the app, now done"). They stay in git
-  history; <code>summer-camp-sync.html</code> (built May 17, fixed May 27 <code>f53788d</code>) is the one worth recovering for Summer 2027.</li>
-  <li><strong><code>scripts/build-dist.sh</code></strong>: <code>rm -rf dist</code>, then a pure copy of an explicit allowlist:
-  <code>index.html</code>, <code>manifest.json</code>, <code>sw.js</code>, <code>css/</code>, <code>js/</code>, <code>assets/</code>. No
-  transformation, so every deployed byte is a committed byte. <code>sw.js</code> stays at the root (a service worker's scope is its
-  own folder).</li>
-  <li><strong><code>netlify.toml</code></strong>: <code>publish = "dist"</code>. <code>functions = "netlify/functions"</code>,
-  <code>node_bundler</code> and <code>included_files = ["js/schedule-helpers.js"]</code> are unchanged: functions are bundled from the
-  source tree, not from the publish folder, so <code>require('../../js/schedule-helpers.js')</code> is unaffected.</li>
-  <li><strong><code>scripts/deploy.sh</code></strong> + <code>"deploy": "sh scripts/deploy.sh"</code> in <code>package.json</code>, modelled on
-  the Classbook's proven script. It refuses unless <code>git status --porcelain</code> is empty and <code>git rev-list @{u}..HEAD</code>
-  is empty, then builds, runs <code>netlify deploy --prod --dir dist --message "$SHA"</code>, then <code>check-live.sh</code>. It does
-  not ask; Claude asks Christie before running it, as today.</li>
-  <li><strong><code>scripts/check-live.sh</code></strong>, adapted to Ticker's single-page fallback:
+  <code>summer-camp-sync.html</code> (Christie, Sep 30). They stay in git history; <code>summer-camp-sync.html</code> is recoverable from
+  <code>f53788d</code> for Summer 2027.</li>
+  <li><strong><code>scripts/dist-manifest.txt</code></strong>: the file-level allowlist, one path per line, sorted:
+  <code>index.html</code>, <code>manifest.json</code>, <code>sw.js</code>, the 2 css files, the 7 js files, the 6 asset files (all 16
+  <code>APP_SHELL</code> paths, <code>sw.js</code> itself, and both maskable icons; 18 files).</li>
+  <li><strong><code>scripts/build-dist.sh</code></strong>: <code>rm -rf dist &amp;&amp; mkdir -p dist</code>; then
+  <code>git archive HEAD -- $(cat scripts/dist-manifest.txt) | tar -x -C dist</code>. That's committed bytes only, with no dot-files and no
+  transformation. Then it <strong>refuses</strong> (exit 1, naming the file) if:
     <ul>
-      <li><em>Complete:</em> every local <code>src</code>/<code>href</code> in <code>index.html</code>, every path in <code>sw.js</code>'s
-      <code>APP_SHELL</code>, and every icon in <code>manifest.json</code> exists in <code>dist/</code>.</li>
-      <li><em>Faithful:</em> every file in <code>dist/</code> is byte-identical live (cache-busting query).</li>
-      <li><em>Private:</em> for each must-not-be-public path, the live body must equal <code>dist/index.html</code> (the fallback) or be a
-      404. If it equals the local file, or anything else, it FAILS. This is not a status check: the fallback makes everything 200.</li>
-      <li>Functions still deployed: <code>/.netlify/functions/preview-shift-reminders</code> answers (a refusal without the secret is
-      expected; a 404 is a failure). Read-only; it never sends.</li>
-    </ul></li>
-  <li><strong><code>.gitignore</code></strong> gains <code>dist/</code>. <strong><code>.netlifyignore</code> is deleted</strong> (it never
-  worked, and a file that looks like protection is worse than none).</li>
-  <li><strong>Docs:</strong> <code>CLAUDE.md</code> and <code>AGENTS.md</code> "Deployment" say <code>npm run deploy</code> (after
-  Christie's "okay to deploy?"), not <code>netlify deploy --prod</code>.</li>
-  <li><strong>Tests</strong> (wiring, no writes): the build allowlist covers every <code>APP_SHELL</code> entry, every local
-  <code>index.html</code> reference and every manifest icon; the four pages are gone from the repo; <code>netlify.toml</code> publishes
-  <code>dist</code>; <code>check-live.sh</code> treats "equals the fallback" as private and a 200 alone as nothing; <code>deploy.sh</code>
-  refuses a dirty/unpushed tree and passes the sha.</li>
+      <li><code>find dist -type f</code> ≠ the manifest;</li>
+      <li>any tracked file under <code>js/</code>, <code>css/</code>, <code>assets/</code> or the root <code>*.html</code>/<code>*.json</code>/<code>sw.js</code>
+      set is NOT in the manifest ("add it to dist-manifest.txt on purpose, or move it out");</li>
+      <li>the <strong>completeness check</strong> fails: every local <code>src</code>/<code>href</code> in <code>index.html</code>, every
+      <code>sw.js</code> <code>APP_SHELL</code> entry (<code>/</code> → <code>index.html</code>), every <code>manifest.json</code> icon, and
+      <code>sw.js</code> itself must exist in <code>dist/</code>.</li>
+    </ul>
+  This runs <em>before</em> any upload. With the fallback, a missing app file would otherwise be cached by the service worker as HTML
+  on every installed device (round 1, Claude M2). Comments in <code>js/</code> are not grepped, e.g. <code>auth-guard.js:15</code>'s example
+  <code>assets/logo.png</code> (round 1, Claude M6).</li>
+  <li><strong><code>scripts/preflight.sh</code></strong> (<code>npm run deploy:check</code>): the clean-tree guard, <code>build-dist.sh</code>,
+  then <code>npm test</code> (full suite, emulator). It prints the sha and the exact approval sentence to ask Christie for. It never
+  uploads. Claude runs it <strong>before</strong> asking "okay to deploy?" (round 1, Codex B2: build and test locally first).</li>
+  <li><strong><code>scripts/deploy.sh</code></strong> (<code>npm run deploy -- --approved &lt;full sha&gt;</code>). It refuses unless all of these hold:
+    <ul>
+      <li><code>--approved</code> equals <code>git rev-parse HEAD</code>. Bare <code>npm run deploy</code> prints what would ship and stops (round 1, Claude M4);</li>
+      <li>the tree is clean;</li>
+      <li>the branch has an upstream (a plain "push it first" message, not a git fatal; round 1, Claude B2);</li>
+      <li>after <code>git fetch</code>, <code>@{u}..HEAD</code> is empty.</li>
+    </ul>
+  Then <code>build-dist.sh</code> (deterministic, same bytes as preflight), <code>netlify deploy --prod --dir dist --message "$SHA"</code>,
+  and <code>check-live.sh</code>. <strong>Ship from <code>main</code></strong>: merge the branch, push, deploy. That way <code>origin/main</code> is what's live.</li>
+  <li><strong><code>scripts/check-live.sh</code></strong>. Every request uses <code>curl --fail-with-body -sS</code> with an explicit status
+  check, and hashes only a successful body (round 1, Codex M3). In order:
+    <ol>
+      <li><em>Shell first:</em> live <code>/index.html</code> must equal <code>dist/index.html</code>; otherwise stop with "private results
+      unreliable" (round 1, Claude L1).</li>
+      <li><em>Faithful:</em> every manifest file is byte-identical live, and each JS/CSS file comes back with a JS/CSS <code>content-type</code>,
+      not HTML. One retry on a mismatch absorbs CDN lag (Claude L7).</li>
+      <li><em>Private:</em> each path in the table (the four deleted pages kept forever as a memorial, notes, tests,
+      <code>firestore-debug.log</code>, <code>package*.json</code>, <code>firebase.json</code>, <code>deno.lock</code>,
+      <code>netlify/functions/send-shift-reminders.js</code>) must return a body equal to <code>dist/index.html</code>, or a 404.
+      Anything else FAILS. Dot-paths aren't listed, because the CLI can't upload them.</li>
+      <li><em>Functions, a positive signal for each</em> (round 1, Claude B1: a missing function returns the shell with 200, so "not 404"
+      proves nothing). GET, which sends nothing: <code>preview-shift-reminders</code> → 401 JSON (this also proves
+      <code>included_files</code> resolved <code>js/schedule-helpers.js</code>); <code>send-shift-reminders</code> → 403 (a deployed
+      scheduled function refuses HTTP); the other seven → 405 JSON. Verified live Sep 30.</li>
+    </ol></li>
+  <li><strong><code>netlify.toml</code></strong>: <code>publish = "dist"</code>, with a comment. The site is <em>not</em> git-linked
+  (checked Sep 30: no repo, no build command), so the CLI's <code>--dir dist</code> is what runs, and <code>publish</code> documents it.
+  If it ever becomes git-linked, it needs <code>command = "sh scripts/build-dist.sh"</code> (round 1, Claude M5). The functions block is unchanged;
+  functions and <code>included_files</code> resolve against the site root, not the publish folder (both reviewers verified).</li>
+  <li><strong><code>.gitignore</code></strong>: add <code>dist/</code>; fix the comment that points at <code>.netlifyignore</code>.
+  <strong>Delete <code>.netlifyignore</code></strong>. It never worked, and its "verified" note was the fallback misread.</li>
+  <li><strong>Docs</strong>: <code>CLAUDE.md</code> Deployment gets <code>npm run deploy:check</code> → ask → <code>npm run deploy -- --approved &lt;sha&gt;</code>,
+  plus "<code>netlify dev</code> serves <code>dist/</code>; build first" (the <code>http-server .</code> line is unchanged). <code>AGENTS.md:12</code>'s
+  mention of "the standalone import pages" is updated, since they're gone (round 1, Claude L4).</li>
+  <li><strong>Tests</strong> (source-level, no writes; the scripts themselves run in preflight): the manifest equals the set the build
+  would archive; the manifest ⊇ <code>APP_SHELL</code> ∪ index.html refs ∪ manifest icons ∪ <code>sw.js</code>; every tracked file under
+  js/css/assets is in the manifest (and vice versa); the four pages don't exist; <code>netlify.toml</code> publishes <code>dist</code>;
+  <code>deploy.sh</code> requires <code>--approved</code> == HEAD plus the upstream/clean/pushed guards; <code>check-live.sh</code> compares
+  bodies (never a bare status) for private paths and asserts each function's exact status.</li>
 </ul>
-<div class="bdd"><strong>Happy:</strong> Given the merged branch, when <code>npm run deploy</code> runs, then the app loads and signs
-in, <code>check-live</code> prints ok, <code>/user-import.html</code> returns the app shell, and <code>/CLAUDE.md</code> returns the app shell.</div>
-<div class="bdd"><strong>Edge:</strong> Given a new file <code>notes.md</code> dropped at the repo root, when deploying, then it is not
-in <code>dist/</code> and is not published.</div>
-<div class="bdd"><strong>Edge (offline):</strong> Given an installed app with the v24 cache, when it next loads after the deploy, then
-<code>sw.js</code> v25 installs and caches every <code>APP_SHELL</code> file (none 404, because the build is complete).</div>
-<div class="bdd"><strong>Failure:</strong> Given an uncommitted change or an unpushed commit, when <code>npm run deploy</code> runs, then
-it refuses before building or uploading anything.</div>
-<div class="bdd"><strong>Failure:</strong> Given <code>check-live</code> finds a mismatch or a leaked path, then it exits non-zero and says
-which. The deploy has already happened, so the fix is a follow-up deploy or a rollback in the Netlify UI to the previous deploy.</div>
+<div class="bdd"><strong>Happy:</strong> preflight passes → Christie approves the sha → deploy → check-live ok: 18 files identical,
+private paths serve the shell, 9 functions answer as expected. The app signs in and works.</div>
+<div class="bdd"><strong>Edge:</strong> a stray <code>js/debug.js</code> is committed → build refuses: "js/debug.js is not in
+dist-manifest.txt". Nothing is uploaded.</div>
+<div class="bdd"><strong>Edge:</strong> a <code>.DS_Store</code> in <code>assets/</code> → never archived (it's untracked) → nothing to report.</div>
+<div class="bdd"><strong>Edge (offline):</strong> an installed app on v24 → the next load installs v25 and caches all 16 shell files as their
+real types (completeness passed before upload; content types checked after).</div>
+<div class="bdd"><strong>Failure:</strong> bare <code>npm run deploy</code>, a wrong sha, a dirty tree, no upstream, or unpushed commits → a
+plain refusal before anything is built or uploaded.</div>
+<div class="bdd"><strong>Failure:</strong> check-live finds a mismatch, a leak, or a missing function → exit 1, naming it. The deploy is
+live, so the fix is to republish the previous deploy in Netlify's UI (instant), then investigate.</div>
 </div>
 
 <h2>Firebase safety checklist</h2>
-<ul>
-  <li>No Firestore reads/writes, rules, collections or indexes change. No data migration.</li>
-  <li>Functions: unchanged source, and the same bundler config. The check confirms they're still deployed.</li>
-</ul>
+<ul><li>No Firestore data, rules, collections or indexes change. The function sources and bundler config are unchanged, and checked live.</li></ul>
 
 <h2>Completeness check</h2>
-<p>One commit. Before the deploy nothing is live, so an interrupted change is just an unmerged branch. A deploy that goes wrong
-is rolled back by republishing the previous deploy in Netlify's UI (instant, no build). The page deletions are reversible from
-git history.</p>
+<p>One commit, not live until deployed. A bad deploy is rolled back by republishing the previous deploy (no build). The deletions
+are reversible from git history.</p>
 
 <h2>Resume instructions</h2>
 <ol>
-  <li>Branch <code>fix/sub-confirm-manager-only</code> in <code>~/tinker-timeclock</code> (this change rides on it, one commit).</li>
-  <li>The Tinker Ticker rule applies (Christie's written go, Sep 30). Netlify: ask "okay to deploy?" first; a clean, pushed tree; the sha as the message.</li>
-  <li>Another session (escapeHtml) works in <code>.claude/worktrees/loving-brahmagupta-576572</code>. Leave it alone.</li>
+  <li>Branch <code>fix/sub-confirm-manager-only</code> in <code>~/tinker-timeclock</code>; this is one more commit on it. Then merge to
+  <code>main</code>, push, preflight, ask, deploy.</li>
+  <li>Another session (escapeHtml) works in <code>.claude/worktrees/loving-brahmagupta-576572</code>. Never touch it.</li>
 </ol>
 
 <h2>Decisions Log</h2>
 <ul>
-  <li><strong>Sep 30, Christie:</strong> delete all four admin tools. They were one-time data-entry helpers, now done.</li>
-  <li><strong>Sep 30, Christie:</strong> do this now, in this session, before the escapeHtml session continues, and ship it with the
-  sub-confirm fix in one deploy.</li>
-  <li><strong>Sep 30, Claude:</strong> the allowlist is the service worker's <code>APP_SHELL</code> plus the maskable icons in
-  <code>manifest.json</code>, copied as folders (<code>css/</code>, <code>js/</code>, <code>assets/</code>). Every file in those folders is
-  browser code today.</li>
+  <li><strong>Sep 30, Christie:</strong> delete all four admin tools; do this now; one deploy with the sub-confirm fix.</li>
+  <li><strong>Sep 30, round 1 → v2:</strong>
+    <ul>
+      <li>BLOCKING, folded in: file-level allowlist + <code>git archive</code> (both); a preflight before asking (Codex); the password
+      reset as part of "done" (Codex); a positive per-function signal (Claude B1); the no-upstream guard + ship from main (Claude B2).</li>
+      <li>MEDIUM, folded in: <code>.claude/</code> was never published, so the record is corrected (Claude M1); completeness runs before
+      upload + content-type checks (Claude M2, Codex M2); <code>.DS_Store</code> via git archive (Claude M3); <code>--approved &lt;sha&gt;</code>
+      in the script (Claude M4); not git-linked, checked in the Netlify API (Claude M5); don't grep js comments (Claude M6); all nine
+      functions checked (Codex M1); <code>curl --fail</code> + explicit status (Codex M3).</li>
+      <li>LOW, folded in: shell-first check, private list, AGENTS.md:12, <code>netlify dev</code> note, <code>mkdir -p</code>, retry.</li>
+    </ul></li>
 </ul>
 </body>
 </html>
