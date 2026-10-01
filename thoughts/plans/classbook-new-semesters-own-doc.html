@@ -35,7 +35,7 @@
   <strong>Parent plan:</strong> <code>classbook-per-semester-lesson-storage.html</code> (Phases A–C DONE: Spring 2026 lives in <code>curriculum/lessons_spring-2026</code>, verified). This plan is its required "Follow-up".<br>
   <strong>Scope for Oct 5 (revision 4):</strong> new weekly semesters are created — atomically, with their config entry — in their own document; one generic rule for new <code>lessons_*</code> documents; <code>lessonData</code> closed to new semester keys; reading, editing, live updates, counts and the gauge for any number of own-doc semesters; a production-shaped test seed. <strong>Trails it (before Spring 2027 is published):</strong> Studio Hub alerts. <strong>Deferred:</strong> deleting a semester that has its own document (Phase E), moving Fall (Phase D).<br>
   <strong>Touches:</strong> the Classbook (<code>js/firebase-data.js</code>, <code>js/app.js</code>, <code>e2e/</code>), <code>studio-hub/firestore.rules</code> + <code>studio-hub/rules.test.js</code> (sha phrase + guard), <code>studio-hub/js/alerts.js</code>. <code>tinker-backups/backup.js</code> needs <strong>no</strong> change (it already tallies every <code>curriculum/lessons_*</code> document, <code>:388-394</code>, and backs up the whole collection).<br>
-  <strong>Line numbers</strong> at Classbook <code>1532121</code>, studio-hub <code>a254b15</code>. <strong>Status:</strong> <span class="status-tag not-ready">revision 4 — round 3 (Codex NOT READY: 3 findings; Fable READY WITH FIXES: 6 minor) addressed; awaiting round 4</span>.
+  <strong>Line numbers</strong> at Classbook <code>1532121</code>, studio-hub <code>a254b15</code>. <strong>Status:</strong> <span class="status-tag not-ready">revision 4 — round 4: Codex + Fable both READY WITH FIXES (text/test-list only), fixes applied; awaiting Christie's approval to build</span>.
 </div>
 
 <div class="safe">
@@ -135,7 +135,7 @@ allow delete: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove()
   Spring rollback (re-add spring-2026 + delete lessons_spring-2026, unverified) → still allowed; the same write also adding another key → denied
   lessonData create with only meta keys by a manager → allowed
   lessons_spring-2027 create in a transaction that also adds appData.semesters.spring-2027 → manager/admin allowed
-  lessons_spring-2027 create while appData is absent                   → denied
+  lessons_spring-2027 create while appData is absent and NOT written in the same batch → denied (the refusal itself is app-level, pinned by the e2e scenario)
   lessons_spring-2027 create in a transaction whose appData write adds a DIFFERENT key (spring-2028) → denied
   lessons_spring-2027 update after its config entry is removed         → denied, every role (document kept)
   lessons_spring-2027 create without the config entry                  → denied, every role
@@ -171,6 +171,8 @@ allow delete: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove()
   <li><code>spring-own-doc.spec.js</code>/<code>storage-move.js</code>: retire the pre-move/undo states that can no longer occur; keep Spring's verified-state coverage, <strong>one staged test of the rollback row</strong> (own doc vanishes for a record-bearing semester → legacy copy shown, never blank), and the rules' one-way guarantees (studio-hub tests).</li>
   <li><code>e2e/helpers/firestore.js:187-241</code>: route the lesson helpers by semester (own doc vs <code>lessonData</code>).</li>
   <li><code>data-safety.spec.js</code> create tests: the <code>window.updateAppData</code> stubs (<code>:3945-3949, 4040-4047, 8358-8363</code>) no longer see the transaction — give them a seam that survives it (a rules-denied role, or an injectable commit); rewrite the compensating-delete tests (<code>:4013-4100</code>, R4-11) as "neither exists"; port the orphan-intact assertion (<code>:4234-4236</code>) to "refused, existing document byte-for-byte intact"; <code>OTHER_SEM</code> (<code>:4604</code>) gets a slug key, config entry and seeded document too.</li>
+  <li><code>data-safety.spec.js:8684-8727</code> (local-only weekly semester + <code>saveSettings</code>) needs a seeded own-doc semester; <code>:4187</code> and <code>:4248</code> (no-copy adopt succeeds) flip to "refused, document intact"; the slot tests at <code>:3706-3816</code> move to the test semester's document.</li>
+  <li>Cleanup helper <code>e2e/helpers/firestore.js:243-249</code> can't delete a <code>lessons_*</code> document as the staff account (manager-only, config holds the key) — clear keys with an update, or stage via firebase-admin as <code>storage-move.js:37-48</code> does.</li>
   <li>The ratchet at <code>spring-own-doc.spec.js:169-200</code> (pins <code>isOwnDocSemester</code> and the allowed <code>lessonData</code> functions) is updated to the new names and lists.</li>
 </ul>
 <p><strong>B2 — app changes:</strong></p>
@@ -300,7 +302,7 @@ Scenario: anything unexpected → stop and report; the semester is an unpublishe
 
 <h2 id="resume">Resume instructions</h2>
 <ul>
-  <li>Read this plan and its Decisions Log, the round-1 and round-2 reviews (<code>thoughts/reviews/2026-10-01-plan-review-new-semesters-own-doc-r{1,2}-{codex,fable}.md</code>), and the parent plan's Decisions Log. <code>git -C ~/studio-hub pull</code> first (the checkout is behind origin/main).</li>
+  <li>Read this plan and its Decisions Log, the round 1–4 reviews (<code>thoughts/reviews/2026-10-01-plan-review-new-semesters-own-doc-r{1,2,3,4}-{codex,fable}.md</code>), and the parent plan's Decisions Log. <code>git -C ~/studio-hub pull</code> first (the checkout is behind origin/main).</li>
   <li>Classbook work: worktree <code>.claude/worktrees/new-semesters-own-doc</code>, branch <code>claude/new-semesters-own-doc</code> (tracks origin/main; deploy needs <code>NETLIFY_SITE_ID</code>). Studio-hub: a branch for the rules, another for <code>alerts.js</code>.</li>
   <li>Order: Phase A rules branch + one Classbook PR (B1+B2) tested together via <code>TINKER_STUDIO_HUB_DIR</code> → merge A → merge the Classbook PR → deploy rules → deploy Classbook → B′ → C. Each step: commit, both suites, second-model implementation review. Each deploy needs Christie's yes; Phase A needs the sha phrase.</li>
 </ul>
@@ -343,6 +345,9 @@ Scenario: anything unexpected → stop and report; the semester is an unpublishe
   <ul>
     <li><strong>Taken:</strong> appData absent → refuse (Codex r3-1); <strong>update rule now requires config membership</strong> — reversing the r2-5 refusal, because Codex r3-2 showed a real path (a stale pre-deploy tab deleting a new semester) and Fable r3-1 confirmed it; costs one <code>getAfter(appData)</code> read per own-doc lesson save; "Create its storage" gated on every manager/admin tab being refreshed (Codex r3-2); the both-copies-missing row (Codex r3-3, Fable r3-2); creating tab installs the map before reconcile (Fable r3-3); one-write roster transaction + partial-failure message (Fable r3-4); spring-2028-mismatch rule test, Phase D existing-target note, "Create its storage" hidden while unknown (Fable r3-5); citations (Fable r3-6).</li>
   </ul>
+</div>
+<div class="decision">
+  <strong>Oct 1, 2026: round 4 — converged.</strong> Codex r4: READY WITH FIXES (two leftover "merge-create appData" sentences). Fable r4: READY WITH FIXES, "no further review round needed" (the same two sentences; the appData-absent rules test reworded; four B1 test items: <code>data-safety.spec.js:8684-8727, 4187, 4248, 3706-3816</code> and the cleanup helper). All applied. Both verified the new update-membership rule breaks no existing flow (every own-doc writer is a single dotted update while the semester is in config; Spring 2026 untouched; 3 rule reads per request, within limits). Baselines before any change: Classbook 372/372 against the rules worktree (proves the <code>TINKER_STUDIO_HUB_DIR</code> set-up), studio-hub 539 + 141. Phases A, B, B′ ready to mark execution-ready on Christie's approval.
 </div>
 </body>
 </html>
