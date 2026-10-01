@@ -24,7 +24,7 @@
 <p><strong>Apps:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Studio Hub / Tinker HQ (<code>~/studio-hub</code>) &middot;
 <strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v5</strong> after design review rounds 1&ndash;2 (round 1: Codex full, Claude sandboxed out;
 round 2: Codex + Claude full. Every finding verified against the code and folded in. See the Decisions log) &middot;
-<strong>execution-ready: false</strong> (waiting on Christie: D5; then review round 3)</p>
+<strong>execution-ready: false</strong> (D5 decided; design review round 3 running)</p>
 
 <div class="status">
   <strong>Goal:</strong> when an admin or manager opens Tinker HQ, a "Coming up" card lists every staff birthday and work
@@ -87,12 +87,10 @@ round 2: Codex + Claude full. Every finding verified against the code and folded
     "Couldn't link to an account" section of the Celebrations page (managers only). Rows with no account are listed there too (R2-L3).</li>
   <li><strong>Leavers come only from a positive match</strong> (R2-B5): a uid gets the leaver write only when a sheet row that matches it is marked P (or OUTDATED).
     A uid that's merely unmatched or skipped is left untouched, never flipped. Never derive leavers by subtraction.</li>
-  <li><strong>Self-edited emails (D5):</strong> today a user can change the <code>email</code> on their own <code>users</code> doc (the self-update rule pins role,
-    appAccess, studios and active, but not email). They could point it at a coworker who has no account, then receive that coworker's record.
-    Fix: add <code>fieldUnchanged('email')</code> to the <code>users</code> self-update rule in the same rules deploy. I checked every app: no self-write touches
-    <code>email</code> (HQ <code>alerts.js</code> dismissedAlertIds, Recap dismissedTaskKeys / lastSeenSharedAt, Ticker pushSubscription and its
-    appAccess/studios patch). Remaining limit, accepted: an account <em>created</em> with a coworker's unused email. That takes deliberate effort and
-    exposes one person.</li>
+  <li><strong>Accepted risk (D5, Christie):</strong> a user can change the <code>email</code> on their own <code>users</code> doc (the self-update rule doesn't pin it),
+    or create an account with a coworker's unused email. Either way they could be matched to a coworker who has no account and receive that
+    coworker's greeting record. It takes deliberate use of the browser console and exposes one person, so it's too unlikely to justify editing the
+    shared <code>users</code> rule. Not fixed.</li>
 </ul>
 
 <h3>Who can see what</h3>
@@ -103,7 +101,7 @@ round 2: Codex + Claude full. Every finding verified against the code and folded
   <tr><td>Kiosk (any role), reminder bot, archived, no users doc, signed out</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
 </table>
 
-<h3>New rules (the only rules changes)</h3>
+<h3>New rules block (the only rules change)</h3>
 <pre>// ── staffCelebrations: birthdays + work anniversaries for Tinker HQ ──
 // _summary = everyone's dates for the admin/manager card. {uid} = one person's own record.
 // Written only by admins/managers from the Staff Directory. Never deleted.
@@ -130,10 +128,7 @@ match /staffCelebrations/{docId} {
     &amp;&amp; (docId == '_summary' ? isCelebrationSummary(request.resource.data)
                             : isCelebrationRecord(request.resource.data));
   // no delete
-}
-
-// users self-update (existing block): add one clause (D5)
-//   … &amp;&amp; fieldUnchanged('active') &amp;&amp; fieldUnchanged('email')</pre>
+}</pre>
 <ul>
   <li>Block-local helpers follow the <code>/curriculum</code> precedent (R2-L8). <code>!isKiosk()</code> is on every grant.</li>
   <li>Summary rows aren't field-checked by the rules (lists can't be iterated). The writer's unit tests pin the row shape instead.</li>
@@ -164,10 +159,7 @@ match /staffCelebrations/{docId} {
 to its <code>npm test</code> file list, so they actually run there (R2-M2).</p>
 
 <h2>Decisions for Christie</h2>
-<div class="decision-needed"><strong>D5 &mdash; NEW (review round 2): stop people changing the email on their own account record.</strong> Add
-<code>fieldUnchanged('email')</code> to the <code>users</code> self-update rule. This edits a block every app shares, but only to refuse something no app does.
-Rules tests (the existing "staff can still self-update unrelated fields" plus a new "staff can't change own email") prove the rest is unaffected.
-<em>Recommend: yes.</em> Without it, a staff member who knows how to use the browser console could get one coworker's birthday greeting record.</div>
+
 
 <h3>Decided</h3>
 <table>
@@ -175,6 +167,7 @@ Rules tests (the existing "staff can still self-update unrelated fields" plus a 
   <tr><td>D1</td><td>Day-of confetti for <strong>any</strong> celebration, for admins/managers. Staff: own celebration only (see Goal).</td></tr>
   <tr><td>D2</td><td>Birthdays + every anniversary on both the HQ card and the Directory Celebrations page.</td></tr>
   <tr><td>D3</td><td>Phase 1 deployed on its own (done, <code>6463ec3</code>).</td></tr>
+  <tr><td>D5</td><td>Don't pin <code>users.email</code>. The console-edit risk is accepted (see Matching).</td></tr>
   <tr><td>D4</td><td>Staff Directory: staff may see the Celebrations page and coworkers' dates. The privacy promise is scoped to HQ.</td></tr>
 </table>
 
@@ -183,7 +176,7 @@ Rules tests (the existing "staff can still self-update unrelated fields" plus a 
 <em>built</em> before rules deploy; it just can't usefully run in production before them (R2-L5).</p>
 
 <div class="phase">
-<h3>2-rules &mdash; <code>staffCelebrations</code> block + <code>users</code> email pin (studio-hub, via the guard)</h3>
+<h3>2-rules &mdash; the <code>staffCelebrations</code> block (studio-hub, via the guard)</h3>
 <ul>
   <li>Fresh worktree of <code>studio-hub</code> from <code>origin/main</code> (the shared checkout is behind and used by other sessions). Branch, PR, merge to <code>main</code>.</li>
   <li>Rules tests (emulator):
@@ -198,8 +191,7 @@ Rules tests (the existing "staff can still self-update unrelated fields" plus a 
       <li>a manager <strong>can</strong> write the leaver shape <code>{current:false, updatedAt}</code> over an existing record (R2-B4);</li>
       <li>refused: an extra field, a wrong type, a missing <code>current</code>/<code>updatedAt</code>, an oversize name/birthday/startDate/updatedAt,
         and a summary with a foreign <code>updatedBy</code> or a non-list <code>staff</code>;</li>
-      <li>nobody can delete;</li>
-      <li><code>users</code>: staff can't change their own <code>email</code>; the existing self-update tests still pass.</li>
+      <li>nobody can delete.</li>
     </ul></li>
   <li>Full studio-hub <code>npm test</code> passes. Then <code>deploy-rules.sh --status</code> / <code>--diff</code> pasted verbatim &rarr; Christie says
     "approved to change firebase &lt;sha&gt;" &rarr; <code>--approved &lt;sha&gt;</code>.</li>
@@ -271,8 +263,7 @@ Given the summary is 31+ days old &rarr; amber "updated 31 days ago" with a link
 <h2>Firebase safety checklist</h2>
 <ul>
   <li>New collection <code>staffCelebrations</code>: rule added, tested and deployed through the studio-hub guard (sha phrase) <em>before</em> any code writes to it.</li>
-  <li><code>tinker-hq-apps</code> rules affect every staff app. The changes are one new match block, plus one added clause to the <code>users</code> self-update rule (D5) that
-    refuses only an email change. No app does that today; checked.</li>
+  <li><code>tinker-hq-apps</code> rules affect every staff app. The change only <em>adds</em> one new match block; no existing block or helper is edited.</li>
   <li>Writes: whole-doc <code>set()</code>s on docs owned solely by this feature, awaited, empty fields stripped, only when changed, behind the sanity gate. Never <code>appData</code>.</li>
   <li>No deletes. No bulk import. Nothing to snapshot first; the first write creates the collection.</li>
   <li>Full studio-hub <code>npm test</code> passes before the rules deploy and before the HQ deploy.</li>
@@ -305,7 +296,7 @@ Check the Decisions log before acting on any recommendation box.</p>
   <li>Oct 1 2026: Calendar: 5/10-year anniversaries imported into the existing shared Tinker calendar. No new calendar; email reminders added per event (Christie).</li>
   <li>Oct 1 2026, review round 2 (Codex + Claude, both full): accepted all blocking items:
     <ul>
-      <li>B1: the users.email pin became D5;</li>
+      <li>B1: the users.email pin became D5 (Christie declined it, accepted risk);</li>
       <li>B2: HQ reads the record by uid;</li>
       <li>B3: summary rows carry status;</li>
       <li>B4: leaver shape <code>{current:false, updatedAt}</code>;</li>
@@ -326,6 +317,7 @@ Check the Decisions log before acting on any recommendation box.</p>
       <li>L1&ndash;L11.</li>
     </ul>
     Codex-11 (a leaver lingers until the next manager load): accepted and documented. Declined nothing new.</li>
+  <li>Oct 1 2026: D5 = no <code>users.email</code> pin. Staff editing their own record from the dev console is too unlikely to justify a shared-rule change; accepted risk (Christie).</li>
 </ul>
 </body>
 </html>
