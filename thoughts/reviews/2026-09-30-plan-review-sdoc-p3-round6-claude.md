@@ -1,0 +1,11 @@
+**Verdict: CHANGES NEEDED** — one MEDIUM, text-only. No design change.
+
+**MEDIUM — point (2)'s 2B reassurance is wrong.** The plan says the stale-server-read limitation is "display-only — Phase 3 writes nothing, and the 2B editor keeps its own read-on-open and save checks." The editor's read-on-open **is** such a read: `readDayOffPlanForEditor()` (firebase-data.js:2893-2897) is a `get({source:'server'})`, and it calls `dayOffInstallVerified()` — marking a possibly stale copy verified. The save doesn't catch it: the transaction (firebase-data.js:2951-2965) locks the camp and re-reads the plan but never compares against the opened version, `merge:true` writes the teacher's fields over a co-teacher's newer text, and `verifyDayOffPlanWrite()` sees its own `lastEditId` → plain "Saved". The "X has edited this plan since" notice D4 relies on cannot fire. Pre-existing live 2B behaviour, so it doesn't block the Phase 3 build — but reword point (2) (the read-on-open uses the same call; name the silent-lost-update exposure) and log it as an open 2B limitation, not as covered.
+
+**(a) LOW.** Every anchor I checked matches 132fef2 (35 of them), and `calculateLessonProgress`, `getProgressLabel`, `canEditDayOffPlan`, `openPlanEditor`, `initCurriculumAdmin` are byte-identical. But "None of these functions' bodies changed" is wrong for `renderDayOffAdmin` (12647): PR #3 swapped `sdocEscA` → `escForOnclick` in its camp/event buttons. Harmless for Phase 3; carve it out. Also loose: the catch opens at 1351, `return 'failed'` is 1363.
+
+**(b) Clean.** Own-doc listeners never bump `globalListenerGeneration` (1419-1422); stamp and `dayOffRefreshFailed` move only in the gated reload, so an own-doc redraw re-renders the same truth; the install loop is synchronous, so no mid-install redraw; the extra `renderAdminGrid()` rebuilds `#ca-grid-wrapper` only (editor is `#ca-detail-modal`, and `restoreGridActionState()` exists), and `renderHelpQueue()` is a pure render.
+
+**(c) Transaction claim correct.** Firebase 10.8.0 compat (index.html:580-583) — Web `Transaction.get()` takes a DocumentReference only; Phase 3's loads are queries (2377-2378).
+
+Full record: `/Users/christiehubley/.claude/plans/plan-review-round-lexical-sky.md`

@@ -1,0 +1,142 @@
+diff --git a/e2e/day-off-overview.spec.js b/e2e/day-off-overview.spec.js
+index 2a1e829..7ffa49b 100644
+--- a/e2e/day-off-overview.spec.js
++++ b/e2e/day-off-overview.spec.js
+@@ -381,6 +381,51 @@ test.describe('School Day Off Camps — Phase 3: the planner\'s plan overview',
+     expect(ok).toBe(false);
+   });
+ 
++  test('P17: a failed SDOC load at startup says "Couldn\'t refresh" in the overview (not a quiet empty year)', async () => {
++    await makeThanksgiving();
++    await showYear(planner);
++    const failed = await planner.evaluate(async (Y) => {
++      const real = window.loadDayOffCampData;
++      window.loadDayOffCampData = async () => { throw new Error('TEST injected startup failure'); };
++      try { await loadLessonData(); } finally { window.loadDayOffCampData = real; }
++      return { failed: dayOffRefreshFailed[Y] === true, guard: lessonDataLoadedSuccessfully };
++    }, Y);
++    expect(failed).toEqual({ failed: true, guard: false });
++    await planner.evaluate(() => renderAdminGrid());
++    await expect(planner.locator('#sdoc-refresh-error')).toContainText("Couldn't refresh");
++  });
++
++  test('P18: a refresh that hangs releases the gate after the deadline — the next refresh runs a new reload', async () => {
++    await makeThanksgiving();
++    await showYear(planner);
++    const n = await planner.evaluate(async (Y) => {
++      DAY_OFF_REFRESH_DEADLINE_MS = 300;
++      const real = window.reloadSummerForModeChange;
++      let calls = 0;
++      window.reloadSummerForModeChange = () => { calls++; return calls === 1 ? new Promise(() => {}) : real(); };   // the first never answers
++      try {
++        refreshDayOffYear(Y);
++        const busy = document.getElementById('sdoc-refresh-btn').disabled;
++        await new Promise(r => setTimeout(r, 500));
++        const outcome = await refreshDayOffYear(Y);
++        return { calls, busy, outcome };
++      } finally { window.reloadSummerForModeChange = real; DAY_OFF_REFRESH_DEADLINE_MS = 30000; }
++    }, Y);
++    expect(n).toEqual({ calls: 2, busy: true, outcome: 'ok' });
++    await expect(planner.locator('#sdoc-refresh-btn')).toBeEnabled();
++  });
++
++  test('P19: a refresh from an earlier day shows the weekday with the time', async () => {
++    await makeThanksgiving();
++    await showYear(planner);
++    const label = await planner.evaluate((Y) => {
++      const d = new Date(); d.setDate(d.getDate() - 2); d.setHours(15, 7, 0, 0);
++      dayOffLastRefreshAt[Y] = d; renderAdminGrid();
++      return d.toLocaleDateString([], { weekday: 'short' });
++    }, Y);
++    await expect(planner.locator('#sdoc-refresh-stamp')).toContainText(`Last full refresh ${label} 3:07`);
++  });
++
+   test('P16: the 2B editor opens from a transactional read — a stale server answer is never what it shows', async () => {
+     const { clay } = await makeThanksgiving();
+     await showYear(planner);
+diff --git a/js/app.js b/js/app.js
+index 82e0946..07a5fea 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -12667,28 +12667,35 @@ function dayOffEventCamps(yearKey, eventId) {
+ // Curriculum Admin entry, on switching to it, and by ↻ Refresh — always through
+ // the listener's own generation-gated reload, never a second loader.
+ let dayOffRefreshInFlight = null;
+-
++// A read that hangs (connected but stalled) must not hold the gate for the rest
++// of the visit: after this long a new refresh may start — its generation bump
++// makes the hung one 'stale' if it ever answers.
++let DAY_OFF_REFRESH_DEADLINE_MS = 30000;   // let: the e2e suite shortens it
++
++// Resolves with the reload's outcome. The listener's callback (onLessonDataReload)
++// redraws Curriculum Admin on 'ok' and 'failed' alike. 'no-listener' only happens
++// before initCurriculumAdmin() has registered the listener — and registering it
++// always runs a full reload on the first server snapshot, which redraws.
+ function refreshDayOffYear(yearKey) {
+   if (dayOffRefreshInFlight) return dayOffRefreshInFlight;   // one at a time: the button and both automatic calls share it
+-  const run = (async () => {
+-    const outcome = await reloadSummerForModeChange();
+-    // The listener's callback redraws Curriculum Admin too, but draw here as
+-    // well: a failed outcome must show its message whoever registered last.
+-    if (outcome !== 'stale' && outcome !== 'no-listener' && isDayOffYear(getAdminSemKey())) renderAdminGrid();
+-    return outcome;
+-  })();
++  const run = reloadSummerForModeChange();
+   dayOffRefreshInFlight = run;
+-  const done = () => {
+-    if (dayOffRefreshInFlight === run) dayOffRefreshInFlight = null;
++  const release = () => {
++    if (dayOffRefreshInFlight !== run) return;
++    dayOffRefreshInFlight = null;
+     if (isDayOffYear(getAdminSemKey())) renderDayOffRefreshControls(getAdminSemKey());
+   };
+-  run.then(done, done);
++  run.then(release, release);
++  setTimeout(release, DAY_OFF_REFRESH_DEADLINE_MS);
+   renderDayOffRefreshControls(yearKey);   // disable the button now
+   return run;
+ }
+ 
++// "3:07 PM" today; "Mon 3:07 PM" otherwise (a page left open overnight).
+ function formatDayOffRefreshTime(d) {
+-  return d instanceof Date && !isNaN(d) ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
++  if (!(d instanceof Date) || isNaN(d)) return '';
++  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
++  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`;
+ }
+ 
+ function dayOffRefreshControlsHtml(yearKey) {
+diff --git a/js/firebase-data.js b/js/firebase-data.js
+index c156e28..c35ecf5 100644
+--- a/js/firebase-data.js
++++ b/js/firebase-data.js
+@@ -977,11 +977,13 @@ async function loadLessonData() {
+       // loaded model is not a safe base for any writer, in any semester.
+       console.error('❌ Could not load camp season data:', err);
+       lessonDataLoadedSuccessfully = false;
++      for (const yearKey of dayOffYearKeys()) dayOffRefreshFailed[yearKey] = true;   // SDOC Phase 3: say so in the overview
+     }
+   } catch (err) {
+     console.error('Error loading lesson data:', err);
+     currentLessonData = {};
+     lessonDataLoadedSuccessfully = false;
++    for (const yearKey of dayOffYearKeys()) dayOffRefreshFailed[yearKey] = true;
+   }
+   return currentLessonData;
+ }
+@@ -1349,7 +1351,6 @@ function setupLessonDataListener(callback) {
+       for (const yearKey of dayOffKeys) {
+         currentLessonData[yearKey] = mergeSummerReload(yearKey, previousSummer?.[yearKey], fresh[yearKey]);
+         healDayOffYearAfterReload(yearKey, fresh[yearKey]);
+-        markDayOffYearInstalled(yearKey);
+       }
+       for (const plan of plans) {
+         // Each season merges against ITS OWN previous map — mergeSummerReload
+@@ -1358,6 +1359,7 @@ function setupLessonDataListener(callback) {
+         currentLessonData[plan.semKey] = mergeSummerReload(plan.semKey, previousSummer?.[plan.semKey], fresh[plan.semKey]);
+       }
+       console.log('📚 Camp seasons loaded:', plans.map(p => `${p.semKey}=${Object.keys(fresh[p.semKey]).length}`).join(' '));
++      for (const yearKey of dayOffKeys) markDayOffYearInstalled(yearKey);   // only once everything installed
+       lessonDataLoadedSuccessfully = true;
+       document.getElementById('lesson-load-error-banner')?.classList.add('hidden');
+       return 'ok';

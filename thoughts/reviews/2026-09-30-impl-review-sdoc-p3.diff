@@ -1,0 +1,793 @@
+diff --git a/css/styles.css b/css/styles.css
+index 55c11df..7b0cc65 100644
+--- a/css/styles.css
++++ b/css/styles.css
+@@ -7215,6 +7215,15 @@ label[for="ca-semester-select"] {
+ .sdoc-chip { background: var(--admin-bg); color: var(--admin-color); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 700; }
+ .sdoc-chip.sdoc-district { background: var(--bg-cream); color: var(--text-medium); border: 1px solid var(--border-light); }
+ .sdoc-event-notes { color: var(--text-medium); font-size: 13px; margin-top: 6px; white-space: pre-wrap; }
++/* SDOC Phase 3: plan overview */
++.sdoc-refresh { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
++.sdoc-refresh-error { color: #C62828; font-size: 13px; font-weight: 600; }
++.sdoc-event-rollup { margin-top: 6px; font-size: 13px; font-weight: 700; color: var(--tinker-purple); }
++.sdoc-plans-cell { min-width: 200px; }
++.sdoc-plan { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 3px 0; }
++.sdoc-plan + .sdoc-plan { border-top: 1px dashed var(--border-light, #E5E5E5); }
++.sdoc-plan-title { font-weight: 600; }
++.sdoc-plan-edited { flex-basis: 100%; font-size: 12px; }
+ .sdoc-actions { display: flex; gap: 8px; align-items: center; }
+ .sdoc-camps-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+ .sdoc-camps-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-medium); padding: 6px 8px; border-bottom: 1px solid var(--border-light); }
+diff --git a/e2e/day-off-overview.spec.js b/e2e/day-off-overview.spec.js
+new file mode 100644
+index 0000000..2a1e829
+--- /dev/null
++++ b/e2e/day-off-overview.spec.js
+@@ -0,0 +1,406 @@
++/**
++ * School Day Off Camps — Phase 3: the planner's plan overview.
++ * Plan: tinker-ai-configs/thoughts/plans/classbook-school-day-off-camps.html (Phase 3, revision 5,
++ * re-verified against 132fef2; Christie's go Sep 29, "#1" Sep 30).
++ *
++ * Curriculum Admin on an SDOC year: a Plans column per camp (status, last editor, Open plan),
++ * a per-event roll-up, "Last full refresh" + ↻ Refresh. Plus the two shared pieces the design
++ * changes: one listener callback for both views (onLessonDataReload), and the 2B editor's
++ * transactional open read.
++ *
++ * EMULATOR ONLY. Sessions: planner = the seeded MANAGER; prep = the suite's default account
++ * (['classbook', 'curriculum-admin'] — Kathy and Allie's access). The TEST year lives only in
++ * each page's currentConfig; every doc carries yearKey TEST_DATA_SAFETY_sdoc and is purged.
++ */
++const { test, expect } = require('@playwright/test');
++const { MANAGER_STATE_PATH } = require('./helpers/login');
++const { Y, setup, teardown, attempt, makeEvent } = require('./helpers/sdoc');
++
++let planner, plannerCtx, prep;
++
++test.beforeEach(async ({ browser, page }) => {
++  plannerCtx = await browser.newContext({ storageState: MANAGER_STATE_PATH });
++  planner = await plannerCtx.newPage();
++  await setup(planner, 'manager');
++  prep = page;
++  await setup(prep, 'admin', { purge: false });
++});
++
++test.afterEach(async () => {
++  await teardown(planner);
++  await plannerCtx.close();
++});
++
++const key = (camp, title) => `${Y}|||${camp.id}|||${title}`;
++const cssStr = (v) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');   // a CSS attribute-selector string
++const planRow = (page, camp, title) => page.locator(`.sdoc-plans-cell .sdoc-plan[data-lesson-key="${cssStr(key(camp, title))}"]`);
++const rollup = (page, ev) => page.locator(`.sdoc-event-card[data-event-id="${ev.id}"] .sdoc-event-rollup`);
++
++async function saveCamp(page, camp) {
++  const r = await attempt(page, ({ Y, camp }) => saveDayOffCamp(Y, camp, null), { Y, camp });
++  expect(r.ok, r.message).toBe(true);
++  return r.value;
++}
++// "Another device": a direct write of plan fields (merge), as a teacher's save would leave them.
++async function writePlan(page, camp, title, fields) {
++  await page.evaluate(({ Y, id, title, fields }) => curriculumDb.collection('dayOffCamps_lessonData').doc(dayOffPlanDocId(Y, id, title))
++    .set({ yearKey: Y, campId: id, projectTitle: title, ...fields }, { merge: true }), { Y, id: camp.id, title, fields });
++}
++const readPlan = (page, camp, title) =>
++  page.evaluate(({ Y, id, title }) => __sdocT.read('lessonData', dayOffPlanDocId(Y, id, title)), { Y, id: camp.id, title });
++
++// Thanksgiving: Clay Creatures camp (Mon "Clay Creatures" + n/a + Open Studio, Tue "Glaze Day" + "—",
++// Wed "Clay Creatures" again) and Paint Party (Mon "Canvas").
++async function makeThanksgiving(page = planner) {
++  const ev = await makeEvent(page);
++  const clay = await saveCamp(page, {
++    eventId: ev.id, title: 'TEST Clay Creatures', timeSlot: 'AM', timeLabel: '9–12', location: 'Tinker',
++    placements: [{ studio: 'AG', ageRange: '5–7', capacity: 12 }],
++    teachers: ['TESTteacher1', 'TESTteacher2'], dates: ['2026-11-23', '2026-11-24', '2026-11-25'],
++    projects: {
++      '2026-11-23': { block1: 'Clay Creatures', block2: 'n/a', openStudio: 'Open Studio' },
++      '2026-11-24': { block1: 'Glaze Day', block2: '—' },
++      '2026-11-25': { block1: 'Clay Creatures' },
++    },
++    notes: '',
++  });
++  const paint = await saveCamp(page, {
++    eventId: ev.id, title: 'TEST Paint Party', timeSlot: 'PM', timeLabel: '1–3', location: 'Tinker',
++    placements: [{ studio: 'AG', ageRange: '5–7', capacity: 10 }],
++    teachers: ['TESTteacher1'], dates: ['2026-11-23'], projects: { '2026-11-23': { block1: 'Canvas' } }, notes: '',
++  });
++  return { ev, clay, paint };
++}
++
++// Show the SDOC year on Curriculum Admin (the header switch — itself one automatic refresh).
++async function showYear(page) {
++  await page.evaluate((Y) => { switchTab('curriculum-admin'); setGlobalSemester(Y); }, Y);
++  await page.evaluate((Y) => refreshDayOffYear(Y), Y);   // shares the in-flight one the switch started
++  await expect(page.locator('.sdoc-admin')).toBeVisible();
++}
++
++// Records every DocumentReference set/update/delete and every transaction write.
++async function spyWrites(page) {
++  await page.evaluate(() => {
++    const proto = Object.getPrototypeOf(curriculumDb.collection('x').doc('y'));
++    const calls = [];
++    window.__writes = calls;
++    for (const m of ['set', 'update', 'delete']) {
++      const real = proto[m];
++      proto[m] = function (...args) { calls.push(`${m} ${this.path}`); return real.apply(this, args); };
++    }
++    const realRun = curriculumDb.runTransaction.bind(curriculumDb);
++    curriculumDb.runTransaction = (fn) => realRun(async (tx) => {
++      for (const m of ['set', 'update', 'delete']) {
++        const real = tx[m].bind(tx);
++        tx[m] = (ref, ...rest) => { calls.push(`tx.${m} ${ref.path}`); return real(ref, ...rest); };
++      }
++      return fn(tx);
++    });
++  });
++}
++const writes = (page) => page.evaluate(() => window.__writes.slice());
++
++test.describe('School Day Off Camps — Phase 3: the planner\'s plan overview', () => {
++
++  test('P1: statuses, last editor and the roll-up — the same status the teachers\' list shows; a bad date shows no date', async () => {
++    const { ev, clay, paint } = await makeThanksgiving();
++    await writePlan(planner, clay, 'Clay Creatures', { introPitch: 'TEST intro', processStep1: 'TEST step', lastEditedBy: 'TESTteacher2', lastEditedAt: '2026-10-05T14:22:31.123Z', lastEditId: 'eotherdevice0001' });
++    await writePlan(planner, paint, 'Canvas', { planComplete: true, lastEditedBy: 'TESTteacher1', lastEditedAt: 'garbage', lastEditId: 'eotherdevice0002' });
++    await showYear(planner);
++
++    await expect(planRow(planner, clay, 'Clay Creatures').locator('.sdoc-plan-status')).toHaveText('In Progress');
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('Not Started');
++    await expect(planRow(planner, paint, 'Canvas').locator('.sdoc-plan-status')).toHaveText('Complete');
++    await expect(planRow(planner, clay, 'Clay Creatures').locator('.sdoc-plan-edited')).toHaveText('last edited by TESTteacher2, Oct 5');
++    await expect(planRow(planner, paint, 'Canvas').locator('.sdoc-plan-edited')).toHaveText('last edited by TESTteacher1');
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-edited')).toHaveCount(0);
++    await expect(rollup(planner, ev)).toHaveText('Plans: 1 of 3 complete · 1 not started');
++
++    // Agrees with the teachers' list for every slot (same calculateLessonProgress + getProgressLabel).
++    const agree = await planner.evaluate((Y) => Object.entries(currentLessonData[Y]).every(([k, s]) => {
++      const shown = document.querySelector(`.sdoc-plan[data-lesson-key="${CSS.escape(k)}"] .sdoc-plan-status`)?.textContent;
++      const p = calculateLessonProgress(s);
++      return shown === getProgressLabel(p === 'ready' ? 'in-progress' : p);
++    }), Y);
++    expect(agree).toBe(true);
++  });
++
++  test('P2: only plannable projects are listed — "n/a", "—" and Open Studio are not; a repeated title is one plan; the same title in two camps is two', async () => {
++    const { ev, clay, paint } = await makeThanksgiving();
++    const paint2 = await saveCamp(planner, {
++      eventId: ev.id, title: 'TEST Paint Party 2', timeSlot: 'PM', timeLabel: '1–3', location: 'Tinker',
++      placements: [{ studio: 'GR', ageRange: '8–12', capacity: 10 }],
++      teachers: ['TESTteacher2'], dates: ['2026-11-24'], projects: { '2026-11-24': { block1: 'Canvas' } }, notes: '',
++    });
++    await showYear(planner);
++    const titles = (camp) => planner.locator(`tr[data-camp-id="${camp.id}"] .sdoc-plans-cell .sdoc-plan-title`).allTextContents();
++    expect(await titles(clay)).toEqual(['Clay Creatures', 'Glaze Day']);
++    expect(await titles(paint)).toEqual(['Canvas']);
++    expect(await titles(paint2)).toEqual(['Canvas']);
++    await expect(rollup(planner, ev)).toHaveText('Plans: 0 of 4 complete · 4 not started');
++  });
++
++  test('P3: ↻ Refresh shows a save made on another device after the page loaded, moves the stamp, and writes nothing', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('Not Started');
++    await planner.evaluate((Y) => { dayOffLastRefreshAt[Y] = new Date(2020, 0, 1, 3, 7); renderAdminGrid(); }, Y);
++    await expect(planner.locator('#sdoc-refresh-stamp')).toContainText('3:07');
++    await writePlan(prep, clay, 'Glaze Day', { closure: 'TEST closure from Mariah', lastEditedBy: 'TESTteacher2', lastEditedAt: new Date().toISOString(), lastEditId: 'eotherdevice0003' });
++    await spyWrites(planner);
++    await planner.click('#sdoc-refresh-btn');
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('In Progress');
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-edited')).toContainText('last edited by TESTteacher2');
++    await expect(planner.locator('#sdoc-refresh-stamp')).not.toContainText('3:07');
++    await expect(planner.locator('#sdoc-refresh-stamp')).toContainText('Last full refresh');
++    expect(await writes(planner)).toEqual([]);
++  });
++
++  test('P4: a failed refresh keeps the figures, says so, and opens plans read-only — then, after a Teacher View visit, the automatic retry recovers with no click', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await planner.evaluate(() => { switchTab('teacher-view'); switchTab('curriculum-admin'); });   // Teacher View has now registered too
++    await planner.evaluate((Y) => refreshDayOffYear(Y), Y);
++    const stampBefore = await planner.evaluate((Y) => +dayOffLastRefreshAt[Y], Y);
++    await writePlan(prep, clay, 'Glaze Day', { closure: 'TEST newer text', lastEditedBy: 'TESTteacher2', lastEditedAt: new Date().toISOString(), lastEditId: 'eotherdevice0004' });
++    // The next SDOC read fails once; the automatic retry comes 4 s later.
++    await planner.evaluate(() => {
++      SUMMER_RELOAD_RETRY_DELAYS_MS[0] = 4000;
++      const real = window.loadDayOffCampData;
++      let failNext = true;
++      window.loadDayOffCampData = async (opts) => { if (failNext) { failNext = false; throw new Error('TEST injected SDOC read failure'); } return real(opts); };
++    });
++    const outcome = await planner.evaluate((Y) => refreshDayOffYear(Y), Y);
++    expect(outcome).toBe('failed');
++    await expect(planner.locator('#sdoc-refresh-error')).toContainText("Couldn't refresh");
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('Not Started');   // previous figures
++    expect(await planner.evaluate((Y) => +dayOffLastRefreshAt[Y], Y)).toBe(stampBefore);
++    expect(await planner.evaluate(() => lessonDataLoadedSuccessfully)).toBe(false);
++    // Inside the retry window: Open plan is read-only.
++    await planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(planner.locator('#summer-lesson-modal')).toHaveClass(/view-only/);
++    await planner.click('#summer-lesson-close');
++    await expect(planner.locator('#summer-lesson-modal')).toHaveCount(0);
++    // The automatic retry succeeds: message gone, rows + stamp fresh, editing back — with no click.
++    await expect(planner.locator('#sdoc-refresh-error')).toBeHidden({ timeout: 15_000 });
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('In Progress');
++    expect(await planner.evaluate((Y) => +dayOffLastRefreshAt[Y], Y)).toBeGreaterThan(stampBefore);
++    expect(await planner.evaluate(() => lessonDataLoadedSuccessfully)).toBe(true);
++    await planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(planner.locator('#summer-lesson-modal')).toBeVisible();
++    await expect(planner.locator('#summer-lesson-modal')).not.toHaveClass(/view-only/);
++  });
++
++  test('P5: a guarded page opens Open plan read-only and writes nothing', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await planner.evaluate(() => { lessonDataLoadedSuccessfully = false; });
++    await planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(planner.locator('#summer-lesson-modal')).toHaveClass(/view-only/);
++    await expect(planner.locator('#summer-lesson-save')).toBeHidden();
++  });
++
++  test('P6: Open plan → type → close saves through the 2B path, and the row reads "In Progress"', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(planner.locator('#summer-lesson-modal .te-modal-meta')).toContainText('Glaze Day');
++    await planner.fill('#summer-closure', 'TEST closure by the planner');
++    await planner.click('#summer-lesson-save');
++    await expect(planner.locator('#summer-autosave-status')).toContainText(/Saved/);
++    await planner.click('#summer-lesson-close');
++    await expect(planner.locator('#summer-lesson-modal')).toHaveCount(0);
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('In Progress');
++    const saved = await readPlan(planner, clay, 'Glaze Day');
++    expect(saved).toMatchObject({ yearKey: Y, campId: clay.id, projectTitle: 'Glaze Day', closure: 'TEST closure by the planner' });
++    expect(saved.lastEditId).toMatch(/^e[a-z0-9]{15}$/);
++  });
++
++  test('P7: prep (Kathy/Allie) sees the overview and can edit; a curriculum-admin user without classbook gets a read-only editor', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(prep);
++    await expect(planRow(prep, clay, 'Glaze Day')).toBeVisible();
++    await planRow(prep, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(prep.locator('#summer-lesson-modal')).not.toHaveClass(/view-only/);
++    await prep.click('#summer-lesson-close');
++    await prep.evaluate(() => { const real = window.getAuthUser; window.getAuthUser = () => ({ ...real(), role: 'staff', appAccess: ['curriculum-admin'] }); });
++    await planRow(prep, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(prep.locator('#summer-lesson-modal')).toHaveClass(/view-only/);
++  });
++
++  test('P8: hostile titles and names render as text, and Open plan still opens the right plan', async () => {
++    const ev = await makeEvent(planner);
++    const evil = `TEST <img src=x onerror="window.__xss=1"> it's "bad"`;
++    const camp = await saveCamp(planner, {
++      eventId: ev.id, title: 'TEST Hostile', timeSlot: 'AM', timeLabel: '9–12', location: 'Tinker',
++      placements: [{ studio: 'AG', ageRange: '5–7', capacity: 8 }], teachers: ['TESTteacher1'],
++      dates: ['2026-11-23'], projects: { '2026-11-23': { block1: evil } }, notes: '',
++    });
++    await writePlan(planner, camp, evil, { introPitch: 'TEST', lastEditedBy: `<b onmouseover="window.__xss=2">x</b>`, lastEditedAt: '2026-10-05T00:00:00.000Z', lastEditId: 'eotherdevice0005' });
++    await showYear(planner);
++    await expect(planRow(planner, camp, evil).locator('.sdoc-plan-title')).toHaveText(evil);
++    await expect(planRow(planner, camp, evil).locator('.sdoc-plan-edited')).toContainText('<b onmouseover=');
++    await planRow(planner, camp, evil).locator('.sdoc-plan-open-btn').click();
++    await expect(planner.locator('#summer-lesson-modal .te-modal-meta')).toContainText(evil);
++    expect(await planner.evaluate(() => window.__xss)).toBeUndefined();
++  });
++
++  test('P9: an event with no projects shows no roll-up', async () => {
++    const ev = await makeEvent(planner);
++    await saveCamp(planner, {
++      eventId: ev.id, title: 'TEST Empty', timeSlot: 'AM', timeLabel: '9–12', location: 'Tinker',
++      placements: [{ studio: 'AG', ageRange: '5–7', capacity: 8 }], teachers: ['TESTteacher1'],
++      dates: ['2026-11-23'], projects: { '2026-11-23': { block1: '', openStudio: 'Open Studio' } }, notes: '',
++    });
++    await showYear(planner);
++    await expect(planner.locator(`.sdoc-event-card[data-event-id="${ev.id}"]`)).toBeVisible();
++    await expect(rollup(planner, ev)).toHaveCount(0);
++  });
++
++  test('P10: an older refresh that resolves last cannot undo a newer reload; the stamp is the newer one\'s', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await planner.evaluate(() => {
++      const real = window.loadDayOffCampData;
++      let first = true;
++      window.__release = null;
++      window.loadDayOffCampData = async (opts) => {
++        if (first) { first = false; await new Promise(r => { window.__release = r; }); }
++        return real(opts);
++      };
++    });
++    await planner.evaluate((Y) => { window.__firstRefresh = refreshDayOffYear(Y); }, Y);
++    await planner.waitForFunction(() => typeof window.__release === 'function');
++    await writePlan(prep, clay, 'Glaze Day', { closure: 'TEST newer', lastEditedBy: 'TESTteacher2', lastEditedAt: new Date().toISOString(), lastEditId: 'eotherdevice0006' });
++    const second = await planner.evaluate(async () => { const o = await reloadSummerForModeChange(); window.__secondStamp = +dayOffLastRefreshAt[getAdminSemKey()]; return o; });
++    expect(second).toBe('ok');
++    const first = await planner.evaluate(async () => { window.__release(); return await window.__firstRefresh; });
++    expect(first).toBe('stale');
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('In Progress');
++    expect(await planner.evaluate(() => +dayOffLastRefreshAt[getAdminSemKey()] === window.__secondStamp)).toBe(true);
++  });
++
++  test('P11: one refresh on tab re-entry and one on switching the header to the SDOC year; ticking or redrawing triggers none; one in flight at a time', async () => {
++    await makeThanksgiving();
++    await showYear(planner);
++    await planner.evaluate(() => {
++      window.__refreshes = 0;
++      const real = window.refreshDayOffYear;
++      window.refreshDayOffYear = (...a) => { window.__refreshes++; return real(...a); };
++    });
++    await planner.evaluate(() => { switchTab('teacher-view'); switchTab('curriculum-admin'); });
++    expect(await planner.evaluate(() => window.__refreshes)).toBe(1);
++    await planner.evaluate((Y) => { setGlobalSemester('spring-2026'); setGlobalSemester(Y); }, Y);
++    expect(await planner.evaluate(() => window.__refreshes)).toBe(2);
++    await planner.evaluate(() => { renderAdminGrid(); renderAdminGrid(); });
++    expect(await planner.evaluate(() => window.__refreshes)).toBe(2);
++    // Shared in-flight promise: two calls while one runs start one reload.
++    const reloads = await planner.evaluate(async (Y) => {
++      await (dayOffRefreshInFlight || Promise.resolve());   // the header switch's refresh settles first
++      let n = 0; const real = window.reloadSummerForModeChange;
++      window.reloadSummerForModeChange = (...a) => { n++; return real(...a); };
++      const a = refreshDayOffYear(Y); const b = refreshDayOffYear(Y);
++      await Promise.all([a, b]);
++      window.reloadSummerForModeChange = real;
++      return { n, same: a === b };
++    }, Y);
++    expect(reloads).toEqual({ n: 1, same: true });
++  });
++
++  test('P12: opening a plan (a single-plan read) does not move "Last full refresh"', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    const before = await planner.evaluate((Y) => +dayOffLastRefreshAt[Y], Y);
++    await planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++    await expect(planner.locator('#summer-lesson-modal')).toBeVisible();
++    await planner.click('#summer-lesson-close');
++    expect(await planner.evaluate((Y) => +dayOffLastRefreshAt[Y], Y)).toBe(before);
++  });
++
++  test('P13: after a Teacher View visit, a reload triggered by a weekly lessonData change redraws Curriculum Admin with no click', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await planner.evaluate(() => { switchTab('teacher-view'); switchTab('curriculum-admin'); });
++    await planner.evaluate((Y) => refreshDayOffYear(Y), Y);
++    await planner.evaluate((Y) => { dayOffLastRefreshAt[Y] = new Date(2020, 0, 1, 3, 7); renderAdminGrid(); }, Y);
++    await writePlan(prep, clay, 'Glaze Day', { closure: 'TEST via snapshot', lastEditedBy: 'TESTteacher2', lastEditedAt: new Date().toISOString(), lastEditId: 'eotherdevice0007' });
++    // Any change to curriculum/lessonData fires the listener → full reload (the weekly semesters' snapshot).
++    await planner.evaluate(() => curriculumDb.collection('curriculum').doc('lessonData').update({ lastUpdated: new Date().toISOString(), lastUpdatedBy: 'TEST snapshot trigger' }));
++    await expect(planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-status')).toHaveText('In Progress', { timeout: 10_000 });
++    await expect(planner.locator('#sdoc-refresh-stamp')).not.toContainText('3:07');
++  });
++
++  test('P14: one shared listener callback — both views register the same function, and either order redraws both', async () => {
++    await makeThanksgiving();
++    await showYear(planner);
++    const src = await planner.evaluate(async () => (await fetch('/js/app.js')).text());
++    const regs = src.match(/setupLessonDataListener\(([^)]*)\)/g) || [];
++    expect(regs).toEqual(['setupLessonDataListener(onLessonDataReload)', 'setupLessonDataListener(onLessonDataReload)']);
++    // The startup race: Teacher View built and showing, Curriculum Admin registers LAST.
++    const drawn = await planner.evaluate(async () => {
++      switchTab('teacher-view');
++      setupLessonDataListener(onLessonDataReload);   // what initCurriculumAdmin() does after its awaits
++      const calls = { tv: 0, ca: 0 };
++      const rtv = window.renderTeacherView, rca = window.renderAdminGrid;
++      window.renderTeacherView = (...a) => { calls.tv++; return rtv(...a); };
++      window.renderAdminGrid = (...a) => { calls.ca++; return rca(...a); };
++      try { onLessonDataReload(currentLessonData); } finally { window.renderTeacherView = rtv; window.renderAdminGrid = rca; }
++      switchTab('curriculum-admin');
++      return calls;
++    });
++    expect(drawn.tv).toBeGreaterThanOrEqual(1);
++    expect(drawn.ca).toBeGreaterThanOrEqual(1);
++    // A throw in Teacher View's redraw cannot skip the admin redraw.
++    const adminDrew = await planner.evaluate(() => {
++      let ca = 0; const rtv = window.teacherViewOnReload, rca = window.renderAdminGrid;
++      window.teacherViewOnReload = () => { throw new Error('TEST throw'); };
++      window.renderAdminGrid = (...a) => { ca++; return rca(...a); };
++      try { onLessonDataReload(currentLessonData); } finally { window.teacherViewOnReload = rtv; window.renderAdminGrid = rca; }
++      return ca;
++    });
++    expect(adminDrew).toBe(1);
++  });
++
++  test('P15: SDOC loads are server reads, and offline they trip the load guard instead of showing a cached year as editable', async () => {
++    await makeThanksgiving();
++    await showYear(planner);
++    const opts = await planner.evaluate(async (Y) => {
++      const proto = Object.getPrototypeOf(curriculumDb.collection('x').where('a', '==', 1));
++      const real = proto.get; const seen = [];
++      proto.get = function (o) { seen.push(o?.source || 'default'); return real.call(this, o); };
++      try { await loadDayOffCampData({ yearKey: Y }); } finally { proto.get = real; }
++      return seen;
++    }, Y);
++    expect(opts).toEqual(['server', 'server', 'server']);
++    const ok = await planner.evaluate(async () => {
++      await curriculumDb.disableNetwork();
++      try { await loadLessonData(); return lessonDataLoadedSuccessfully; }
++      finally { await curriculumDb.enableNetwork(); }
++    });
++    expect(ok).toBe(false);
++  });
++
++  test('P16: the 2B editor opens from a transactional read — a stale server answer is never what it shows', async () => {
++    const { clay } = await makeThanksgiving();
++    await showYear(planner);
++    await writePlan(prep, clay, 'Glaze Day', { closure: 'TEST fresh text', lastEditedBy: 'TESTteacher2', lastEditedAt: new Date().toISOString(), lastEditId: 'eotherdevice0008' });
++    // Every plain DocumentReference.get() now answers with a stale "no plan yet" — what a
++    // get({source:'server'}) after a Listen transport error can do.
++    await planner.evaluate(() => {
++      const proto = Object.getPrototypeOf(curriculumDb.collection('x').doc('y'));
++      const real = proto.get;
++      window.__restoreGet = () => { proto.get = real; };
++      proto.get = function (o) {
++        if (this.path.startsWith('dayOffCamps_lessonData/')) return Promise.resolve({ exists: false, data: () => undefined, id: this.id, ref: this, metadata: { fromCache: false } });
++        return real.call(this, o);
++      };
++    });
++    try {
++      await planRow(planner, clay, 'Glaze Day').locator('.sdoc-plan-open-btn').click();
++      await expect(planner.locator('#summer-closure')).toHaveValue('TEST fresh text');
++    } finally {
++      await planner.evaluate(() => window.__restoreGet());
++    }
++  });
++});
+diff --git a/js/app.js b/js/app.js
+index f5dce8c..82e0946 100644
+--- a/js/app.js
++++ b/js/app.js
+@@ -96,6 +96,7 @@ function initGlobalSemesterSelector() {
+ function setGlobalSemester(key) {
+   if (!currentConfig?.semesters?.[key]) return;
+ 
++  const previousKey = globalSemesterKey;
+   globalSemesterKey = key;
+   localStorage.setItem('globalSemesterKey', key);
+   updateOwnDocPausedNotice();   // Spring 2026 storage move: standing "editing is paused" notice
+@@ -138,6 +139,8 @@ function setGlobalSemester(key) {
+     renderCutBank();
+     renderIdeaBank();
+     renderChangeHistory();
++    // Switching TO an SDOC year re-reads it for the overview (Phase 3).
++    if (key !== previousKey && isDayOffYear(key) && caInitialized) refreshDayOffYear(key);
+   } else if (activeTab === 'settings') {
+     loadSettingsForm();
+   }
+@@ -218,6 +221,8 @@ function setupTabs() {
+       } else if (tabId === 'prep-dashboard') {
+         initPrepDashboard();
+       } else if (tabId === 'curriculum-admin') {
++        // Already built: an SDOC year's overview re-reads on every return (Phase 3).
++        if (caInitialized && isDayOffYear(getAdminSemKey())) refreshDayOffYear(getAdminSemKey());
+         initCurriculumAdmin();
+       } else if (tabId === 'settings') {
+         ensureSettingsFormMatchesHeader();
+@@ -657,6 +662,49 @@ function isCoTeacherForCurrentSemester() {
+   );
+ }
+ 
++// Teacher View's part of every lesson-data reload (its old listener callback).
++function teacherViewOnReload() {
++  renderProgressDashboard();
++  // SDOC (Phase 2B): a camp with only empty blocks has no slots, and there is
++  // no sharedWith — so re-render on every reload while the year is showing
++  // (the list and the teacher picker are rebuilt from the camps each time).
++  if (isDayOffYear(getTvSemKey())) {
++    if (document.querySelector('.tab-btn.active')?.dataset.tab === 'teacher-view') renderTeacherView();
++    return;
++  }
++  // If teacher view initialized early without data, reset so it re-runs with the now-loaded data
++  const semKey = getTvSemKey();
++  const lessons = currentLessonData?.[semKey];
++  if (lessons && Object.keys(lessons).length > 0 && tvInitialized && isAdminOrManager()) {
++    const hasTeachers = document.getElementById('tv-teacher-select')?.options.length > 1;
++    if (!hasTeachers) {
++      tvInitialized = false;
++      initTeacherView();
++    }
++  }
++  // Skip re-render while a camp is expanded — preserves expanded state on live data updates
++  const anyExpanded = document.querySelector('.summer-camp-content:not(.hidden)');
++  if (!anyExpanded && (tvCurrentTeacher || isCoTeacherForCurrentSemester())) renderTeacherView();
++}
++
++// The ONE lesson-data listener callback (SDOC Phase 3). There is one listener
++// and both Teacher View and Curriculum Admin register it; with a callback each,
++// whichever registered last owned every redraw and the other view went stale
++// (after one Teacher View visit, Curriculum Admin stopped redrawing — and a
++// startup race could do the reverse). Each branch is what that view's own
++// callback did on every tick; each is isolated so one throwing can't skip the other.
++function onLessonDataReload(data) {
++  currentLessonData = data;
++  if (tvInitialized) {
++    try { teacherViewOnReload(); } catch (err) { console.error('Teacher View redraw after reload failed:', err); }
++  }
++  if (caInitialized) {
++    try { renderAdminGrid(); renderHelpQueue(); } catch (err) { console.error('Curriculum Admin redraw after reload failed:', err); }
++  }
++  // Refresh teacher mapping table in Settings if it exists
++  try { renderTeacherMappingTable(); } catch (err) { console.error('Teacher mapping redraw after reload failed:', err); }
++}
++
+ async function initTeacherView() {
+   // Already built: the semester may have changed on another tab — refresh for
+   // it (renderTeacherView handles SDOC, and leaving SDOC, itself).
+@@ -683,33 +731,7 @@ async function initTeacherView() {
+ 
+   // Set up real-time listener FIRST so the retry mechanism fires even if
+   // summer camp data isn't ready yet when we reach the early-return below.
+-  setupLessonDataListener((data) => {
+-    currentLessonData = data;
+-    renderProgressDashboard();
+-    // SDOC (Phase 2B): a camp with only empty blocks has no slots, and there is
+-    // no sharedWith — so re-render on every reload while the year is showing
+-    // (the list and the teacher picker are rebuilt from the camps each time).
+-    if (isDayOffYear(getTvSemKey())) {
+-      if (document.querySelector('.tab-btn.active')?.dataset.tab === 'teacher-view') renderTeacherView();
+-      renderTeacherMappingTable();
+-      return;
+-    }
+-    // If teacher view initialized early without data, reset so it re-runs with the now-loaded data
+-    const semKey = getTvSemKey();
+-    const lessons = currentLessonData?.[semKey];
+-    if (lessons && Object.keys(lessons).length > 0 && tvInitialized && isAdminOrManager()) {
+-      const hasTeachers = document.getElementById('tv-teacher-select')?.options.length > 1;
+-      if (!hasTeachers) {
+-        tvInitialized = false;
+-        initTeacherView();
+-      }
+-    }
+-    // Skip re-render while a camp is expanded — preserves expanded state on live data updates
+-    const anyExpanded = document.querySelector('.summer-camp-content:not(.hidden)');
+-    if (!anyExpanded && (tvCurrentTeacher || isCoTeacherForCurrentSemester())) renderTeacherView();
+-    // Refresh teacher mapping table in Settings if it exists
+-    renderTeacherMappingTable();
+-  });
++  setupLessonDataListener(onLessonDataReload);
+ 
+   // Build semester selector (only show if multiple published semesters)
+   renderTvSemesterSelector();
+@@ -5110,14 +5132,8 @@ async function initCurriculumAdmin() {
+     if (e.target === document.getElementById('ca-detail-modal')) closeAdminModal();
+   });
+ 
+-  // Real-time updates
+-  setupLessonDataListener((data) => {
+-    currentLessonData = data;
+-    renderAdminGrid();
+-    renderHelpQueue();
+-    // Refresh teacher mapping table in Settings if it exists
+-    renderTeacherMappingTable();
+-  });
++  // Real-time updates — the same callback Teacher View registers (Phase 3)
++  setupLessonDataListener(onLessonDataReload);
+ }
+ 
+ function renderAdminGrid() {
+@@ -11645,7 +11661,8 @@ async function openPlanEditor(semKey, lessonKey, { onClosed = null } = {}) {
+   let lesson = currentLessonData?.[semKey]?.[lessonKey];
+   if (!lesson) { alert(sdoc ? DAY_OFF_RENAMED_MESSAGE : 'Lesson not found'); return; }
+   const { campName, projectTitle, block } = lesson;
+-  const canEdit = sdoc ? canEditDayOffPlan(lesson) : true;   // summer: canEditLesson() gates each save, as before
++  // SDOC: read-only while the load guard is tripped (Phase 3) — its save refuses anyway.
++  const canEdit = sdoc ? (canEditDayOffPlan(lesson) && lessonDataLoadedSuccessfully !== false) : true;   // summer: canEditLesson() gates each save, as before
+ 
+   // Remove existing modal
+   document.getElementById('summer-lesson-modal')?.remove();
+@@ -12644,6 +12661,104 @@ function dayOffEventCamps(yearKey, eventId) {
+     .sort((a, b) => ['AM', 'FULL', 'PM'].indexOf(a.timeSlot) - ['AM', 'FULL', 'PM'].indexOf(b.timeSlot) || String(a.title).localeCompare(String(b.title)));
+ }
+ 
++// ─── Plan overview (SDOC Phase 3) ───────────────────
++// Read-only: computed from the slots buildDayOffSlots() already builds. Teachers
++// save on other devices and there is no SDOC listener, so the year is re-read on
++// Curriculum Admin entry, on switching to it, and by ↻ Refresh — always through
++// the listener's own generation-gated reload, never a second loader.
++let dayOffRefreshInFlight = null;
++
++function refreshDayOffYear(yearKey) {
++  if (dayOffRefreshInFlight) return dayOffRefreshInFlight;   // one at a time: the button and both automatic calls share it
++  const run = (async () => {
++    const outcome = await reloadSummerForModeChange();
++    // The listener's callback redraws Curriculum Admin too, but draw here as
++    // well: a failed outcome must show its message whoever registered last.
++    if (outcome !== 'stale' && outcome !== 'no-listener' && isDayOffYear(getAdminSemKey())) renderAdminGrid();
++    return outcome;
++  })();
++  dayOffRefreshInFlight = run;
++  const done = () => {
++    if (dayOffRefreshInFlight === run) dayOffRefreshInFlight = null;
++    if (isDayOffYear(getAdminSemKey())) renderDayOffRefreshControls(getAdminSemKey());
++  };
++  run.then(done, done);
++  renderDayOffRefreshControls(yearKey);   // disable the button now
++  return run;
++}
++
++function formatDayOffRefreshTime(d) {
++  return d instanceof Date && !isNaN(d) ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
++}
++
++function dayOffRefreshControlsHtml(yearKey) {
++  const at = formatDayOffRefreshTime(dayOffLastRefreshAt[yearKey]);
++  const busy = !!dayOffRefreshInFlight;
++  const failed = !!dayOffRefreshFailed[yearKey];
++  return `<span class="sdoc-refresh" id="sdoc-refresh">
++      <span id="sdoc-refresh-stamp" class="settings-hint">${at ? `Last full refresh ${sdocEsc(at)}` : 'Not refreshed yet'}</span>
++      <button class="btn-text" id="sdoc-refresh-btn" type="button" onclick="refreshDayOffYear(getAdminSemKey())" ${busy ? 'disabled' : ''}>${busy ? 'Refreshing…' : '↻ Refresh'}</button>
++      ${failed ? `<span id="sdoc-refresh-error" class="sdoc-refresh-error">Couldn't refresh — showing the last full refresh${at ? ` (${sdocEsc(at)})` : ''}</span>` : ''}
++    </span>`;
++}
++
++// Just the header controls (busy state) — the rows wait for the outcome's redraw.
++function renderDayOffRefreshControls(yearKey) {
++  const el = document.getElementById('sdoc-refresh');
++  if (el) el.outerHTML = dayOffRefreshControlsHtml(yearKey);
++}
++
++// Same status the teachers' list shows; 'ready' ("Almost Done") can't happen for
++// an SDOC slot (campName zeroes materials) and reads as In Progress if it ever does.
++function dayOffPlanProgress(slot) {
++  const p = calculateLessonProgress(slot);
++  return p === 'ready' ? 'in-progress' : p;
++}
++
++// A camp's plans in dayOffCampTitles() order — one per title, however many days it runs.
++function dayOffCampPlanSlots(yearKey, camp) {
++  const slots = currentLessonData?.[yearKey] || {};
++  return [...dayOffCampTitles(camp).keys()]
++    .map(title => ({ lessonKey: dayOffLessonKey(yearKey, camp.id, title), title }))
++    .filter(({ lessonKey }) => slots[lessonKey])
++    .map(p => ({ ...p, slot: slots[p.lessonKey] }));
++}
++
++function renderDayOffPlansCell(yearKey, camp) {
++  const plans = dayOffCampPlanSlots(yearKey, camp);
++  if (!plans.length) return '<span class="settings-hint">no projects yet</span>';
++  return plans.map(({ lessonKey, title, slot }) => {
++    const progress = dayOffPlanProgress(slot);
++    const date = String(slot.lastEditedAt || '').slice(0, 10);
++    const edited = slot.lastEditedBy
++      ? `<div class="sdoc-plan-edited settings-hint">last edited by ${sdocEsc(slot.lastEditedBy)}${isIsoDate(date) ? `, ${sdocEsc(formatDayOffDate(date, { month: 'short', day: 'numeric' }))}` : ''}</div>`
++      : '';
++    return `<div class="sdoc-plan" data-lesson-key="${sdocEscA(lessonKey)}">
++        <span class="sdoc-plan-title">${sdocEsc(title)}</span>
++        <span class="sdoc-plan-status sdoc-tv-status progress-${progress}">${getProgressLabel(progress)}</span>
++        <button class="btn-text sdoc-plan-open-btn" type="button" onclick="openDayOffPlanFromAdmin(this.closest('.sdoc-plan').dataset.lessonKey)">Open plan</button>
++        ${edited}
++      </div>`;
++  }).join('');
++}
++
++// "Plans: c of n complete · k not started" — n counts (camp, title) pairs.
++function dayOffEventRollupHtml(yearKey, evCamps) {
++  const plans = evCamps.flatMap(c => dayOffCampPlanSlots(yearKey, c));
++  if (!plans.length) return '';
++  const progress = plans.map(p => dayOffPlanProgress(p.slot));
++  const complete = progress.filter(p => p === 'complete').length;
++  const notStarted = progress.filter(p => p === 'not-started').length;
++  return `<div class="sdoc-event-rollup">Plans: ${complete} of ${plans.length} complete${notStarted ? ` · ${notStarted} not started` : ''}</div>`;
++}
++
++function openDayOffPlanFromAdmin(lessonKey) {
++  const yearKey = getAdminSemKey();
++  return openPlanEditor(yearKey, lessonKey, {
++    onClosed: () => { if (getAdminSemKey() === yearKey) renderAdminGrid(); },
++  });
++}
++
+ function renderDayOffAdmin(yearKey) {
+   const wrapper = document.getElementById('ca-grid-wrapper');
+   if (!wrapper) return;
+@@ -12660,6 +12775,7 @@ function renderDayOffAdmin(yearKey) {
+   const head = `
+     <div class="sdoc-admin-header">
+       <h2>${sdocEsc(year.name)}<span class="sdoc-count">${events.length} event${events.length === 1 ? '' : 's'}, ${camps.length} camp${camps.length === 1 ? '' : 's'}</span></h2>
++      ${dayOffRefreshControlsHtml(yearKey)}
+       ${planner ? `<button class="btn-primary write-control" onclick="openDayOffEventEditor(null)" ${dis}>+ Add event</button>` : '<span class="settings-hint">View only — events and camps are planned by Christie and Anika.</span>'}
+     </div>`;
+   if (events.length === 0) {
+@@ -12690,6 +12806,7 @@ function renderDayOffAdmin(yearKey) {
+           const parts = SDOC_BLOCKS.map(b => day[b.key] ? sdocEsc(day[b.key]) : (SDOC_PROJECT_BLOCK_KEYS.includes(b.key) ? '<span class="sdoc-tbd">to fill</span>' : '')).filter(Boolean);
+           return `<div class="sdoc-day-line"><strong>${sdocEsc(formatDayOffDate(d, { weekday: 'short' }))}</strong> ${parts.join(' · ')}</div>`;
+         }).join('')}${(() => { const f = dayOffBlocksToFill(c); return f.empty ? `<div class="sdoc-to-fill">${f.empty} of ${f.total} blocks to fill</div>` : ''; })()}</td>
++        <td class="sdoc-plans-cell">${renderDayOffPlansCell(yearKey, c)}</td>
+         <td>${renderDayOffMaterialsCell(yearKey, c, { planner, ticker, dis })}</td>
+         <td class="sdoc-actions">${planner ? `
+           <button class="btn-text write-control" onclick="openDayOffCampEditor(${escForOnclick(ev.id)}, ${escForOnclick(c.id)})" ${dis}>Edit</button>
+@@ -12703,6 +12820,7 @@ function renderDayOffAdmin(yearKey) {
+             <div class="sdoc-event-title">${sdocEsc(ev.label)}</div>
+             <div class="sdoc-chips">${dayOffDateRuns(ev.dates).map(r => `<span class="sdoc-chip">${sdocEsc(r)}</span>`).join('')}${ev.district ? `<span class="sdoc-chip sdoc-district">${sdocEsc(ev.district)}</span>` : ''}</div>
+             ${ev.notes ? `<div class="sdoc-event-notes">${sdocEsc(ev.notes)}</div>` : ''}
++            ${dayOffEventRollupHtml(yearKey, evCamps)}
+           </div>
+           <div class="sdoc-actions">${evMatBtn}${planner ? `
+             <button class="btn-secondary write-control" onclick="openDayOffCampEditor(${escForOnclick(ev.id)}, null)" ${dis}>+ Add camp</button>
+@@ -12711,7 +12829,7 @@ function renderDayOffAdmin(yearKey) {
+           </div>
+         </div>
+         ${evCamps.length ? `<div class="sdoc-table-scroll"><table class="sdoc-camps-table">
+-          <thead><tr><th>Camp</th><th>Slot &amp; hours</th><th>Location · placements · headcount</th><th>Teachers</th><th>Days &amp; projects</th><th>Materials</th><th></th></tr></thead>
++          <thead><tr><th>Camp</th><th>Slot &amp; hours</th><th>Location · placements · headcount</th><th>Teachers</th><th>Days &amp; projects</th><th>Plans</th><th>Materials</th><th></th></tr></thead>
+           <tbody>${rows}</tbody></table></div>` : '<div class="sdoc-empty">No camps yet.</div>'}
+       </div>`;
+   }
+diff --git a/js/firebase-data.js b/js/firebase-data.js
+index 3138c56..c156e28 100644
+--- a/js/firebase-data.js
++++ b/js/firebase-data.js
+@@ -968,6 +968,7 @@ async function loadLessonData() {
+       // trips the same app-wide guard — loud, never a quiet empty list.
+       for (const yearKey of dayOffYearKeys()) {
+         currentLessonData[yearKey] = await loadDayOffCampData({ yearKey });
++        markDayOffYearInstalled(yearKey);
+         console.log(`📚 ${yearKey}: ${Object.keys(currentLessonData[yearKey]).length} day-off camp plans`);
+       }
+       lessonDataLoadedSuccessfully = true;
+@@ -1293,6 +1294,17 @@ function mergeSummerReload(semKey, previous, fresh, protectedKeys = fresh?.[DAY_
+ // and an in-flight save's optimistic entry had no map to live in), and the
+ // reload is merged per lesson keeping the newer copy (mergeSummerReload).
+ const SUMMER_RELOAD_RETRY_DELAYS_MS = [5000, 15000];
++// SDOC Phase 3: when each School Day Off year was last read in full and
++// installed (a Date), and whether the latest full reload of it failed. Both
++// change only where a full load installs or fails — never on a single-plan
++// read — and Curriculum Admin's overview derives its message from them at
++// render time, so any redraw after a recovery shows the truth.
++const dayOffLastRefreshAt = {};
++const dayOffRefreshFailed = {};
++function markDayOffYearInstalled(yearKey) {
++  dayOffLastRefreshAt[yearKey] = new Date();
++  delete dayOffRefreshFailed[yearKey];
++}
+ // The camp seasons currently in memory, by semester key.
+ function snapshotCampSeasons() {
+   const out = {};
+@@ -1337,6 +1349,7 @@ function setupLessonDataListener(callback) {
+       for (const yearKey of dayOffKeys) {
+         currentLessonData[yearKey] = mergeSummerReload(yearKey, previousSummer?.[yearKey], fresh[yearKey]);
+         healDayOffYearAfterReload(yearKey, fresh[yearKey]);
++        markDayOffYearInstalled(yearKey);
+       }
+       for (const plan of plans) {
+         // Each season merges against ITS OWN previous map — mergeSummerReload
+@@ -1353,6 +1366,7 @@ function setupLessonDataListener(callback) {
+       if (!isCurrent()) return 'stale';
+       lessonDataLoadedSuccessfully = false;
+       document.getElementById('lesson-load-error-banner')?.classList.remove('hidden');
++      for (const yearKey of dayOffYearKeys()) dayOffRefreshFailed[yearKey] = true;   // nothing of this reload installed
+       const delay = SUMMER_RELOAD_RETRY_DELAYS_MS[attempt];
+       if (delay !== undefined) {
+         setTimeout(() => {
+@@ -2386,10 +2400,12 @@ async function loadDayOffCampData({ yearKey, isCurrent = () => true } = {}) {
+   // Read BEFORE the queries: any plan verified after this point is newer than
+   // what they return (Phase 2B — a reload must not undo a verified save).
+   const startSeq = dayOffInstallSeq;
++  // Server reads (Phase 3, Christie's yes Sep 29): offline, the load fails and
++  // trips the guard instead of serving a cached or empty year as editable.
+   const [eventSnap, campSnap, planSnap] = await Promise.all([
+-    dayOffQuery('events', 'yearKey', yearKey).get(),
+-    dayOffQuery('camps', 'yearKey', yearKey).get(),
+-    dayOffQuery('plans', 'yearKey', yearKey).get(),
++    dayOffQuery('events', 'yearKey', yearKey).get({ source: 'server' }),
++    dayOffQuery('camps', 'yearKey', yearKey).get({ source: 'server' }),
++    dayOffQuery('plans', 'yearKey', yearKey).get({ source: 'server' }),
+   ]);
+   const events = sortDayOffEvents(eventSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+   const camps = campSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+@@ -2887,12 +2903,16 @@ function dayOffFindProject(yearKey, lessonKey) {
+ }
+ 
+ // Fresh server copy of one plan, for the editor to open from (shared plans:
+-// a co-teacher may have saved since this page loaded).
++// a co-teacher may have saved since this page loaded). Read inside a read-only
++// transaction (Phase 3, Christie "#1", Sep 30): a get({source:'server'}) can
++// answer with stale data after a Listen transport error (found in the Spring
++// storage move), and the editor would then save over newer text unawares.
+ async function readDayOffPlanForEditor(yearKey, lessonKey) {
+   const slot = dayOffFindProject(yearKey, lessonKey);
+   if (!slot) return null;
+   if (!curriculumDb) initCurriculumFirestore();
+-  const snap = await curriculumDb.collection(DAY_OFF_COLLECTIONS.plans).doc(dayOffPlanDocId(yearKey, slot.campId, slot.projectTitle)).get({ source: 'server' });
++  const ref = curriculumDb.collection(DAY_OFF_COLLECTIONS.plans).doc(dayOffPlanDocId(yearKey, slot.campId, slot.projectTitle));
++  const snap = await curriculumDb.runTransaction(tx => tx.get(ref));
+   dayOffInstallVerified(yearKey, lessonKey, snap.exists ? snap.data() : null);
+   return currentLessonData[yearKey]?.[lessonKey] || null;
+ }
