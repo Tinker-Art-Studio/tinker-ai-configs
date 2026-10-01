@@ -34,7 +34,7 @@
   <strong>Why now:</strong> On Sep 29, 2026 Christie measured <code>curriculum/lessonData</code> at <strong>972 KB of 1,024 KB (95%)</strong> from a forced server read: <code>spring-2026</code> 551 KB, <code>fall-2026</code> 420 KB. It's real content spread over hundreds of lessons (the largest field is 2.5 KB), so there's nothing to trim. At the cap, <strong>every weekly lesson save fails for everyone</strong>. Fall is being written into it right now.<br>
   <strong>Scope (revision 2):</strong> <strong>Spring 2026 only, with its key written literally into the code and the rules.</strong> Spring ran Jan–May and is dormant, so the move needs no new UI and no config flags. Moving Fall, making every new semester get its own document, and the <code>createNewSemester</code>/<code>deleteSemester</code> changes that requires are a <strong>follow-up plan</strong>. That plan must land before the next semester is created (see "Follow-up").<br>
   <strong>Touches:</strong> the Classbook (<code>js/firebase-data.js</code>, <code>js/app.js</code>), <code>studio-hub/firestore.rules</code> + <code>studio-hub/rules.test.js</code> (sha phrase + guard), <code>studio-hub/js/alerts.js</code> (Studio Hub deploy), and <code>tinker-backups/backup.js</code>, <strong>which only Christie edits</strong> (memory: <code>backup-js-uses-cli-token</code>).<br>
-  <strong>Line numbers</strong> at <code>2ef2e62</code>. <strong>Status:</strong> <span class="status-tag ready">execution-ready: true</span>. Revision 5. Reviewed by Claude (round 1) and Codex (rounds 1–3). Codex round 3 left one edit, now made. Waiting for Christie's go-ahead to build.
+  <strong>Line numbers</strong> at <code>2ef2e62</code>. <strong>Status:</strong> <span class="status-tag ready">DONE (Phases A–C)</span>. Revision 5. Reviewed by Claude (round 1) and Codex (rounds 1–3). Codex round 3 left one edit, now made. Waiting for Christie's go-ahead to build.
 </div>
 
 <div class="danger">
@@ -211,6 +211,18 @@ The make-active-semester plan resumes after that.</div>
 </ol>
 
 <h2 id="decisions">Decisions Log (append-only)</h2>
+<div class="decision">
+  <strong>Sep 30, 2026 (evening): Phase C DONE in production. Spring 2026 is moved and verified.</strong>
+  <ul>
+    <li>Christie ran <code>scripts/spring-2026-move.console.js</code> (as reviewed, <code>126002a</code>). It read 371 lessons with fingerprint <code>4d62541465ce…</code> and downloaded the backup <code>classbook-spring-2026-lessons-2026-10-01T02-13-20-169Z.json</code>. Christie confirmed, and the move transaction committed (movedAt <code>2026-10-01T02:13:33Z</code>).</li>
+    <li>Its verification read then came back <strong>stale</strong>, right after a Firestore Listen 400 / "transport errored": <code>get({source:'server'})</code> is served through the listen stream. So it reported "record missing / new document missing / Spring still shared" and correctly stopped without undoing anything (the new copy didn't match its stale view).</li>
+    <li>A read-only status check showed the true state: moved, unverified, 373 fields, record = 371 lessons plus the same fingerprint.</li>
+    <li>A finish-only step (<code>scripts/spring-2026-finish.console.js</code>, <code>809e97a</code>: read-only transaction, one write, no undo, rehearsed) verified 371 lessons and a matching fingerprint and set <code>verified: true</code>.</li>
+  </ul>
+  <strong>Result:</strong> <code>curriculum/lessonData</code> is about <strong>451 KB / 1,024 KB (44%)</strong>, down from 972 KB (95%). Spring is editable from <code>curriculum/lessons_spring-2026</code>.<br>
+  <strong>Lessons for the follow-up plan (Fall):</strong> verify with transactional reads, never <code>get({source:'server'})</code>. Treat a "transport errored" before verification as a reason to re-check, not to conclude.<br>
+  <strong>Next:</strong> the follow-up plan (Fall + new semesters in their own documents + routed delete/archive) must land before Spring 2027 is created or lessonData passes about 70%. Then the make-active-semester plan resumes.
+</div>
 <div class="decision">
   <strong>Sep 30, 2026: backup.js edit done (Christie: "yes, make the backup.js edit").</strong> Five lines added to <code>tinker-backups/backup.js</code> <code>computeClassbookContentByTeacher</code>: they tally every <code>curriculum/lessons_*</code> document. The original is kept as <code>backup.js.bak-2026-09-30-before-lessons-own-doc</code> (the folder isn't a git repo). <code>node --check</code> ok. The function was run in isolation on "before" and "after" shaped data and gives the same per-teacher counts. The script itself was not run, and its credential code was not touched. <strong>All Phase C prerequisites are met;</strong> the move is Christie's to run tonight.
 </div>
