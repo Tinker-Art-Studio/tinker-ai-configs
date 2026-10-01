@@ -154,7 +154,8 @@ allow delete: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove()
   <li><code>LEGACY_LESSONDATA_SEMESTERS</code> and <code>ownDocSemesterKeys()</code> (weekly config semesters not in the list) replace every use of <code>OWN_DOC_SEMESTERS</code>.</li>
   <li><code>ownDocSource</code> gains <code>'missing'</code>: "<em>&lt;name&gt;'s lesson storage is missing — reload the page; if it stays, a manager can delete this semester and create it again</em>". Never an empty grid that looks like data loss, never writable. Legacy fallback only for semesters with a migration record.</li>
   <li>Atomic <code>createNewSemester</code> (Design). Empty key refused. Name whose key is in the legacy list refused.</li>
-  <li><code>saveLessonData</code> / <code>createLessonSlotsForRoster</code>: merge-set on the own doc only when it exists; "missing" message otherwise (the rules refuse a classbook-role create anyway).</li>
+  <li><strong><code>createLessonSlotsForRoster</code> writes only the NEW slots</strong> (Oct 1, Christie's blank-save question): today it merge-sets the <em>entire cached semester</em> (<code>app.js:11535, 11577</code>), so a stale tab's copy of every existing lesson is written back over the server — the same whole-semester resave the Phase 11 audit removed from the reply and copy paths (<code>app.js:6240, 7229</code>). For an own-doc semester: one transaction reads the document and adds only slot keys absent on the server (dotted <code>tx.update</code> per new key); existing lessons are never written. Legacy semesters (Fall) get the same targeted write against <code>lessonData</code>. Missing document → "missing" message, nothing written.</li>
+  <li><code>saveLessonData</code> (whole-semester merge-set) is then used only by the dead <code>restoreFromBackup</code> helper and the legacy copy path being replaced; it refuses for an own-doc semester whose document is missing.</li>
   <li><code>deleteSemester</code>: own-doc refusal kept; "missing" semesters delete config-only.</li>
   <li>Listener map + reconcile; parallel initial load; minimal gauge; content count over the runtime set.</li>
   <li>Ratchet: no literal <code>'spring-2026'</code>/<code>'fall-2026'</code> in <code>js/</code> outside the legacy-list line, the config defaults (<code>firebase-data.js:641-643</code>), <code>LEGACY_CAMP_SEMESTER_KEY</code> and comments.</li>
@@ -180,6 +181,12 @@ Scenario: two own-doc semesters live at once
   Given Spring 2026 and Spring 2027 both open
   When a Fall lesson is saved (new lessonData snapshot)
   Then both own-doc maps survive the swap; a listener error on one leaves the other editable
+
+Scenario: adding a class in Settings never rewrites existing lessons
+  Given Spring 2027 with a teacher's saved lesson, and an admin tab whose cached copy of that lesson is stale
+  When the admin adds a class to the roster in Settings
+  Then only the new class's slots are written; the teacher's lesson on the server is unchanged
+  And a slot key that already exists on the server (created by another tab) is not overwritten
 
 Scenario: create in this tab → Spring 2027's listener starts once; repeating reconcile adds no duplicate
 
@@ -282,6 +289,9 @@ Scenario: anything unexpected → stop and report; the semester is an unpublishe
     <li><strong>Not taken — Codex 3's membership check on <em>update</em>:</strong> it adds a <code>getAfter(appData)</code> read to every lesson save, and with create atomic and delete deferred there is no path in this plan that leaves an editable orphan. Revisit in Phase E.</li>
     <li><strong>Not taken — Codex 5's sanitized slot template:</strong> the empty strings are the slot schema (identical to all 770 existing Fall/Spring lessons, which every renderer relies on), written only into a document the same transaction confirmed absent or template-empty, so they can never overwrite real content — the risk the "strip empty fields" invariant exists for. Changing the schema the week of a deadline is the riskier option. Christie to confirm.</li>
   </ul>
+</div>
+<div class="decision">
+  <strong>Oct 1, 2026: slot template decision + roster-slot fix (Christie).</strong> Christie: keep the blank fields in new slots ("yes i guess so"), asking whether this could reintroduce the blank-save bug. Checked in code: (1) the slot blanks are written only into a document the create transaction confirmed absent/template-empty; (2) every ordinary lesson save strips empty content fields before writing (<code>buildLessonFieldUpdates</code>, <code>firebase-data.js:1734-1744</code>), so a blank in a slot is never written over real text later. But (3) <code>createLessonSlotsForRoster</code> still re-saves the whole cached semester when a class is added in Settings — a stale-tab overwrite path of the same family, and it will be used on Spring 2027. Added to Phase B: write only new slot keys, in a transaction, never existing lessons.
 </div>
 </body>
 </html>
