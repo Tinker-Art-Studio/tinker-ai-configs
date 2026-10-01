@@ -29,14 +29,14 @@
 <h1>Plan: My Clay Hub D-4 — the weekly vault export (and scheduled functions in the guard)</h1>
 
 <div class="meta">
-  <strong>Goal:</strong> Every week, a complete copy of My Clay Hub's database lands in its own bucket in <code>tinker-hq-vault</code>, outside the <code>my-clay-hub</code> project. Christie gets an email if an export fails, and a separate email if no good export has landed for 8 days, for any reason. The copy can be restored by following a written runbook. The function is deployed only through the functions guard, which now understands scheduled functions and checks Christie's reading of the Scheduler job.<br>
+  <strong>Goal:</strong> Every week, a complete copy of My Clay Hub's database lands in its own bucket in <code>tinker-hq-vault</code>, outside the <code>my-clay-hub</code> project. Christie gets an email if an export fails, and a separate email when no complete export has landed for 8 days, for any reason. The copy can be restored by following a written runbook. The function is deployed only through the functions guard, which now understands scheduled functions and checks Christie's reading of the Scheduler job.<br>
   <strong>Repo:</strong> <code>/Users/christiehubley/my-clay-hub</code>. Console work in <code>my-clay-hub</code> and <code>tinker-hq-vault</code> (Christie; no gcloud). Nothing in <code>tinker-hq-apps</code> or studio-hub changes.<br>
-  <strong>Parent plans:</strong> <code>my-clay-hub-phase-d-project.html</code> D-4 (the outline this plan expands; its requirements are listed in <a href="#trace">Traceability</a>), C2, C3; <code>firebase-functions-deploy-guard.html</code> (Phase D2) amendment <strong>M6</strong> and choice <strong>F13</strong>, which this plan amends for schedules only; <code>clayhub-members-foundation.html</code> (the Phase E gate).<br>
-  <strong>Gate it lifts:</strong> Phase E loads no real member data until V-4's first export has completed successfully (OPEN-ITEMS.md "Vault export"; parent plan C3).<br>
+  <strong>Parent plans:</strong> <code>my-clay-hub-phase-d-project.html</code> D-4 (the outline this plan expands; see <a href="#trace">Traceability</a>), C2, C3; <code>firebase-functions-deploy-guard.html</code> (Phase D2) amendment <strong>M6</strong> and choice <strong>F13</strong>, which this plan amends for schedules only; <code>clayhub-members-foundation.html</code> (the Phase E gate).<br>
+  <strong>Gate it lifts:</strong> Phase E loads no real member data until V-4 is complete: the newest <code>vault</code> attempt has <code>deploy_verified=yes</code>, <code>iam_attested=yes</code> and <code>scheduler_attested=yes</code>, and one complete export is in the vault bucket.<br>
   <strong>Not in this plan:</strong> any other trigger kind (events, callables, task queues, blocking); secrets or params; deleting functions; a retention lock on the vault bucket (V12); <code>tinker-hq-apps</code>' own functions guard (Phase E, M1); member data (the database is still empty).<br>
-  <strong>Risk:</strong> MEDIUM. It changes the deploy guard, it creates the project's first scheduled job, and it adds the first grant <em>into</em> <code>tinker-hq-vault</code> from <code>my-clay-hub</code>. The database is empty and deny-all, so an export reads nothing sensitive yet.<br>
-  <strong>History:</strong> Oct 1 written from the D-4 outline + research (the pinned CLI's source, Google's docs). Not yet reviewed.<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> (all phases) — open questions answered (Oct 1); needs a second-model review.
+  <strong>Risk:</strong> MEDIUM. It changes the deploy guard, creates the project's first scheduled job, and adds the first grants <em>into</em> <code>tinker-hq-vault</code> from <code>my-clay-hub</code>. The database is empty and deny-all, so an export reads nothing sensitive yet.<br>
+  <strong>History:</strong> Oct 1 written; review round 1 (Codex "not ready", 5 blocking; Claude "ready after fixes", 5 blocking) → this rewrite, with Christie's decisions O5/O6. See <a href="#reviews">Reviews</a>.<br>
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> (all phases) — round 2 review next.
 </div>
 
 <h2>Already decided (not reopened here)</h2>
@@ -48,76 +48,82 @@
 <tr><td>Runtime, region</td><td>2nd gen, <code>us-central1</code>, <code>nodejs22</code>, explicit limits; retries set explicitly.</td><td>D23 / #54</td></tr>
 <tr><td>No gcloud</td><td>No gcloud and no second Google login on this laptop. Christie does Console steps; Claude verifies from her readings.</td><td>Christie, Sep 29</td></tr>
 <tr><td>Approval</td><td>"approved to change firebase &lt;full sha&gt;", for that sha and the my-clay-hub functions guard only.</td><td>Global CLAUDE.md</td></tr>
-<tr><td>Alert email</td><td>Email, not desktop notifications.</td><td>Resilience plan Step 1</td></tr>
+<tr><td>Alert email</td><td>Email, to Christie only for now.</td><td>Resilience plan Step 1; O1</td></tr>
 </table>
 
 <h2 id="facts">Facts this plan relies on</h2>
-<p>J-facts were read from the pinned tools in this repo (firebase-tools <strong>15.22.3</strong>, firebase-functions <strong>7.4.0</strong>) or from Google's docs on Oct 1. "Verify" means a phase step proves it before anything depends on it.</p>
+<p>Read from the pinned tools in this repo (firebase-tools <strong>15.22.3</strong>, firebase-functions <strong>7.4.0</strong>) or from Google's docs on Oct 1, and checked by both round-1 reviewers. "Verify" means a phase step proves it before anything depends on it.</p>
 <table>
 <tr><th>#</th><th>Fact</th><th>So this plan…</th></tr>
-<tr><td>J1</td><td><code>functions:list</code> shows a scheduled v2 function only as <code>scheduleTrigger: {}</code> plus the label <code>deployment-scheduled: "true"</code> (<code>gcp/cloudfunctionsv2.js</code> ~302). The schedule, time zone, retry settings, deadline and target are not visible to the CLI.</td><td>The Scheduler job is read by Christie in the Console and checked by the script (V2), as M3 does for invokers.</td></tr>
-<tr><td>J2</td><td>The CLI creates the job <code>projects/my-clay-hub/locations/us-central1/jobs/firebase-schedule-&lt;id&gt;-us-central1</code>, an HTTP <code>POST</code> to the function's <code>uri</code>, with an OIDC token signed as <strong>the function's own runtime account</strong> (<code>gcp/cloudscheduler.js</code> <code>jobFromEndpoint</code>). The default time zone for v2 is UTC.</td><td>V3, V5.</td></tr>
-<tr><td>J3</td><td>For a scheduled function, the CLI <strong>forces</strong> <code>run.invoker</code> to exactly <code>[runtime account]</code>, on create and update (<code>release/fabricator.js</code> ~382, ~484). Nothing in the code can choose it.</td><td>The declaration says so explicitly; the attestation checks it (V3).</td></tr>
-<tr><td>J4</td><td><code>attemptDeadline</code> = <code>max(min(timeoutSeconds, 1800), 180)</code> seconds; scheduled functions are limited to 1,800 s (<code>deploy/functions/validate.js</code>). firebase-functions 7.4.0 has no separate <code>attemptDeadline</code> option.</td><td><code>timeoutSeconds: 1800</code> → deadline 30 min (V6).</td></tr>
-<tr><td>J5</td><td>The job is only patched when schedule, time zone, deadline or retry changed — and <strong>a <code>retryConfig</code> removed from the code is never cleared</strong> from the live job (<code>createOrReplaceJob</code>).</td><td>The guard requires all five retry fields, always (V3).</td></tr>
-<tr><td>J6</td><td>onSchedule's manifest: <code>scheduleTrigger {schedule, timeZone, retryConfig {retryCount, maxRetrySeconds, minBackoffSeconds, maxBackoffSeconds, maxDoublings}}</code>, plus a <code>requiredAPIs</code> entry for <code>cloudscheduler.googleapis.com</code>. The handler's <code>event.scheduleTime</code> comes from the <code>X-CloudScheduler-ScheduleTime</code> header, or <strong>now</strong> if absent (<code>v2/providers/scheduler.js</code>).</td><td>The week key is the UTC ISO week, so it's the same even if the header is missing (V7). Verify the exact manifest in V-2 step 1.</td></tr>
-<tr><td>J7</td><td>Caller permissions: <code>datastore.databases.export</code>, <code>datastore.operations.get</code>, <code>datastore.operations.list</code> exist (the Import/Export Admin role also holds <code>…databases.import</code>, which overwrites production). Google's guides also give the caller Storage Admin on the bucket; no doc says the caller strictly needs it, because the <strong>Firestore service agent</strong> writes the files.</td><td>V4: the narrow custom role first; a storage grant to the caller only if a real export is denied, with the denied permission named and Christie's OK.</td></tr>
-<tr><td>J8</td><td>The Firestore service agent <code>service-760301318440@gcp-sa-firestore.iam.gserviceaccount.com</code> needs an explicit grant on a bucket in another project. The narrow set is documented on Google's Datastore export page: <code>storage.buckets.get</code>, <code>storage.objects.create</code>, <code>storage.objects.delete</code>, <code>storage.objects.list</code>. The Firebase page says Storage Admin. The agent's address is shown on the Firestore Import/Export page; it is created on demand.</td><td>V4: a custom role with those four in <code>tinker-hq-vault</code>, proven by the first real export. Fallback: Storage Admin on that one bucket, residual written down.</td></tr>
-<tr><td>J9</td><td>Bucket location for a nam5 database: Google says only "near your Firestore database location" (Datastore mode says "same location"). No current list of allowed locations was found.</td><td>V10; the first export proves it. Location is permanent, so it's settled before the bucket is created.</td></tr>
-<tr><td>J10</td><td><code>exportDocuments</code> takes a caller-chosen <code>outputUriPrefix</code>; the operation can be polled (<code>done</code>, <code>error</code>, <code>metadata.operationState</code>, <code>metadata.outputUriPrefix</code>) and listed for "a few days after completion". Google says a prefix can't be reused. A completed export writes <code>&lt;prefix&gt;/&lt;last segment&gt;.overall_export_metadata</code>. Optional <code>snapshotTime</code> (needs PITR, which is on) gives a consistent point-in-time copy.</td><td>V7, V8.</td></tr>
-<tr><td>J11</td><td>Scheduler: <code>retryCount</code> 0–5; <code>maxRetryDuration</code> 0 = unlimited; "the next scheduled execution might be skipped if retries continue through that time". A late response is cancelled as <code>DEADLINE_EXCEEDED</code>; whether the Cloud Run request keeps running is undocumented.</td><td>The function is safe to re-enter (V7).</td></tr>
-<tr><td>J12</td><td>Cloud Monitoring's "metric absent" condition is capped at <strong>23.5 hours</strong>, so it can't say "nothing for 8 days" by itself.</td><td>V9: an uptime check against a small freshness endpoint.</td></tr>
-<tr><td>J13</td><td>Soft delete defaults to 7 days. Lifecycle "age" counts from creation. A retention lock is irreversible, and the export agent needs <code>storage.objects.delete</code>.</td><td>V11, V12.</td></tr>
+<tr><td>J1</td><td><code>functions:list</code> shows a scheduled v2 function only as <code>scheduleTrigger: {}</code> plus the label <code>deployment-scheduled: "true"</code> (<code>gcp/cloudfunctionsv2.js:299-305</code>; labels are copied through). Schedule, time zone, retry settings, deadline and target are not visible to the CLI.</td><td>The Scheduler job is read by Christie and checked by the script (V2). The guard can't prove the schedule; it proves her reading matches (V2).</td></tr>
+<tr><td>J2</td><td>The job is <code>projects/my-clay-hub/locations/us-central1/jobs/firebase-schedule-&lt;id&gt;-us-central1</code>, keeping the function id's case (<code>firebase-schedule-vaultExport-us-central1</code>; the Cloud Run service is lower-cased, <code>vaultexport</code>). It's an HTTP <code>POST</code> to the function's <code>uri</code>, with an OIDC token signed as <strong>the function's own runtime account</strong> and no audience set (<code>gcp/cloudscheduler.js:118-166</code>). The default v2 time zone is UTC.</td><td>V2's reading; fixtures keep the case.</td></tr>
+<tr><td>J3</td><td>For a scheduled function the CLI <strong>forces</strong> the Cloud Run service-level <code>run.invoker</code> binding to exactly <code>[runtime account]</code>, on create and update (<code>release/fabricator.js:382-389, 484-492</code>).</td><td>The declaration has no invoker; the expected one is derived (V3).</td></tr>
+<tr><td>J4</td><td><code>attemptDeadline</code> = <code>max(min(timeoutSeconds, 1800), 180)</code> s; a schedule's timeout is capped at 1,800 s (<code>validate.js:28-29, 152</code>). firebase-functions 7.4.0 has no <code>attemptDeadline</code> option.</td><td><code>timeoutSeconds: 1800</code> → 30-min deadline; the wait budget is 1,500 s (V7).</td></tr>
+<tr><td>J5</td><td>The job is only patched when schedule, time zone, deadline or retry changed; retry is compared with a <strong>partial</strong> match, so live retry fields not in the code are neither cleared nor noticed (<code>cloudscheduler.js:82-108</code>). The job is created/patched <strong>after</strong> the function (<code>fabricator.js:161, 182</code>): a failed job upsert leaves a live function with no (or an old) job and a non-zero exit. Removing a schedule from code orphans the job: it keeps POSTing.</td><td>V3 requires all five retry values; V2 reads the whole job; the runbook covers each partial state.</td></tr>
+<tr><td>J6</td><td>onSchedule pre-fills <code>timeZone</code> and all five retry keys with a reset marker that serialises to <code>null</code> (<code>runtime/manifest.js:32-45, 113-135</code>), so an unset field is <em>present</em> as <code>null</code>. <code>requiredAPIs</code> is a list of <code>{api, reason}</code> objects: <code>[{api: "cloudscheduler.googleapis.com", reason: …}]</code>. The handler's <code>event.scheduleTime</code> is the <code>X-CloudScheduler-ScheduleTime</code> header, or now if absent; a thrown error is logged with <code>logger.error</code> and answered 500; the wrapper writes the response itself (<code>v2/providers/scheduler.js:42-66</code>).</td><td>V3 checks numbers and the string <code>"UTC"</code>, not presence; O6.</td></tr>
+<tr><td>J7</td><td>Caller: Google's Firestore page names only roles (Owner / Datastore Owner / Import Export Admin). <code>datastore.databases.export</code>, <code>datastore.operations.get</code>, <code>datastore.operations.list</code> are real permissions (Import Export Admin also holds <code>…databases.import</code>, which overwrites production). <em>Inference, not a doc statement:</em> the caller needs no bucket permission to export, because the Firestore service agent writes the files.</td><td>V4; the first real export proves it.</td></tr>
+<tr><td>J8</td><td>The Firestore service agent needs an explicit grant on a bucket in another project. <strong>Datastore-mode</strong> docs list the narrow export set: <code>storage.buckets.get</code>, <code>storage.objects.create</code>, <code>storage.objects.delete</code>, <code>storage.objects.list</code> (and <code>buckets.get</code> + <code>objects.get</code> for import). Native-mode/Firebase docs say Storage Admin. The agent is created on demand; its address is shown on Firestore's Import/Export page.</td><td>V4: the narrow set, proven by a real export; Storage Admin on that one bucket as the written fallback.</td></tr>
+<tr><td>J9</td><td><code>nam5</code> is a US multi-region (us-central1 + us-central2, witness us-east1). Datastore docs say the bucket should be in the <strong>same location</strong>; Firestore docs say "near". The matching GCS location is <code>US</code>; <code>us-central1</code> is narrower than the database.</td><td>V10: <code>US</code>.</td></tr>
+<tr><td>J10</td><td>Native API: <code>exportDocuments</code> takes a caller-chosen <code>outputUriPrefix</code>; the operation can be polled (<code>done</code>, <code>error</code>, <code>metadata.operationState</code>, <code>metadata.outputUriPrefix</code>). <code>snapshotTime</code> must be in the past, on a whole minute, inside the version-retention window (1 h without PITR, 7 days with). The LRO exists server-side before the call returns.<br>Datastore docs: a prefix can't be reused; operations are listed "for a few days" after completion; the list has no documented filter on the prefix.<br>A complete export holds <code>&lt;folder&gt;/&lt;folder&gt;.overall_export_metadata</code> (file name = folder name).</td><td>V7, V8.</td></tr>
+<tr><td>J11</td><td>Scheduler: <code>retryCount</code> 0–5 — retried that many times "or until the next scheduled execution, whichever first"; <code>maxRetryDuration</code> 0 = unlimited, and when both are set it retries until <em>both</em> limits are reached. A late response is cancelled as <code>DEADLINE_EXCEEDED</code>; whether the Cloud Run request keeps running is undocumented.</td><td>V6 (<code>maxRetrySeconds: 0</code>), V7 (own wait budget).</td></tr>
+<tr><td>J12</td><td>Cloud Monitoring's "metric absent" condition is capped at 23.5 h; a threshold condition may use a window up to 25 h. Uptime checks support <strong>service-agent authentication</strong> to Cloud Run (the token's audience is the configured URL); public checks run from at least three regions; default timeout 10 s.</td><td>V9.</td></tr>
+<tr><td>J13</td><td>Soft delete defaults to 7 days; a listing excludes soft-deleted objects. Lifecycle age counts from creation; deletion of a folder's objects is asynchronous over up to 24 h. A retention lock is irreversible, and the export agent needs <code>objects.delete</code>.</td><td>V11, V12, V14.</td></tr>
+<tr><td>J14</td><td>Firestore allows up to 50 concurrent exports per project: Google won't stop a duplicate.</td><td>V7 makes a duplicate harmless rather than impossible (O5).</td></tr>
 </table>
 
 <h2 id="choices">Choices made here (Christie can overrule any)</h2>
 <table>
 <tr><th>#</th><th>Choice</th><th>Why</th></tr>
-<tr><td>V1</td><td><strong>A new codebase, <code>vault</code></strong> (<code>functions/vault/</code>), separate from <code>core</code> (the canary). Its own <code>firebase.json</code> entry, lockfile, tests at <code>tests/functions/vault/</code>, and its own attempt receipts (<code>deployed/my-clay-hub/functions-vault/…</code>).</td><td>A canary redeploy never touches the backup, and vice versa. With two codebases the backstop can also tell which one is deploying (M5's gap closes).</td></tr>
-<tr><td>V2</td><td><strong>The Scheduler read-back is Christie's Console reading, checked by the script.</strong> <code>--attest</code> gains a per-scheduled-function block: job name, state, schedule, time zone, target URL, HTTP method, OIDC service account, attempt deadline and the five retry values. The script compares it with <code>declarations.json</code> and the live <code>uri</code>, and refuses any difference. A new record field <code>scheduler_attested</code>; <code>--status</code> shows it. A deploy that creates or changes a scheduled function always needs that reading (added to #61's list).</td><td>J1: the CLI can't read the job, and there's no gcloud. Same pattern as M3, which is already reviewed and in use.</td></tr>
-<tr><td>V3</td><td><strong>The guard's manifest rules for a schedule</strong> (F13 amended for schedules only):
+<tr><td>V1</td><td><strong>A new codebase, <code>vault</code></strong> (<code>functions/vault/</code>), separate from <code>core</code> (the canary). Own <code>firebase.json</code> entry, lockfile, tests at <code>tests/functions/vault/</code>, attempt receipts <code>deployed/my-clay-hub/functions-vault/…</code>. Direct, exact-pinned dependencies: firebase-functions 7.4.0, firebase-admin 14.5.0, <code>@google-cloud/firestore</code> and <code>@google-cloud/storage</code> (versions = those firebase-admin 14.5.0 already resolves).</td><td>A canary redeploy never touches the backup, and vice versa. Note: <code>iam-expectations.json</code> is shared, so from V-3 on every <code>core</code> attestation also lists the vault accounts' roles.</td></tr>
+<tr><td>V2</td><td><strong>The Scheduler read-back is Christie's Console reading, checked by the script.</strong> <code>--attest</code> evidence gains two keys, <strong>always present</strong>: <code>schedulerJobList</code> (every job name in <code>us-central1</code>, a complete list) and <code>schedulerJobs</code> (per scheduled function: name, state, schedule, timeZone, targetUri, httpMethod, oidcServiceAccount, oidcAudience, body, headers, attemptDeadline and the five retry values). For <code>core</code> both are empty. The script requires: the list equals exactly the declared scheduled functions' job names; each job ENABLED; every field equal to <code>declarations.json</code> (J4's deadline computed from the manifest's timeout); <code>targetUri</code> = the live <code>uri</code>; POST; OIDC account = the runtime account; audience absent or = the live <code>uri</code>; no body; no custom headers.<br>
+  New record field <code>scheduler_attested</code> = yes / no / <code>n/a</code> (no scheduled function in the codebase). <strong>A Scheduler reading is always needed</strong> for a deploy of a codebase that has a schedule. <code>deploy_verified</code> is unchanged; <code>--status</code> shows all three.<br>
+  <strong>Limit, stated plainly:</strong> the job exists before Christie can read it, and the reading proves what the Console showed at that moment, not later drift. The guard never proves the schedule runs; the 8-day freshness alert (V9) is what catches a job that doesn't.</td><td>J1: the CLI can't read the job; no gcloud. Same model as M3.</td></tr>
+<tr><td>V3</td><td><strong>The guard's rules for a schedule</strong> (F13 amended for schedules only):
   <ul>
-  <li>each endpoint has exactly one trigger: <code>httpsTrigger</code> (as now) or <code>scheduleTrigger</code>; anything else is still refused by name;</li>
-  <li><code>scheduleTrigger</code> has exactly <code>schedule</code>, <code>timeZone</code> = <code>"UTC"</code>, and <code>retryConfig</code> with all five fields present, each equal to the function's <code>schedule</code> block in <code>declarations.json</code>;</li>
-  <li><code>requiredAPIs</code> is exactly <code>[cloudscheduler.googleapis.com]</code> when the codebase has a schedule, and empty otherwise;</li>
-  <li>a scheduled function's declaration has <code>"trigger": "schedule"</code> and no <code>invoker</code>; the guard derives the expected invoker as exactly its runtime account (J3). HTTP declarations gain <code>"trigger": "https"</code>;</li>
-  <li><code>timeoutSeconds</code> ≤ 1800 for a schedule; the other F14 rules unchanged.</li>
+  <li>a declaration's <strong>key set is exact</strong>: HTTP <code>{trigger: "https", serviceAccount, invoker, ingress}</code>; schedule <code>{trigger: "schedule", serviceAccount, ingress, schedule: {schedule, timeZone, retryCount, maxRetrySeconds, minBackoffSeconds, maxBackoffSeconds, maxDoublings}}</code>. Any unknown or missing key refuses by name.</li>
+  <li>each endpoint has exactly one trigger, and it matches its declaration: <code>httpsTrigger</code> (as now) or <code>scheduleTrigger</code>; every other trigger kind is still refused by name;</li>
+  <li><code>scheduleTrigger</code>'s <code>schedule</code> and <code>timeZone</code> are strings and its five retry values are <strong>numbers</strong>, each equal to the declaration (J6: <code>null</code> means "unset" and refuses); <code>timeZone</code> must be <code>"UTC"</code>;</li>
+  <li><code>[.requiredAPIs[].api]</code> is exactly <code>["cloudscheduler.googleapis.com"]</code> with each entry's keys exactly <code>{api, reason}</code> when the codebase has a schedule; empty otherwise;</li>
+  <li>a schedule's expected <code>run.invoker</code> (for <code>--attest</code>) is exactly <code>serviceAccount:&lt;its runtime account&gt;</code> (J3); <code>timeoutSeconds</code> ≤ 1800; the other F14 rules unchanged.</li>
   </ul>
-  F8's live check accepts <code>scheduleTrigger: {}</code> + the <code>deployment-scheduled</code> label for a declared schedule only. The unauthenticated probe still runs (a scheduled function has a <code>uri</code>) and must be refused. The backstop (<code>predeploy-check.sh</code>) applies the same rules.</td><td>M6, J5, J6. Params, secrets and every other trigger stay refused.</td></tr>
-<tr><td>V4</td><td><strong>Identities, each minimal:</strong>
+  F8 accepts <code>scheduleTrigger: {}</code> with label <code>deployment-scheduled: "true"</code> only for a declared schedule, and an HTTP function only without that label. The unauthenticated probe still runs on every <code>uri</code> and must be refused. The backstop (<code>predeploy-check.sh:221-234</code>) applies the same branches. Because the schedule lives in <code>declarations.json</code> (an <code>ATTEST_FILES</code> member), every effective schedule change shows in <code>--diff</code>.</td><td>M6, J5, J6. Params, secrets and every other trigger stay refused. If a scheduled function were ever public, the probe would answer 2xx (caught as "answered") but would also start a real export — public is refused before upload for that reason too.</td></tr>
+<tr><td>V4</td><td><strong>Identities, each minimal</strong> (role ids exactly as written; Christie transcribes the id, not the display title):
   <ul>
-  <li><code>vault-export@my-clay-hub.iam.gserviceaccount.com</code> (runs the export): a custom project role <code>vaultExporter</code> = <code>datastore.databases.export</code>, <code>datastore.operations.get</code>, <code>datastore.operations.list</code>. Nothing else. No data read, no import.</li>
-  <li>The Firestore service agent (writes the files): a custom role <code>firestoreExportWriter</code> in <code>tinker-hq-vault</code> = the four J8 permissions, granted <strong>on the vault bucket only</strong>. Nothing on <code>tinker-hq-vault-backups</code>.</li>
-  <li><code>vault-watch@my-clay-hub.iam.gserviceaccount.com</code> (the freshness check, V9): a custom role <code>vaultLister</code> in <code>tinker-hq-vault</code> = <code>storage.objects.list</code>, on the vault bucket only. It can see file names and times, not contents.</li>
+  <li><code>vault-export@my-clay-hub.iam.gserviceaccount.com</code>: custom project role <code>projects/my-clay-hub/roles/vaultExporter</code> = <code>datastore.databases.export</code>, <code>datastore.operations.get</code>, <code>datastore.operations.list</code>; and <code>projects/tinker-hq-vault/roles/vaultLister</code> on the vault bucket. It can start and read exports and list file names; it can't read or write a document, read an export's contents, or change anything in the vault.</li>
+  <li>The Firestore service agent: <code>projects/tinker-hq-vault/roles/firestoreExportWriter</code> (the four J8 permissions) on the vault bucket only, granted in V-4 (bootstrap).</li>
+  <li><code>vault-watch@my-clay-hub.iam.gserviceaccount.com</code>: <code>vaultLister</code> on the vault bucket only. Its code only lists (reading <code>timeCreated</code> from the listing; never <code>exists()</code> or <code>getMetadata()</code>, which need <code>buckets.get</code>).</li>
   </ul>
-  The deployer's <code>actAs</code> on both new accounts comes from Christie's Owner role (M7). Any widening needs the exact denied permission from a real error and Christie's approval.</td><td>Parent D-4 ("two identities, each minimal"), plus the watcher. Each can do one thing.</td></tr>
-<tr><td>V5</td><td><strong>Schedule:</strong> <code>every sunday 09:00</code>, UTC (02:00/03:00 Denver — outside the DST gap because it's UTC).</td><td>Parent D-4.</td></tr>
-<tr><td>V6</td><td><strong>Retries and limits:</strong> <code>retryCount: 3</code>, <code>maxRetrySeconds: 21600</code> (6 h), <code>minBackoffSeconds: 600</code>, <code>maxBackoffSeconds: 3600</code>, <code>maxDoublings: 2</code>; <code>timeoutSeconds: 1800</code> (→ 30-min attempt deadline); <code>maxInstances: 1</code>, <code>concurrency: 1</code>, <code>cpu: 1</code>, <code>memory: 256MiB</code>.</td><td>A failed Sunday run gets three more tries within 6 hours, well before the next week. One instance means two attempts can never race.</td></tr>
-<tr><td>V7</td><td><strong>One export per week, and retries resume.</strong> The week key is the <strong>UTC ISO week</strong> of <code>event.scheduleTime</code> (e.g. <code>2026-W41</code>; J6). Output prefix <code>gs://&lt;vault bucket&gt;/weekly/&lt;week&gt;-a&lt;n&gt;</code>. Each run first lists this database's export operations (J10) and finds the ones whose prefix is this week's:
-  <ul>
-  <li>one <strong>succeeded</strong> → log "already done" and return success; no new export;</li>
-  <li>one is <strong>running</strong> → resume waiting on it;</li>
-  <li>only <strong>failed/cancelled</strong> ones (attempt <em>n</em>) → start attempt <em>n</em>+1;</li>
-  <li>none → start attempt 1.</li>
-  </ul>
-  Then it polls the operation until <code>done</code>, and returns success only if there's no <code>error</code>, the state is <code>SUCCESSFUL</code> and the prefix is the expected one. Anything else throws (→ HTTP 500 → Scheduler retries, and the error alert fires). If waiting runs out of time, it throws, and the retry resumes waiting.<br>
-  <strong>The saved state is Google's own operation record</strong>, not a new Firestore collection.</td><td>The parent asked for saved state (folder, operation name, result). Reading it from Firestore's operation list keeps <code>vault-export@</code> unable to read or write any document. A Firestore state collection would need data-write access for the exporter and a new rule. Test: "the export succeeded but the function died before returning" → the retry finds it and starts nothing.</td></tr>
-<tr><td>V8</td><td><strong>Point-in-time:</strong> each export passes <code>snapshotTime</code> = the start of the current minute minus one minute.</td><td>A consistent copy across collections, at no extra cost (PITR is on; J10). Dropped if the first real export rejects it (logged).</td></tr>
-<tr><td>V9</td><td><strong>The 8-day alert: an uptime check on a small private HTTP function</strong>, <code>vault/vaultFresh</code>. It lists <code>weekly/</code> in the vault bucket, finds the newest <code>*.overall_export_metadata</code>, and returns 200 when it's at most 8 days old, 503 otherwise (500 on any error). Its body holds only the folder name and age. A Cloud Monitoring <strong>uptime check</strong> in <code>my-clay-hub</code> calls it every 15 min with Monitoring's service-agent authentication; an alert policy emails when it fails for 6 hours. Its declared invoker is exactly the Monitoring service agent (address read from the Console in V-0, never assembled by hand); <code>maxInstances: 1</code>, <code>concurrency: 10</code>.</td><td>J12: absence alerts can't span 8 days. Monitoring drives the check, so it doesn't depend on Cloud Scheduler: it catches the scheduler never running, the export function broken, the bucket grants lost, and the watcher itself broken. Alternative considered: a second scheduled "watcher" function plus an absence alert on its log line, every 6 h — more moving parts, and it shares Scheduler with the thing it watches.</td></tr>
-<tr><td>V10</td><td><strong>Bucket location: <code>US</code> (multi-region).</strong> Name tried in order: <code>my-clay-hub-vault-exports</code>, <code>my-clay-hub-vault-exports-&lt;4 random chars&gt;</code> (the parent's <code>&lt;PROJECT_ID&gt;-…</code> candidate is the same name here, so it collapses into the first). Recorded before any grant or code uses it. Standard class, uniform access, public access prevention on.</td><td>"Near" nam5 (J9), and it survives a <code>us-central1</code> outage that could also hit the database. The staff vault bucket is <code>us-central1</code>; this one doesn't need to match. Christie may prefer <code>us-central1</code> for symmetry; either fits Google's wording. The first export proves it.</td></tr>
-<tr><td>V11</td><td><strong>Retention:</strong> lifecycle delete at age 56 days (about 8 weekly copies); soft delete on, at the default 7 days; no versioning.</td><td>Parent D-4. Exports are never overwritten (new prefix each time), so versioning adds nothing.</td></tr>
-<tr><td>V12</td><td><strong>No retention lock</strong> on this bucket, for now.</td><td>The export agent needs <code>objects.delete</code> (J8/J13), and a lock is irreversible. Containment comes from the separate bucket, narrow grants and soft delete. Revisit after a few months of clean exports.</td></tr>
-<tr><td>V13</td><td><strong>Failure alert:</strong> a log-based alert policy in <code>my-clay-hub</code> on <code>ERROR</code>-or-worse entries from the <code>vaultexport</code> Cloud Run service, emailing the notification channel. One email per incident, auto-close after 7 days.</td><td>Parent D-4 ("fails loudly"). No secrets are needed (Resend would need one, which the guard refuses).</td></tr>
-<tr><td>V14</td><td><strong>Restore runbook</strong> <code>docs/my-clay-hub/DATA-RESTORE.md</code>: choosing an export (the newest with <code>.overall_export_metadata</code>), the temporary read grant an import needs (<code>storage.buckets.get</code> + <code>storage.objects.get</code> for the agent, removed afterwards), and that an import <strong>overwrites matching documents but deletes nothing</strong> — into a non-empty database it is a merge, not a rollback. Rehearsed into a scratch database in <code>tinker-hq-vault</code> only if Christie wants (O3).</td><td>Parent D-4.</td></tr>
+  Admin clients are built with explicit project and database names (no project discovery). <code>actAs</code> comes from Christie's Owner role (M7). Any widening needs the exact denied permission from a real error and Christie's approval.</td><td>Parent D-4. The two <code>tinker-hq-vault</code> grants can't be read by <code>--attest</code> (it reads only <code>my-clay-hub</code>'s IAM); V-1/V-4 screenshots plus V-4/V-5 behaviour are their record.</td></tr>
+<tr><td>V5</td><td><strong>Schedule:</strong> <code>every sunday 09:00</code>, <code>timeZone: "UTC"</code> (02:00/03:00 Denver; UTC has no DST gap).</td><td>Parent D-4.</td></tr>
+<tr><td>V6</td><td><strong><code>vaultExport</code> limits:</strong> <code>retryCount: 3</code>, <code>maxRetrySeconds: 0</code>, <code>minBackoffSeconds: 600</code>, <code>maxBackoffSeconds: 3600</code>, <code>maxDoublings: 2</code> → retries about 10, 20 and 40 min after a failure, then stop (J11; observed in V-4). <code>timeoutSeconds: 1800</code>, <code>maxInstances: 1</code>, <code>concurrency: 1</code>, <code>cpu: 1</code>, <code>memory: 512MiB</code>, <code>ingressSettings: ALLOW_ALL</code> (as the canary; Scheduler calls the public URL with a token).</td><td>A failed Sunday run gets three tries in the next hour and a quarter. 512 MiB is cheap headroom for the gRPC admin client.</td></tr>
+<tr><td>V7</td><td><strong>Each scheduled run exports once; retries resume; a rare duplicate is a second complete copy, never a mixed folder</strong> (O5). The run key is the <strong>UTC date of <code>event.scheduleTime</code></strong> (<code>D</code>, e.g. <code>2026-10-04</code>); Scheduler's retries carry the same scheduled time (verify in V-4). Each run:
+  <ol>
+  <li><strong>Done already?</strong> List <code>weekly/D-</code> in the vault bucket (paged; a hard cap, and hitting it throws). A folder is complete when it holds <code>&lt;folder&gt;.overall_export_metadata</code>. Any complete folder → log "already done" and succeed.</li>
+  <li><strong>Running already?</strong> List this database's operations (<code>listOperationsAsync</code> on <code>projects/my-clay-hub/databases/(default)</code>, paged, filtered client-side to exports whose prefix starts <code>gs://&lt;bucket&gt;/weekly/D-</code>; a cap, and hitting it throws — never "none"). One not done → wait on it. One done <code>SUCCESSFUL</code> but no complete folder → throw (inconsistent: needs a person).</li>
+  <li>Otherwise <strong>start</strong> an export to a fresh prefix <code>weekly/D-&lt;6 random chars&gt;</code> with V8's <code>snapshotTime</code>, and wait on it.</li>
+  </ol>
+  Waiting polls every 15 s with a <strong>budget of 1,500 s from the start of the run</strong>; on expiry it throws ("still running; the retry resumes"), so the error path and alert always run before Cloud Run's 1,800 s kill. Success needs: <code>done</code>, no <code>error</code>, state <code>SUCCESSFUL</code>, the expected prefix, and the complete folder visible in the bucket. Anything else throws.<br>
+  <strong>Duplicates:</strong> two runs racing within seconds, or a lost reply that Google hasn't listed by the next retry, can each start an export. Each goes to its own prefix, so the result is two complete copies. At most one export per invocation, and at most 4 invocations per scheduled run. A Force run on another day gets its own key (an honest extra copy).<br>
+  <strong>State</strong> is the bucket (durable for 56 days) plus the operation list (used only for "still running", which is well inside its few-day retention). No Firestore collection, so <code>vault-export@</code> never gets data access.</td><td>Both round-1 reviews: the operation list alone can't be the record, and <code>maxInstances</code> isn't a lock. Christie chose (Oct 1) to allow a rare second copy rather than build a lock.</td></tr>
+<tr><td>V8</td><td><strong>Point-in-time:</strong> <code>snapshotTime</code> = the start of the current minute minus one minute.</td><td>A consistent copy across collections; inside the retention window with or without PITR (J10). Dropped if the first real export rejects it (logged).</td></tr>
+<tr><td>V9</td><td><strong>The 8-day alert: an uptime check on a small private HTTP function</strong>, <code>vault/vaultFresh</code>. It lists <code>weekly/</code> (paged, capped), takes complete folders only (V7 step 1), and reads the newest metadata object's <code>timeCreated</code>. 200 when that's at most <strong>7 days 18 hours</strong> old; 503 when older or none; 500 on any error. The body holds only the folder name, the age and which case it was (stale / none / error), the triage for an alert. <code>withReached</code>. Options: <code>invoker: [Monitoring service agent]</code> (address read in V-0, never assembled), <code>serviceAccount: vault-watch@</code>, <code>ingressSettings: ALLOW_ALL</code> (checkers come from public IPs), <code>maxInstances: 1</code>, <code>concurrency: 10</code>, <code>timeoutSeconds: 30</code>, <code>cpu: 1</code>, <code>memory: 256MiB</code>.<br>
+  The uptime check: HTTPS, URL = exactly the live <code>uri</code> the guard reads back (the token's audience), service-agent authentication, period 15 min, check timeout 30 s (cold starts), 3 US regions. Alert policy: failing for 6 hours → email. So the email arrives at about 8 days.</td><td>J12. Monitoring drives the check, so it doesn't share Cloud Scheduler with the thing it watches: it catches the scheduler never running, the export broken, grants lost, folders deleted, and the watcher itself broken. Christie chose it (O4) and the 7 d 18 h threshold (Oct 1).</td></tr>
+<tr><td>V10</td><td><strong>Bucket: location <code>US</code></strong> (J9). Name: <code>my-clay-hub-vault-exports</code>, else <code>my-clay-hub-vault-exports-&lt;4 random chars&gt;</code> (the parent's <code>&lt;PROJECT_ID&gt;-…</code> candidate is the same name here). Recorded before anything uses it. Standard class, uniform access, public access prevention on.</td><td>"Same location" as nam5, and it survives a <code>us-central1</code> outage. O2.</td></tr>
+<tr><td>V11</td><td><strong>Retention:</strong> lifecycle delete at age 56 days (about 8 weekly copies); soft delete on at 7 days; no versioning.</td><td>Parent D-4. Prefixes are never reused, so versioning adds nothing.</td></tr>
+<tr><td>V12</td><td><strong>No retention lock</strong>, for now. Residual: the Firestore agent (via <code>objects.delete</code>) could delete exports in this one bucket; soft delete recovers them <strong>for 7 days only</strong> — a deletion unnoticed for a week is permanent. The freshness alert notices a deleted newest copy within hours.</td><td>The export needs <code>objects.delete</code>; a lock is irreversible. Revisit after a few months of clean exports.</td></tr>
+<tr><td>V13</td><td><strong>Failure alert:</strong> a log-based alert policy in <code>my-clay-hub</code> with filter <code>resource.type="cloud_run_revision" AND resource.labels.service_name="vaultexport" AND severity&gt;=ERROR</code> (including request logs, so a 500 or a killed request also counts), emailing Christie. One email per incident; auto-close after 7 days.</td><td>Parent D-4. No secrets (the guard refuses them).</td></tr>
+<tr><td>V14</td><td><strong>Restore runbook</strong> <code>docs/my-clay-hub/DATA-RESTORE.md</code>: choose the newest <strong>complete</strong> folder (its metadata file present and named after it — lifecycle deletes folders gradually, so a folder can be half there); the temporary read grant (<code>storage.buckets.get</code> + <code>storage.objects.get</code>) for the <em>importing</em> database's Firestore service agent, removed afterwards; an import <strong>overwrites matching documents and deletes nothing</strong>, so into a non-empty database it is a merge, not a rollback. The rehearsal happens in Phase E (O3).</td><td>Parent D-4.</td></tr>
 </table>
 
-<h2 id="open">Open questions for Christie — answered Oct 1 ("go with your recommendations")</h2>
+<h2 id="open">Christie's decisions (Oct 1)</h2>
 <table>
-<tr><th>#</th><th>Question</th><th>Recommendation (= Christie's answer, Oct 1)</th></tr>
-<tr><td>O1</td><td>Who gets the two alert emails?</td><td>Christie only, for now (Anika gets the staff-backup alerts; add her here when My Clay Hub has real data, if wanted).</td></tr>
-<tr><td>O2</td><td>Bucket location <code>US</code> (V10) or <code>us-central1</code>?</td><td><code>US</code>.</td></tr>
-<tr><td>O3</td><td>Rehearse a restore now (into a scratch database in <code>tinker-hq-vault</code>, deleted after), or after Phase E has real data?</td><td>After Phase E: restoring an empty export proves little. V-6 writes the runbook now; Phase E's checklist gets the rehearsal.</td></tr>
-<tr><td>O4</td><td>The freshness check (V9) is the one new thing beyond the outline. OK to add it, or prefer the simpler "watcher function every 6 h"?</td><td>The uptime check.</td></tr>
+<tr><th>#</th><th>Question</th><th>Decision</th></tr>
+<tr><td>O1</td><td>Who gets the alert emails?</td><td>Christie only, for now.</td></tr>
+<tr><td>O2</td><td>Bucket location?</td><td><code>US</code>.</td></tr>
+<tr><td>O3</td><td>Rehearse a restore now or after Phase E?</td><td>After Phase E (real data); added to Phase E's checklist in V-6.</td></tr>
+<tr><td>O4</td><td>The freshness check (V9)?</td><td>The uptime check; threshold 7 days 18 hours so the email lands at about 8 days.</td></tr>
+<tr><td>O5</td><td>Strict lock or allow a rare second copy?</td><td><strong>Allow a rare second copy</strong> (V7): each run writes to its own folder, so the worst case is two complete copies, never a mixed one. Changes the outline's "retries never make a second export" to "a retry never starts a second export when the first is visible".</td></tr>
+<tr><td>O6</td><td>Scheduled functions can't set <code>x-tinker-reached</code> (the SDK writes the response).</td><td><strong>A narrow exception</strong>, for scheduled functions only, recorded in <code>CLAUDE.md</code> and DECISIONS (V-2). The guard still requires Google to refuse an unauthenticated request to them.</td></tr>
 </table>
 
 <h2>Phases</h2>
@@ -125,208 +131,218 @@
 
 <!-- V-0 -->
 <div class="phase" id="v0">
-<h3>V-0 — Christie: identities and roles in <code>my-clay-hub</code> (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-0 — Christie: identities and readings in <code>my-clay-hub</code> (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li>IAM → "View by roles", Google-provided grants shown: screenshot (the <strong>before</strong> picture; it must match D2-5's).</li>
-  <li>IAM → Roles → create custom role <code>vaultExporter</code> ("Vault exporter") with exactly <code>datastore.databases.export</code>, <code>datastore.operations.get</code>, <code>datastore.operations.list</code>. Screenshot its permission list.</li>
-  <li>Service accounts → create <code>vault-export</code> and <code>vault-watch</code> (no roles in the create wizard, no keys). Grant <code>vaultExporter</code> to <code>vault-export@</code> at project level. Nothing to <code>vault-watch@</code> here.</li>
-  <li>Firestore → Import/Export: read the service agent's address shown there (J8). If none is shown yet, record that; V-1 grants to the address exactly as Google shows it.</li>
-  <li>APIs: Cloud Scheduler API enabled? Cloud Monitoring API enabled? Record both (they may be enabled already; the Scheduler service agent exists since D-1). Enable either only if absent.</li>
-  <li>Monitoring: the uptime check's service agent address (V9) is shown when an uptime check with "Service agent authentication" is being created — read it, cancel the wizard, record it.</li>
-  <li>Monitoring → Alerting → Notification channels: an email channel for O1's addresses. Send a test notification; Christie confirms it arrived.</li>
-  <li>IAM "View by roles" again: <strong>after</strong> screenshot. The only differences: the custom role on <code>vault-export@</code>.</li>
+  <li>IAM → "View by roles", Google-provided grants shown: screenshot (the <strong>before</strong>; it should match D2-5's).</li>
+  <li>Firestore → Disaster recovery: PITR on? Record it and the earliest version time (the safety checklist relies on it).</li>
+  <li>APIs: Cloud Scheduler and Cloud Monitoring enabled? Record; enable either only if absent.</li>
+  <li>IAM → Roles → create <code>vaultExporter</code> (exactly the three V4 permissions). Screenshot.</li>
+  <li>Service accounts → create <code>vault-export</code> and <code>vault-watch</code> (no roles in the wizard, no keys). Grant <code>vaultExporter</code> to <code>vault-export@</code>.</li>
+  <li>Firestore → Import/Export: the service agent's address if shown, recorded verbatim (or "not shown yet").</li>
+  <li>Monitoring → Uptime checks → Create: choose "Service agent authentication"; read the Monitoring service agent's address shown; cancel. Record it verbatim. (This may provision the agent; that's expected and it must exist before V-4.)</li>
+  <li>Monitoring → Alerting → Notification channels: an email channel for Christie; send a test; Christie confirms it arrived.</li>
+  <li>IAM "View by roles" again: <strong>after</strong>. Expected differences: <code>vaultExporter</code> on <code>vault-export@</code>; and, if step 3 or 7 caused them, Google service-agent grants such as <code>roles/cloudscheduler.serviceAgent</code> or <code>roles/monitoring.notificationServiceAgent</code> on their own <code>service-760301318440@gcp-sa-…</code> agents. The Editor holder list is read specifically: still exactly the Google APIs Service Agent (#60). Anything else stops V-0.</li>
 </ol>
-<p><strong>Acceptance:</strong> the two accounts exist with exactly the roles above; the two agent addresses are recorded verbatim; the email channel's test arrived; before/after differ only as planned.</p>
+<p><strong>Acceptance:</strong> both accounts exist with exactly the planned roles; PITR state, both agent addresses and the API states are recorded; the channel's test email arrived; the after-reading differs only by the expected items. Claude lists any new agent grants in the Decisions log for V-3's <code>iam-expectations.json</code>.</p>
 <div class="bdd">Given the IAM page matches D2-5's reading
-When Christie creates the role, the two accounts and the grant
-Then the after-reading differs only by vaultExporter on vault-export@
+When Christie creates the role, the accounts and the grant, and opens the uptime wizard
+Then the after-reading differs only by vaultExporter on vault-export@ and named Google service-agent grants
 
 Given the Firestore Import/Export page shows no service agent yet
 When V-0 records that
-Then V-1 waits for the first export attempt to create it, and grants to exactly the address Google shows then (no hand-assembled address)
+Then nothing waits on it: V-4's bootstrap grants the agent after Google creates it
 
-Given the after-reading shows any other difference (e.g. an Editor grant appeared)
+Given the Editor holders now include anything besides the Google APIs Service Agent
 When Claude compares
-Then V-0 stops; the difference is explained and undone before V-1</div>
+Then V-0 stops; the grant is explained and removed (Christie) before V-1</div>
 </div>
 
 <!-- V-1 -->
 <div class="phase" id="v1">
 <h3>V-1 — Christie: the vault bucket in <code>tinker-hq-vault</code> (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li><strong>Before:</strong> <code>tinker-hq-vault-backups</code> → Configuration (location, lifecycle rules, soft delete, versioning, retention) and Permissions (full principal list): screenshots. <code>tinker-hq-vault</code> IAM "View by roles": screenshot.</li>
-  <li>Create bucket: the first free name from V10, location per O2, Standard, uniform access, public access prevention on, soft delete 7 days, no versioning, no retention policy. Record the name.</li>
-  <li>Lifecycle: one rule, Delete, age 56 days. Check no second, day-less rule was added (the Step 1 lesson).</li>
-  <li>IAM → Roles (in <code>tinker-hq-vault</code>): create <code>firestoreExportWriter</code> (the four J8 permissions) and <code>vaultLister</code> (<code>storage.objects.list</code>). Screenshot both.</li>
-  <li>The new bucket → Permissions → grant <code>firestoreExportWriter</code> to the Firestore agent address from V-0, and <code>vaultLister</code> to <code>vault-watch@my-clay-hub.iam.gserviceaccount.com</code>. If the org's domain-restricted sharing refuses the cross-project principals, stop and record the exact message.</li>
-  <li><strong>After:</strong> the same screenshots as step 1, plus the new bucket's Configuration and Permissions.</li>
+  <li><strong>Before:</strong> <code>tinker-hq-vault-backups</code> → Configuration (location, lifecycle, soft delete, versioning, retention) and Permissions (full list); <code>tinker-hq-vault</code> IAM "View by roles". Screenshots.</li>
+  <li>Create the bucket per V10/V11: first free name, <code>US</code>, Standard, uniform access, public access prevention on, soft delete 7 days, no versioning, no retention policy. Record the name.</li>
+  <li>Lifecycle: one rule, Delete, age 56 days; check no second, day-less rule appeared (the Step 1 lesson).</li>
+  <li>IAM → Roles (in <code>tinker-hq-vault</code>): create <code>firestoreExportWriter</code> (four J8 permissions) and <code>vaultLister</code> (<code>storage.objects.list</code>). Screenshot both.</li>
+  <li>The new bucket → Permissions → grant <code>vaultLister</code> to <code>vault-export@my-clay-hub.iam.gserviceaccount.com</code> and <code>vault-watch@my-clay-hub.iam.gserviceaccount.com</code>. <strong>No grant to the Firestore agent yet</strong> (V-4's bootstrap; it doubles as the failure test). If domain-restricted sharing refuses a cross-project principal, stop and record the message.</li>
+  <li><strong>After:</strong> the step-1 screenshots again, plus the new bucket's Configuration and Permissions.</li>
 </ol>
-<p><strong>Acceptance:</strong> the staff backup bucket's lifecycle, soft delete, versioning, retention and permissions are <strong>identical</strong> before and after; the new bucket has exactly the planned settings and exactly two non-inherited grants; the bucket name is written into this plan's Decisions log.</p>
+<p><strong>Acceptance:</strong> the staff bucket's settings and permissions and <code>tinker-hq-vault</code>'s project IAM are <strong>identical</strong> before and after (no project-level grant was made by mistake); the new bucket has exactly the planned settings and exactly two non-inherited grants; its name is in the Decisions log.</p>
 <div class="bdd">Given my-clay-hub-vault-exports is taken
 When Christie tries to create it
-Then she uses my-clay-hub-vault-exports-&lt;4 chars&gt;, and that name is recorded before anything uses it
+Then she uses my-clay-hub-vault-exports-&lt;4 chars&gt;, recorded before anything uses it
 
-Given the before and after readings of tinker-hq-vault-backups
+Given the before and after readings of tinker-hq-vault-backups and the project IAM
 When Claude compares them field by field
 Then they are identical, or V-1 stops and the change is undone
 
 Given the organization blocks the cross-project grant
 When Christie saves it
-Then nothing else proceeds; the error is recorded and the plan is revised (Christie decides)</div>
+Then nothing else proceeds; the error is recorded and Christie decides the revision</div>
 </div>
 
 <!-- V-2 -->
 <div class="phase" id="v2">
 <h3>V-2 — Claude: scheduled functions in the guard (branch <code>d4-guard-schedules</code>, PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li><strong>Prove the shapes first</strong> (offline): a fixture codebase under <code>tests/functions/fixtures/</code> with one <code>onSchedule</code> using V5/V6 values; run the guard's discovery helper on it; commit the discovered manifest as the expected fixture. Confirms J6's keys and <code>requiredAPIs</code> entry.</li>
-  <li>V3 in <code>scripts/deploy-functions.sh</code> (JQ_MANIFEST, JQ_DRIFT, JQ_F8) and <code>scripts/predeploy-check.sh</code>. <code>declarations.json</code> gains <code>"trigger"</code> for the canary (a control-file change; the canary's next deploy needs an IAM reading per #61).</li>
-  <li>V2 in <code>--attest</code>: the new evidence block, its shape check (<code>JQ_ATTEST_SHAPE</code>) and match (<code>JQ_ATTEST</code>); <code>scheduler_attested</code> written and read fail-closed in <code>scripts/lib/receipts.sh</code>; <code>--status</code> line; <code>attest_need</code> says "needed: scheduled function created or changed".</li>
-  <li>The guard's fake CLI synthesizes live scheduled entries (<code>scheduleTrigger: {}</code> + label). Tests, each with a refusal and no deploy/tag: missing retry field; a retry value differing from the declaration; <code>timeZone</code> not UTC; timeout &gt; 1800; extra <code>requiredAPIs</code>; schedule declared but HTTP in code (and the reverse); invoker written on a scheduled declaration; live <code>scheduleTrigger</code> without the label; the probe answering a scheduled function. Attestation tests: wrong job name, state PAUSED, wrong OIDC account, deadline ≠ 1800 s, any retry field off, target URL ≠ live <code>uri</code>, an extra scheduled job. Every existing test still passes unchanged (HTTP behaviour untouched).</li>
-  <li><code>FUNCTIONS-ROLLBACK.md</code>: scope now "HTTP and scheduled"; new §: <em>stopping a scheduled function</em> — Cloud Scheduler → Pause is the immediate, reversible stop (never delete the job; the guard never deletes); and the J5 note. DECISIONS #62 (F13 amended for schedules, V2/V3).</li>
-  <li>Mutation checks: remove each new refusal in turn → its test goes red; restore.</li>
-  <li><code>npm test</code> (with <code>TINKER_FUNCTIONS_TESTS=required</code>) green; record counts. Implementation review: Codex + Claude (<code>/second-model-review</code>), fixes applied, then Christie's "okay to merge".</li>
+  <li><strong>Prove the shapes first</strong>, offline: a Node 22 unit test that requires the installed firebase-functions 7.4.0, calls <code>onSchedule({…V5/V6…}, …)</code>, and asserts <code>__endpoint.scheduleTrigger</code> and <code>__requiredAPIs</code> whole; and the same with one retry field omitted (→ <code>null</code>). No CLI, no <code>firebase.json</code>. Also prove the Functions emulator (<code>emulators:exec --only functions</code>) loads a codebase containing an <code>onSchedule</code> (a scratch fixture with its own <code>firebase.json</code>, as <code>env-probe</code> does).</li>
+  <li>V3 in <code>scripts/deploy-functions.sh</code>: JQ_MANIFEST (the declaration-shape check at <code>:161-164</code> branched on <code>trigger</code>, exact key sets), JQ_DRIFT, JQ_F8; and in <code>scripts/predeploy-check.sh:221-234</code>, the same branch (a unit test asserts guard and backstop agree on every fixture). <code>declarations.json</code>: the canary gains <code>"trigger": "https"</code> (its next deploy then needs an IAM reading, #61).</li>
+  <li>V2 in <code>--attest</code>: <code>JQ_ATTEST_SHAPE</code>'s required key set gains <code>schedulerJobList</code> and <code>schedulerJobs</code> (always present); <code>JQ_ATTEST</code> derives a schedule's expected invoker from its runtime account (<code>:291-293</code>) and checks the Scheduler block; <code>scheduler_attested</code> (yes/no/n/a) written, and read fail-closed in <code>scripts/lib/receipts.sh</code>; <code>--status</code> line; <code>attest_need</code>: "needed: the codebase has a schedule". <code>FUNCTIONS-ROLLBACK.md</code> §7's reading template gains the two keys, with a <code>core</code> example (both empty).</li>
+  <li><code>scripts/functions-emulator.mjs</code> (a control file) runs every codebase in <code>firebase.json</code>, not just <code>core</code>, with a loud SKIPPED line naming each codebase whose <code>node_modules</code> is missing.</li>
+  <li>The fake CLI synthesizes live scheduled entries (<code>scheduleTrigger: {}</code> + the label, camelCase job id). Refusal tests (each: refused by name, no deploy, no tag): a retry value <code>null</code>; a retry value ≠ declaration; <code>schedule</code> ≠ declaration; <code>timeZone</code> <code>null</code> or not <code>"UTC"</code>; timeout &gt; 1800; <code>requiredAPIs</code> extra entry, wrong shape, or present on an HTTP-only codebase; declared schedule but HTTP in code, and the reverse; an unknown declaration key (<code>"triger"</code>); invoker on a schedule declaration; a live scheduled function without the label, or an HTTP one with it; the probe answering a scheduled function. Attestation tests: wrong job name or case; state PAUSED; wrong OIDC account; an audience ≠ <code>uri</code>; a body or header; deadline ≠ 1800 s; each retry field off; target ≠ live <code>uri</code>; an extra job in <code>schedulerJobList</code>; a missing key; and <code>core</code> with empty blocks → <code>scheduler_attested=n/a</code>, <code>iam_attested</code> unaffected. Every existing test passes unchanged.</li>
+  <li><code>FUNCTIONS-ROLLBACK.md</code>: scope "HTTP and scheduled"; a new § <em>scheduled functions</em>: Pause is the immediate, reversible stop (never delete); the partial states (function live with no job; job left on the old schedule; a schedule removed from code leaves an orphaned job — pause it, with Christie's OK); what to do if the Scheduler reading fails (pause first, then diagnose). <code>CLAUDE.md</code>: O6's exception. DECISIONS #62 (F13 amended for schedules; V2/V3; O6).</li>
+  <li>Mutation checks: remove each new refusal in turn → its test goes red; restore. <code>npm test</code> with <code>TINKER_FUNCTIONS_TESTS=required</code> green; counts recorded. Implementation review (Codex + Claude), fixes applied, Christie's "okay to merge".</li>
 </ol>
-<p><strong>Acceptance:</strong> the guard deploys and verifies a correct scheduled function in its fake-CLI tests, refuses each wrong one by name, and won't call a scheduled deploy fully checked until a matching Scheduler reading is attested. Everything the canary relied on behaves exactly as before.</p>
-<div class="bdd">Given a codebase whose onSchedule omits maxDoublings
+<p><strong>Acceptance:</strong> the guard deploys and verifies a correct scheduled function in its fake-CLI tests, refuses each wrong one by name, and records <code>scheduler_attested</code> only from a matching, complete Scheduler reading. Everything the canary relied on behaves as before (apart from the two always-present empty keys in its reading).</p>
+<div class="bdd">Given an onSchedule that omits maxDoublings (so the manifest carries maxDoublings: null)
 When the guard checks the manifest
-Then it refuses ("retryConfig.maxDoublings missing (V3)") before any upload, and writes no tag
+Then it refuses ("vault/vaultExport: retry maxDoublings is not a number (V3)") before any upload, and writes no tag
 
-Given a scheduled deploy that the CLI reports as successful
-When Christie's Scheduler reading shows state PAUSED
+Given index.js changes the schedule but declarations.json doesn't
+When the guard checks the manifest
+Then it refuses: schedule differs from the declaration
+
+Given a scheduled deploy the CLI reports as successful
+When Christie's reading shows the job PAUSED, or a second job in the list
 Then --attest refuses, scheduler_attested stays no, and --status says so
 
-Given the canary codebase with no scheduled function
-When the full guard suite runs
-Then every pre-existing test passes unchanged</div>
+Given the canary codebase
+When its next reading has empty schedulerJobList and schedulerJobs
+Then scheduler_attested=n/a and every pre-existing check behaves as before</div>
 </div>
 
 <!-- V-3 -->
 <div class="phase" id="v3">
 <h3>V-3 — Claude: the <code>vault</code> codebase and the restore runbook (branch <code>d4-vault-codebase</code>, PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li><code>functions/vault/</code>: <code>package.json</code> (exact pins matching <code>core</code>: firebase-functions 7.4.0, firebase-admin 14.5.0; engines 22; lockfile), <code>reached.js</code> (same helper), <code>index.js</code> with:
+  <li><code>functions/vault/</code> per V1: <code>package.json</code> + lockfile, <code>reached.js</code>, <code>index.js</code> with <code>vaultExport</code> (<code>onSchedule</code>, every V5/V6 option written out) and <code>vaultFresh</code> (<code>onRequest</code>, every V9 option written out, <code>withReached</code>). The logic lives in two pure modules with injected clients: <code>export-run.js</code> (V7/V8) and <code>freshness.js</code> (V9). The bucket name and project are constants in one file (no params; F13).</li>
+  <li><code>firebase.json</code>: the <code>vault</code> entry (same pinned shape as <code>core</code>). <code>declarations.json</code>: both functions. <code>iam-expectations.json</code>: <code>vault-export@</code> → <code>["projects/my-clay-hub/roles/vaultExporter"]</code>, <code>vault-watch@</code> → <code>[]</code>, plus any Google agent grants V-0 recorded.</li>
+  <li>Unit tests (<code>tests/functions/vault/</code>), fake clients:
     <ul>
-    <li><code>vaultExport</code> — <code>onSchedule</code> with every V5/V6 option written out and <code>serviceAccount: 'vault-export@my-clay-hub.iam.gserviceaccount.com'</code>; the V7/V8 logic in a pure module (<code>export-week.js</code>) that takes an injected Firestore Admin client, so it can be tested without Google.</li>
-    <li><code>vaultFresh</code> — <code>onRequest</code>, invoker = the Monitoring agent from V-0, <code>serviceAccount: 'vault-watch@…'</code>, V9 limits, <code>withReached</code>; the age logic in a pure module (<code>freshness.js</code>) with an injected lister.</li>
-    </ul>
-    The bucket name and project come from constants in one file (no params; F13).</li>
-  <li><code>firebase.json</code>: the <code>vault</code> entry (same pinned shape as <code>core</code>). <code>declarations.json</code>: both functions. <code>iam-expectations.json</code>: <code>vault-export@</code> → <code>[projects/my-clay-hub/roles/vaultExporter]</code>, <code>vault-watch@</code> → <code>[]</code> (its only grant is in <code>tinker-hq-vault</code>, read in V-1).</li>
-  <li>Unit tests (<code>tests/functions/vault/</code>), with a fake admin client: the four V7 branches; "succeeded but died before returning" → no second export; a failed attempt → <code>-a2</code>; an operation for another week ignored; an operation still running at the time limit → throws, and the next run resumes it; <code>error</code> set → throws; a <code>SUCCESSFUL</code> state with the wrong prefix → throws; the week key across a year boundary and with the header missing (uses <code>shared/denver-time.js</code>'s ISO week helper only if it's UTC-correct for this purpose, otherwise a UTC one with its own tests); freshness at 7 d 23 h (200), 8 d 1 h (503), no exports (503), a listing error (500); no member data in any response or log line.</li>
-  <li>Emulator tests (Functions emulator, as <code>core</code>'s): the manifest matches the expected fixture exactly; <code>vaultFresh</code> sets <code>x-tinker-reached</code>; nothing but HTTP and the one schedule.</li>
-  <li><code>docs/my-clay-hub/DATA-RESTORE.md</code> (V14). <code>SPEC.md</code>/<code>DATA-MODEL.md</code> if they describe backups. DECISIONS #63 (V1, V4–V12).</li>
-  <li><code>npm test</code> green with <code>TINKER_FUNCTIONS_TESTS=required</code>; implementation review (Codex + Claude); fixes; Christie's "okay to merge".</li>
+    <li>V7: a complete folder → "already done", no export; a folder without its metadata file, or with a metadata name ≠ folder name, is not complete; a running operation → resumed, none started; "the export succeeded but the run died before returning" → no second export; a failed attempt → a new prefix; an operation for another date ignored; an operation not visible on the first retry but visible on the next; operation-list pagination, and the cap → throws (never "none"); a <code>SUCCESSFUL</code> operation with no complete folder → throws; <code>done</code> with a missing or unknown state → throws; <code>error</code> set → throws; a wrong prefix → throws; transient list/get errors → throw (retry), never "start"; the wait budget → throws at 1,500 s; two concurrent runs → two distinct prefixes, never one shared; the key with the header missing and across a year end.</li>
+    <li>V9: 7 d 17 h → 200; 7 d 19 h → 503; none → 503; a listing error → 500; a metadata-looking object in the wrong folder ignored; pagination; the cap → 500. No member data in any response or log line.</li>
+    <li>The real clients' surface, offline: <code>FirestoreAdminClient</code> has <code>exportDocuments</code>, <code>listOperationsAsync</code>, <code>checkExportDocumentsProgress</code>, <code>databasePath</code>; the Storage <code>Bucket</code> has <code>getFiles</code>. Constructed with explicit project/database.</li>
+    </ul></li>
+  <li>Emulator tests: the <code>vault</code> manifest equals the expected fixture exactly (via <code>functions-discover.mjs</code>, which works for a real <code>firebase.json</code> codebase); <code>vaultFresh</code> sets <code>x-tinker-reached</code>.</li>
+  <li><code>docs/my-clay-hub/DATA-RESTORE.md</code> (V14); <code>SPEC.md</code>/<code>DATA-MODEL.md</code> where they describe backups; DECISIONS #63 (V1, V4–V12, O5).</li>
+  <li><code>npm test</code> green with <code>TINKER_FUNCTIONS_TESTS=required</code> (both codebases installed); implementation review (Codex + Claude); fixes; Christie's "okay to merge".</li>
 </ol>
-<p><strong>Acceptance:</strong> the code exports at most once per week no matter how often it's retried, only reports success when Google says the export finished cleanly, and the freshness endpoint answers "stale" after 8 days. All of it is proven without touching Google.</p>
-<div class="bdd">Given this week's export already SUCCEEDED (the earlier run died before returning)
+<p><strong>Acceptance:</strong> the code only reports success when Google says the export finished cleanly and the complete folder is in the bucket; a retry never starts a second export when the first is visible; a duplicate can only ever be a separate complete copy; the freshness endpoint answers "stale" after 7 days 18 hours. All proven without touching Google.</p>
+<div class="bdd">Given today's export already completed (the earlier run died before returning)
 When Scheduler retries
-Then the function finds that operation, starts nothing, and returns success
+Then the run finds the complete folder, starts nothing, and succeeds
 
-Given this week's attempt a1 FAILED
-When the next retry runs
-Then it starts weekly/&lt;week&gt;-a2 and waits for it
+Given the export is still running when the run reaches 1,500 s
+When the budget expires
+Then the run throws (logged as an error), and the next retry resumes waiting on the same operation
 
-Given the newest .overall_export_metadata is 8 days 1 hour old
-When the uptime check calls vaultFresh
-Then it answers 503 with only the folder name and age</div>
+Given two runs start in the same second
+When both find nothing
+Then each exports to its own prefix; both folders are complete copies</div>
 </div>
 
 <!-- V-4 -->
 <div class="phase" id="v4">
-<h3>V-4 — Deploy, read back, first export (the Phase E gate) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-4 — Deploy, read back, failure-first bootstrap, first export (the Phase E gate) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p>Not run on a Sunday (UTC), so the first scheduled run is days away while the readings are done.</p>
 <ol>
-  <li>V-0, V-1, V-2, V-3 done and merged. <code>git fetch</code>; <code>deploy-functions.sh --status --codebase vault</code>; <code>--diff --codebase vault</code> pasted verbatim (stop if it holds hunks Claude didn't write). Christie's IAM reading per #61 if <code>--status</code> says it's needed.</li>
+  <li>V-0 … V-3 done and merged. <code>git fetch</code>; <code>deploy-functions.sh --status --codebase vault</code>; <code>--diff --codebase vault</code> pasted verbatim (stop if it holds hunks Claude didn't write).</li>
   <li>Christie: "approved to change firebase &lt;full sha&gt;". <code>--approved &lt;sha&gt; --codebase vault</code>. Expect <code>deploy_match=yes</code> and both functions refused unauthenticated.</li>
-  <li>Christie's readings for <code>--attest</code>: each function's Security/Permissions (V3: <code>vaultExport</code>'s invoker exactly <code>vault-export@</code>; <code>vaultFresh</code>'s exactly the Monitoring agent), project IAM, and the Scheduler job (V2). <code>iam_attested=yes</code>, <code>scheduler_attested=yes</code>.</li>
-  <li>The canary is untouched: <code>--status --codebase core</code> unchanged.</li>
-  <li>Cloud Scheduler → the job → <strong>Force run</strong>. Logs: one operation started at <code>weekly/&lt;week&gt;-a1</code>, then "export complete". Bucket: the folder and its <code>.overall_export_metadata</code> exist. If the agent created on demand now has an address that differs from V-0's, stop (V-1's grant would be on the wrong principal).</li>
-  <li><strong>Force run again</strong>: the log says "already done"; no new folder, no new operation.</li>
-  <li>Christie: Monitoring → the uptime check (V9) and the two alert policies (V13, V9) created on the email channel. The uptime check passes.</li>
-  <li>Record in the Decisions log: receipt tags, the folder name, operation name, durations. Update OPEN-ITEMS.md and the foundation plan's Phase E gate: <strong>the first export completed</strong>.</li>
+  <li>Christie's readings for <code>--attest</code>: each function's Security/Permissions (<code>vaultExport</code>: exactly <code>vault-export@</code>; <code>vaultFresh</code>: exactly the Monitoring agent), project IAM, and Cloud Scheduler (the complete job list and the job's fields, V2). <code>iam_attested=yes</code>, <code>scheduler_attested=yes</code>. If the Scheduler reading fails: <strong>Pause the job first</strong>, then diagnose.</li>
+  <li><code>--status --codebase core</code>: unchanged.</li>
+  <li>Christie: the V13 failure-alert policy, on the email channel.</li>
+  <li><strong>Failure first (bootstrap):</strong> Cloud Scheduler → the job → Force run. The Firestore agent has no grant on the bucket yet, so the export is expected to fail. Confirm: the function logs an error naming the denied principal, and the <strong>failure email arrives</strong> (note the delay). Note whether Scheduler retried, and at what spacing (V6/J11).</li>
+  <li>Firestore → Import/Export: read the agent's address; it must equal the denied principal in the log (and V-0's, if it was shown). Christie grants <code>firestoreExportWriter</code> to exactly that address on the vault bucket; screenshot the bucket's Permissions.</li>
+  <li>Force run (after a few minutes for the grant to propagate): one new prefix <code>weekly/&lt;date&gt;-&lt;6&gt;</code>, "export complete", and the folder holds its <code>.overall_export_metadata</code>. If it's denied a storage permission instead, stop: record the exact permission; any widening (J8's Storage Admin fallback) needs Christie's OK and goes into V12's residual.</li>
+  <li><strong>Force run again, same day:</strong> the log says "already done"; no new folder, no new operation.</li>
+  <li>Christie: the V9 uptime check (URL = exactly <code>vaultFresh</code>'s live <code>uri</code>) and its alert policy. The check passes; <code>vaultFresh</code>'s body names the new folder.</li>
+  <li>Decisions log: receipt tags, folder, operation name, durations, the retry observation. OPEN-ITEMS.md and the foundation plan's Phase E gate: <strong>lifted</strong>, citing the three record fields and the folder.</li>
 </ol>
-<p><strong>Acceptance:</strong> a verified, attested deploy of the <code>vault</code> codebase; one successful export in the vault bucket; a second run makes no second export; the freshness check is green; the Phase E data gate is marked lifted.</p>
-<div class="bdd">Given the first Force run
-When the export finishes without error
-Then the function logs success, and the bucket holds weekly/&lt;week&gt;-a1 with its metadata file
+<p><strong>Acceptance:</strong> the newest <code>vault</code> attempt has <code>deploy_verified</code>, <code>iam_attested</code> and <code>scheduler_attested</code> all <code>yes</code>; the failure email was seen; one complete export is in the vault bucket; a second same-day run made no second export; the freshness check is green.</p>
+<div class="bdd">Given the Firestore agent has no grant yet
+When the first Force run exports
+Then it fails, the function logs the denied principal, and Christie gets the failure email
 
-Given the export is denied a storage permission
-When the function reports the error
-Then V-4 stops; the exact denied permission and principal are recorded; any widening (e.g. J8's Storage Admin fallback) needs Christie's OK and is written into V4's residual
+Given the grant is made to exactly that principal
+When the job is run again
+Then one export completes into its own folder with its metadata file
 
 Given the Scheduler reading shows a retry value different from the code
 When --attest runs
-Then it refuses; the job is not "attested", and the cause is diagnosed before anything else</div>
+Then it refuses; Christie pauses the job; the cause is diagnosed before anything else</div>
 </div>
 
 <!-- V-5 -->
 <div class="phase" id="v5">
-<h3>V-5 — Failure tests that end green <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-5 — The freshness alert, end to end <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li><strong>Export failure:</strong> Christie screenshots the vault bucket's Permissions, then removes the Firestore agent's <code>firestoreExportWriter</code> grant. Force run → the export fails → the function throws → the failure alert email arrives (note the delay). Christie restores <strong>the exact binding</strong>; the Permissions screenshot matches the "before". Force run → success (a new attempt suffix this week), freshness green.</li>
-  <li><strong>Freshness failure:</strong> remove <code>vault-watch@</code>'s <code>vaultLister</code> grant → <code>vaultFresh</code> answers 500 → after the policy's window, the freshness alert email arrives. Restore the exact binding; the check passes; the incident closes.</li>
-  <li>Retries actually happened: Scheduler's logs for the failure test show the retry attempts at the V6 spacing (or record why not).</li>
+  <li>Screenshot the vault bucket's Permissions. Remove <code>vault-watch@</code>'s <code>vaultLister</code> grant → <code>vaultFresh</code> answers 500 (body: "error") → after the 6-hour window the freshness email arrives.</li>
+  <li>Restore <strong>the exact binding</strong>; Permissions match the screenshot; the check passes and the incident closes.</li>
+  <li>After the first <strong>scheduled</strong> Sunday run: one new complete folder dated that Sunday, logs clean, freshness green. (This also confirms the job fires on its own.)</li>
 </ol>
-<p><strong>Acceptance:</strong> both emails were seen by Christie; both bindings are back exactly as before (screenshots match); the last state is a successful export and a passing freshness check.</p>
-<div class="bdd">Given the agent's grant is removed
-When the export runs
-Then it fails, the function exits with an error, and Christie gets the failure email
+<p><strong>Acceptance:</strong> the freshness email was seen; the binding is back exactly; the first unattended Sunday export completed.</p>
+<div class="bdd">Given vault-watch@ can't list the bucket
+When the uptime check has failed for 6 hours
+Then Christie gets the freshness email
 
-Given the grant is restored exactly
-When it runs again
-Then a new attempt succeeds and the freshness check stays green
+Given the binding is restored exactly
+When the next checks run
+Then they pass and the incident closes
 
 Given the alert email never arrives
 When the window has passed
-Then V-5 stops; the alert policy is fixed and the test repeated before the plan closes</div>
+Then V-5 stops; the policy is fixed and the test repeated before the plan closes</div>
 </div>
 
 <!-- V-6 -->
 <div class="phase" id="v6">
 <h3>V-6 — Close <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li>Resilience report inventory row <code>#app-my-clay-hub</code>: the vault bucket, both accounts, both custom roles in each project, the first export, the alerts; residual risk updated ("off-project weekly copy since &lt;date&gt;").</li>
+  <li>Resilience report row <code>#app-my-clay-hub</code>: the vault bucket, the three accounts/agents and their roles in each project, the first export, both alerts; the two <code>tinker-hq-vault</code> grants' record (V-1/V-4 screenshots + behaviour); residual risk ("weekly off-project copy since &lt;date&gt;"; V12).</li>
   <li>Memory (<code>firebase-backend-resilience-plan</code>), <code>next-session.md</code>, the Phase D plan's D-4 box marked done with a link here.</li>
-  <li>Phase E's checklist gains: after the first real member load, Force run and confirm the export's document count; the restore rehearsal (O3).</li>
+  <li>Phase E's checklist gains: after the first real member load, Force run and confirm the export completed; the restore rehearsal (O3).</li>
 </ol>
 </div>
 
 <h2>Firebase safety checklist</h2>
 <table>
 <tr><th>Check</th><th>Answer</th></tr>
-<tr><td>New Firestore collections?</td><td><strong>None.</strong> The export's state is Firestore's own operation record (V7). <code>firestore.rules</code> and <code>storage.rules</code> are unchanged; no rules release.</td></tr>
-<tr><td>Writes to Firestore data?</td><td>None. <code>vault-export@</code> can't read or write documents; it can only start and read exports.</td></tr>
-<tr><td>Can anything import into production?</td><td>No. No identity here holds <code>datastore.databases.import</code>. A restore is a separate, manual, approved step (DATA-RESTORE.md).</td></tr>
-<tr><td>Snapshot before bulk ops?</td><td>No bulk ops. PITR + the daily managed backup already cover the (empty) database.</td></tr>
-<tr><td>Emulator-only tests?</td><td>Yes; the export logic is tested with an injected fake client. Real behaviour is proven in V-4/V-5.</td></tr>
-<tr><td>Production deploy</td><td>Only through <code>deploy-functions.sh --approved &lt;full sha&gt; --codebase vault</code> after Christie's phrase.</td></tr>
-<tr><td><code>tinker-hq-apps</code>, <code>tinker-hq-vault-backups</code></td><td>Untouched; the staff bucket is read back before and after V-1.</td></tr>
-<tr><td>Cost</td><td>Bucket storage on <code>tinker-hq-vault</code>'s bill (an empty or small export is cents); functions and the uptime check in <code>my-clay-hub</code>'s $20 budget (a weekly run + ~300 tiny requests a day: well inside free tiers).</td></tr>
+<tr><td>New Firestore collections?</td><td><strong>None.</strong> The state is the bucket plus Firestore's operation list (V7). <code>firestore.rules</code> and <code>storage.rules</code> unchanged; no rules release.</td></tr>
+<tr><td>Writes to Firestore data?</td><td>None. <code>vault-export@</code> can't read or write documents.</td></tr>
+<tr><td>Can anything import into production?</td><td>No identity here holds <code>datastore.databases.import</code>. A restore is manual and approved (DATA-RESTORE.md).</td></tr>
+<tr><td>Snapshot before bulk ops?</td><td>No bulk ops. PITR (state recorded in V-0) and the daily managed backup cover the empty database.</td></tr>
+<tr><td>Emulator-only tests?</td><td>Yes; the export logic is tested with fake clients and a surface check on the real ones. Real behaviour is proven in V-4/V-5.</td></tr>
+<tr><td>Production deploy</td><td>Only <code>deploy-functions.sh --approved &lt;full sha&gt; --codebase vault</code> after Christie's phrase.</td></tr>
+<tr><td><code>tinker-hq-apps</code>, <code>tinker-hq-vault-backups</code></td><td>Untouched; the staff bucket and <code>tinker-hq-vault</code>'s project IAM are read before and after V-1.</td></tr>
+<tr><td>Cost</td><td>Storage (and 7 days of soft-deleted objects) on <code>tinker-hq-vault</code>'s bill; the export's document reads, the functions and the uptime check (about 300–600 small requests a day) on <code>my-clay-hub</code>'s, inside its $20 budget. Cents at this size.</td></tr>
 </table>
 
 <h2>Completeness check — if it's interrupted</h2>
 <ul>
-  <li><strong>V-0/V-1 halfway:</strong> every step is visible in the Console; re-read and continue from the first step not done. Nothing uses the accounts or bucket until V-4.</li>
+  <li><strong>V-0/V-1 halfway:</strong> visible in the Console; re-read and continue from the first step not done. Nothing uses the accounts or bucket until V-4.</li>
   <li><strong>V-2/V-3 halfway:</strong> a branch, unmerged; nothing released.</li>
-  <li><strong>V-4 deploy interrupted:</strong> the guard's in-flight file and FUNCTIONS-ROLLBACK.md §2 (<code>--reconcile</code> / <code>--clear-inflight</code>). A scheduled job created without a verified function: Pause it in the Console (FUNCTIONS-ROLLBACK's new §) until reconciled.</li>
-  <li><strong>An export running when the function dies:</strong> the export continues in Google; the next run finds it (V7).</li>
-  <li><strong>V-5 halfway (a grant removed):</strong> restore from the "before" screenshot first, then continue. Until then, the freshness alert will (correctly) fire.</li>
+  <li><strong>V-4 deploy interrupted:</strong> the in-flight file and FUNCTIONS-ROLLBACK.md §2. The scheduled-functions §: a live function with no job (job upsert failed → re-run the same sha); a job on the old schedule (the reading catches it; pause, re-run); any doubt → Pause the job.</li>
+  <li><strong>An export running when the function dies:</strong> the export continues in Google; the next run finds it (V7 step 2) or its complete folder (step 1).</li>
+  <li><strong>V-4 bootstrap halfway (agent not yet granted):</strong> each scheduled or forced run fails and emails, which is correct; grant and continue.</li>
+  <li><strong>V-5 halfway (a grant removed):</strong> restore from the screenshot first. Until then, the freshness alert correctly fires.</li>
   <li><strong>Plan abandoned after V-1:</strong> an empty bucket and two unused accounts; harmless. The Phase E gate stays closed.</li>
 </ul>
 
 <h2 id="trace">Traceability to the D-4 outline</h2>
 <table>
 <tr><th>Outline requirement</th><th>Where</th></tr>
-<tr><td>Wait for the operation; fail loudly unless it completes without error</td><td>V7, V13; tests in V-3; V-5 step 1</td></tr>
-<tr><td>Independent alert if no new export for 8 days, incl. the scheduler never running</td><td>V9; V-5 step 2</td></tr>
-<tr><td>Schedule in UTC; retries explicit (D23)</td><td>V5, V6; V3 enforces</td></tr>
-<tr><td>Retries never make a second export; saved state; the "succeeded but died" test</td><td>V7 (state = Google's operation record — a deliberate change); V-3 tests; V-4 step 6</td></tr>
-<tr><td>Caller: custom role, export + operations.get only, not Import Export Admin</td><td>V4 (+ <code>operations.list</code>, needed by V7)</td></tr>
-<tr><td>Service agent: check current docs; narrower role only if docs allow and a real export proves it</td><td>J8, V4; V-4 step 5; fallback written</td></tr>
+<tr><td>Wait for the operation; fail loudly unless it completes without error</td><td>V7 (incl. the wait budget), V13; V-3 tests; V-4 step 6</td></tr>
+<tr><td>Independent alert if no new export for 8 days, incl. the scheduler never running</td><td>V9 (7 d 18 h + 6 h); V-5</td></tr>
+<tr><td>Schedule in UTC; retries explicit (D23)</td><td>V5, V6; V3 enforces numbers</td></tr>
+<tr><td>Retries never make a second export; saved state; the "succeeded but died" test</td><td>V7 — <strong>changed by Christie (O5)</strong>: a retry never starts a second export when the first is visible; a rare duplicate is a separate complete copy. State = the bucket + the operation list. V-3 tests; V-4 step 9.</td></tr>
+<tr><td>Caller: custom role, export + operations.get only, not Import Export Admin</td><td>V4 (+ <code>operations.list</code> and bucket listing, needed by V7)</td></tr>
+<tr><td>Service agent: check current docs; narrower role only if docs allow and a real export proves it</td><td>J8, V4; V-4 steps 6–8; fallback written</td></tr>
 <tr><td>Bucket: own bucket, name order, location before creating, 56-day lifecycle, soft delete</td><td>V10, V11; V-1</td></tr>
-<tr><td>Staff backups identical before/after every change in <code>tinker-hq-vault</code></td><td>V-1 steps 1 and 6; V-5 restores exact bindings</td></tr>
-<tr><td>Failure test that ends green</td><td>V-5</td></tr>
-<tr><td>Restore instructions (pick, temporary read grant, merge-not-rollback)</td><td>V14; V-3 step 5</td></tr>
-<tr><td>Cost on <code>tinker-hq-vault</code>'s bill</td><td>Safety checklist</td></tr>
+<tr><td>Staff backups identical before/after every change in <code>tinker-hq-vault</code></td><td>V-1 steps 1/6; V-4 step 7 and V-5 grants are bucket-level on the new bucket only</td></tr>
+<tr><td>Failure test that ends green</td><td>V-4 steps 6–8 (export), V-5 (freshness)</td></tr>
+<tr><td>Restore instructions (pick, temporary read grant, merge-not-rollback)</td><td>V14</td></tr>
+<tr><td>Cost on <code>tinker-hq-vault</code>'s bill</td><td>Safety checklist (storage there; reads and functions here)</td></tr>
 <tr><td>Closing: inventory and memory</td><td>V-6</td></tr>
 <tr><td>M6: guard extended first, real Scheduler read-back, <code>retryConfig</code>, its own review</td><td>V2, V3; V-2 (own PR and review) before V-3/V-4</td></tr>
 </table>
@@ -338,15 +354,43 @@ Then V-5 stops; the alert policy is fixed and the test repeated before the plan 
   <li>Code phases: <code>git -C ~/my-clay-hub branch -a</code> for <code>d4-guard-schedules</code> / <code>d4-vault-codebase</code>; read the PR's review state.</li>
   <li>Deploy state: <code>git -C ~/my-clay-hub fetch origin</code>, then <code>scripts/deploy-functions.sh --status --codebase vault</code> (and <code>core</code>).</li>
   <li>Tests: <code>"$NODE22" /opt/homebrew/opt/node@22/lib/node_modules/npm/bin/npm-cli.js ci --prefix functions/&lt;cb&gt;</code> for each codebase, then <code>TINKER_FUNCTIONS_TESTS=required npm test</code>.</li>
+  <li>Reviews: inputs and outputs in <code>~/tinker-ai-configs/thoughts/reviews/my-clay-hub-d4-vault-export-round&lt;n&gt;-*</code>.</li>
 </ol>
 
-<h2>Reviews</h2>
-<p>None yet.</p>
+<h2 id="reviews">Reviews</h2>
+<h3>Round 1 (Oct 1) — Codex "not ready"; Claude "ready after fixes"</h3>
+<table>
+<tr><th>Finding</th><th>Resolution</th></tr>
+<tr><td>The operation list isn't a reliable idempotency record; lost replies; <code>maxInstances</code> isn't a lock; two runs could share a prefix (Codex blocking; Claude should-fix)</td><td>V7 rewritten: the bucket's complete folders are the record, the list is only "still running", a fresh prefix per export, capped paging that throws. Christie: allow a rare second complete copy (O5).</td></tr>
+<tr><td>V-5's failure test couldn't fail: V-4 already left a success for the week (Codex blocking)</td><td>The failure test moved first, into V-4's bootstrap (steps 6–8). V-5 is the freshness test.</td></tr>
+<tr><td>The "agent not created yet" path was circular (Codex blocking)</td><td>The agent is granted in V-4 after the first (failing) export creates it; the denied principal must match the Import/Export page.</td></tr>
+<tr><td>Scheduler attestation is after the fact; missing audience/body/headers/complete list; the Phase E gate needs all three fields (Codex blocking; Claude should-fix)</td><td>V2 extended; limit stated; pause-first rule; no V-4 on a Sunday; the gate names all three fields.</td></tr>
+<tr><td><code>onSchedule</code> can't set <code>x-tinker-reached</code> (both)</td><td>O6: narrow exception, recorded in V-2.</td></tr>
+<tr><td>Unset retry fields serialise to <code>null</code>, so "present" proves nothing (Claude blocking)</td><td>V3: numbers equal to the declaration; <code>timeZone</code> the string <code>"UTC"</code>; J6 corrected.</td></tr>
+<tr><td>The cron string wasn't pinned to the declaration (Claude blocking)</td><td>V3: <code>schedule</code> and <code>timeZone</code> in the declaration; always-needed Scheduler reading.</td></tr>
+<tr><td>V-2 step 1 couldn't run through <code>functions-discover.mjs</code> (Claude blocking)</td><td>An offline unit test on <code>onSchedule</code>'s endpoint instead; discovery used for the real <code>vault</code> codebase in V-3.</td></tr>
+<tr><td><code>requiredAPIs</code> holds objects (Claude blocking)</td><td>V3 checks <code>[.requiredAPIs[].api]</code> and the key set.</td></tr>
+<tr><td>Existing attestation checks would refuse a schedule; the always-present keys; the backstop's hard-coded HTTP check; exact declaration keys (Claude blocking)</td><td>V-2 steps 2–3 name each spot; <code>core</code> regression tests.</td></tr>
+<tr><td>Retry semantics misstated (Codex)</td><td>V6: <code>maxRetrySeconds: 0</code>; J11 corrected; the spacing observed in V-4.</td></tr>
+<tr><td>The 8-day alert arrived at 8 d 6 h (Codex)</td><td>Threshold 7 d 18 h (Christie).</td></tr>
+<tr><td>Week key: a mid-week Force run would cancel Sunday's backup (Claude)</td><td>Key = the UTC date of the scheduled time.</td></tr>
+<tr><td>No wait budget; a 1,800 s kill is silent (Claude)</td><td>1,500 s budget; V13 includes request logs.</td></tr>
+<tr><td><code>vaultFresh</code>'s ingress, URL/audience, limits; cold starts (both)</td><td>V9 written out; check timeout 30 s; 3 regions.</td></tr>
+<tr><td>V-0's expected IAM deltas omitted Google agents; Monitoring agent must exist before V-4 (both)</td><td>V-0 step 9; step 7.</td></tr>
+<tr><td>Shared <code>iam-expectations.json</code>; exact role id strings (Claude)</td><td>V1, V4.</td></tr>
+<tr><td>Direct dependencies; the real client surface (Claude)</td><td>V1; V-3 step 3.</td></tr>
+<tr><td><code>functions-emulator.mjs</code> is <code>core</code>-only; does the emulator load an <code>onSchedule</code>? (Claude)</td><td>V-2 steps 1 and 4.</td></tr>
+<tr><td>Missing partial states: no job, old job, orphaned job, lifecycle half-deleted folders, auth-vs-stale alerts (both)</td><td>Runbook § (V-2 step 6), completeness check, V14, V9's body.</td></tr>
+<tr><td>J7/J8/J9/J10 overstated or wrong (snapshotTime doesn't need PITR; "same location"; Datastore-mode source) (both)</td><td>Corrected; J14 added (50 concurrent exports).</td></tr>
+<tr><td>Nits: verify PITR; list-only watcher; cross-project grants not attested; cost attribution; soft delete is only 7 days (Claude)</td><td>V-0 step 2; V4; V4/V-6; checklist; V12.</td></tr>
+<tr><td>Consider an IAM condition on the two vault bindings (Claude nit)</td><td>Not adopted: they're bucket-level bindings, which can't widen to the project; noted.</td></tr>
+</table>
 
 <h2>Decisions log</h2>
 <ul>
-  <li><strong>Oct 1:</strong> Christie: "go with your recommendations, run the review" — O1 Christie only; O2 <code>US</code>; O3 rehearse after Phase E; O4 the uptime-check freshness endpoint (V9). Second-model review round 1 started.</li>
-  <li><strong>Oct 1:</strong> Plan written from the D-4 outline (Phase D plan), M6/F13 (D2 plan), the pinned firebase-tools 15.22.3 / firebase-functions 7.4.0 source and Google's current docs. Deliberate changes from the outline, each flagged for Christie: the saved state is Firestore's operation list rather than a stored record (V7); a third identity and a freshness endpoint for the 8-day alert (V9, O4); <code>operations.list</code> added to the caller role (V4); the bucket-name list collapses to two (V10).</li>
+  <li><strong>Oct 1:</strong> Plan written from the D-4 outline, M6/F13, the pinned firebase-tools 15.22.3 / firebase-functions 7.4.0 source and Google's docs.</li>
+  <li><strong>Oct 1:</strong> Christie: O1 Christie only; O2 <code>US</code>; O3 rehearse after Phase E; O4 the uptime-check freshness endpoint.</li>
+  <li><strong>Oct 1:</strong> Review round 1: Codex "not ready" (5 blocking, 8 should-fix), Claude "ready after fixes" (5 blocking, 11 should-fix). Christie: the 8-day email lands at 8 days (threshold 7 d 18 h); O5 allow a rare second complete copy; O6 the header exception for scheduled functions. Plan rewritten against both (Reviews). Round 2 next.</li>
 </ul>
 
 </body>
