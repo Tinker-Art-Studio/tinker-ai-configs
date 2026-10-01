@@ -22,8 +22,8 @@
 <body>
 <h1>Plan: Tinker HQ shows admins and managers what's coming up</h1>
 <p><strong>Apps:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Studio Hub / Tinker HQ (<code>~/studio-hub</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v6</strong> after design review rounds 1&ndash;3 (round 1: Codex full, Claude sandboxed out; rounds 2&ndash;3: Codex + Claude full. Every finding
-verified against the code and folded in. See the Decisions log) &middot; <strong>execution-ready: false</strong> (round 4 findings pending fold-in, see Decisions log)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v7</strong> after design review rounds 1&ndash;4 (round 1: Codex full, Claude sandboxed out; rounds 2&ndash;3: Codex + Claude full; round 4: Claude only, because Codex was out of credits. Every finding
+verified against the code and folded in. See the Decisions log) &middot; <strong>execution-ready: false</strong> (design review round 5 running)</p>
 
 <div class="status">
   <strong>Goal:</strong> when an admin or manager opens Tinker HQ, a "Coming up" card lists every staff birthday and work
@@ -66,8 +66,8 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
       <td>Admins/managers (the HQ card)</td></tr>
   <tr><td><code>staffCelebrations/{uid}</code></td>
       <td>Current: <code>{ name, birthday?, startDate?, current:true, updatedAt }</code>. No birth year; <code>birthday</code> is <code>M/D</code>.
-      Month-only birthdays are <em>left out</em>, so nobody gets "Happy Birthday" on a guessed day (R2-M6). <code>startDate</code> only if it parses with a year
-      and is &le; 40 characters; <code>name</code> truncated to 120. A built record can't violate the rules' caps; a test checks every record against them (R3 Claude-B1).
+      Month-only birthdays <em>and month-only start dates</em> are <em>left out</em>, so nobody gets a greeting on a guessed day (R2-M6, R4-M5). The summary keeps
+      both, and the card marks them "≈ month only". <code>startDate</code> only if it parses with a year, isn't month-only, and is &le; 40 characters; <code>name</code> truncated to 120. A built record can't violate the rules' caps; a test checks every record against them (R3 Claude-B1).
       <br>Leaver: exactly <code>{ current:false, updatedAt }</code>, which drops name and dates (R2-B4).</td>
       <td>That person (self only) + admins/managers</td></tr>
 </table>
@@ -78,9 +78,15 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
   <li><strong>Written only by admins/managers</strong>, when they load or refresh the Staff Directory. The gate is a separate, role-only
     <code>canWriteCelebrations(user)</code>, deliberately <em>not</em> the Directory's <code>canWrite</code> (which includes override staff). It also gates the
     <code>users</code> read, so override staff never trigger denied reads or a notice on every load (R3 Claude-M5).</li>
-  <li><strong>All-or-nothing:</strong> the full write set (changed records, leavers, summary) is built and checked against the rule shapes first, then committed in
-    <strong>one <code>writeBatch</code></strong> (guarded at 400 operations; ~25 staff today). Records and summary can never disagree. A denied batch means
-    "rules not deployed / not allowed": one notice, nothing written, retried on the next load (R3 Codex-4, Claude-L5).</li>
+  <li><strong>Validated as a set, committed in small chunks</strong> (R4-B1): rules allow only <strong>20 document-access calls per batched write</strong>, summed
+    across its writes, and each manager write costs 1&ndash;2 <code>users</code> lookups. So one big batch would be refused outright. The full write set (changed
+    records, leavers, summary) is built and checked against the rule shapes first. It's then committed with compat <code>db.batch()</code> in chunks of
+    <strong>at most 8 docs</strong>, records first and <code>_summary</code> <strong>last</strong> (R4-L8). The 2-rules tests measure the real limit; the chunk
+    size is set from that measurement. A failed chunk stops the run: no summary is written (so neither is <code>checkedAt</code>), one notice is shown, and the next
+    load reconciles. Records may briefly be newer than the summary, never the reverse.</li>
+  <li><strong>2a lists the whole collection once</strong> (<code>_summary</code> plus every record; managers have <code>list</code>). <code>_summary</code> is used for change
+    detection, carrying <code>updatedAt</code> forward, and the <code>checkedAt</code> heartbeat. It's excluded <strong>by doc id</strong> from all record, leaver and
+    vanished-row logic (R4-M2).</li>
   <li><strong>Written only when something changed:</strong> compare canonical domain fields only, staff sorted by <code>id</code>, ignoring
     <code>updatedAt</code>/<code>checkedAt</code>/<code>updatedBy</code>. A plain reload writes nothing, except the summary's <code>checkedAt</code>, refreshed at most once a day (R2-M8, R3).</li>
   <li><strong>Sanity gate before any write</strong> (R2-B5, R3 Codex-1). Write <em>nothing</em> (summary, records or leavers) and show a notice if:
@@ -88,8 +94,13 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
       <li>the sheet produced zero staff rows;</li>
       <li>zero rows matched an account;</li>
       <li>any required column wasn't found by header (<code>name</code>, <code>email</code>, <code>status</code>, <code>startDate</code>, <code>birthday</code>,
-        from <code>detectColumns()</code>), so a renamed form question can't blank out everyone's dates or make past staff current.</li>
-    </ul> A broken or unpublished sheet must never look like "everyone left".
+        from <code>detectColumns()</code>), so a renamed form question can't blank out everyone's dates or make past staff current.
+        <code>name</code> may instead be satisfied by first + last name, as <code>fetchStaffData()</code> already falls back;</li>
+      <li>the number of current rows swings by more than 40% against the existing summary (Supply Low List shape). The manager sees "Staff count changed
+        from 24 to 9: save anyway?" and must confirm (R4-M4).</li>
+    </ul>
+    Because <code>detectColumns()</code> matches headers by substring, the Celebrations page (managers) shows <strong>which sheet header</strong> each required field bound
+    to, e.g. Name &larr; "Name", Status &larr; "Employment Status - Current (C) or Past". A wrong binding (e.g. "Emergency Contact 1 - Name") is visible (R4-M4). A broken or unpublished sheet must never look like "everyone left".
     This is the same failure shape as the Supply Low List incident.</li>
   <li><strong>Going stale is mild.</strong> Dates repeat yearly, so an old summary still predicts correctly; it misses only hires and leavers since
     the last manager load. The card shows the row count and <code>checkedAt</code>, e.g. "24 staff &middot; checked 2 days ago" (amber past 30 days, with a link
@@ -104,7 +115,8 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
     "Needs attention" section of the Celebrations page (managers only). Also listed there: rows with no account, rows whose start date or name couldn't be
     saved, and existing current records whose sheet row has vanished (R2-L3, R3).</li>
   <li><strong>Leavers come only from a positive match</strong> (R2-B5): a uid gets the leaver write only when a sheet row that matches it has the existing
-    <code>status === 'past'</code> (P, past, former, inactive, outdated) (R3 Claude-L1). A uid that's merely unmatched or skipped is left untouched. Never derive leavers by subtraction.</li>
+    <code>status === 'past'</code> (P, past, former, inactive, outdated) (R3 Claude-L1) <strong>and</strong> its existing record is <code>current:true</code>. So the first run doesn't
+    create dozens of leaver docs for long-gone staff (R4-M3). A uid that's merely unmatched or skipped is left untouched. Never derive leavers by subtraction.</li>
   <li><strong>Operational rule: keep leavers in the sheet, marked P.</strong> If a row is <em>deleted</em> instead, or an account is recreated under a new uid,
     the old record can't be safely cleared. It's listed under "Needs attention" on the Celebrations page (managers) for a manual fix:
     mark the row P, or archive the old account (R3 Codex-8, Claude-L1).</li>
@@ -179,7 +191,8 @@ match /staffCelebrations/{docId} {
     </ul>
     <code>_summary</code> missing &rarr; "Staff list not loaded yet. Open the Staff Directory once to fill it" with a link. Permission-denied or malformed
     (no <code>staff</code> list) &rarr; "Couldn't load the staff list", never a cheerful "nothing coming up" (R3 Claude-M3, Codex-6).
-    Staff-role HQ never attempts the summary read.</li>
+    The summary read is gated on <code>currentUser.role</code> being admin or manager, and tested. Staff-role HQ never attempts it, so staff never see a permission
+    error or "Couldn't load" (R4-M7). If someone edits their role in the console, the server still refuses.</li>
   <li>The card is inserted as a placeholder node synchronously inside <code>renderAdminDashboard()</code> (after quick stats, before Priority Alerts) and filled
     when the async read lands, so it can't land in the wrong place or be wiped by the dashboard's <code>innerHTML = ''</code> (R3 Claude-L4). New CSS goes in <code>css/</code> (R3 Claude-L9).</li>
   <li><strong>One pop-up, built from everything</strong> (R2 Codex-8): gather all qualifying events first: the Tinker / Clay Hub studio
@@ -200,8 +213,12 @@ match /staffCelebrations/{docId} {
 <p><code>js/celebrations.js</code> gains <code>recentOccurrence(parsed, startYear, today, days)</code>, returning <code>{date, years}</code> (years counted from the
 occurrence's own year, which avoids the Dec&rarr;Jan trap) or null (R3 Claude-L6). It's added in
 <strong>2a</strong>, in the Directory repo with tests, along with the <code>birthdayMonthOnly</code> handling in <code>getCelebrations()</code>. <code>module.exports</code> is updated (R2-L1). 2b copies the file to
-<code>studio-hub/js/celebrations.js</code> unchanged, with a header naming the source. The tests are converted to <strong>jest</strong> for studio-hub and added
-to its <code>npm test</code> file list, so they actually run there (R2-M2).</p>
+<code>studio-hub/js/celebrations.js</code> unchanged, with a header naming the source. The writer builders (<code>buildSummary</code>, <code>buildRecords</code>,
+<code>planCelebrationWrites</code>, <code>canWriteCelebrations</code>) live in a separate Directory-only <code>js/celebrations-sync.js</code>, so HQ doesn't carry dead code (R4-L11).
+HQ's pure UI helpers (<code>planCelebrationPopup</code>, <code>planCelebrationCard</code>) go in a new <code>studio-hub/js/celebrations-ui.js</code> with the
+<code>typeof module !== 'undefined'</code> exports guard, the same as <code>archive-helpers.js</code> (R4-M6). Its <code>&lt;script&gt;</code> tag comes after <code>celebrations.js</code>.
+The tests are jest files <strong>at the studio-hub repo root</strong>, never under <code>js/</code>, which <code>build-dist.sh</code> publishes. They're added to the
+<code>npm test</code> list (R2-M2, R4-M6).</p>
 
 <h2>Decisions for Christie</h2>
 
@@ -243,9 +260,10 @@ to its <code>npm test</code> file list, so they actually run there (R2-M2).</p>
           <li>a <code>current:false</code> record that keeps a name;</li>
           <li>a summary with a foreign <code>updatedBy</code>, a missing <code>checkedAt</code>, a non-list or 301-item <code>staff</code>;</li>
           <li>a record shape written at <code>_summary</code>, and a summary shape written at a uid (the ternary both ways);</li>
-          <li>an authenticated user whose uid is <code>_summary</code> doing a self-get;</li>
+          <li>an authenticated user whose uid is <code>_summary</code> (with a seeded <code>users/_summary</code> staff doc, so the test fails for the right reason) doing a self-get (R4-L9);</li>
         </ul></li>
-      <li>nobody can delete.</li>
+      <li>nobody can delete;</li>
+      <li><strong>batch size</strong> (R4-B1): a manager commits batches of 8, 9, 10 and 20 record docs. The plan's chunk size is set to the largest that passes (expected about 9). The test pins it so a future rules change that adds lookups shows up as a failure.</li>
     </ul></li>
   <li>Full studio-hub <code>npm test</code> passes. Then <code>deploy-rules.sh --status</code> / <code>--diff</code> pasted verbatim &rarr; Christie says
     "approved to change firebase &lt;sha&gt;" &rarr; <code>--approved &lt;sha&gt;</code>.</li>
@@ -258,18 +276,25 @@ to its <code>npm test</code> file list, so they actually run there (R2-M2).</p>
   <li>Branch from <code>main</code>.</li>
   <li><code>celebrations.js</code>: add <code>recentOccurrence()</code> and the <code>birthdayMonthOnly</code> handling. Add pure builders
     <code>buildSummary(staffMembers, links)</code>, <code>buildRecords(staffMembers, users, existing)</code> (returns <code>{records, leavers, needsAttention}</code>),
-    <code>planCelebrationWrites(...)</code> (the batch contents, or null when the sanity gate fails), and <code>canWriteCelebrations(user)</code>.</li>
+    <code>planCelebrationWrites(...)</code> (the chunked write list, or null when the sanity gate fails), and <code>canWriteCelebrations(user)</code>, all in <code>js/celebrations-sync.js</code>.</li>
   <li><code>firebase-data.js</code>: new functions with <strong>explicit</strong> refs <code>staffCelebrations/_summary</code> and <code>staffCelebrations/&lt;uid&gt;</code>.
-    They never call <code>saveDataToFirestore()</code> (hardcoded to <code>appData</code>). One awaited <code>writeBatch</code>; failure &rarr; one notice, nothing written,
-    retry on the next load.</li>
-  <li><code>app.js</code>: after <code>fetchStaffData()</code>, if admin/manager and the sanity gate passes, read <code>users</code> + existing records, write changed
+    They never call <code>saveDataToFirestore()</code> (hardcoded to <code>appData</code>). Chunked <code>db.batch()</code> commits, records first and summary last; failure &rarr; one notice and stop; the next load reconciles.</li>
+  <li><code>app.js</code>: after <code>fetchStaffData()</code>, if admin/manager and the sanity gate passes, read <code>users</code> + the whole <code>staffCelebrations</code> collection, write changed
     records, leavers, and the summary if changed (or if <code>checkedAt</code> is &gt; 24h old). Any prerequisite read failing &rarr; no writes at all. Add the "Needs attention" section.</li>
   <li>Tests (<code>node --test</code>), each consuming the builders' real output:
     <ul>
       <li><code>getCelebrations(buildSummary(rows).staff, fixedToday, 60)</code> returns the expected events (R2-B3);</li>
       <li>no birth year anywhere; month-only birthday &rarr; omitted from the record and flagged in the summary;</li>
       <li>zero sheet rows, zero matches, or any one required column missing (one test per column) &rarr; <code>planCelebrationWrites</code> returns null: no records, no leavers, no summary;</li>
-      <li>every summary row has exactly the allowed keys (<code>assert.deepEqual(Object.keys(row).sort(), …)</code>), and every record satisfies the rule's key set and caps (R3 Claude-B1/B2);</li>
+      <li>every summary row's keys are a subset of <code>[id, uid, name, birthday, birthdayMonthOnly, startDate, status]</code> and include <code>[id, name, status]</code>,
+        and every record satisfies the rule's key set and caps (R3 Claude-B1/B2, R4-L10);</li>
+      <li>unchanged input with <code>checkedAt</code> 25h old &rarr; only <code>_summary</code> is rewritten, with the <strong>same</strong> <code>updatedAt</code> and a new <code>checkedAt</code>;
+        with <code>checkedAt</code> 2h old &rarr; zero writes (R4-M2);</li>
+      <li><code>_summary</code> in the listed collection never appears in leavers or needsAttention;</li>
+      <li>a matched P row whose uid has no record, or is already <code>current:false</code> &rarr; no write (R4-M3);</li>
+      <li>current-row count 24 &rarr; 9 &rarr; requires confirmation; 24 &rarr; 22 &rarr; doesn't (R4-M4);</li>
+      <li>month-only start date &rarr; omitted from the record, kept in the summary, listed in needsAttention (R4-M5);</li>
+      <li>chunking: 30 writes &rarr; chunks of &le; 8, <code>_summary</code> alone in the last chunk;</li>
       <li>a 54-character start date or a 200-character name &rarr; the record omits or truncates it, and the person appears in "Needs attention";</li>
       <li>month-only birthday: <code>buildSummary &rarr; getCelebrations</code> yields a dated event flagged month-only, and the record has no birthday;</li>
       <li><code>canWriteCelebrations({role:'staff', appAccess:['staff-directory']}) === false</code>;</li>
@@ -307,6 +332,7 @@ Given nothing changed since the last load &rarr; no writes.</div>
       <li>a pure <code>planCelebrationPopup(...)</code> helper, which decides what the pop-up shows: own birthday today / 3 days ago / exactly 7 days ago (shown) / 8 days ago (none);</li>
       <li>a pure <code>planCelebrationCard(summary, today)</code>: null &rarr; "not loaded yet"; malformed &rarr; "couldn't load"; "just passed" includes a 2-days-ago milestone; inclusive 60-day boundary;</li>
       <li>two coworkers sharing a birthday get distinct once-keys;</li>
+      <li>own record missing or permission-denied &rarr; no pop-up and no error text; role <code>staff</code> &rarr; no summary read attempted (R4-M7, R4-L12);</li>
       <li>milestone vs a non-milestone anniversary; <code>current:false</code> &rarr; none;</li>
       <li>a studio birthday on the same day as a staff birthday &rarr; both;</li>
       <li>an admin's own birthday isn't listed twice;</li>
@@ -330,7 +356,7 @@ Given no manager has opened the Directory for 31+ days &rarr; amber "24 staff &m
 <ul>
   <li>New collection <code>staffCelebrations</code>: rule added, tested and deployed through the studio-hub guard (sha phrase) <em>before</em> any code writes to it.</li>
   <li><code>tinker-hq-apps</code> rules affect every staff app. The change only <em>adds</em> one new match block; no existing block or helper is edited.</li>
-  <li>Writes: one awaited <code>writeBatch</code> of whole-doc <code>set()</code>s on docs owned solely by this feature. Every doc is pre-checked against the rule shapes,
+  <li>Writes: chunked <code>db.batch()</code> commits (&le; 8 docs each, the size proven by a rules test; summary last) of whole-doc <code>set()</code>s on docs owned solely by this feature. Every doc is pre-checked against the rule shapes,
     empty fields stripped, written only when changed, behind the sanity gate (rows, matches, required columns). Never <code>appData</code>.</li>
   <li>No deletes. No bulk import. Nothing to snapshot first; the first write creates the collection.</li>
   <li>Full studio-hub <code>npm test</code> passes before the rules deploy and before the HQ deploy.</li>
@@ -405,21 +431,16 @@ Check the Decisions log before acting on any recommendation box.</p>
       <li>Codex-11: DST test.</li>
     </ul>
     Declined nothing.</li>
-  <li>Oct 1 2026, review round 4 (Claude full; the Codex output didn't parse, so re-run it). <strong>NOT YET FOLDED IN. Next session starts here.</strong>
-    Raw review: scratchpad <code>review-claude.md</code>, summarized:
+  <li>Oct 1 2026, review round 4 (Claude full; Codex ran out of credits). Accepted all:
     <ul>
-      <li>B1: rules allow 20 doc-access calls per batch, and each manager write costs one <code>users</code> get, so one 25+-doc batch would be denied. Add a 30-doc batch rules test; if it fails, chunk at &le;18 docs with records first and <code>_summary</code> last.</li>
-      <li>M2: 2a must list the whole collection, including <code>_summary</code>, for change detection and <code>checkedAt</code>; exclude <code>_summary</code> by id from record logic.</li>
-      <li>M3: write a leaver only if the existing record is <code>current:true</code>.</li>
-      <li>M4: <code>detectColumns</code> can bind the wrong column ("Emergency Contact 1 - Name", "... Status"). Surface the matched headers, and refuse a &gt;40% swing in current-row count.</li>
-      <li>M5: decide <em>before 2-rules</em>: month-only start dates should be omitted from personal records (no guessed-day milestone greeting), kept in the summary, and listed in Needs attention.</li>
-      <li>M6: <code>js/celebrations-ui.js</code> with the exports guard; tests at the repo root (not <code>js/</code>, which ships).</li>
-      <li>M7: role-gate the summary read in HQ, plus a test.</li>
-      <li>L8: compat SDK, so <code>db.batch()</code>.</li>
-      <li>L9: seed <code>users/_summary</code> for the self-get test.</li>
-      <li>L10: optional-key assertion (keys &sube; allowed, &supe; id/name/status).</li>
-      <li>L11: dead code in the HQ copy.</li>
-      <li>L12: two missing HQ tests.</li>
+      <li>B1: chunked batches &le; 8, summary last, batch-size rules test;</li>
+      <li>M2: list the whole collection; <code>_summary</code> excluded by id;</li>
+      <li>M3: leaver only from an existing <code>current:true</code> record;</li>
+      <li>M4: header bindings shown, plus a confirm on a &gt;40% count swing;</li>
+      <li>M5: month-only start dates get no personal greeting (Claude's recommendation, adopted; Christie can override, and it needs no rules change);</li>
+      <li>M6: <code>celebrations-ui.js</code>, tests at the repo root;</li>
+      <li>M7: summary read role-gated;</li>
+      <li>L8&ndash;L12.</li>
     </ul></li>
   <li>Oct 1 2026: D5 = no <code>users.email</code> pin. Staff editing their own record from the dev console is too unlikely to justify a shared-rule change; accepted risk (Christie).</li>
 </ul>
