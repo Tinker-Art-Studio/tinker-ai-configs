@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: Tinker HQ shows admins and managers what's coming up</h1>
 <p><strong>Apps:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Studio Hub / Tinker HQ (<code>~/studio-hub</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v3</strong> (staff see only their <em>own</em> birthday / milestone; one new rules block) &middot; <strong>execution-ready: false</strong> (decisions made; design review round 1 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v4</strong> after design review round 1 (Codex full review; the Claude reviewer was sandboxed out of the plan and gave general advice only. Findings verified against the code and folded in) &middot; <strong>execution-ready: false</strong> (waiting on Christie: D4; then review round 2)</p>
 
 <div class="status">
   <strong>Goal:</strong> when an admin or manager opens Tinker HQ, a "Coming up" card lists every staff birthday and work
@@ -94,42 +94,63 @@ it saves a summary to a <strong>new doc in the existing <code>staffDirectory</co
 <h3>Staff: only their own celebration, enforced by the rules</h3>
 <p>Christie (v3): showing staff everyone's birthdays could be awkward, since not everyone knows each other. So staff get a greeting only for
 <strong>themselves</strong>, for their <strong>birthday</strong> and their <strong>5-year milestone anniversaries</strong> (5, 10, 15…), not every anniversary.</p>
-<pre>staffCelebrations/{email}         // doc id = the person's email, lowercased
-{ name: "Shelley …", birthday: "10/4", startDate: "5/15/2023", updatedAt: "…" }   // no birth year</pre>
+<pre>staffCelebrations/{uid}           // doc id = the person's Firebase Auth uid (never changes)
+{ name: "Shelley …", birthday: "10/4", startDate: "5/15/2023", current: true, updatedAt: "…" }   // no birth year</pre>
 <ul>
-  <li><strong>Written by the Staff Directory</strong> alongside the summary (2a): one doc per current staff member who has an email,
-    and only when it changed. When someone leaves, their doc is overwritten with <code>{ current: false }</code>, never deleted.
-    Their account is archived anyway, which already blocks reads.</li>
-  <li><strong>What the person sees in HQ:</strong> on load, GET <em>their own</em> doc by id (their sign-in email). Using the shared date logic,
-    if their birthday or a milestone anniversary fell <strong>today or in the last 7 days</strong>, show a confetti pop-up once:
-    "🎂 Happy Birthday, Shelley!" / "⭐ Happy 5-year Tinker anniversary!". "Once" is remembered in localStorage per celebration,
-    so a second device may show it one more time. If they don't sign in within 7 days, they miss it.</li>
-  <li><strong>Feb 29</strong> birthdays celebrate on Feb 28 in non-leap years (already how <code>celebrations.js</code> works).</li>
-  <li><strong>No staff ever sees anyone else's date.</strong> The old "It's X's birthday!" pop-up for staff is dropped.</li>
-  <li>Admins/managers: the full "Coming up" card, plus the day-of confetti for <em>anyone's</em> celebration (D1), from the summary.</li>
+  <li><strong>Keyed by uid, not email</strong> (review R1-2). A user can change their own sign-in email from the browser SDK, but never their uid.
+    The Staff Directory maps each sheet email to an account by reading <code>users</code> (managers can read all user docs). The match is
+    trimmed and lowercased. Sheet rows with no matching account get no record. Two rows with the same email, or two accounts with the same
+    email, mean <em>neither</em> is written, and the email appears in the Missing/unclear list.</li>
+  <li><strong>Written only by admins/managers</strong> (review R1-3), when someone loads the Staff Directory, only the records that changed.
+    Staff holding the <code>staff-directory</code> override skip this step. Leavers are overwritten with <code>{ current: false }</code>, never
+    deleted, and only after both the sheet parse and the collection read succeeded (R1-6).</li>
+  <li><strong>What the person sees in HQ:</strong> on load, GET <em>their own</em> doc by uid. A new shared function <code>recentOccurrences(parsed, today, 7)</code>
+    (R1-7) finds a birthday or 5-year-multiple anniversary that fell <strong>today or in the last 7 days</strong>. HQ then shows one confetti
+    pop-up, once, listing everything that qualifies (e.g. birthday and 10 years in the same week) (R1-14). "Once" is a localStorage key
+    <code>uid:type:YYYY-MM-DD</code> (R1-11), so a shared browser doesn't suppress someone else's, and it comes back next year. If they
+    don't sign in within 7 days, they miss it.</li>
+  <li>"Today" means the device's local date, same as the rest of HQ (R1-8, declined: all staff are local; a traveller seeing it a day off is harmless).</li>
+  <li><strong>Feb 29</strong> birthdays celebrate on Feb 28 in non-leap years. Tests cover Dec&rarr;Jan rollover, Feb 28/Mar 1 after a leap day, and milestone years counted from the occurrence year.</li>
+  <li><strong>No staff ever sees anyone else's date in HQ.</strong> The old "It's X's birthday!" pop-up for staff is dropped. Admins/managers: the full card + day-of confetti for anyone (D1), from the summary.</li>
 </ul>
 <h4>New rules block (the only rules change in this plan)</h4>
-<pre>// Each person may read only their own celebration record. Never list.
-match /staffCelebrations/{email} {
-  allow get: if isActiveUser() &amp;&amp; !isKiosk()
-             &amp;&amp; request.auth.token.email != null
-             &amp;&amp; request.auth.token.email.lower() == email;
-  allow get, list, create, update: if isManagerOrAbove() || hasAppAccess('staff-directory');
+<pre>// Each person may read only their own celebration record. Admin/manager maintain them. Never deleted.
+function isCelebrationRecord(d) {
+  return d.keys().hasOnly(['name', 'birthday', 'startDate', 'current', 'updatedAt'])
+    &amp;&amp; d.current is bool
+    &amp;&amp; (!('name' in d)      || (d.name is string &amp;&amp; d.name.size() &lt;= 120))
+    &amp;&amp; (!('birthday' in d)  || (d.birthday is string &amp;&amp; d.birthday.size() &lt;= 10))
+    &amp;&amp; (!('startDate' in d) || (d.startDate is string &amp;&amp; d.startDate.size() &lt;= 40))
+    &amp;&amp; d.updatedAt is string;
+}
+match /staffCelebrations/{uid} {
+  allow get: if !isKiosk() &amp;&amp; isActiveUser() &amp;&amp; request.auth.uid == uid;
+  allow get, list: if !isKiosk() &amp;&amp; isManagerOrAbove();
+  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isCelebrationRecord(request.resource.data);
   // no delete
 }</pre>
 <ul>
-  <li>Ties the record to the <strong>sign-in email</strong>, which only an admin sets (accounts are created in Manage Team). For review: confirm a
-    user can't change their own auth email in these apps to read someone else's doc. Worst case it's that one person's birthday and start date.</li>
-  <li>The kiosk and the reminder bot are refused (<code>isActiveUser()</code> already refuses the bot).</li>
-  <li>Doc id must match exactly. The Staff Directory lowercases emails when writing. People without an email in the sheet get no greeting.</li>
+  <li><code>!isKiosk()</code> on every grant (R1-4), so a kiosk account given a manager role still can't read the collection.</li>
+  <li>No <code>staff-directory</code> override on this collection (R1-3): override holders are staff, and staff never list.</li>
+  <li>Schema allow-list (R1-5): only these five fields, typed and size-capped, so no one can park a whole sheet row here.</li>
+  <li><strong>Known limit, accepted:</strong> the email&rarr;uid match trusts the <code>email</code> on the user doc. HQ self-creates a staff doc on first
+    sign-in, so someone who made an account with a coworker's <em>unused</em> email could be matched to that coworker and see their birthday and start date.
+    That takes deliberate effort, exposes one person, and is far smaller than D4 below (the live Staff Directory already shows every staff
+    member everyone's birthday). Closing it fully means changing the shared <code>users</code> create rule, which is out of scope.</li>
 </ul>
-
 <h3>Shared date logic</h3>
 <p>Copy <code>tinker-staff-directory/js/celebrations.js</code> to <code>studio-hub/js/celebrations.js</code> unchanged, with a header line naming
 the source file. Two copies of ~200 lines are simpler than a shared package for two static sites. Both copies carry the same
 tests, so drift shows up as a failing test.</p>
 
 <h2>Decisions for Christie</h2>
+<div class="decision-needed"><strong>D4 &mdash; NEW from review: the live Staff Directory shows staff everyone's dates.</strong> Any signed-in account
+can open the Staff Directory. "Read-only" only hides buttons. The browser still downloads the whole sheet. So staff can see every coworker's
+birthday and start date in each profile and in the Celebrations page, plus addresses, emergency contacts and medical notes in profiles. The
+last three were there before Phase 1. That conflicts with "not everyone knows each other".
+<em>Recommend:</em> now, hide the Celebrations button and the birthday/start-date/address/medical rows from read-only staff (one small Staff Directory
+deploy). Note that this is <strong>cosmetic</strong> while the sheet is published, since the data is still downloaded. The real fix is the sheet-unpublish work
+(option 2: staff read a trimmed copy). Alternatives: leave as is until option 2, or fold the option-2 plan in ahead of this one.</div>
 <div class="decision-needed"><strong>D1 &mdash; Birthday-day pop-up in HQ.</strong> HQ has an old "It's X's birthday! 🎂" confetti pop-up that never fired,
 because of the bug above. Repointing HQ at the summary would switch it on for admins and managers on the day itself.
 <em>Recommend:</em> keep the pop-up for <strong>milestone anniversaries only</strong>, and show birthdays on the card only. Alternatives: keep it for birthdays too, or remove it.
@@ -153,14 +174,17 @@ Given nothing changed since the last open &rarr; no write happens.<br>
 Given a read-only staff user opens the Directory &rarr; no write is attempted.</div>
 </div>
 <div class="phase">
-<h3>2a+ &mdash; Staff Directory also writes each person's record</h3>
+<h3>2a+ &mdash; Staff Directory also writes each person's record (admins/managers only)</h3>
 <ul>
-  <li>Same moment as the summary: build <code>{email &rarr; {name, birthday M/D, startDate}}</code> for current staff, compare with what's stored
-    (manager <code>list</code>), write only the changed ones, and set <code>{current:false}</code> for people no longer current. Writes are awaited,
-    empty fields stripped, and a failure is shown.</li>
-  <li>Tests: record builder (lowercased email id, no birth year, past staff &rarr; current:false, no email &rarr; skipped).</li>
+  <li>Same moment as the summary: read <code>users</code> and the existing <code>staffCelebrations</code>. Match current sheet rows to accounts by trimmed,
+    lowercased email; duplicates on either side are skipped and listed. Build <code>{uid &rarr; {name, birthday M/D, startDate, current:true}}</code>,
+    write only the changed ones, then <code>{current:false}</code> for uids no longer current, but only if every read above succeeded.
+    Writes are awaited, empty fields stripped, and failures are shown. A permission-denied (rules not deployed yet) shows one notice and stops; the next manager load retries everything (R1-10).</li>
+  <li>The summary and records use their own explicit doc refs, never <code>saveDataToFirestore()</code> (which targets <code>appData</code>). An emulator test proves <code>staffDirectory/appData</code> is unchanged after a refresh (R1-12).</li>
+  <li>Tests: matcher and record builder (no birth year; past staff &rarr; current:false; no account &rarr; skipped; duplicate emails &rarr; skipped + listed; email or name change; rehire).</li>
 </ul>
-<div class="bdd">Given Shelley (shelley@…) is current with birthday 10/4/1990 &rarr; <code>staffCelebrations/shelley@…</code> = {name, birthday "10/4", startDate}.<br>
+<div class="bdd">Given Shelley (shelley@…, uid S1) is current with birthday 10/4/1990 &rarr; <code>staffCelebrations/S1</code> = {name, birthday "10/4", startDate, current:true}.<br>
+Given two sheet rows share an email &rarr; neither gets a record; the Missing/unclear list names the email.<br>
 Given someone is marked P &rarr; on the next manager load their doc becomes {current:false}.</div>
 </div>
 <div class="phase">
@@ -169,16 +193,19 @@ Given someone is marked P &rarr; on the next manager load their doc becomes {cur
   <li>Add the block above to <code>studio-hub/firestore.rules</code> on a branch, merged to <code>main</code> before deploy.</li>
   <li>Rules tests (emulator):
     <ul>
-      <li>staff can GET their own doc (including when the token email has capitals);</li>
-      <li>staff are refused someone else's doc;</li>
-      <li>staff are refused <code>list</code>;</li>
-      <li>staff are refused writes;</li>
-      <li>kiosk is refused;</li>
+      <li>staff can GET only <code>staffCelebrations/&lt;own uid&gt;</code>;</li>
+      <li>staff are refused another uid, refused <code>list</code> (including an id-filtered query), refused create and refused update (each tested separately);</li>
+      <li><code>staff-directory</code>-override staff are refused list and writes;</li>
+      <li>signed-out users are refused;</li>
+      <li>a user with no users doc is refused;</li>
       <li>archived users are refused;</li>
       <li>the reminder bot is refused;</li>
-      <li>the manager and staff with the <code>staff-directory</code> override can list and write;</li>
+      <li>both kiosks are refused, <em>including a kiosk whose users doc says manager</em>;</li>
+      <li>managers and admins can get, list, create and update;</li>
+      <li>writes with an extra field, a wrong type or an oversize name are refused;</li>
       <li>nobody can delete.</li>
     </ul></li>
+  <li>Run the <strong>full</strong> studio-hub <code>npm test</code> before the rules deploy (R1-10).</li>
   <li>Deploy: <code>deploy-rules.sh --status</code> / <code>--diff</code> pasted verbatim &rarr; Christie says "approved to change firebase &lt;sha&gt;" &rarr;
     <code>--approved &lt;sha&gt;</code>. <strong>Rules deploy first</strong>, before the Staff Directory starts writing (otherwise writes are refused).</li>
 </ul>
@@ -186,7 +213,7 @@ Given someone is marked P &rarr; on the next manager load their doc becomes {cur
 <div class="phase">
 <h3>2b &mdash; Tinker HQ card</h3>
 <ul>
-  <li>Add <code>js/celebrations.js</code> (copy) and load it in <code>index.html</code>; <strong>add it to <code>scripts/build-dist.sh</code></strong> (otherwise the deploy ships without it, and <code>check-live</code> should catch that).</li>
+  <li>Add <code>js/celebrations.js</code> (copy) and load it in <code>index.html</code>. <code>scripts/build-dist.sh</code> already archives all of <code>js/</code>, so no change there (R1-13). <code>check-live</code> verifies the deployed bytes.</li>
   <li><code>renderAdminDashboard()</code>: build the card and fetch <code>staffDirectory/celebrations</code>. Escape every name (HTML-escape helper; names come from a Google Form).</li>
   <li><code>checkCelebrations()</code>:
     <ul>
@@ -211,7 +238,7 @@ Given the summary is 31+ days old &rarr; card shows an amber "updated 31 days ag
 <ul>
   <li>New collection? <strong>Yes, one</strong>: <code>staffCelebrations</code>. Its rule is added in the same work (2-rules), tested, and deployed through the studio-hub guard with Christie's sha phrase <em>before</em> any code writes to it. The summary doc lives in <code>staffDirectory</code> and is covered by the existing rule.</li>
   <li><code>tinker-hq-apps</code> rules affect every staff app, so the change only adds a new match block. No existing block or helper is edited.</li>
-  <li>Writes: one whole-doc <code>set()</code> on a doc owned solely by this feature; awaited; empty fields stripped; never touches <code>appData</code>.</li>
+  <li>Writes: whole-doc <code>set()</code>s, one for the summary plus one per changed person, on docs owned solely by this feature. Awaited, empty fields stripped, never touching <code>appData</code> (emulator-tested).</li>
   <li>No deletes (leavers are set to <code>{current:false}</code>), no bulk import. Nothing to snapshot first.</li>
   <li>Studio Hub's <code>npm test</code> (rules suite) passes before the HQ deploy, even though rules are unchanged.</li>
   <li>Order: rules (guard, sha phrase) &rarr; Staff Directory (Netlify, Christie's OK) &rarr; HQ (Netlify, Christie's OK). Each Netlify deploy comes from a clean pushed tree with the sha as the message.</li>
@@ -238,6 +265,7 @@ worktree of <code>studio-hub</code> from <code>origin/main</code>. The shared ch
   <li>Oct 1 2026: D3 = Phase 1 deploys on its own now (Christie).</li>
   <li>Oct 1 2026: Staff get day-of confetti too, but no list ever: per-day docs + a rules window around today. Belated note once within 3 days for weekends (Christie can veto: window 0) (Christie).</li>
   <li>Oct 1 2026 (v3, supersedes the line above): staff see only their <strong>own</strong> birthday + 5-year-multiple anniversaries, on the day or first HQ sign-in within 7 days, once. Not every anniversary. Never anyone else's. Per-person docs keyed by email (Christie).</li>
+  <li>Oct 1 2026, review round 1 (Codex): accepted R1-2 (uid keys), R1-3 (managers only, no override), R1-4 (kiosk on every grant), R1-5 (schema), R1-6 (duplicates and safe leaver marking), R1-7 (belated-window function), R1-9 (more tests), R1-10 (rollout notice, full suite first), R1-11 (once-key), R1-12 (appData untouched test), R1-13 (no build-dist edit), R1-14 (one pop-up for several). Declined R1-8 (Denver timezone: device-local is fine). R1-1 became decision D4. Residual email&rarr;uid trust limit accepted (see rules section).</li>
   <li>Oct 1 2026: Tinker Ticker is out of scope. No greeting there, now or as a planned add-on (Christie).</li>
   <li>Oct 1 2026: Calendar: 5/10-year anniversaries imported into the existing shared Tinker calendar. No new calendar; email reminders added per event (Christie).</li>
 </ul>
