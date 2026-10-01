@@ -36,8 +36,7 @@
   <strong>Not in this plan:</strong> any other trigger kind (events, callables, task queues, blocking); secrets or params; deleting functions; a retention lock on the vault bucket (V12); <code>tinker-hq-apps</code>' own functions guard (Phase E, M1); member data (the database is still empty).<br>
   <strong>Risk:</strong> MEDIUM. It changes the deploy guard, creates the project's first scheduled job, and adds the first grants <em>into</em> <code>tinker-hq-vault</code> from <code>my-clay-hub</code>. The database is empty and deny-all, so an export reads nothing sensitive yet.<br>
   <strong>History:</strong> Oct 1 written; review round 1 (Codex "not ready", 5 blocking; Claude "ready after fixes", 5 blocking) → rewrite, with Christie's decisions O5/O6 → round 2 (Claude "ready after fixes"; Codex did not run, out of credits) → fixes applied. See <a href="#reviews">Reviews</a>.<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> (all phases) — a Codex confirming pass is owed (round 2 did not run).
-</div>
+  <strong>Status:</strong> <span class="status-tag ready">execution-ready: true</span> (all phases) — Christie, Oct 1, after two review rounds (both reviewers "ready after fixes" in round 2, all applied). In progress: V-0.</div>
 
 <h2>Already decided (not reopened here)</h2>
 <table>
@@ -138,7 +137,7 @@
 
 <!-- V-0 -->
 <div class="phase" id="v0">
-<h3>V-0 — Christie: identities and readings in <code>my-clay-hub</code> (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-0 — Christie: identities and readings in <code>my-clay-hub</code> (Claude verifies, read-only) <span class="status-tag ready">execution-ready: true</span></h3>
 <ol>
   <li>IAM → "View by roles", Google-provided grants shown: screenshot (the <strong>before</strong>; it should match D2-5's).</li>
   <li>Firestore → Disaster recovery: PITR on? Record it and the earliest version time (the safety checklist relies on it).</li>
@@ -166,7 +165,7 @@ Then V-0 stops; the grant is explained and removed (Christie) before V-1</div>
 
 <!-- V-1 -->
 <div class="phase" id="v1">
-<h3>V-1 — Christie: the vault bucket in <code>tinker-hq-vault</code> (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-1 — Christie: the vault bucket in <code>tinker-hq-vault</code> (Claude verifies, read-only) <span class="status-tag ready">execution-ready: true</span></h3>
 <ol>
   <li><strong>Before:</strong> <code>tinker-hq-vault-backups</code> → Configuration (location, lifecycle, soft delete, versioning, retention) and Permissions (full list); <code>tinker-hq-vault</code> IAM "View by roles". Screenshots.</li>
   <li>Create the bucket per V10/V11: first free name, <code>US</code>, Standard, uniform access, public access prevention on, soft delete 7 days, no versioning, no retention policy. Record the name.</li>
@@ -191,7 +190,7 @@ Then nothing else proceeds; the error is recorded and Christie decides the revis
 
 <!-- V-2 -->
 <div class="phase" id="v2">
-<h3>V-2 — Claude: scheduled functions in the guard (branch <code>d4-guard-schedules</code>, PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-2 — Claude: scheduled functions in the guard (branch <code>d4-guard-schedules</code>, PR) <span class="status-tag ready">execution-ready: true</span></h3>
 <ol>
   <li><strong>Prove the shapes first</strong>, offline: a Node 22 unit test that requires the installed firebase-functions 7.4.0, calls <code>onSchedule({…V5/V6…}, …)</code>, and asserts <code>__endpoint.scheduleTrigger</code> and <code>__requiredAPIs</code> whole; and the same with one retry field omitted (→ <code>null</code>). No CLI, no <code>firebase.json</code>. Also prove the Functions emulator (<code>emulators:exec --only functions</code>) loads a codebase containing an <code>onSchedule</code> (a scratch fixture with its own <code>firebase.json</code>, as <code>env-probe</code> does).</li>
   <li>V3 in <code>scripts/deploy-functions.sh</code>: JQ_MANIFEST (the allowed endpoint-key list at <code>:153-155</code> gains <code>scheduleTrigger</code>; the manifest-level <code>requiredAPIs</code> rule at <code>:158</code>; the declaration-shape check at <code>:161-164</code> branched on <code>trigger</code>, exact key sets), JQ_DRIFT, JQ_F8; and in <code>scripts/predeploy-check.sh:221-234</code>, the same branch (a unit test asserts guard and backstop agree on every fixture). <code>declarations.json</code>: the canary gains <code>"trigger": "https"</code> (its next deploy then needs an IAM reading, #61).</li>
@@ -225,7 +224,7 @@ Then it succeeds and shows "unknown (recorded before D-4)"</div>
 
 <!-- V-3 -->
 <div class="phase" id="v3">
-<h3>V-3 — Claude: the <code>vault</code> codebase and the restore runbook (branch <code>d4-vault-codebase</code>, PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-3 — Claude: the <code>vault</code> codebase and the restore runbook (branch <code>d4-vault-codebase</code>, PR) <span class="status-tag ready">execution-ready: true</span></h3>
 <ol>
   <li><code>functions/vault/</code> per V1: <code>package.json</code> + lockfile, <code>reached.js</code>, <code>index.js</code> with <code>vaultExport</code> (<code>onSchedule</code>, every V5/V6 option written out) and <code>vaultFresh</code> (<code>onRequest</code>, every V9 option written out, <code>withReached</code>). The logic lives in two pure modules with injected clients: <code>export-run.js</code> (V7/V8) and <code>freshness.js</code> (V9). The bucket name and project are constants in one file (no params; F13).</li>
   <li><code>firebase.json</code>: the <code>vault</code> entry (same pinned shape as <code>core</code>). <code>functions/declarations.json</code>: both functions. <code>functions/iam-expectations.json</code>: <code>vault-export@</code> → <code>["projects/my-clay-hub/roles/vaultExporter"]</code>, <code>vault-watch@</code> → <code>[]</code>, plus any Google agent grants V-0 recorded.</li>
@@ -255,7 +254,7 @@ Then each exports to its own prefix; both folders are complete copies</div>
 
 <!-- V-4 -->
 <div class="phase" id="v4">
-<h3>V-4 — Deploy, read back, failure-first bootstrap, first export (the Phase E gate) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-4 — Deploy, read back, failure-first bootstrap, first export (the Phase E gate) <span class="status-tag ready">execution-ready: true</span></h3>
 <p>Not started on a Saturday after 12:00 UTC or a Sunday (UTC), so the first scheduled run (Sunday 09:00 UTC) is at least a day away while the readings are done.</p>
 <ol>
   <li>V-0 … V-3 done and merged. <code>git fetch</code>; <code>deploy-functions.sh --status --codebase vault</code>; <code>--diff --codebase vault</code> pasted verbatim (stop if it holds hunks Claude didn't write).</li>
@@ -286,7 +285,7 @@ Then it refuses; Christie pauses the job; the cause is diagnosed before anything
 
 <!-- V-5 -->
 <div class="phase" id="v5">
-<h3>V-5 — The freshness alert, end to end <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-5 — The freshness alert, end to end <span class="status-tag ready">execution-ready: true</span></h3>
 <ol>
   <li>Screenshot the vault bucket's Permissions. Remove <code>vault-watch@</code>'s <code>vaultLister</code> grant → <code>vaultFresh</code> answers 500 (body: "error") → after the 6-hour window the freshness email arrives.</li>
   <li>Restore <strong>the exact binding</strong>; Permissions match the screenshot; the check passes and the incident closes.</li>
@@ -308,7 +307,7 @@ Then V-5 stops; the policy is fixed and the test repeated before the plan closes
 
 <!-- V-6 -->
 <div class="phase" id="v6">
-<h3>V-6 — Close <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>V-6 — Close <span class="status-tag ready">execution-ready: true</span></h3>
 <ol>
   <li>Resilience report row <code>#app-my-clay-hub</code>: the vault bucket, the three accounts/agents and their roles in each project, the first export, both alerts; the two <code>tinker-hq-vault</code> grants' record (V-1/V-4 screenshots + behaviour); residual risk ("weekly off-project copy since &lt;date&gt;"; V12).</li>
   <li>Memory (<code>firebase-backend-resilience-plan</code>), <code>next-session.md</code>, the Phase D plan's D-4 box marked done with a link here.</li>
@@ -425,6 +424,7 @@ Then V-5 stops; the policy is fixed and the test repeated before the plan closes
   <li><strong>Oct 1:</strong> Review round 1: Codex "not ready" (5 blocking, 8 should-fix), Claude "ready after fixes" (5 blocking, 11 should-fix). Christie: the 8-day email lands at 8 days (threshold 7 d 18 h); O5 allow a rare second complete copy; O6 the header exception for scheduled functions. Plan rewritten against both (Reviews). Round 2 next.</li>
   <li><strong>Oct 1:</strong> Round 2: Claude "ready after fixes" (3 blocking, 5 should-fix, 10 nits) — all applied (Reviews, round 2). Codex round 2 did not run: "workspace is out of credits" (stderr in reviews/). A Codex confirming pass is owed before execution-ready.</li>
   <li><strong>Oct 1:</strong> Christie bought Codex credits; Codex round 2: "ready after fixes" (2 blocking — client data shapes — 3 should-fix, 2 nits), all applied. Both reviewers have now said "ready after fixes" and every finding is applied.</li>
+  <li><strong>Oct 1:</strong> Christie: "mark it ready and start V-0" (no round 3; V-2 and V-3 each get their own implementation review). All phases execution-ready. V-0 started with its read-only readings (steps 1–3, 6).</li>
 </ul>
 
 </body>
