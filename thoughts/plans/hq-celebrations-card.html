@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Tinker HQ shows admins and managers what's coming up</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  pre { background: #f4f4f4; padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Tinker HQ shows admins and managers what's coming up</h1>
+<p><strong>Apps:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Studio Hub / Tinker HQ (<code>~/studio-hub</code>) &middot;
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v1</strong> &middot; <strong>execution-ready: false</strong> (waiting on Christie's review and decisions D1&ndash;D3)</p>
+
+<div class="status">
+  <strong>Goal:</strong> when an admin or manager opens Tinker HQ, a "Coming up" card lists every staff birthday and work
+  anniversary in the next 60 days, with 5- and 10-year (every 5th) anniversaries highlighted. Staff accounts never see it,
+  and the database rules stop them from reading the data even if the page had a bug.
+  <br><strong>Why:</strong> Christie missed Anika's 10th anniversary (Aug 20 2026). HQ is the app she opens every day, so
+  the reminder belongs there, not only in the Staff Directory.
+  <br><strong>Depends on:</strong> Phase 1 (Staff Directory Celebrations page, branch <code>claude/celebrations</code> @ <code>53d5c17</code>):
+  it provides <code>js/celebrations.js</code>, the date logic this plan reuses.
+</div>
+
+<h2>What is wrong today</h2>
+<ul>
+  <li><strong>HQ's birthday alert has never worked.</strong> <code>checkCelebrations()</code> in <code>studio-hub/js/app.js</code> reads
+    <code>staffDirectory/appData</code>&rarr;<code>staff</code>. The Staff Directory never writes a <code>staff</code> field. It writes only
+    <code>{offboardingData, lastUpdated}</code>, using <code>set()</code>, which replaces the whole doc on every offboarding save. So HQ
+    always finds an empty list and shows nothing. (Nothing was lost: staff data has always lived in the Google Sheet.)</li>
+  <li>That code also only knew <code>MM/DD</code> birthdays, looked only 7 days ahead, and had no work anniversaries.</li>
+  <li>HQ can't read the Google Sheet directly. The sheet's "published to web" link is going away (separate work, see below),
+    and pointing a second app at it would make that harder.</li>
+</ul>
+
+<h2>Design</h2>
+<h3>Data path: a small summary in Firestore, written by the Staff Directory</h3>
+<p>When someone who can write (admin, manager, or staff with <code>appAccess: staff-directory</code>) loads or refreshes the Staff Directory,
+it saves a summary to a <strong>new doc in the existing <code>staffDirectory</code> collection</strong>:
+<code>staffDirectory/celebrations</code>.</p>
+<pre>{
+  staff: [ { name: "Anika …", birthday: "8/3", startDate: "8/20/2016" }, … ],   // current staff only
+  updatedAt: "2026-10-01T15:00:00.000Z",
+  updatedBy: "&lt;uid&gt;"
+}</pre>
+<ul>
+  <li><strong>Only what the card needs:</strong> name, birthday as month/day (<em>no birth year</em>), and start date. No emails, phones,
+    addresses or anything else from the sheet. Start dates stay in the sheet's own wording (e.g. "July 2022") so the shared
+    date logic reads them identically in both apps.</li>
+  <li><strong>Written only when it changes:</strong> the app compares against what it last read and skips the write if nothing changed,
+    so opening the Directory doesn't write every time.</li>
+  <li><strong>A whole-doc <code>set()</code> is correct here.</strong> The summary replaces itself entirely each time. It's a separate doc from
+    <code>appData</code>, so it can never clobber offboarding progress (and vice versa).</li>
+  <li><strong>Going stale is mild.</strong> Birthdays and anniversaries repeat yearly, so an old summary still predicts correctly. It only
+    misses people hired or offboarded since the last time a manager opened the Directory. The card shows "Staff list updated
+    N days ago", and goes amber past 30 days with a link to open the Directory.</li>
+</ul>
+
+<h3>Who can see it: rules first, page second</h3>
+<table>
+  <tr><th>Layer</th><th>What enforces "not staff"</th></tr>
+  <tr><td>Firestore rules (unchanged)</td><td><code>match /staffDirectory/{docId}</code>: read only if <code>isManagerOrAbove() || hasAppAccess('staff-directory')</code>.
+    A plain staff account gets permission-denied on the summary. <strong>No rules change; no guard deploy.</strong></td></tr>
+  <tr><td>HQ page</td><td>The card is built only inside <code>renderAdminDashboard()</code>, which runs only for <code>role === 'admin' || 'manager'</code>.
+    <code>renderStaffDashboard()</code> never builds it or fetches the summary.</td></tr>
+</table>
+<p>Staff who hold the <code>staff-directory</code> app-access override can read the summary (they can already read and edit all of
+<code>staffDirectory</code>), but they get the staff dashboard, so they don't see the card.</p>
+
+<h3>HQ card</h3>
+<ul>
+  <li>Title "🎉 Coming up". Rows: date &middot; name &middot; "🎂 Birthday" / "🎉 3 years" / "⭐ 10 years" &middot; "in 12 days". Milestone rows get the same orange stripe as the Directory.</li>
+  <li>Empty state: "No birthdays or anniversaries in the next 60 days." No summary yet: "Open the Staff Directory once to load the staff list" (with link).</li>
+  <li>"See all →" opens the Staff Directory.</li>
+  <li>Placement: right after the quick-stats row and before Priority Alerts. Collapsible, like the alert feed (state kept in localStorage).</li>
+</ul>
+
+<h3>Shared date logic</h3>
+<p>Copy <code>tinker-staff-directory/js/celebrations.js</code> to <code>studio-hub/js/celebrations.js</code> unchanged, with a header line naming
+the source file. Two copies of ~200 lines are simpler than a shared package for two static sites. Both copies carry the same
+tests, so drift shows up as a failing test.</p>
+
+<h2>Decisions for Christie</h2>
+<div class="decision-needed"><strong>D1 &mdash; Birthday-day pop-up in HQ.</strong> HQ has an old "It's X's birthday! 🎂" confetti pop-up that never fired,
+because of the bug above. Repointing HQ at the summary would switch it on for admins and managers on the day itself.
+<em>Recommend:</em> keep the pop-up for <strong>milestone anniversaries only</strong>, and show birthdays on the card only. Alternatives: keep it for birthdays too, or remove it.
+The Tinker / Clay Hub studio-birthday pop-ups are unchanged either way.</div>
+<div class="decision-needed"><strong>D2 &mdash; What the card lists.</strong> <em>Recommend:</em> birthdays + every anniversary for 60 days, milestones highlighted
+(matches the Directory). Alternative: anniversaries only, since birthdays are already on the shared calendar.</div>
+<div class="decision-needed"><strong>D3 &mdash; Ship Phase 1 now or with 2a.</strong> Each Netlify deploy costs credits. <em>Recommend:</em> ship Phase 1 + 2a in
+<strong>one</strong> Staff Directory deploy. Alternative: deploy Phase 1 now so the Celebrations page is live today (one extra deploy).</div>
+
+<h2>Phases</h2>
+<div class="phase">
+<h3>2a &mdash; Staff Directory writes the summary</h3>
+<ul>
+  <li><code>firebase-data.js</code>: <code>loadCelebrationsSummary()</code> and <code>saveCelebrationsSummary(summary)</code> on <code>staffDirectory/celebrations</code>. The save is awaited; errors are logged and shown as a small non-blocking notice, never a silent pass.</li>
+  <li><code>app.js</code>: after <code>fetchStaffData()</code>, if the user can write, build the summary (current staff; drop blank fields; birthday reduced to month/day). Write only if it differs from the stored one.</li>
+  <li>Never written by read-only staff (the rules would refuse anyway).</li>
+  <li>Tests: summary builder (no birth year, no extra fields, blanks dropped, past/OUTDATED excluded) in <code>tests/</code>.</li>
+</ul>
+<div class="bdd">Given a manager opens the Directory &rarr; the summary exists with only name/birthday(M/D)/startDate for current staff.<br>
+Given nothing changed since the last open &rarr; no write happens.<br>
+Given a read-only staff user opens the Directory &rarr; no write is attempted.</div>
+</div>
+<div class="phase">
+<h3>2b &mdash; Tinker HQ card</h3>
+<ul>
+  <li>Add <code>js/celebrations.js</code> (copy) and load it in <code>index.html</code>; <strong>add it to <code>scripts/build-dist.sh</code></strong> (otherwise the deploy ships without it, and <code>check-live</code> should catch that).</li>
+  <li><code>renderAdminDashboard()</code>: build the card and fetch <code>staffDirectory/celebrations</code>. Escape every name (HTML-escape helper; names come from a Google Form).</li>
+  <li><code>checkCelebrations()</code>: read the summary instead of <code>appData.staff</code>, per D1. Skip the read entirely for non-admin/manager users (today it fires and fails with permission-denied for plain staff).</li>
+  <li>Tests: copy the date-logic tests; add a rules test pinning that a plain staff user <em>cannot</em> read <code>staffDirectory/celebrations</code> and a manager can (tests only, no rules change).</li>
+</ul>
+<div class="bdd">Given an admin/manager opens HQ &rarr; "Coming up" card lists the next 60 days; milestones highlighted.<br>
+Given a staff user opens HQ &rarr; no card, and no request for <code>staffDirectory/celebrations</code> in the network log.<br>
+Given the summary is 31+ days old &rarr; card shows an amber "updated 31 days ago" with a link to the Directory.</div>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+  <li>New collection? <strong>No</strong>: a new doc in <code>staffDirectory</code>, covered by the existing rule. No rules edit, no guard deploy.</li>
+  <li>Writes: one whole-doc <code>set()</code> on a doc owned solely by this feature; awaited; empty fields stripped; never touches <code>appData</code>.</li>
+  <li>No deletes, no bulk import. Nothing to snapshot first.</li>
+  <li>Studio Hub's <code>npm test</code> (rules suite) passes before the HQ deploy, even though rules are unchanged.</li>
+  <li>Deploys (each needs Christie's OK, from a clean pushed tree with the sha as the message): Staff Directory once (D3) &rarr; HQ once.</li>
+</ul>
+
+<h2>Not in this plan (tracked separately)</h2>
+<ul>
+  <li><strong>Unpublishing the Staff Info sheet.</strong> The published CSV link exposes addresses, emergency contacts, medical and background-check
+    columns to anyone who has the link. This plan doesn't depend on that link, so the fix can go either way.</li>
+  <li><strong>Old Staff Directory cards don't escape sheet text.</strong> Names and positions go into the page as HTML; Celebrations code escapes, the old cards don't.</li>
+  <li><strong>Staff Directory deploy publishes the whole repo folder</strong> (incl. <code>tests/</code>, <code>PROJECT-SUMMARY.md</code>). Moving it to a <code>dist/</code>-only deploy like Classbook/Ticker/HQ is a small follow-up.</li>
+</ul>
+
+<h2>Resume instructions</h2>
+<p>Start from Staff Directory branch <code>claude/celebrations</code>. Do 2a on that branch (or a branch from it once merged). For 2b, create a fresh
+worktree of <code>studio-hub</code> from <code>origin/main</code>. The shared checkout is used by other sessions and is behind origin.</p>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li>Oct 1 2026: Data path = Firestore summary written by the Staff Directory (not HQ reading the sheet), so the card survives unpublishing the sheet and the rules enforce manager-only.</li>
+  <li>Oct 1 2026: Card for admin + manager only (Christie).</li>
+  <li>Oct 1 2026: Calendar: 5/10-year anniversaries imported into the existing shared Tinker calendar. No new calendar; email reminders added per event (Christie).</li>
+</ul>
+</body>
+</html>
