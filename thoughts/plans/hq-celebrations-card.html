@@ -22,8 +22,8 @@
 <body>
 <h1>Plan: Tinker HQ shows admins and managers what's coming up</h1>
 <p><strong>Apps:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Studio Hub / Tinker HQ (<code>~/studio-hub</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v8</strong> after design review rounds 1&ndash;5 (round 1: Codex full, Claude sandboxed out; rounds 2&ndash;3: Codex + Claude full; round 4: Claude only, because Codex was out of credits; round 5: both (Codex: no blocking). Every finding
-verified against the code and folded in. See the Decisions log) &middot; <strong>execution-ready: false</strong> (design review round 6 running)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v9</strong> after design review rounds 1&ndash;6 (round 1: Codex full, Claude sandboxed out; rounds 2&ndash;3: Codex + Claude full; round 4: Claude only, because Codex was out of credits; round 5: both (Codex: no blocking); round 6: Claude "execution-ready: yes" after text fixes, Codex one blocking contradiction in the text. All folded in. Every finding
+verified against the code and folded in. See the Decisions log) &middot; <strong>execution-ready: false</strong> (all review findings folded in; waiting on Christie's go-ahead)</p>
 
 <div class="status">
   <strong>Goal:</strong> when an admin or manager opens Tinker HQ, a "Coming up" card lists every staff birthday and work
@@ -56,13 +56,16 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
       current staff only. Each row has <strong>exactly</strong> these keys, pinned by a unit test, because rules can't inspect list items (R3 Claude-B2).
       Nothing else from the sheet row (address, medical, phone…) can get in.
       <ul>
-        <li><code>id</code> is always <code>row-&lt;slug of email, or name if no email&gt;</code>, independent of whether the row is linked, so it doesn't change when
+        <li><code>id</code> is always <code>row-&lt;trimmed lowercased email&gt;</code> (lossless, not slugged, so <code>sam.one@</code> and <code>sam-one@</code> stay distinct), or
+          <code>row-name-&lt;lowercased name&gt;</code> when there's no email. A collision gets <code>-2</code>, <code>-3</code>… in sheet order (R6 Codex-M2, Claude-L3). It's independent of whether the row is linked, so it doesn't change when
           someone gets an account (R5 Codex-L1). <code>uid</code> is carried separately when linked. It's never the sheet's <code>staff-&lt;index&gt;</code> id, which shifts when rows
           are inserted; a test pins the format (R5 Claude-L1). <code>id</code> drives once-keys; dedupe uses <code>uid</code> when present (R3 Codex-5, Claude-L2).</li>
         <li><code>birthday</code> is month/day only (<code>"8/3"</code>). A month-only sheet birthday is kept as <code>"7/1"</code> <em>plus</em>
           <code>birthdayMonthOnly:true</code>, so the card still lists it with "≈ month only" (R3 Claude-M1, Codex-2). <code>getCelebrations()</code> treats
           <code>parsed.monthOnly || staff.birthdayMonthOnly</code> as month-only.</li>
         <li><code>startDate</code> keeps the sheet's wording. <code>status:'current'</code> lets the shared <code>getCelebrations()</code> work on rows as-is (R2-B3).</li>
+        <li>Summary rows use the same caps as records: name truncated, and an over-long startDate dropped (and listed in Needs attention), so one huge cell can't push
+          <code>_summary</code> past Firestore's doc-size limit (R6 Codex-L4).</li>
         <li><code>updatedAt</code> = when the content last changed. <code>checkedAt</code> = when a manager's load last confirmed it (R3 Claude-M2, Codex-3).
           <code>updatedBy</code> = who last <em>wrote</em> the doc, including a <code>checkedAt</code>-only refresh, not who last changed content (R5 Claude-L9).</li>
       </ul></td>
@@ -71,7 +74,8 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
       <td>Current: <code>{ name, birthday?, startDate?, current:true, updatedAt }</code>. No birth year; <code>birthday</code> is <code>M/D</code>.
       Month-only birthdays are <em>left out</em>, so nobody gets "Happy Birthday" on a guessed day (R2-M6). Month-only <strong>start dates are kept</strong>
       (sheet wording, e.g. "July 2022"), and the milestone greeting fires on <strong>the 1st of that month</strong> (D6, Christie). The card marks both "≈ month only".
-      <code>startDate</code> only if it parses with a year and is &le; 40 characters; <code>name</code> truncated to 120. A built record can't violate the rules' caps; a test checks every record against them (R3 Claude-B1).
+      <code>startDate</code> only if it parses with a year and is &le; 32 <strong>UTF-8 bytes</strong>; <code>name</code> truncated to 100 UTF-8 bytes. That leaves headroom under the rules'
+      120/40 caps, however the rules count accented characters (R6 Claude-L6). A built record can't violate the rules' caps; a test checks every record against them (R3 Claude-B1).
       <br>Leaver: exactly <code>{ current:false, updatedAt }</code>, which drops name and dates (R2-B4).</td>
       <td>That person (self only) + admins/managers</td></tr>
 </table>
@@ -110,7 +114,7 @@ verified against the code and folded in. See the Decisions log) &middot; <strong
     This is the same failure shape as the Supply Low List incident.</li>
   <li><strong>Going stale is mild.</strong> Dates repeat yearly, so an old summary still predicts correctly; it misses only hires and leavers since
     the last manager load. The card shows the row count and <code>checkedAt</code>, e.g. "24 staff &middot; checked 2 days ago" (amber past 30 days, with a link
-    to the Directory). A 0-row card is visibly different from a quiet 60 days (R3 Claude-L8). A leaver marked P disappears on the next manager load. <code>new Date(updatedAt)</code> is safe because it's a full ISO instant;
+    to the Directory). The writer never saves an empty summary (the gate blocks zero rows), but the card still handles <code>staff: []</code> as "Staff list is empty", tested, so a future writer change can't produce a cheerful empty card (R3 Claude-L8, R6 Claude-L4). A leaver marked P disappears on the next manager load. <code>new Date(updatedAt)</code> is safe because it's a full ISO instant;
     there's a code comment so nobody "fixes" it (R2-L11).</li>
 </ul>
 
@@ -153,9 +157,9 @@ match /staffCelebrations/{docId} {
     return v is string &amp;&amp; v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$') &amp;&amp; v.size() &lt;= 30;
   }
   function isCelebrationRecord(d) {
-    return d.get('current', null) == false
-      ? (d.keys().hasOnly(['current', 'updatedAt']) &amp;&amp; isIsoInstant(d.updatedAt))
-      : (d.get('current', null) == true
+    return ('current' in d &amp;&amp; d.current == false)
+      ? (d.keys().hasOnly(['current', 'updatedAt']) &amp;&amp; d.keys().hasAll(['current', 'updatedAt']) &amp;&amp; isIsoInstant(d.updatedAt))
+      : ('current' in d &amp;&amp; d.current == true
          &amp;&amp; d.keys().hasOnly(['name', 'birthday', 'startDate', 'current', 'updatedAt'])
          &amp;&amp; d.keys().hasAll(['name', 'current', 'updatedAt'])
          &amp;&amp; isIsoInstant(d.updatedAt)
@@ -274,7 +278,7 @@ The tests are jest files <strong>at the studio-hub repo root</strong>, never und
           <li>an oversize name or startDate;</li>
           <li>a birthday with a year (<code>10/4/1990</code>);</li>
           <li>a non-ISO <code>updatedAt</code>;</li>
-          <li>a <code>current:false</code> record that keeps a name;</li>
+          <li>a <code>current:false</code> record that keeps a name, or that has no <code>updatedAt</code>;</li>
           <li>a summary with a foreign <code>updatedBy</code>, a missing <code>checkedAt</code>, a non-list or 301-item <code>staff</code>;</li>
           <li>a record shape written at <code>_summary</code>, and a summary shape written at a uid (the ternary both ways);</li>
           <li>an authenticated user whose uid is <code>_summary</code> (with a seeded <code>users/_summary</code> staff doc, so the test fails for the right reason) doing a self-get (R4-L9);</li>
@@ -294,21 +298,29 @@ The tests are jest files <strong>at the studio-hub repo root</strong>, never und
   <li>Branch from <code>main</code>.</li>
   <li><code>celebrations.js</code>: add <code>recentOccurrence()</code> and the <code>birthdayMonthOnly</code> handling. Add pure builders
     <code>buildSummary(staffMembers, links)</code>, <code>buildRecords(staffMembers, users, existing)</code> (returns <code>{records, leavers, needsAttention}</code>),
-    <code>planCelebrationWrites(...)</code> (the chunked write list, or null when the sanity gate fails), and <code>canWriteCelebrations(user)</code>, all in <code>js/celebrations-sync.js</code>.</li>
+    <code>planCelebrationWrites(...)</code> (the chunked write list, or null when the sanity gate fails), and <code>canWriteCelebrations(user)</code>, all in <code>js/celebrations-sync.js</code>, with the same <code>typeof module !== 'undefined'</code> exports guard so <code>node --test</code> can require it (R6 Claude-L5).
+    Writes are plain <code>batch.set(ref, data)</code>, never <code>{merge:true}</code>: a merged leaver would keep its name, be refused, and stall every load (R6 Claude-L2).</li>
   <li><code>firebase-data.js</code>: new functions with <strong>explicit</strong> refs <code>staffCelebrations/_summary</code> and <code>staffCelebrations/&lt;uid&gt;</code>.
     They never call <code>saveDataToFirestore()</code> (hardcoded to <code>appData</code>). Chunked <code>db.batch()</code> commits, records first and summary last; failure &rarr; one notice and stop; the next load reconciles.</li>
+  <li><code>app.js</code>: <code>fetchStaffData()</code> currently discards <code>detectColumns()</code>'s result. Keep it as module-level <code>lastColumnMap</code> + <code>lastHeaders</code>.
+    <code>planCelebrationWrites(...)</code> takes the column map as an argument, so the required-column gate and the header-binding display use the <em>real</em> map,
+    never "are the values empty". <code>detectColumns</code> binds <code>name</code> to the first header containing "name", so the visible binding is the real protection for that field (R6 Claude-M3).</li>
   <li><code>app.js</code>: after <code>fetchStaffData()</code>, if admin/manager and the sanity gate passes, read <code>users</code> + the whole <code>staffCelebrations</code> collection, write changed
     records, leavers, and the summary if changed (or if <code>checkedAt</code> is &gt; 24h old). Any prerequisite read failing &rarr; no writes at all. Add the "Needs attention" section.</li>
   <li>Tests (<code>node --test</code>), each consuming the builders' real output:
     <ul>
       <li><code>getCelebrations(buildSummary(rows).staff, fixedToday, 60)</code> returns the expected events (R2-B3);</li>
       <li>no birth year anywhere; month-only birthday &rarr; omitted from the record and flagged in the summary;</li>
-      <li>zero sheet rows, zero matches, or any one required column missing (one test per column) &rarr; <code>planCelebrationWrites</code> returns null: no records, no leavers, no summary;</li>
+      <li>zero sheet rows, any one required column missing (one test per column), a failed prerequisite read, or an unconfirmed count swing &rarr; <code>planCelebrationWrites</code>
+        returns null: no records, no leavers, no summary. (Zero <em>matches</em> is different: summary only, see below);</li>
       <li><strong>one predicate mirrors the rules exactly</strong> (key sets, caps, ISO shape, <code>updatedBy === currentUser.uid</code>, <code>staff.length &le; 300</code>).
         <code>planCelebrationWrites</code> runs every doc through it before writing, and the tests run every emitted doc through the same function (R5 Claude-M3). Over 300
         staff is flagged, not written;</li>
       <li>the commit loop is dependency-injected and tested with a fake: chunks are awaited in order, records come before <code>_summary</code>, a rejected chunk stops
         everything after it (no <code>_summary</code>), a permission-denied prerequisite read means zero writes, and exactly one notice is shown (R5 Codex-M3);</li>
+      <li>two <code>users</code> docs share one email &rarr; that email is skipped, no record, listed in Needs attention (R6 Claude-L9);</li>
+      <li>colliding ids: <code>sam.one@</code> vs <code>sam-one@</code> stay distinct; two emailless "Sam Lee" rows &rarr; <code>row-name-sam lee</code> and <code>…-2</code> (R6 Codex-M2, Claude-L3);</li>
+      <li>an oversized name or startDate cell is capped or dropped in both the summary and the record (R6 Codex-L4);</li>
       <li>email normalisation: <code>" Shelley@Example.com "</code> matches <code>shelley@example.com</code>; a blank sheet email plus a users doc with no email &rarr; no record (R5 Codex-L2, Claude-M2);</li>
       <li>zero matches with good columns and 24 rows &rarr; summary written, no records, no leavers, everyone in Needs attention (R5 Claude-B1);</li>
       <li>no existing summary and 24 rows &rarr; written without confirmation (R5 Claude-M4);</li>
@@ -349,8 +361,13 @@ Given nothing changed since the last load &rarr; no writes.</div>
 <ul>
   <li>Fresh worktree from <code>origin/main</code>. Add <code>js/celebrations.js</code> (copy) and its <code>&lt;script&gt;</code> tag before <code>js/app.js</code>.
     <code>build-dist.sh</code> already archives <code>js/</code>, so no change there.</li>
-  <li><code>renderAdminDashboard()</code>: the card, after quick stats and before Priority Alerts, collapsible (localStorage).</li>
+  <li><code>index.html</code>: add <code>&lt;div id="celebrations-card" class="hidden"&gt;&lt;/div&gt;</code> between <code>.welcome-section</code> and <code>#departments-container</code>.
+    <code>renderAdminDashboard()</code> only unhides it with a "Loading…" placeholder. The <code>_summary</code> read in <code>checkCelebrations()</code> (which runs on the existing 1s
+    <code>setTimeout</code> from <code>showHub()</code>) fills it and drives the pop-up from the same read. <code>renderStaffDashboard()</code> and demo mode keep it hidden.
+    It's collapsible (localStorage). It is <strong>not</strong> rendered inside <code>#departments-container</code>, which a studio-filter click clears (R6 Claude-M1).</li>
   <li><code>checkCelebrations()</code>: rebuilt as above (own record by uid; summary for admin/manager; one aggregated pop-up; occurrence-date once-keys).</li>
+  <li><code>showCelebration(message, className)</code> gets a new signature that takes a list of lines, each a child element set with <code>textContent</code>. Its CSS
+    (<code>styles.css</code> celebration-message rules, including the mobile overrides) is reworked for several lines (R6 Claude-L8).</li>
   <li>Remove the dead code: <code>showUpcomingBirthdaysNotification()</code>, <code>parseBirthday()</code>, <code>getDaysUntil()</code>, the <code>appData.staff</code> read,
     and the <code>#admin-notifications</code> birthday use. The now-unused <code>#admin-notifications</code> element and its CSS are removed too (nothing else writes to it).
     <code>isSameDate()</code> stays for the studio birthdays (R2-L7, R3 Claude-L9).</li>
@@ -367,7 +384,15 @@ Given nothing changed since the last load &rarr; no writes.</div>
       <li>a studio birthday on the same day as a staff birthday &rarr; both;</li>
       <li>an admin's own birthday isn't listed twice;</li>
       <li>once-keys: shown Wednesday for Sunday &rarr; not Thursday, and a birthday doesn't suppress a milestone (R2-M1);</li>
-      <li>the record path is <code>staffCelebrations/&lt;uid&gt;</code> (R2-B2).</li>
+      <li>the record path is <code>staffCelebrations/&lt;uid&gt;</code> (R2-B2);</li>
+      <li>an orchestration smoke test with fake Firestore and localStorage (R6 Codex-M3):
+        <ul>
+          <li>a staff init reads only <code>staffCelebrations/{ownUid}</code>; a manager init also reads <code>_summary</code>;</li>
+          <li><strong>nobody</strong> reads <code>staffDirectory/appData</code> any more (R6 Claude-L9);</li>
+          <li>card and pop-up output reach <code>#celebrations-card</code> and the celebration modal;</li>
+          <li><code>index.html</code> loads <code>celebrations.js</code> and <code>celebrations-ui.js</code> before <code>app.js</code>;</li>
+          <li><code>npm run build:dist</code> output contains both files.</li>
+        </ul></li>
     </ul></li>
 </ul>
 <div class="bdd">Given Shelley signs in to HQ on her birthday &rarr; "🎂 Happy Birthday, Shelley!" with confetti; no card.<br>
@@ -386,14 +411,16 @@ Given no manager has opened the Directory for 31+ days &rarr; amber "24 staff &m
 <ul>
   <li>New collection <code>staffCelebrations</code>: rule added, tested and deployed through the studio-hub guard (sha phrase) <em>before</em> any code writes to it.</li>
   <li><code>tinker-hq-apps</code> rules affect every staff app. The change only <em>adds</em> one new match block; no existing block or helper is edited.</li>
-  <li>Writes: chunked <code>db.batch()</code> commits (&le; 8 docs each, the size proven by a rules test; summary last) of whole-doc <code>set()</code>s on docs owned solely by this feature. Every doc is pre-checked against the rule shapes,
-    empty fields stripped, written only when changed, behind the sanity gate (rows, matches, required columns). Never <code>appData</code>.</li>
+  <li>Writes: chunked <code>db.batch()</code> commits of exactly <code>CELEBRATION_CHUNK = 5</code> docs maximum (5 writes &times; &le;2 <code>users</code> lookups = 10, half the 20-call limit;
+    the rules tests prove a 5-doc manager batch succeeds, with no upper-bound assertion; summary last) of whole-doc <code>set()</code>s (never <code>{merge:true}</code>) on docs owned solely by this feature. Every doc is pre-checked against the rule shapes,
+    empty fields stripped, written only when changed, behind the sanity gate (rows, required columns, count swing). Zero account matches suppresses only records/leavers. Never <code>appData</code>.</li>
   <li>No deletes. No bulk import. Nothing to snapshot first; the first write creates the collection.</li>
   <li>Full studio-hub <code>npm test</code> passes before the rules deploy and before the HQ deploy.</li>
   <li>Netlify deploys (Christie's OK each, clean pushed tree, sha as message): Staff Directory once, HQ once. The <strong>Staff Directory</strong> deploys only from an archive
     of the app files, never the repo folder (its <code>.netlify</code> config publishes the whole folder, including <code>PROJECT-SUMMARY.md</code> with the sheet's edit link) (R5 Claude-M6):
     <code>git archive --format=tar HEAD index.html assets css js | tar -x -C "$DIST" &amp;&amp; netlify deploy --prod --dir "$DIST" --site ecc04245-1ceb-437b-a159-64037447496a --message "$(git rev-parse HEAD)"</code>,
-    then compare each live file byte-for-byte. HQ uses its own <code>npm run deploy</code>.</li>
+    then compare each live file byte-for-byte. Immediately before, confirm the site id is <code>tinker-staff-directory</code> with a read-only <code>netlify api getSite</code> (Phase 1 deploy used this id; R6 Claude-L7).
+    HQ uses its own <code>npm run deploy</code>.</li>
   <li><strong>Between the Directory and HQ deploys:</strong> open the Directory once as an admin and confirm <code>_summary</code> exists with the right row count and the "Linked N of M" figure (R5 Claude-L10).</li>
 </ul>
 
@@ -490,6 +517,18 @@ Check the Decisions log before acting on any recommendation box.</p>
       <li>Codex-L1: linkage-independent id;</li>
       <li>Codex-L2 and Claude-L1&ndash;L10.</li>
     </ul></li>
+  <li>Oct 1 2026, review round 6 (Claude: no blocking, "execution-ready: yes" after text fixes; Codex: one blocking text contradiction). Accepted all:
+    <ul>
+      <li>Codex-B1: zero matches is summary-only everywhere;</li>
+      <li>Claude-M1: one card home, <code>#celebrations-card</code>, filled by <code>checkCelebrations()</code>;</li>
+      <li>Claude-M2 / Codex-L5: checklist matches the chunk of 5;</li>
+      <li>Claude-M3: keep the real column map;</li>
+      <li>Codex-M2 / Claude-L3: lossless, collision-suffixed ids;</li>
+      <li>Codex-M3: orchestration smoke test;</li>
+      <li>Codex-L4: summary-side caps;</li>
+      <li>Claude-L1&ndash;L9.</li>
+    </ul>
+    No design or rules-access change. This is the end of the design review loop: remaining findings across rounds 5&ndash;6 were consistency and test-coverage items.</li>
   <li>Oct 1 2026: D7 = staff sign in with the sheet email ("I think"); no manual linking. The "Linked N of M" figure surfaces exceptions (Christie).</li>
   <li>Oct 1 2026: D6 = month-only start dates trigger the personal milestone greeting on the 1st of the month; month-only birthdays don't (Christie). Changed while round 5 was reading v7; no rules impact.</li>
   <li>Oct 1 2026: D5 = no <code>users.email</code> pin. Staff editing their own record from the dev console is too unlikely to justify a shared-rule change; accepted risk (Christie).</li>
