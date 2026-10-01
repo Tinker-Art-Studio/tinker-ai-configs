@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Parked: Ticker data rules that match what the app lets staff do</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .parked { background: #f3f0ff; border: 1px solid #8b7fd1; border-radius: 8px; padding: 10px 14px; margin: 14px 0; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Parked: Ticker data rules that match what the app lets staff do</h1>
+<p><strong>Apps:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) and the shared rules file
+(<code>/Users/christiehubley/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
+<strong>Written:</strong> Oct 1 2026 &middot; <strong>Status: PARKED</strong> (hardening to do later) &middot;
+<strong>execution-ready: false</strong>. Not yet a reviewed plan.</p>
+
+<div class="parked">
+  <strong>Why it's parked:</strong> Christie decided on Oct 1 2026 to treat this as hardening for later, after
+  the stored-XSS fix shipped (plan <code>ticker-escape-html-attribute-xss</code>, deploy <code>01c1b86</code>). Nothing
+  here is approved. To pick it up, run <code>/planning-workflow</code>, turn this note into a full plan (phases, BDD,
+  emulator tests), get second-model reviews, and then get Christie's written Ticker approval plus the sha approval for
+  the rules.
+</div>
+
+<div class="status">
+  <strong>Goal:</strong> the database refuses what the app's screens never let a staff member do. Today the screens
+  enforce the limits and the rules don't, so anyone signed in can skip the screens.
+</div>
+
+<h2>How it works today</h2>
+<p>Every staff app talks to Firestore straight from the browser. The app's screens decide what a staff member is
+<em>shown</em> how to do. The rules decide what the database <em>accepts</em>. A signed-in person can skip the
+screens and write to the database directly with their own login.</p>
+<table>
+  <tr><th>Data</th><th>What the app lets staff do</th><th>What the rules actually allow staff to do</th></tr>
+  <tr><td><b>Roster</b> (<code>timeclock_settings/employees</code>, one doc listing everyone)</td>
+  <td>Claim their own name once</td>
+  <td><b>Rewrite the whole roster</b>: rename, archive or delete anyone, or claim someone else's entry
+  (<code>allow write: if hasAppAccess('timeclock') &amp;&amp; docId == 'employees'</code>). The app's claim
+  (<code>checkNameClaim</code>, <code>handleClaimName</code>) saves the entire list via <code>saveEmployeeRoster</code>
+  (<code>.set({ roster, updatedAt })</code>), so the rule must allow writing all of it.</td></tr>
+  <tr><td><b>Clock entries</b> (<code>timeclock_entries</code>)</td>
+  <td>Clock in/out; ask for a time correction (<code>submitChangeRequest</code>), which a manager approves</td>
+  <td>Create entries with <b>any timestamp</b>; <b>change any field on their own entries</b> (times, type, the
+  correction's status). The update rule checks only <code>resource.data.uid == request.auth.uid</code>, so it doesn't
+  even stop the <code>uid</code> being changed. Nothing in the rules checks pay-period locks.</td></tr>
+  <tr><td><b>Time-off requests</b> (<code>timeclock_timeoff</code>)</td>
+  <td>Submit, edit, withdraw, comment</td>
+  <td>Change <b>any field on their own request</b>, including <code>status: 'approved'</code> and confirming their own
+  sub. The Sep 29 "only a manager confirms a sub" guarantee is app-only.</td></tr>
+  <tr><td><b>Streaks</b> (<code>timeclock_streaks</code>)</td><td>Updated automatically by their clock-ins</td>
+  <td>Set any value on their own streak doc (<code>saveStreakData</code> merges client-computed values)</td></tr>
+  <tr><td><b>HFWA</b> (sick leave)</td><td>Submit</td><td>Create only (any fields); a manager still reviews</td></tr>
+  <tr><td><b>Their own profile</b> (<code>users</code>)</td><td>&mdash;</td><td>Change their own name and email; role,
+  app access, studios and active are pinned</td></tr>
+  <tr><td><b>Doc ids</b></td><td>The app uses <code>.doc()</code> (random ids)</td><td>Create rules don't constrain
+  the document id, so staff can choose any id. This was handled display-side on Oct 1 (ids are escaped).</td></tr>
+</table>
+
+<h2>Exactly how it could happen</h2>
+<p>No hacking tools or special skills, only a signed-in browser.</p>
+
+<h3>Path 1: a staff member misusing their own login</h3>
+<ol>
+  <li><b>They sign in to Ticker normally</b>, on a laptop with any desktop browser.</li>
+  <li><b>They open the browser's developer console</b>: it's built into every desktop browser, one keyboard shortcut
+  away (⌥⌘J in Chrome on a Mac), and needs no installs or admin rights.</li>
+  <li><b>The app's own database connection is right there.</b> Ticker loads Firebase as a plain browser script
+  (the <code>firebase</code> global from the compat SDK), so the same object the app saves with is reachable from the
+  console, already signed in as that person.</li>
+  <li><b>They type a single line</b> in the form "in clock entries, document X, set field Y to Z". It's the same kind
+  of save the app does when you tap a button, just with values the app would never send. Finding the document's id is
+  easy, because the app loads their own entries to display them.</li>
+  <li><b>Firestore checks the rules, not the app.</b> The rules only ask "is this their own entry?", the answer is
+  yes, and the write is accepted, saved, and shown to managers like any other entry.</li>
+</ol>
+<p><b>What that one line could do today:</b></p>
+<ul>
+  <li>move their own clock-in earlier, or clock-out later, in the current pay period</li>
+  <li>mark their own time-correction request "approved"</li>
+  <li>set their own time-off request to "approved", or mark their sub "confirmed"</li>
+  <li>for the roster, rewrite the whole list for everyone</li>
+</ul>
+<p><b>What they can't do, even today:</b></p>
+<ul>
+  <li>touch anyone else's clock entries or time-off</li>
+  <li>change their own role or app access</li>
+  <li>edit schedules, pay-period locks, or other managers' data</li>
+</ul>
+<p>It's a few minutes of effort for someone who has used a browser console before, or who follows a short how-to for
+Firebase apps. It isn't something anyone does by accident.</p>
+<p><b>Would anyone notice?</b> Probably not right away. The edited entry looks like any other, and nothing in Ticker
+records who last changed it or what it was before. Firestore doesn't keep a change history by default.</p>
+
+<h3>Path 2: a stolen login</h3>
+<p>Someone else gets into a staff account and has exactly the same powers as that staff member. The realistic ways:</p>
+<ul>
+  <li><b>The exposed <code>user-import.html</code> passwords.</b> The starting passwords for 9 named staff were on a
+  public page until <code>65e3c41</code> stopped publishing it (Sep 30). Anyone who never changed theirs still has a
+  login that could have been read. <b>This is a prerequisite, separate from this plan: reset those passwords, or
+  confirm each was changed.</b></li>
+  <li>A shared or studio computer left signed in.</li>
+  <li>A reused password leaked from another site, or a phishing email.</li>
+</ul>
+<p>A stranger with a Ticker login could also rewrite or wipe the roster for everyone. In the app that would look like
+"the data disappeared" for the whole studio.</p>
+
+<h3>Why the risk is low, and why it's still worth doing</h3>
+<p>It needs either a staff member willing to falsify their own records, which is a trust and HR issue more than a
+technical one, or a compromised account. Every change is limited to that person's own records, except the
+roster.</p>
+<p>But Ticker's clock entries are <b>payroll's source of truth</b>, approvals should mean what they say, and today it
+can happen with only a browser and nothing would flag it.</p>
+
+<h2>What would change (direction, not yet designed)</h2>
+<table>
+  <tr><th>Data</th><th>After</th></tr>
+  <tr><td><b>Clock entries</b></td><td>A staff member's update can touch <b>only the correction request</b>
+  (<code>diff(resource.data).affectedKeys().hasOnly(['changeRequest'])</code>), only as a new <code>pending</code>
+  request, and can't change the <code>uid</code>. Times, hours and approval stay manager-only. Creates are limited to
+  known entry types and their own uid. Consider a <code>createdAt == request.time</code> stamp for an audit trail, since
+  timestamps are client-generated by design.</td></tr>
+  <tr><td><b>Time off</b></td><td>A staff member's update is limited to the fields the edit, withdraw and comment
+  screens use. Status can only move to <code>withdrawn</code>, coverage confirmation stays manager-only, and the
+  <code>uid</code> is pinned. This turns the sub-confirm guarantee into a real one.</td></tr>
+  <tr><td><b>Roster</b></td><td>Staff can no longer write the roster doc directly. Rules can't compare a list entry by
+  entry, so the claim needs a new route. Either (a) a small server function that verifies the caller and checks "this
+  entry is unclaimed and it's you" before writing, or (b) split the roster into one doc per person, which is a data
+  migration and falls under the <em>Removing a data source</em> rule. <b>This is the biggest design decision.</b> Option
+  (a) also changes Ticker's code, so it needs Ticker approval.</td></tr>
+  <tr><td><b>Streaks</b></td><td>Type and range checks only (numbers, non-negative). Streaks are a game, not pay.</td></tr>
+  <tr><td><b>Kiosk</b></td><td>Its broad rights are by design (shared device, PIN-based). Check whether its entry
+  creates and streak writes can be narrowed the same way without breaking kiosk clock-in/out.</td></tr>
+</table>
+<p>Staff shouldn't notice any difference in normal use. Every button keeps working, and only writes the app never
+makes are refused.</p>
+
+<h2>Suggested split</h2>
+<ol>
+  <li><b>Clock entries + time off</b>: rules-only, and closes the payroll gap first.</li>
+  <li><b>Roster claim</b>: rules plus a Ticker code change, with its own design decision.</li>
+  <li><b>Streaks</b> (and the kiosk, if worthwhile).</li>
+</ol>
+
+<h2>To verify before designing (not checked yet)</h2>
+<ul>
+  <li><b>Every staff-side write path, field by field.</b> A first grep (Oct 1) found <code>submitChangeRequest</code>
+  as the only staff caller of <code>updateClockEntry</code>. The others are admin or kiosk. Confirm, including the
+  break auto-end and extension flows, and anything in <code>js/firebase-data.js</code> that calls
+  <code>.update</code>/<code>.set</code> directly.</li>
+  <li><b>Time-off staff updates:</b> exactly which fields the edit, withdraw and comment paths write
+  (<code>updateTimeOffRequest</code>, <code>updateTimeOffRequestIfStatus</code>, the comment flow).</li>
+  <li><b>Pay-period locks:</b> confirm the Payroll Tool reads totals snapshotted at lock time (so editing entries in
+  a locked period doesn't change payroll), and decide whether the rules should refuse entry writes in locked periods
+  anyway.</li>
+  <li><b>Other apps sharing these rules:</b> do any other staff apps write <code>timeclock_*</code>? The rules affect
+  every staff app at once.</li>
+</ul>
+
+<h2>Process reminders for whoever picks this up</h2>
+<ul>
+  <li>Rules live only in <code>/Users/christiehubley/studio-hub/firestore.rules</code>. Add emulator tests in
+  studio-hub for every allowed and refused write, and run <code>npm test</code> there. Deploy only through
+  <code>studio-hub/scripts/deploy-rules.sh</code> after Christie says "approved to change firebase &lt;full sha&gt;". If
+  data looks missing after a deploy, follow the rollback in <code>studio-hub/RULES-ROLLBACK.md</code>.</li>
+  <li>Any Ticker file edit needs Christie's written approval first.</li>
+  <li>Ship the app change (if any) <b>before</b> the rules that depend on it, so no working button is refused even
+  briefly.</li>
+</ul>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li><b>Oct 1 2026:</b> written up from the session that shipped the escaping fix. Christie asked for this to be
+  parked as later hardening, with the "how it could happen" explanation included.</li>
+</ul>
+</body>
+</html>
