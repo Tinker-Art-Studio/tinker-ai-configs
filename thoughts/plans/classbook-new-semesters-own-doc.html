@@ -33,9 +33,9 @@
   <strong>Goal:</strong> When Christie creates Spring 2027 (and every semester after it), its lessons are stored in their own Firestore document, so the shared, size-capped <code>curriculum/lessonData</code> never grows again and lesson saves never hit the 1 MB wall.<br>
   <strong>Why now:</strong> Christie wants to build Spring 2027 the week of <strong>Oct 5, 2026</strong>. Today, "+ New Semester → Copy from Fall 2026" would write Spring 2027 into <code>lessonData</code> (44% → about 85%).<br>
   <strong>Parent plan:</strong> <code>classbook-per-semester-lesson-storage.html</code> (Phases A–C DONE: Spring 2026 lives in <code>curriculum/lessons_spring-2026</code>, verified). This plan is its required "Follow-up".<br>
-  <strong>Scope for Oct 5 (revision 2):</strong> new weekly semesters are created — atomically, with their config entry — in their own document; one generic rule for new <code>lessons_*</code> documents; <code>lessonData</code> closed to new semester keys; reading, editing, live updates, counts and the gauge for any number of own-doc semesters; a production-shaped test seed. <strong>Trails it (before Spring 2027 is published):</strong> Studio Hub alerts. <strong>Deferred:</strong> deleting a semester that has its own document (Phase E), moving Fall (Phase D).<br>
+  <strong>Scope for Oct 5 (revision 3):</strong> new weekly semesters are created — atomically, with their config entry — in their own document; one generic rule for new <code>lessons_*</code> documents; <code>lessonData</code> closed to new semester keys; reading, editing, live updates, counts and the gauge for any number of own-doc semesters; a production-shaped test seed. <strong>Trails it (before Spring 2027 is published):</strong> Studio Hub alerts. <strong>Deferred:</strong> deleting a semester that has its own document (Phase E), moving Fall (Phase D).<br>
   <strong>Touches:</strong> the Classbook (<code>js/firebase-data.js</code>, <code>js/app.js</code>, <code>e2e/</code>), <code>studio-hub/firestore.rules</code> + <code>studio-hub/rules.test.js</code> (sha phrase + guard), <code>studio-hub/js/alerts.js</code>. <code>tinker-backups/backup.js</code> needs <strong>no</strong> change (it already tallies every <code>curriculum/lessons_*</code> document, <code>:388-392</code>, and backs up the whole collection).<br>
-  <strong>Line numbers</strong> at Classbook <code>1532121</code>, studio-hub <code>a254b15</code>. <strong>Status:</strong> <span class="status-tag not-ready">revision 2 — round 1 (Codex + Fable 5.1: both NOT READY) addressed; awaiting round 2</span>.
+  <strong>Line numbers</strong> at Classbook <code>1532121</code>, studio-hub <code>a254b15</code>. <strong>Status:</strong> <span class="status-tag not-ready">revision 3 — round 2 (Codex NOT READY, Fable READY WITH FIXES) addressed; awaiting round 3</span>.
 </div>
 
 <div class="safe">
@@ -61,18 +61,29 @@
   <tr><td>Production (Phase 0): <code>lessonData</code> = <code>fall-2026</code> + meta (<code>lastUpdated</code>, <code>lastUpdatedBy</code>, <code>qaData</code>) + 4 TEST leftovers; <code>spring-2026</code> own doc, verified.</td><td>Decisions Log, Oct 1</td></tr>
 </table>
 
-<h2 id="design">Design (revision 2)</h2>
+<h2 id="design">Design (revision 3)</h2>
 <ul>
   <li><strong>Flip the default.</strong> <code>LEGACY_LESSONDATA_SEMESTERS = ['fall-2026']</code> replaces <code>OWN_DOC_SEMESTERS</code>. <code>isOwnDocSemester(k) = isWeeklySemester(k) &amp;&amp; !LEGACY_LESSONDATA_SEMESTERS.includes(k)</code>. Every new semester is own-doc with no flag and no per-semester code. The rules carry the same literal list.</li>
   <li><strong>Born own-doc vs moved.</strong> A semester has an edit pause only if <code>storageMigrations</code> has a record for it (Spring 2026: verified; Fall later). No record → editable as soon as its document exists. The pause/"missing" messages name the semester.</li>
-  <li><strong>Create is one transaction</strong> (both reviewers). After <code>updateAppData</code>'s two guards (config-load failure, registry error) and an empty-key refusal: one transaction reads <code>appData</code> and <code>lessons_&lt;key&gt;</code>; refuses if the key is already a semester; refuses with today's message if the document exists with real content and "Copy from" is chosen; adopts an existing document otherwise (no-copy path) or when it's template-empty; then <code>tx.set</code>s the document (slots or stamp only) and <code>tx.update</code>s <code>semesters.&lt;key&gt;</code> + stamps on <code>appData</code>. No compensation, no orphan, no read-to-update window. The rules check the pair with <code>getAfter(appData)</code>.</li>
-  <li><strong><code>lessonData</code> is closed to new keys.</strong> A create or update may not <em>add</em> a top-level key outside <code>['fall-2026', 'lastUpdated', 'lastUpdatedBy']</code> (<code>qaData</code> already exists, so it stays editable without being listed; Fable 6). Existing keys change and disappear as today.</li>
-  <li><strong>One generic rule block for new <code>lessons_*</code> documents</strong>: <code>docId.matches('^lessons_[a-z0-9]+(-[a-z0-9]+)*$') &amp;&amp; docId != 'lessons_spring-2026'</code>. Spring 2026's literal rules stay exactly as deployed (Fable: saves the ~60-test rewrite; fold at Phase D). Create: manager+, only when <code>getAfter(appData)</code> lists the key as a semester. Update: manager+ or classbook roles, gated on a migration record if one exists (guarded <code>exists</code> first). Delete: manager+, only when the key is gone from the projected config <em>or</em> an unverified migration record exists (Phase D's undo). No routed delete in the app for Oct 5.</li>
-  <li><strong>Deleting an own-doc semester stays disabled</strong> (Codex: stale-tab edits between backup and delete could be lost; Fable: two writes can strand a semester). One exception: a semester whose document is <em>missing</em> (only possible from a stale pre-deploy tab) can be deleted — config entry only, nothing to lose — so the "delete and create again" remedy works. Proper delete is Phase E.</li>
+  <li><strong>Create is one transaction</strong> (both reviewers). After <code>updateAppData</code>'s two guards (config-load failure, registry error) and an empty-key refusal: the key must match the rules regex <code>^[a-z0-9]+(-[a-z0-9]+)*$</code> (one shared literal, pinned by a ratchet test) and not be in the legacy list. One transaction reads <code>appData</code> and <code>lessons_&lt;key&gt;</code>; refuses if the key is already a semester; <strong>refuses if the document exists at all</strong> (revision 3: no "adopt" path — round 2 found its <code>tx.set</code> would replace the adopted lessons; Phase 0 found no such documents, and atomic create can never leave one); then <code>tx.set</code>s the new document (copied slots, or stamps only) and writes <code>semesters.&lt;key&gt;</code> + stamps to <code>appData</code> — <code>tx.update</code> when appData exists, <code>tx.set(nested, {merge:true})</code> when it doesn't (as <code>updateAppData</code> does). No compensation, no orphan, no read-to-update window. The rules check the pair with <code>getAfter(appData)</code>.</li>
+  <li><strong><code>lessonData</code> is closed to new keys.</strong> A create or update may not <em>add</em> a top-level key outside <code>['fall-2026', 'lastUpdated', 'lastUpdatedBy']</code> (<code>qaData</code> already exists, so it stays editable without being listed; Fable 6). Existing keys change and disappear as today. The fence is added to the <code>lessonData</code> create and the shared update statement only; the manager-only Spring removal/rollback statement stays un-fenced (its <code>affectedKeys().hasOnly(['spring-2026'])</code> already limits what it can add, and the existing rollback test re-adds <code>spring-2026</code>).</li>
+  <li><strong>One generic rule block for new <code>lessons_*</code> documents</strong>: <code>docId.matches('^lessons_[a-z0-9]+(-[a-z0-9]+)*$') &amp;&amp; docId != 'lessons_spring-2026'</code>. Spring 2026's literal rules stay as deployed except for two edits: <code>isStorageMoveDoc()</code> also covers new <code>lessons_*</code> docs, and the two fenced <code>lessonData</code> statements above (Fable: saves the ~60-test rewrite; fold at Phase D). Create: manager+, only when <code>getAfter(appData)</code> lists the key as a semester. Update: manager+ or classbook roles, gated on a migration record if one exists (guarded <code>exists</code> first). Delete: manager+, only when the key is gone from the projected config <em>or</em> an unverified migration record exists (Phase D's undo). No routed delete in the app for Oct 5.</li>
+  <li><strong>Deleting an own-doc semester stays disabled</strong> (Codex: stale-tab edits between backup and delete could be lost; Fable: two writes can strand a semester). No exception (revision 3): a semester whose document is <em>missing</em> (only possible from a stale pre-deploy tab) gets a manager-only <strong>"Create its storage"</strong> button instead — a transaction that reads <code>lessons_&lt;key&gt;</code>, refuses if it exists, else sets the stamps (the create rule allows it because config already holds the key). Nothing is ever removed, so no document can be orphaned. Proper delete is Phase E.</li>
   <li><strong>Listeners by name.</strong> <code>Map&lt;semKey, unsubscribe&gt;</code> with a <code>reconcileOwnDocListeners()</code> that starts missing ones and stops removed ones; the <code>lessonData</code> listener carries every own-doc semester's map across each snapshot. <code>createNewSemester</code> calls reconcile only (no full listener re-setup, no generation bump). A vanished document for a semester <em>without</em> a migration record = "missing — deleted or changed elsewhere, reload", never writable. Initial load reads own docs in parallel.</li>
+  <li><strong>Storage state per own-doc semester</strong> (Codex r2-4). A failed or not-yet-arrived <code>storageMigrations</code> read is <em>unknown</em>, never "no record"; every own-doc semester is read-only until it arrives, and the state is re-evaluated when it does.
+  <table>
+    <tr><th>Own document</th><th>Migration record</th><th>State</th></tr>
+    <tr><td>exists</td><td>none</td><td>born own-doc — editable</td></tr>
+    <tr><td>exists</td><td>verified</td><td>moved — editable</td></tr>
+    <tr><td>exists</td><td>unverified / malformed / unknown</td><td>paused (read-only, named message)</td></tr>
+    <tr><td>absent</td><td>unverified, legacy map present</td><td>rollback — legacy copy shown, paused</td></tr>
+    <tr><td>absent</td><td>none</td><td><code>missing</code> — notice + manager "Create its storage"</td></tr>
+    <tr><td>absent</td><td>verified / malformed / unknown</td><td><strong>error</strong> — red notice "lessons for &lt;name&gt; can't be found — don't edit; tell a manager (restore from backup)"; config untouched, nothing writable</td></tr>
+    <tr><td>read error</td><td>any</td><td>error — notice, nothing writable, others unaffected</td></tr>
+  </table></li>
   <li><strong>Gauge:</strong> minimal — <code>lessonData</code> approx. size plus one line per own-doc semester with its approx. size (warn at 85%).</li>
-  <li><strong>Slot template stays as today.</strong> See Decisions Log (Codex 5).</li>
-  <li><strong>Studio Hub</strong> (trails the Classbook, before Spring 2027 is published): one listener on <code>curriculum</code> by document ID, <code>&gt;= 'lessons_'</code> and <code>&lt; 'lessons_'</code>; each snapshot <em>replaces</em> the own-doc map; only IDs matching the rules regex count; the semester key comes from the ID; two sources (legacy + range); keep the last complete map on error.</li>
+  <li><strong>Slot template stays as today — an explicit exception, approved by Christie Oct 1,</strong> to the "strip empty fields before any write" invariant: the blanks go only into a document the same transaction confirmed absent, and ordinary saves strip empty content fields before writing. See Decisions Log.</li>
+  <li><strong>Studio Hub</strong> (trails the Classbook, before Spring 2027 is published): one listener on <code>curriculum</code> by document ID, <code>&gt;= 'lessons_'</code> and <code>&lt; 'lessons_\uf8ff'</code> (the escape for U+F8FF); each snapshot <em>replaces</em> the own-doc map; only IDs matching the rules regex count; the semester key comes from the ID; two sources (legacy + range); keep the last complete map on error.</li>
 </ul>
 
 <div class="decision"><strong>Why a legacy list and not a per-semester flag in config:</strong> a literal list can't flip under a bad or missing config read, and the rules use the same literal list without an extra <code>get(appData)</code> on every <code>lessonData</code> write.</div>
@@ -103,8 +114,9 @@ function semesterInConfigAfter(k) {
   return existsAfter(a) &amp;&amp; ('semesters' in getAfter(a).data) &amp;&amp; (k in getAfter(a).data.semesters);
 }
 // isStorageMoveDoc() also returns true for isNewLessonsDoc(), so ordinary-doc grants exclude them.
-// lessonData: existing statements keep springKeyUntouched()/removal/rollback, each ANDed with
-//   noNewLessonDataKeys() (create: request.resource.data.keys().hasOnly(lessonDataAllowedNewKeys())).
+// lessonData: the create and the shared update (springKeyUntouched) are ANDed with the fence —
+//   create: request.resource.data.keys().hasOnly(lessonDataAllowedNewKeys()); update: noNewLessonDataKeys().
+//   The manager-only removal/rollback statement is left exactly as deployed (un-fenced).
 allow create: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove() &amp;&amp; semesterInConfigAfter(lessonsSemKey());
 allow update: if isNewLessonsDoc() &amp;&amp; (isManagerOrAbove() || isClassbookRole()) &amp;&amp; migrationAllowsEdit(lessonsSemKey());
 allow delete: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove()
@@ -118,8 +130,13 @@ allow delete: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove()
   lessonData update editing / removing an existing TEST key; adding a new TEST key → allowed / allowed / denied
   lessonData create with fall-2026 + meta → as today; with spring-2027 → denied
   every existing Spring-fence test (lessonData, lessons_spring-2026, storageMigrations one-way) → unchanged, passing
+  Spring rollback (re-add spring-2026 + delete lessons_spring-2026, unverified) → still allowed; the same write also adding another key → denied
+  lessonData create with only meta keys by a manager → allowed
   lessons_spring-2027 create in a transaction that also adds appData.semesters.spring-2027 → manager/admin allowed
+  lessons_spring-2027 create in a transaction that CREATES appData (merge) with the entry → manager allowed
+  lessons_spring-2027 create while appData is absent and not created   → denied
   lessons_spring-2027 create without the config entry                  → denied, every role
+  lessons_spring-2027 create when config already holds the key (the "Create its storage" remedy) → manager allowed
   lessons_spring-2027 create by classbook roles (even with the entry)  → denied
   classbook-role merge-set on a MISSING lessons_spring-2027            → denied (it's a create)
   manager set over an EXISTING lessons_spring-2027                     → treated as update, allowed
@@ -137,28 +154,31 @@ allow delete: if isNewLessonsDoc() &amp;&amp; isManagerOrAbove()
   appData, prepCycleConfig, prepData, cutProjects, changeLog, storageMigrations → exactly as today
   near-1 MB lessonData fixture → the lessonData cases still evaluate correctly
   The whole studio-hub suite passes; the Classbook suite (Phase B branch) passes against these rules</div>
-<div class="note"><strong>Order matters (Fable 1):</strong> the Classbook suite reads rules from the studio-hub checkout, and <code>data-safety.spec.js</code> adds a new top-level key to <code>lessonData</code>. So the Phase B test rework is done on its branch against the Phase A rules branch <em>before</em> Phase A is merged; both suites are green together. Deploy: merged to <code>origin/main</code>, <code>--status</code>/<code>--diff</code> pasted verbatim, <strong>Fable 5.1 review of the rules diff</strong>, Christie's "approved to change firebase &lt;full sha&gt;", then <code>--approved</code>.</div>
+<div class="note"><strong>Order (revision 3, both round-2 reviewers):</strong> B1 and B2 are <strong>one Classbook PR</strong>, developed and tested against a studio-hub worktree on the Phase A branch (<code>TINKER_STUDIO_HUB_DIR</code>, <code>e2e/emulators/config.js:54</code>) — B1 can't be green without B2, because pre-B2 code routes the test semester into <code>lessonData</code>, which the fence denies. When both suites are green together: merge Phase A, merge the Classbook PR straight after (in between, Classbook main's suite is red against studio-hub main — expected, minutes), deploy rules, then deploy the Classbook. Deploy: merged to <code>origin/main</code>, <code>--status</code>/<code>--diff</code> pasted verbatim, <strong>Fable 5.1 review of the rules diff</strong>, Christie's "approved to change firebase &lt;full sha&gt;", then <code>--approved</code>.</div>
 </div>
 
 <div class="phase" id="phase-b">
 <h3>Phase B: the Classbook creates and edits new semesters in their own document <span class="status-tag not-ready">execution-ready: false</span></h3>
 <p><strong>Acceptance:</strong> in production nothing visible changes for Fall 2026 or Spring 2026. A manager creating a weekly semester gets its config entry and <code>curriculum/lessons_&lt;key&gt;</code> in one step; <code>lessonData</code> is untouched; teachers can plan, save, ask Q&amp;A and get replies in it immediately. Every past semester stays selectable.</p>
-<p><strong>B1 — test seed made production-shaped (critical path, about a day; first):</strong></p>
+<p><strong>B1 — test seed made production-shaped (critical path; B1+B2 together ≈ 1.5–2 days):</strong></p>
 <ul>
   <li>Seed Spring 2026 as moved: <code>lessons_spring-2026</code> + <code>storageMigrations.spring-2026.verified = true</code>; <code>lessonData</code> = a seeded <code>fall-2026</code> map + meta. Config gains <code>fall-2026</code>.</li>
   <li><code>data-safety.spec.js</code>: its test semester becomes a slug key with a seeded config entry and its own document; its four direct <code>lessonData</code> reads point at that document.</li>
-  <li><code>spring-own-doc.spec.js</code>/<code>storage-move.js</code>: retire the pre-move/undo states that can no longer occur; keep Spring's verified-state coverage and the rules' one-way guarantees (studio-hub tests).</li>
+  <li><code>spring-own-doc.spec.js</code>/<code>storage-move.js</code>: retire the pre-move/undo states that can no longer occur; keep Spring's verified-state coverage, <strong>one staged test of the rollback row</strong> (own doc vanishes for a record-bearing semester → legacy copy shown, never blank), and the rules' one-way guarantees (studio-hub tests).</li>
+  <li><code>e2e/helpers/firestore.js:187-241</code>: route the lesson helpers by semester (own doc vs <code>lessonData</code>).</li>
+  <li><code>data-safety.spec.js</code> create tests: the <code>window.updateAppData</code> stubs (<code>:3945-3949, 4040-4047, 8358-8363</code>) no longer see the transaction — give them a seam that survives it (a rules-denied role, or an injectable commit); rewrite the compensating-delete tests (<code>:4013-4100</code>, R4-11) as "neither exists"; port the orphan-intact assertion (<code>:4234-4236</code>) to "refused, existing document byte-for-byte intact"; <code>OTHER_SEM</code> (<code>:4604</code>) gets a slug key, config entry and seeded document too.</li>
+  <li>The ratchet at <code>spring-own-doc.spec.js:169-200</code> (pins <code>isOwnDocSemester</code> and the allowed <code>lessonData</code> functions) is updated to the new names and lists.</li>
 </ul>
 <p><strong>B2 — app changes:</strong></p>
 <ul>
   <li><code>LEGACY_LESSONDATA_SEMESTERS</code> and <code>ownDocSemesterKeys()</code> (weekly config semesters not in the list) replace every use of <code>OWN_DOC_SEMESTERS</code>.</li>
-  <li><code>ownDocSource</code> gains <code>'missing'</code>: "<em>&lt;name&gt;'s lesson storage is missing — reload the page; if it stays, a manager can delete this semester and create it again</em>". Never an empty grid that looks like data loss, never writable. Legacy fallback only for semesters with a migration record.</li>
-  <li>Atomic <code>createNewSemester</code> (Design). Empty key refused. Name whose key is in the legacy list refused.</li>
+  <li><code>ownDocSource</code> gains <code>'missing'</code>: "<em>&lt;name&gt;'s lesson storage hasn't been set up — reload the page; if it stays, a manager can click Create its storage</em>". Never an empty grid that looks like data loss, never writable. Legacy fallback only for semesters with an unverified migration record. Every state follows the table in Design.</li>
+  <li>Atomic <code>createNewSemester</code> (Design). Empty key, a key failing the regex, a legacy-list key, or an existing document → refused, nothing written, one alert (no double alert on retry).</li>
   <li><strong><code>createLessonSlotsForRoster</code> writes only the NEW slots</strong> (Oct 1, Christie's blank-save question): today it merge-sets the <em>entire cached semester</em> (<code>app.js:11535, 11577</code>), so a stale tab's copy of every existing lesson is written back over the server — the same whole-semester resave the Phase 11 audit removed from the reply and copy paths (<code>app.js:6240, 7229</code>). For an own-doc semester: one transaction reads the document and adds only slot keys absent on the server (dotted <code>tx.update</code> per new key); existing lessons are never written. Legacy semesters (Fall) get the same targeted write against <code>lessonData</code>. Missing document → "missing" message, nothing written.</li>
   <li><code>saveLessonData</code> (whole-semester merge-set) is then used only by the dead <code>restoreFromBackup</code> helper and the legacy copy path being replaced; it refuses for an own-doc semester whose document is missing.</li>
-  <li><code>deleteSemester</code>: own-doc refusal kept; "missing" semesters delete config-only.</li>
+  <li><code>deleteSemester</code>: own-doc refusal kept for every own-doc semester (no config-only exception). "Create its storage" for the <code>missing</code> state.</li>
   <li>Listener map + reconcile; parallel initial load; minimal gauge; content count over the runtime set.</li>
-  <li>Ratchet: no literal <code>'spring-2026'</code>/<code>'fall-2026'</code> in <code>js/</code> outside the legacy-list line, the config defaults (<code>firebase-data.js:641-643</code>), <code>LEGACY_CAMP_SEMESTER_KEY</code> and comments.</li>
+  <li>Ratchet: the app's key regex and the rules regex are the same literal; no literal <code>'spring-2026'</code>/<code>'fall-2026'</code> in <code>js/</code> outside the legacy-list line, the config defaults (<code>firebase-data.js:641-643</code>), <code>LEGACY_CAMP_SEMESTER_KEY</code> and comments.</li>
 </ul>
 <div class="bdd">Scenario: create by copying (happy path)
   Given Fall 2026 (legacy) with 8 teacher/class combos
@@ -174,7 +194,8 @@ Scenario: blank semester → lessons_&lt;key&gt; with stamps only; adding a rost
 
 Scenario: the transaction fails (rules denial, network) → neither the config entry nor the document exists; alert says nothing was created
 Scenario: the key is already a semester on the server (another tab) → refused inside the transaction, nothing written
-Scenario: document exists with real lessons → "Copy from" refused (today's message); no-copy adopts it, lessons shown
+Scenario: lessons_&lt;key&gt; already exists (any content) → refused with or without "Copy from"; the document is byte-for-byte unchanged; the config has no entry
+Scenario: appData absent → create writes appData (merge) and the document together, or refuses — never one without the other
 Scenario: name maps to fall-2026, or to an empty key ("!!!") → refused, nothing written
 
 Scenario: two own-doc semesters live at once
@@ -188,12 +209,17 @@ Scenario: adding a class in Settings never rewrites existing lessons
   Then only the new class's slots are written; the teacher's lesson on the server is unchanged
   And a slot key that already exists on the server (created by another tab) is not overwritten
 
-Scenario: create in this tab → Spring 2027's listener starts once; repeating reconcile adds no duplicate
+Scenario: create in this tab → Spring 2027's listener starts once; repeating reconcile adds no duplicate; a semester leaving the set is unsubscribed
 
 Scenario: document missing (stale pre-deploy tab created config only)
-  Then "storage is missing" notice, saves refused; a manager can delete it (config only) and create it again
+  Then "hasn't been set up" notice, saves refused
+  When a manager clicks Create its storage → lessons_&lt;key&gt; with stamps; the semester becomes editable; adding a roster creates slots
+  And if the document appeared meanwhile (another tab) → refused, the existing document untouched
 
 Scenario: document deleted in another tab/Console (no migration record) → "missing — reload", never writable, never blank-as-deleted
+Scenario: Spring 2026's own document vanishes while its record is verified → red "can't be found" error, config untouched, nothing writable
+Scenario: storageMigrations read fails or hasn't arrived → every own-doc semester read-only until it arrives; then editable per the table
+Scenario: adding a class in Settings — Fall (legacy) and Spring 2027 (own doc) both write only the new slots; two tabs adding different classes at once keep both tabs' slots
 
 Scenario: own-doc semester delete → still refused ("can't be deleted yet")
 
@@ -240,17 +266,18 @@ Scenario: anything unexpected → stop and report; the semester is an unpublishe
 
 <h2 id="edge">Edge cases</h2>
 <ul>
-  <li><strong>Stale tabs (old code) after Phase A:</strong> Fall and Spring 2026 work as today. "Copy from" creation writes into <code>lessonData</code> → refused, nothing created. No-copy creation writes config only → Phase B code shows "storage is missing" with a working remedy.</li>
+  <li><strong>Stale tabs (old code) after Phase A:</strong> Fall and Spring 2026 work as today. "Copy from" creation writes into <code>lessonData</code> → refused, nothing created. No-copy creation writes config only → Phase B code shows "hasn't been set up" with the "Create its storage" remedy.</li>
   <li><strong>Tabs open while Spring 2027 is created</strong> don't see it until they reload (config has no listener) — as today for any new semester.</li>
-  <li><strong>appData missing entirely</strong> (defaults, which include spring-2026): own-doc listeners follow the defaults; no new semester can be created without appData's transaction read succeeding.</li>
+  <li><strong>appData missing entirely</strong> (defaults, which include spring-2026): own-doc listeners follow the defaults; creating a semester writes appData (merge) and the document in the same transaction.</li>
+  <li><strong>A semester removed from config by hand</strong> (Firebase Console) while its document remains: its document stays editable by stale tabs (Codex r2-5). No app path does this — every <code>appData</code> writer uses per-semester dotted paths (<code>app.js:4663, 4717, 4805, 4939, 5079, 10956, 11050, 11471</code>) and the only removal, <code>deleteSemester</code>, refuses own-doc semesters. Accepted; see Decisions Log.</li>
   <li><strong>Growth:</strong> each tab listens to every own-doc semester (about 0.5 MB each, two more a year). Fine now; later, past semesters can be read once instead of listened to. A single semester near 1 MB: Spring 2026, the largest, is 54%; the gauge warns per semester at 85%.</li>
 </ul>
 
 <h2 id="safety">Firebase safety checklist</h2>
 <ul>
   <li><strong>Rules:</strong> no new collection — <code>lessons_*</code> are documents in <code>curriculum</code>. The generic rule is tested for every role and shipped through the guard with the sha phrase before any code relies on it.</li>
-  <li><strong>Partial updates:</strong> lesson edits stay per-field dotted <code>update()</code>s; whole-semester writes stay <code>set(…, {merge:true})</code>; creation is a transaction <code>set</code> on a document just read inside the same transaction as absent (or template-empty/adopted), plus a dotted <code>update</code> of <code>appData</code>.</li>
-  <li><strong>Empty fields:</strong> slot template unchanged (see Decisions Log); <code>undefined</code> is never written.</li>
+  <li><strong>Partial updates:</strong> lesson edits stay per-field dotted <code>update()</code>s; whole-semester writes stay <code>set(…, {merge:true})</code>; creation is a transaction <code>set</code> on a document just read inside the same transaction as absent, plus a dotted <code>update</code> of <code>appData</code> (merge-set only if appData is absent); roster slots are dotted <code>tx.update</code>s of absent keys only.</li>
+  <li><strong>Empty fields:</strong> <strong>explicit exception approved by Christie (Oct 1)</strong> for the slot template's blank defaults, written only into absent documents/keys; ordinary saves keep stripping empty content fields; <code>undefined</code> is never written.</li>
   <li><strong>Awaited:</strong> the one create transaction is awaited before any UI change.</li>
   <li><strong>Snapshot before delete:</strong> no own-doc delete ships in this plan (Phase E). Backups: <code>backup.js</code> covers every <code>lessons_*</code> document.</li>
   <li><strong>Spot check:</strong> Phase C, in the Console.</li>
@@ -265,9 +292,9 @@ Scenario: anything unexpected → stop and report; the semester is an unpublishe
 
 <h2 id="resume">Resume instructions</h2>
 <ul>
-  <li>Read this plan and its Decisions Log, the round-1 reviews (<code>thoughts/reviews/2026-10-01-plan-review-new-semesters-own-doc-r1-{codex,fable}.md</code>), and the parent plan's Decisions Log. <code>git -C ~/studio-hub pull</code> first (the checkout is behind origin/main).</li>
+  <li>Read this plan and its Decisions Log, the round-1 and round-2 reviews (<code>thoughts/reviews/2026-10-01-plan-review-new-semesters-own-doc-r{1,2}-{codex,fable}.md</code>), and the parent plan's Decisions Log. <code>git -C ~/studio-hub pull</code> first (the checkout is behind origin/main).</li>
   <li>Classbook work: worktree <code>.claude/worktrees/new-semesters-own-doc</code>, branch <code>claude/new-semesters-own-doc</code> (tracks origin/main; deploy needs <code>NETLIFY_SITE_ID</code>). Studio-hub: a branch for the rules, another for <code>alerts.js</code>.</li>
-  <li>Order: B1 seed rework against the Phase A rules branch → Phase A merged + deployed → B2 → Phase B deploy → B′ → C. Each step: commit, both suites, second-model implementation review. Each deploy needs Christie's yes; Phase A needs the sha phrase.</li>
+  <li>Order: Phase A rules branch + one Classbook PR (B1+B2) tested together via <code>TINKER_STUDIO_HUB_DIR</code> → merge A → merge the Classbook PR → deploy rules → deploy Classbook → B′ → C. Each step: commit, both suites, second-model implementation review. Each deploy needs Christie's yes; Phase A needs the sha phrase.</li>
 </ul>
 
 <h2 id="decisions">Decisions Log (append-only)</h2>
@@ -295,6 +322,13 @@ Scenario: anything unexpected → stop and report; the semester is an unpublishe
 </div>
 <div class="decision">
   <strong>Oct 1, 2026: round 2 reviews in — Codex NOT READY (7 findings), Fable 5.1 READY WITH FIXES (10 findings); no redesign needed.</strong> Files: <code>thoughts/reviews/2026-10-01-plan-review-new-semesters-own-doc-r2-{codex,fable}.md</code>. Both agree: (1) B1+B2 are ONE Classbook PR built against the Phase A rules branch via <code>TINKER_STUDIO_HUB_DIR</code>, then rules deploy, then Classbook; (2) the adopt path's <code>tx.set</code> would wipe adopted lessons — Fable: simply refuse if the document exists; (3) leave the Spring rollback statement un-fenced. Codex also: full migration-state table; update-membership check (Codex 5) — Fable instead: replace the config-only delete of a "missing" semester with a manager "Create its storage" action, which keeps the "no orphan" rationale true; record the blank-slot decision as an explicit exception. Fable also: B1 test list is incomplete (stubs of updateAppData, compensating-delete tests, OTHER_SEM, the ratchet) — budget 1.5–2 days; pin the key to the rules regex; appData-absent inside the transaction; Studio Hub upper bound typo. <strong>Paused at Christie's request (moving locations). Next: revision 3 folding in both round-2 reviews.</strong>
+</div>
+<div class="decision">
+  <strong>Oct 1, 2026: revision 3 — round 2 addressed.</strong>
+  <ul>
+    <li><strong>Taken:</strong> B1+B2 one PR tested against the Phase A branch, then A, then the Classbook (Codex 1, Fable 3); no adopt path — refuse if the document exists, port the byte-for-byte assertion (Codex 2, Fable 2); rollback statement un-fenced, rollback test kept (Codex 3, Fable 1); storage-state table, unknown migration state ≠ "no record" (Codex 4); "Create its storage" replaces the config-only delete (Fable 4); blank slots recorded as an explicit approved exception (Codex 6); full B1 list + 1.5–2 day budget (Fable 5); one rollback-row test kept (Fable 6); key pinned to the rules regex (Fable 7); appData-absent handled inside the transaction (Fable 8); Studio Hub upper bound written as the visible escape (it was the invisible U+F8FF character, which Fable read as a typo) (Fable 9); new tests (Codex 7, Fable 10).</li>
+    <li><strong>Codex r2-5 (membership check on update) — still not taken, with new evidence:</strong> with the config-only delete gone, no app path removes an own-doc semester's config entry. Every <code>appData</code> writer uses per-semester dotted paths (<code>app.js:4663, 4717, 4805, 4939, 5079, 10956, 11050, 11471</code>); the only removal (<code>deleteSemester</code>, <code>:4663</code>) refuses own-doc semesters. The remaining path is a hand edit in the Firebase Console. Adding a <code>getAfter(appData)</code> read to every lesson save isn't worth it for that; Phase E (which introduces removal) adds the check.</li>
+  </ul>
 </div>
 </body>
 </html>
