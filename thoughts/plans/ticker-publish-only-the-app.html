@@ -20,8 +20,9 @@
 <body>
 <h1>Plan: Tinker Ticker publishes only the app</h1>
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>) &middot; <strong>Drafted:</strong> Sep 30 2026 &middot;
-<strong>v3</strong> after design review rounds 1&ndash;2 (round 2: Codex "not ready", 2 BLOCKING, folded in; Claude's round-2 run
-returned nothing and is re-run on v3) &middot; <strong>execution-ready: false</strong> &mdash; <em>awaiting round 3. Christie's go to make this change: Sep 30 ("can we do
+<strong>v4</strong> after design review rounds 1&ndash;3 (round 3: Codex no BLOCKING, one MEDIUM + LOWs, folded in; Claude's round-2
+and round-3 runs were cut off, by a process exit and then the Mac sleeping, so Claude reviews v4) &middot; <strong>execution-ready: false</strong>
+&mdash; <em>awaiting Claude on v4. Christie's go to make this change: Sep 30 ("can we do
 this here").</em> Ships in the same deploy as <code>ticker-sub-confirm-only-by-manager</code>. (<code>plan-review</code> is broken on
 this Mac, with a missing Homebrew library, so this plan is not registered in the viewer.)</p>
 
@@ -89,7 +90,8 @@ and it doesn't replace the reset.</div>
       lists overlap ("list js/debug.js in dist-manifest.txt or dist-private.txt on purpose");</li>
       <li>the <strong>completeness check</strong> fails: every local <code>src</code>/<code>href</code> in <code>index.html</code>, every
       <code>sw.js</code> <code>APP_SHELL</code> entry (<code>/</code> → <code>index.html</code>), every <code>manifest.json</code> icon, and
-      <code>sw.js</code> itself must exist in <code>dist/</code>.</li>
+      <code>sw.js</code> itself must exist in <code>dist/</code>. Fragment-only (<code>#…</code>), absolute (<code>http(s):</code>, <code>//</code>)
+      and <code>data:</code>/<code>mailto:</code> values are skipped, and a query string is stripped (round 3, Codex L3).</li>
     </ul>
   This runs <em>before</em> any upload. With the fallback, a missing app file would otherwise be cached by the service worker as HTML
   on every installed device (round 1, Claude M2). Comments in <code>js/</code> are not grepped, e.g. <code>auth-guard.js:15</code>'s example
@@ -109,17 +111,20 @@ and it doesn't replace the reset.</div>
   Then it <strong>re-runs the whole preflight</strong> (build + completeness + <code>npm test</code>) itself, so an approved sha can't be
   uploaded untested (round 2, Codex B2). Then <code>netlify deploy --prod --dir dist --message "$SHA"</code>, then <code>check-live.sh</code>.</li>
   <li><strong><code>scripts/check-live.sh</code></strong>. Every request is <code>curl -sS --location -o &lt;fresh temp file&gt; -w '%{http_code}
-  %{content_type}'</code>, with curl's exit code captured. Any transport failure (DNS, TLS, timeout, connection: non-zero exit) is fatal.
+  %{content_type}' --connect-timeout 10 --max-time 30</code>, with curl's exit code captured (round 3, Codex L1: no request can hang the check). Any transport failure (DNS, TLS, timeout, connection: non-zero exit) is fatal.
   The HTTP status is then compared with what that check expects (200, or an expected 401/403/404/405), and a body is hashed only on an
   expected 200. No <code>--fail</code>, so an expected 4xx isn't turned into a curl error; no <code>set -e</code> around probes (round 1,
   Codex M3; round 2, Codex M2). In order:
     <ol>
-      <li><em>Shell first:</em> live <code>/index.html</code> must equal <code>dist/index.html</code>; otherwise stop with "private results
-      unreliable" (round 1, Claude L1).</li>
+      <li><em>Shell first:</em> live <code>/index.html</code> must equal <code>dist/index.html</code>. On a mismatch, wait 15 s and retry once
+      (this deploy changes <code>index.html</code>, so CDN lag is likely); if it still differs, stop with "private results unreliable"
+      (round 1, Claude L1; round 3, Codex M1).</li>
       <li><em>Faithful:</em> every manifest file is byte-identical live, and its media type (ignoring parameters like <code>charset</code>) is
       <code>text/css</code> for CSS, <code>application/javascript</code> or <code>text/javascript</code> for JS (including <code>sw.js</code>),
-      and not <code>text/html</code> for any non-HTML file (round 2, Codex L2). One retry on a mismatch absorbs CDN lag (Claude L7).</li>
-      <li><em>Private:</em> each path in the table (the four deleted pages kept forever as a memorial, notes, tests,
+      and not <code>text/html</code> for any non-HTML file (round 2, Codex L2). Every mismatch, here and in the shell check, gets one real
+      second attempt after 15 s (Claude L7; Codex M1). Every request carries a cache-busting query <code>?v=&lt;sha&gt;</code>.</li>
+      <li><em>Private:</em> one explicit, checked-in list of concrete paths, <code>scripts/must-not-be-public.txt</code> (round 3, Codex L2):
+      each path in the table (the four deleted pages kept forever as a memorial, notes, tests,
       <code>firestore-debug.log</code>, <code>package*.json</code>, <code>firebase.json</code>, <code>deno.lock</code>,
       <code>netlify/functions/send-shift-reminders.js</code>) must return a body equal to <code>dist/index.html</code>, or a 404.
       Anything else FAILS. Dot-paths aren't listed, because the CLI can't upload them.</li>
@@ -190,6 +195,9 @@ are reversible from git history.</p>
   so today's tree passes; B2 <code>deploy.sh</code> re-runs the preflight itself; M1 enforce <code>main</code> = <code>origin/main</code> exactly;
   M2 curl without <code>--fail</code>, with transport errors fatal and expected 4xx compared explicitly; M3 acceptance wording narrowed; L1 path
   normalization; L2 exact media types. Claude's round-2 output was empty (the process was cut off), so Claude reviews v3.</li>
+  <li><strong>Sep 30, round 3 (Codex) → v4:</strong> no BLOCKING; every earlier BLOCKING/MEDIUM confirmed resolved, and the partition is exact
+  (18 public, 3 private, no overlap). M1 a retry on the shell check too, with a cache-busting query; L1 curl timeouts; L2 a concrete
+  must-not-be-public list file; L3 skip fragments and external refs. Claude's round-3 run died when the Mac slept.</li>
 </ul>
 </body>
 </html>
