@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v3</strong> after design review round 1 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (waiting on Christie: Q5&ndash;Q7)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v4</strong> after design review round 1 + Christie's Q5&ndash;Q7 &middot; <strong>execution-ready: false</strong> (design review round 2 next)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -64,7 +64,7 @@
   <tr><td>3. Save two copies</td><td>Same parsing as today (<code>detectColumns</code> &rarr; staff objects). Then save:
     <ul>
       <li><code>staffRosterFull/{id}</code>: every field the app uses today, one doc per sheet row, managers only;</li>
-      <li><code>staffRosterTeam/{id}</code>: the trimmed fields (Q2), one doc per <em>current</em> staff member, readable by staff with Directory access (Q5).</li>
+      <li><code>staffRosterTeam/{id}</code>: the trimmed fields (Q2), one doc per <em>current</em> staff member, readable by managers and by staff with the Staff Directory checkbox.</li>
     </ul>
     See "Storage and rules" below: one document <em>per person</em>, so the database rules can check every field (R1 Codex-B1). See "Sync safety" for when nothing is saved.</td></tr>
   <tr><td>4. Everyone else</td><td>Staff open the Staff Directory and it loads <code>staffRosterTeam</code> from Firestore. Managers load <code>staffRosterFull</code>,
@@ -104,11 +104,11 @@ match /staffRosterFull/{id} {
   allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isFullRow(request.resource.data);
 }
 match /staffRosterTeam/{id} {
-  allow get, list: if !isKiosk() &amp;&amp; (isManagerOrAbove() || &lt;Q5&gt;);
+  allow get, list: if !isKiosk() &amp;&amp; (isManagerOrAbove() || hasAppAccess('staff-directory'));
   allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isTeamRow(request.resource.data);
 }
 match /staffRosterMeta/{docId} {  // 'sync': last sync time, by whom, row counts, revision
-  allow get: if !isKiosk() &amp;&amp; (isManagerOrAbove() || &lt;Q5&gt;);
+  allow get: if !isKiosk() &amp;&amp; (isManagerOrAbove() || hasAppAccess('staff-directory'));
   allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; docId == 'sync' &amp;&amp; isSyncMeta(request.resource.data);
 }
 // isTeamRow: keys().hasOnly([name, pronouns, studio, position, email, phone, birthday, startDate,
@@ -166,20 +166,23 @@ removed only after that comparison passes and Christie confirms. Nothing in the 
     The sheet has no preferred-name column, so the Directory uses "Name". The mapping is fixed so "preferred" can't match the coffee question (Christie: full name is fine).</li>
 </ul>
 
-<h2>New questions for Christie (from review round 1)</h2>
-<div class="decision-needed"><strong>Q5 &mdash; Who may open the Staff Directory?</strong> Today it's any account that can sign in, and anyone can create an account
-(the sign-in key is public and new accounts get a staff record automatically). After this plan, the staff copy (names, emails, phones, birthdays, dietary) would be readable by:
+<h2>Who sees what (Christie, same model as every other Tinker app)</h2>
+<table>
+  <tr><th>Account</th><th>Staff Directory</th></tr>
+  <tr><td>Admin or manager</td><td>Full view: everything, incl. address, emergency contacts, medical/allergies, T-shirt, past staff. Manager tools: offboarding, Generate Order, Sync from sheet, Compare sources.</td></tr>
+  <tr><td>Staff with <strong>Staff Directory</strong> checked in Manage Team (existing <code>appAccess: 'staff-directory'</code>)</td><td>Staff view: current staff, the fields in the table above (no address, medical or emergency). View only.</td></tr>
+  <tr><td>Staff without the checkbox, self-made accounts, kiosk</td><td>No access: "You don't have access to the Staff Directory. Ask Christie or Anika."</td></tr>
+</table>
 <ul>
-  <li><strong>(a) Recommended:</strong> only accounts you or Anika grant "Staff Directory" access in Tinker HQ's Manage Team (a new checkbox), plus managers.
-    One-time: tick it for current staff. Closes the self-made-account hole.</li>
-  <li><strong>(b)</strong> any signed-in account, as today. Simpler, but a self-made account could read the staff copy.</li>
-</ul></div>
-<div class="decision-needed"><strong>Q6 &mdash; Staff who have the existing "Staff Directory" app-access override.</strong> Today that override lets a staff member use manager tools in the Directory
-(offboarding checklist, Generate Order). Which copy should they read: the <strong>staff copy</strong> (recommended: they keep offboarding and ordering, which need only name, email
-and favorites, but don't see addresses or medical notes), or the full one? Do you know who has it? The plan lists every account's access in Setup so you can see.</div>
-<div class="decision-needed"><strong>Q7 &mdash; Who can open the sheet itself in Google?</strong> Unpublishing only stops the anonymous link. If the sheet, or its folder, is shared with
-staff, the whole company, or "anyone with the link", those people can still open it in Google and see every column. Setup includes checking the sheet's Share settings together;
-the goal is just you and Anika (plus anyone who truly needs to edit it). Is that right? Also: does Anika have a tinkerartstudio.com Google account the sheet is shared with?</div>
+  <li><strong>Changes from today</strong> (call-outs, not decisions to revisit):
+    <ul>
+      <li>staff <em>without</em> the checkbox currently see the Directory read-only, and will now see nothing;</li>
+      <li>staff <em>with</em> the checkbox currently get manager tools (offboarding, Generate Order) and will now get the staff view only;</li>
+      <li>Phase C lists who has the checkbox, so Christie can tick it for anyone who should keep access.</li>
+    </ul></li>
+  <li>Follow-up, not in this plan: Firebase may allow turning off self sign-up for the whole project (accounts are only ever created in Manage Team). That would close the
+    "anyone can create an account" gap for every app. To be checked separately.</li>
+</ul>
 
 <h2>Answered questions</h2>
 <table>
@@ -188,6 +191,9 @@ the goal is just you and Anika (plus anyone who truly needs to edit it). Is that
   <tr><td>Q2</td><td>Staff fields as in the table above: full name; dietary yes; medical/allergies no.</td></tr>
   <tr><td>Q3</td><td>Use the narrow one-file access (<code>drive.file</code> + Google Picker). Christie does the one-time Google Cloud setup with click-by-click steps.</td></tr>
   <tr><td>Q4</td><td>No interim quick fix; solve it properly.</td></tr>
+  <tr><td>Q5</td><td>Only accounts with the <strong>existing</strong> "Staff Directory" checkbox in Manage Team (plus managers/admins) can open the Directory. No new checkbox.</td></tr>
+  <tr><td>Q6</td><td>Staff with the checkbox get the staff view; only managers and admins see address, medical and the other sensitive fields, same as every other app.</td></tr>
+  <tr><td>Q7</td><td>Christie will set the sheet's sharing to Christie, Anika and the admin account only.</td></tr>
 </table>
 
 <h2>Phases</h2>
@@ -197,12 +203,12 @@ Celebrations 2a is built on B's sync.</p>
 <div class="phase"><h3>Setup &mdash; checks and Google Cloud (Christie, about 20 minutes; Claude gives exact clicks)</h3>
 <p><strong>First, three checks</strong> (R1 Claude-B3, B7, M10; Codex-B5):</p>
 <ul>
-  <li><strong>Sheet sharing (Q7):</strong> open the Staff Info sheet &rarr; Share. Record who has access and the general-access setting (and the parent folder's / shared drive's).
-    Restrict to Christie + Anika (+ editors who truly need it). Repeat after phase D.</li>
+  <li><strong>Sheet sharing (Q7, Christie):</strong> set the Staff Info sheet's Share list to Christie, Anika and the admin account; general access "Restricted"; check the parent folder
+    or shared drive doesn't grant more. Recorded before and re-checked after phase D.</li>
   <li><strong>Can the Google Cloud project use "Internal"?</strong> Only if <code>tinker-hq-apps</code> belongs to the tinkerartstudio.com Workspace organization. If it doesn't, the fallback is
     "External, testing" with Christie and Anika as test users (<code>drive.file</code> needs no Google review either way; an "unverified app" notice appears).
     Also confirm Christie and Anika each have a <strong>tinkerartstudio.com Google account</strong> that can open the sheet. That Google account is separate from the Tinker app sign-in.</li>
-  <li><strong>Who has what access</strong> (for Q5/Q6): a manager-only list of every account's role and app access, so Christie sees exactly who gets the staff copy, the full copy, or nothing.</li>
+  <li><strong>Who has what access:</strong> a manager-only list of every account's role and Staff Directory checkbox, so Christie sees exactly who gets the full view, the staff view, or nothing before phase C ships.</li>
 </ul>
 <p><strong>Then Google Cloud</strong>, for project <code>tinker-hq-apps</code> (project number <code>929945075847</code>, already in the code):</p>
 <ul>
@@ -225,12 +231,12 @@ Celebrations 2a is built on B's sync.</p>
 
 <div class="phase"><h3>A &mdash; Rules: <code>staffRosterFull</code> / <code>staffRosterTeam</code> / <code>staffRosterMeta</code> (studio-hub, via the guard)</h3>
 <ul>
-  <li>The blocks in "Storage and rules", with per-doc shape checks. If Q5 = (a), Tinker HQ's Manage Team also gets a "Staff Directory (view)" checkbox writing
-    <code>appAccess: 'staff-directory-view'</code>. The users rule already lets only admins and managers set app access.</li>
+  <li>The blocks in "Storage and rules", with per-doc shape checks. Access uses the existing <code>appAccess: 'staff-directory'</code> checkbox. Nothing changes in Tinker HQ.
+    The users rule already lets only admins and managers set app access.</li>
   <li>Rules tests:
     <ul>
-      <li>a self-made account (own users doc, staff, no app access) is <strong>denied</strong> the staff copy (if Q5 = a);</li>
-      <li>an override staff member per Q6;</li>
+      <li>a self-made account (own users doc, staff, no app access) is <strong>denied</strong> the staff copy;</li>
+      <li>staff with the <code>staff-directory</code> checkbox can read the staff copy and meta, but not the full copy, and can't write;</li>
       <li>staff can't read full, and can't write anything;</li>
       <li>kiosk (incl. a manager-role kiosk), bot, archived and signed-out are refused;</li>
       <li>no delete;</li>
@@ -274,6 +280,8 @@ Celebrations 2a is built on B's sync.</p>
 <ul>
   <li><strong>Both Christie and Anika</strong> sync successfully at least once, and a staff test account reads the staff copy (R1 Codex-M6).</li>
   <li>The manager-only "Compare sources" panel (the normalized comparison above) shows zero unexplained differences, and Christie confirms.</li>
+  <li>The Directory's access check changes to the table in "Who sees what": manager tools are gated on role only (no longer on the checkbox); checkbox staff get the staff view;
+    everyone else gets the "no access" screen.</li>
   <li>Then staff load the staff copy and managers the full copy. The CSV stops being fetched for display, but the comparison/recovery path stays until E (R1 Codex-M7).</li>
   <li>New messages:
     <ul>
@@ -311,6 +319,9 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 2 2026: Q5&ndash;Q7 (Christie): Directory access uses the <strong>existing</strong> Manage Team "Staff Directory" checkbox. Staff with it get the staff view; only
+    managers/admins see sensitive fields and manager tools, "just like all my other apps". The sheet is shared only with Christie, Anika and the admin account. Christie noted the
+    access model was being re-asked; it's now stated once, in "Who sees what", and not reopened.</li>
   <li>Oct 1 2026, design review round 1 (Codex + Claude). Accepted:
     <ul>
       <li>per-person docs so the rules enforce the field split (Codex-B1, Claude-M12);</li>
