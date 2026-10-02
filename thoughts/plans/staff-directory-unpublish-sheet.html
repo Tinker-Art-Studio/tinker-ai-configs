@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v9</strong> after design review rounds 1&ndash;6 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 7 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v10</strong> after design review rounds 1&ndash;7 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (Christie: stop design rounds here? see Decisions log)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -136,7 +136,8 @@ staffRosterMeta/current                     // pointer: {revision, previous, upd
   <li>Doc ids: a hash of the normalized email (or of the normalized name when there's no email), so they're path-safe for names with "/" or accents (R2 Codex-L1).</li>
   <li><strong>Duplicate rows</strong> (R3 Claude-B2). The sheet is a Form response tab, and today 3 emails appear twice (counted Oct 2: 81 rows, 0 without an email, 0 blank).
     For duplicate <em>emails</em>, the <strong>later row in the sheet wins</strong> (Form responses are appended in order, so row order has no locale or time-of-day ambiguity) (R5 Claude-M1, Codex-M1).
-    A newer P row correctly makes someone past. If a duplicate group's timestamps don't increase with row order (the sheet was sorted or edited), the sync stops and asks for a check.
+    A newer P row correctly makes someone past. If a duplicate group's timestamps don't appear to increase with row order, the preview shows a <em>warning</em> (advisory only, since formatted
+    timestamps are locale-dependent and row order already decides) (R7 Claude-M3).
     If a person's rows disagree on status, or the same email carries clearly different names, the sync needs an explicit confirm, and the preview prints the winning row per person.
     Two email-less rows with the same name stop the sync: they could be two different people (R4 Codex-M2). Every dropped row is listed in the preview and as an intended difference in Compare.
     The same id function is applied to the CSV rows, so Compare lines up by person.</li>
@@ -206,9 +207,9 @@ function isRevId(v)      { return v is string &amp;&amp; v.matches('^[A-Za-z0-9]
 function isTeamFields(d) {
   return isRosterId(d.id) &amp;&amp; isRevId(d.revision)
     &amp;&amp; capStr(d,'name',120) &amp;&amp; d.name.size() &gt; 0
-    &amp;&amp; capStr(d,'pronouns',40) &amp;&amp; capStr(d,'position',80)
+    &amp;&amp; capStr(d,'pronouns',40)
     &amp;&amp; d.studioId in ['tinker','clayhub','both']
-    &amp;&amp; capStr(d,'email',120) &amp;&amp; (d.email == '' || d.email.matches('^[^@\s]+@[^@\s]+$'))
+    &amp;&amp; capStr(d,'email',120) &amp;&amp; (d.email == '' || d.email.matches('^[^@ ]+@[^@ ]+$'))   // no backslash escapes (none in this file; R7 both)
     &amp;&amp; capStr(d,'phone',40)
     &amp;&amp; d.birthday is string &amp;&amp; (d.birthday == '' || d.birthday.matches('^[0-9]{1,2}/[0-9]{1,2}$'))
     &amp;&amp; d.birthdayMonthOnly is bool
@@ -218,7 +219,7 @@ function isTeamFields(d) {
     &amp;&amp; capStr(d,'dietary',300);
 }
 function teamKeys() {
-  return ['id','revision','name','pronouns','position','studioId','email','phone','birthday','birthdayMonthOnly',
+  return ['id','revision','name','pronouns','studioId','email','phone','birthday','birthdayMonthOnly',
           'startDate','favoriteCoffee','favoriteCandy','favoriteSnack','favoriteSalty','dietary'];
 }
 function isTeamRow(d) { return d.keys().hasOnly(teamKeys()) &amp;&amp; d.keys().hasAll(teamKeys()) &amp;&amp; isTeamFields(d); }
@@ -245,9 +246,35 @@ match /staffDirectory/{docId} {
 <p>Nothing else reads <code>staffDirectory</code> except HQ's ineffective birthday check, which still runs on every HQ load. After phase A it will log a harmless permission error for
 non-managers (inside its try/catch) until the celebrations plan's phase 2b removes it. That's expected console noise, not a rules regression (R6 Claude-L1).</p>
 
+<h3>The exact header map (R7 Claude-M2): the real privacy boundary for which text goes where</h3>
+<p>Read from the live sheet's header row on Oct 2 (header text only). Matching is on the full header text, trimmed; anything else stops the sync. The sync reads only these columns.</p>
+<table>
+  <tr><th>Col</th><th>Exact sheet header (trimmed)</th><th>Field</th><th>Copy</th></tr>
+  <tr><td>A</td><td>Timestamp</td><td>(dedupe advisory only)</td><td>not copied</td></tr>
+  <tr><td>B</td><td>Name</td><td>name</td><td>team + full</td></tr>
+  <tr><td>D</td><td>Employment Status - Current (C) or Past (P)</td><td>status</td><td>full (team = current only)</td></tr>
+  <tr><td>E</td><td>Team</td><td>studioId (via detectStudio)</td><td>team + full</td></tr>
+  <tr><td>F</td><td>Email Address</td><td>email</td><td>team + full</td></tr>
+  <tr><td>G</td><td>Start Date</td><td>startDate</td><td>team + full</td></tr>
+  <tr><td>H</td><td>Phone Number</td><td>phone</td><td>team + full</td></tr>
+  <tr><td>I</td><td>Address</td><td>address</td><td>full only</td></tr>
+  <tr><td>J&ndash;M</td><td>Emergency Contact 1/2 - Name &amp; Relationship / Phone Number</td><td>emergencyContact1Name/Phone, emergencyContact2Name/Phone</td><td>full only</td></tr>
+  <tr><td>N</td><td>Any medical information/allergies that we should be aware of in the event we need to support you during a medical emergency?</td><td>medical (the <em>only</em> allergy column)</td><td>full only</td></tr>
+  <tr><td>Q</td><td>Pronouns</td><td>pronouns</td><td>team + full</td></tr>
+  <tr><td>S</td><td>Any dietary restrictions or food preferences?</td><td>dietary</td><td>team + full</td></tr>
+  <tr><td>U&ndash;X</td><td>What is your preferred coffee or tea order? Include as many details as possible. / What is your favorite sweet / healthy / salty treat?</td><td>favoriteCoffee / Candy / Snack / Salty</td><td>team + full</td></tr>
+  <tr><td>AB</td><td>Birthdate</td><td>birthday (M/D) + birthdayMonthOnly; birthdayRaw</td><td>team + full; raw in full only</td></tr>
+</table>
+<ul>
+  <li>There is <strong>no position/role column</strong>; today every card shows the app's "Staff" fallback. <code>position</code> is dropped from both copies, and the Directory keeps showing "Staff".</li>
+  <li>Allergies and medical are one question (N); it is manager-only, as decided. Dietary (S) is a separate question. BDD after every sync: no <code>team</code> doc's <code>dietary</code> equals its <code>full</code>
+    doc's <code>medical</code>.</li>
+  <li>Compare's "intended differences" are an <strong>enumerated</strong> list (field + person); anything else is a hard stop, not a judgment call.</li>
+</ul>
+
 <h3>The exact key lists (R3 Claude-M3)</h3>
 <p>One shared constant in <code>js/roster-sync.js</code>. The rules tests assert against the same lists. Derived from every <code>staff.&lt;field&gt;</code> the Directory and <code>celebrations.js</code> read today.</p>
-<pre>TEAM_KEYS = [id, revision, name, pronouns, position, studioId, email, phone, birthday, birthdayMonthOnly, startDate,
+<pre>TEAM_KEYS = [id, revision, name, pronouns, studioId, email, phone, birthday, birthdayMonthOnly, startDate,
              favoriteCoffee, favoriteCandy, favoriteSnack, favoriteSalty, dietary]
 FULL_KEYS = TEAM_KEYS + [status, birthdayRaw, address, emergencyContact1Name, emergencyContact1Phone,
              emergencyContact2Name, emergencyContact2Phone, medical]
@@ -269,11 +296,15 @@ Never copied: every other sheet column.</pre>
   <li><strong>Exact header contract, not fuzzy matching:</strong> the sync uses a pinned list of the sheet's exact column headers for every column it <em>reads</em> (copied fields plus Timestamp and status) (R4 Claude-M1). A missing,
     renamed, duplicated or ambiguous header stops the sync and names the column. No "save anyway" for structural problems. This also fixes the "preferred name" bug
     and the risk of "phone" matching "Emergency Contact 1 - Phone". Fixture test: the real 36 headers &rarr; the full expected map; no two fields share a column.</li>
+  <li><strong>Every built doc is validated before the first write</strong> against one shared schema object (the JS mirror of the rules). A violation names the person, field and cell text in the
+    preview and stops the sync: e.g. an email cell like "a@b.com (personal)" or "n/a", or a row with a blank Name but other answers. Over-cap free text (medical, address, dietary,
+    favorites) is <strong>never silently truncated</strong>; it's listed for an explicit confirm, then capped (R7 Claude-B2).</li>
   <li><strong>Status must be C or P</strong> (or a known variant). Blank or unknown stops the sync for that row and lists it, so it can never default to "current" and leak into the staff copy.</li>
   <li>Sheets API call pinned: the tab found by gid <code>119449978</code> (currently "Form Responses 1"; the title is quoted in the range, with any apostrophe doubled, and unit-tested) (R6 Claude-L3), <code>majorDimension=ROWS</code>, <code>valueRenderOption=FORMATTED_VALUE</code> (R5 Claude-L1). Rows are padded to header width (the API trims trailing empties) and cells trimmed, like the CSV parser.</li>
   <li><strong>Every sync shows a "what changed" preview before publishing</strong>, and any removal, current&rarr;past change, id change, or loss of a previously filled field needs an explicit
     confirm (R2 Codex-M2). Hard stops with no confirm, all measured on the <strong>team</strong> (current staff) set versus the live revision: zero rows; current staff down by more than 10% or more
-    than 3 people; more than 3 people flipping current&rarr;past in one sync; readable birthdays or start dates down by more than 10% or more than 3. Affected names are printed (R6 Claude-M6).
+    than 3 people; more than 3 people flipping current&rarr;past in one sync; readable birthdays or start dates down by more than 10% or more than 3. Also on the <strong>full</strong> set: past
+    rows down by more than 10% or 3, or any previously filled field (address, medical, emergency contacts, phone, email…) emptied for more than 10% or 3 people. Affected names are printed (R6 Claude-M6, R7 Codex-M1).</li>
     The first sync has no live revision to compare against, so it keeps only the absolute gates (zero rows, header contract, status), and Compare sources is the gate (R4 Claude-L1).</li>
   <li>Every row carries every allow-listed key as a string (<code>''</code> when blank), so the Directory's existing code (e.g. <code>staff.email.toLowerCase()</code>) never crashes on a missing field.</li>
   <li>Writes go in chunks of 5 (same 20-lookups-per-batch limit as the celebrations plan) into the staging revision. Publishing is the single pointer flip described above.</li>
@@ -293,7 +324,7 @@ removed only after that comparison passes and Christie confirms. Nothing in the 
 <table>
   <tr><th>Field (sheet column)</th><th>Staff (<code>team</code>)</th><th>Managers (<code>full</code>)</th></tr>
   <tr><td>Name (the sheet's single "Name" column)</td><td>yes</td><td>yes</td></tr>
-  <tr><td>Pronouns, Team/studio, position, status (current/past)</td><td>yes (current staff only)</td><td>yes (all rows)</td></tr>
+  <tr><td>Pronouns, Team/studio, status (current/past). (No position column exists in the sheet.)</td><td>yes (current staff only)</td><td>yes (all rows)</td></tr>
   <tr><td>Email, phone</td><td>yes</td><td>yes</td></tr>
   <tr><td>Birthday (month/day), start date</td><td>yes</td><td>yes</td></tr>
   <tr><td>Favorite coffee/tea, sweet, healthy, salty treats</td><td>yes</td><td>yes</td></tr>
@@ -362,8 +393,13 @@ Celebrations 2a is built on B's sync.</p>
     Also confirm Christie and Anika each have a <strong>tinkerartstudio.com Google account</strong> that can open the sheet. That Google account is separate from the Tinker app sign-in.</li>
   <li><strong>The Google Form itself</strong> (R3 Claude-M11): in the form's settings, "See summary charts and text responses" must be off for respondents, and "Edit after submit" considered.
     Otherwise people who filled in the form could see everyone's answers there.</li>
+  <li><strong>Before phase 0: check where the offboarding history lives.</strong> In Christie's browser, does <code>staffDirectory/appData</code> exist in Firestore, and does local storage hold records
+    it doesn't? If local-only records exist, phase 0's migration step handles them (R7 Codex-B2).</li>
   <li><strong>A 15-minute spike with the real setup</strong> (R3 Claude-B1): Picker &rarr; grant &rarr; <code>values.get</code>, recording the exact error the Sheets API returns for a file that hasn't
-    been picked yet. That recording drives the code, not a guessed error name. Also record the published CSV's redirect host (for the CSP while the CSV still exists) (R4 Claude-B1).</li>
+    been picked yet. That recording drives the code, not a guessed error name. Also record the published CSV's redirect host (for the CSP while the CSV still exists) (R4 Claude-B1).
+    <strong>GO / NO-GO in Safari with "Prevent cross-site tracking" on:</strong> the Picker loads, the sheet can be picked, then <code>values.get</code> returns 200. If the Picker iframe fails there, the
+    fallback is doing the one-time pick in Chrome (the grant is stored by Google, so Safari then needs only a token). Anika's phase C sync is run in her real browser (R7 Claude-M4).
+    The Picker's API key is used only for the Picker, never on Sheets calls.</li>
   <li><strong>Record the current published CSV URL</strong> in this plan before phase D, in case it's needed for a rollback (R3 Claude-M7).</li>
   <li><strong>Who has what access:</strong> a manager-only list of every account's role and Staff Directory checkbox, so Christie sees exactly who gets the full view, the staff view, or nothing before phase C ships.</li>
 </ul>
@@ -407,7 +443,9 @@ Celebrations 2a is built on B's sync.</p>
   <li><strong>Offboarding can never wipe itself</strong> (R4 Claude-B2):
     <ul>
       <li>loading returns loaded / absent / failed. On <em>failed</em>, Save and Complete are disabled ("Couldn't load offboarding history, reload before editing") and nothing is written.
-        On <em>absent</em>, the first save creates the document once (<code>set</code> of just that one entry); after that, saves use the one-entry update (R6 Codex-M2). Complete Offboarding runs its
+        On <em>absent</em>: if this browser's <code>tinkerOffboardingData</code> holds records, that's a <strong>migration</strong>. The manager sees "N offboarding records exist only in this browser",
+        a JSON snapshot is downloaded first, and one create-only transaction writes the complete map, then it's read back and verified before edits are enabled (R7 Codex-B2). If nothing is held
+        locally, the first save creates the document with that one entry. Either way the create fails if the doc appeared meanwhile, and the user reloads (R6 Codex-M2). Complete Offboarding runs its
         Hiring-app and other follow-ups only after the Firestore write succeeds;</li>
       <li>saving writes only that one person's entry, never the whole map, so one save can't remove anyone else's record. The keys are email addresses, which contain dots, so the write uses
         <code>update(new firebase.firestore.FieldPath('offboardingData', key), data)</code>, <strong>never</strong> a dotted string path (which would nest under <code>…@tinkerartstudio → com</code>) (R5 both);</li>
@@ -433,6 +471,12 @@ Celebrations 2a is built on B's sync.</p>
       <li>a team doc with an <code>address</code>/<code>medical</code>/emergency key is refused;</li>
       <li>a spoofed <code>updatedBy</code> or a client-clock <code>updatedAt</code> is refused;</li>
       <li>a doc id outside the pattern is refused;</li>
+      <li><strong>the whole block compiles in the emulator</strong>: the first item, before anything else (R7 Claude-B1);</li>
+      <li>a <strong>full realistic row</strong> (e.g. <code>anika@tinkerartstudio.com</code>, filled name/phone/birthday/favorites/dietary) is <strong>accepted</strong> in both <code>team</code> and <code>full</code>;
+        <code>'not an email'</code> and <code>'a@b.com, c@d.com'</code> are refused (R7 both);</li>
+      <li>the real SDK sequences are accepted: the header create with <code>serverTimestamp()</code> in a batch, and the pointer flip inside <code>runTransaction</code> with <code>serverTimestamp()</code>.
+        If <code>== request.time</code> doesn't hold there, switch to the ISO-string + freshness pattern this file already uses for <code>staffCelebrations</code> (R7 Claude-M1);</li>
+      <li><code>collectionGroup('full')</code> and <code>collectionGroup('team')</code> are denied for staff and managers (R7 Claude-M5);</li>
       <li>a <strong>mixed</strong> manager batch (3 <code>full</code> + 2 <code>team</code> in one batch) succeeds (R6 Claude-M4);</li>
       <li>a row whose <code>id</code> isn't a 32-char hex hash, or whose <code>revision</code> differs from its path, is refused; a header created with zero counts, or with counts changed at complete, is refused;</li>
       <li>CAS: revision C staged on A, then B published, then flipping to C is refused (incl. a retried transaction); rollback to any revision other than the immediate previous is refused (R6 Codex-M1);</li>
@@ -546,6 +590,19 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 2 2026, design review round 7 (Codex + Claude). Accepted:
+    <ul>
+      <li>the email regex without backslash escapes, a compile-first check and an accepting realistic-row test (both);</li>
+      <li>builder-side validation with named stops, and no silent truncation (Claude-B2);</li>
+      <li>the browser-only offboarding records migration (Codex-B2);</li>
+      <li>the serverTimestamp/transaction acceptance tests (Claude-M1);</li>
+      <li>the exact header map written into the plan from the live header row, with position dropped since no such column exists (Claude-M2);</li>
+      <li>the timestamp check made advisory (Claude-M3);</li>
+      <li>the Safari Picker GO/NO-GO (Claude-M4); collection-group tests (Claude-M5);</li>
+      <li>full-copy health gates (Codex-M1).</li>
+    </ul>
+    <strong>Note on the review loop:</strong> rounds 5&ndash;7 have found only implementation-detail issues, each fixed in the text. The plan already requires an implementation review after each
+    phase (second-model-review), and phase A's rules must compile and pass the emulator suite before the sha phrase. Recommended to Christie: stop design rounds and mark execution-ready.</li>
   <li>Oct 2 2026, design review round 6 (Codex + Claude). Accepted:
     <ul>
       <li>the complete literal row schemas, <code>currentRev()</code> and id patterns (Codex-B2);</li>
