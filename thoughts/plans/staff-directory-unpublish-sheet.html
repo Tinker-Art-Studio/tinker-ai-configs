@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v6</strong> after design review rounds 1&ndash;3 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 4 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v7</strong> after design review rounds 1&ndash;4 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 5 next)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -134,9 +134,14 @@ staffRosterMeta/current                     // pointer: {revision, previous, upd
   <li>Per-field UTF-8 caps in the builder, with headroom under the rules' caps; an aggregate per-doc size check before writing (R2 Codex-M3).</li>
   <li>Doc ids: a hash of the normalized email (or of the normalized name when there's no email), so they're path-safe for names with "/" or accents (R2 Codex-L1).</li>
   <li><strong>Duplicate rows</strong> (R3 Claude-B2). The sheet is a Form response tab, and today 3 emails appear twice (counted Oct 2: 81 rows, 0 without an email, 0 blank).
-    One row per person is kept: a C row beats P/OUTDATED rows, otherwise the latest Timestamp wins. Every dropped row is listed in the preview and as an intended difference in Compare.
+    For duplicate <em>emails</em>, the row with the latest Timestamp wins, and C-beats-P only breaks a Timestamp tie (a newer P row correctly makes someone past) (R4 Claude-M1).
+    If a person's rows disagree on status, or the same email carries clearly different names, the sync needs an explicit confirm, and the preview prints the winning row per person.
+    Two email-less rows with the same name stop the sync: they could be two different people (R4 Codex-M2). Every dropped row is listed in the preview and as an intended difference in Compare.
     The same id function is applied to the CSV rows, so Compare lines up by person.</li>
   <li>Timestamps are server time (<code>request.time</code>); <code>createdBy</code>/<code>updatedBy</code> must equal the caller.</li>
+  <li>Each row's <code>id</code> must equal its doc id, and its <code>revision</code> must equal the <code>{rev}</code> in its path (R4 Codex-M5).</li>
+  <li>The pointer flip also requires the target header's counts to be non-zero (<code>team &gt; 0</code>, <code>full &ge; team</code>) and <code>revision != previous</code> (R4 Claude-L3).</li>
+  <li><strong>Reads are one-shot gets</strong>, never live listeners on revision data. The only listener is on <code>staffRosterMeta/current</code>; a pointer change triggers a fresh read (R4 Claude-M5).</li>
 </ul>
 <pre>// Legacy collection, tightened in the same rules deploy (R2 both, blocking):
 match /staffDirectory/{docId} {
@@ -156,19 +161,20 @@ Never copied: every other sheet column.</pre>
 <ul>
   <li><code>birthday</code> is stored as <code>M/D</code> (no year) in both copies. Team rows are current staff only, so they carry no status field; the reader adapter sets <code>status: 'current'</code>.</li>
   <li><strong>Status cases</strong> (R3 Claude-M4): an all-blank row is skipped silently. C &rarr; current. P / past / former / inactive / OUTDATED &rarr; past (in <code>full</code> only).
-    A named row with a blank or unknown status goes into <code>full</code> only, flagged in the preview and a "fix in the sheet" list, and never into <code>team</code>.
-    (None exist today.) <code>getDateProblems</code> keeps its blank-status branch.</li>
+    A named row with a blank or unknown status <strong>stops the whole sync</strong> before anything is written, and names the row to fix in the sheet (R4 Codex-M3; none exist today).
+    <code>getDateProblems</code>'s blank-status branch and its test are removed: dead logic now, and it would flag everyone on a staff account (R4 Claude-M3).</li>
 </ul>
 
 <h3>Sync safety (R1 Codex-B2, Claude-B2, M1&ndash;M4, M11)</h3>
 <ul>
-  <li><strong>Exact header contract, not fuzzy matching:</strong> the sync uses a pinned list of the sheet's exact column headers for every copied field. A missing,
+  <li><strong>Exact header contract, not fuzzy matching:</strong> the sync uses a pinned list of the sheet's exact column headers for every column it <em>reads</em> (copied fields plus Timestamp and status) (R4 Claude-M1). A missing,
     renamed, duplicated or ambiguous header stops the sync and names the column. No "save anyway" for structural problems. This also fixes the "preferred name" bug
     and the risk of "phone" matching "Emergency Contact 1 - Phone". Fixture test: the real 36 headers &rarr; the full expected map; no two fields share a column.</li>
   <li><strong>Status must be C or P</strong> (or a known variant). Blank or unknown stops the sync for that row and lists it, so it can never default to "current" and leak into the staff copy.</li>
   <li>Sheets API call pinned: tab name, <code>majorDimension=ROWS</code>, <code>valueRenderOption=FORMATTED_VALUE</code>. Rows are padded to header width (the API trims trailing empties) and cells trimmed, like the CSV parser.</li>
   <li><strong>Every sync shows a "what changed" preview before publishing</strong>, and any removal, current&rarr;past change, id change, or loss of a previously filled field needs an explicit
-    confirm (R2 Codex-M2). Hard stops with no confirm: zero rows; readable birthdays or start dates down by more than 10% or more than 3 people versus the live revision.</li>
+    confirm (R2 Codex-M2). Hard stops with no confirm: zero rows; readable birthdays or start dates down by more than 10% or more than 3 people versus the live revision.
+    The first sync has no live revision to compare against, so it keeps only the absolute gates (zero rows, header contract, status), and Compare sources is the gate (R4 Claude-L1).</li>
   <li>Every row carries every allow-listed key as a string (<code>''</code> when blank), so the Directory's existing code (e.g. <code>staff.email.toLowerCase()</code>) never crashes on a missing field.</li>
   <li>Writes go in chunks of 5 (same 20-lookups-per-batch limit as the celebrations plan) into the staging revision. Publishing is the single pointer flip described above.</li>
   <li>The manual CSV-file escape hatch feeds the <strong>same</strong> pipeline: header contract, validator, preview, staging, flip. There's no second, looser import path (R2 Codex-M2).</li>
@@ -193,8 +199,8 @@ removed only after that comparison passes and Christie confirms. Nothing in the 
   <tr><td>Favorite coffee/tea, sweet, healthy, salty treats</td><td>yes</td><td>yes</td></tr>
   <tr><td>Dietary restrictions / food preferences</td><td><strong>yes</strong> (for team treats)</td><td>yes</td></tr>
   <tr><td>Medical information / allergies (one combined question)</td><td><strong>no</strong></td><td>yes</td></tr>
-  <tr><td>Home address, emergency contacts 1 &amp; 2, T-shirt size</td><td>no</td><td>yes</td></tr>
-  <tr><td>Background check, sex-offender check, I-9/W4, rehire eligibility, COVID, over-21, driver's license, CPR, notes, end of employment, timestamp</td><td>never copied</td><td>never copied</td></tr>
+  <tr><td>Home address, emergency contacts 1 &amp; 2</td><td>no</td><td>yes</td></tr>
+  <tr><td>Background check, sex-offender check, I-9/W4, rehire eligibility, COVID, over-21, driver's license, CPR, notes, end of employment, timestamp, <strong>T-shirt size</strong> (never displayed today; stays in the sheet) (R4 both)</td><td>never copied</td><td>never copied</td></tr>
 </table>
 <ul>
   <li><strong>Staff copy = current staff only.</strong> Read-only staff already can't see past staff in the Directory, so past staff never go into <code>team</code>.</li>
@@ -206,7 +212,7 @@ removed only after that comparison passes and Christie confirms. Nothing in the 
 <h2>Who sees what (Christie, same model as every other Tinker app)</h2>
 <table>
   <tr><th>Account</th><th>Staff Directory</th></tr>
-  <tr><td>Admin or manager</td><td>Full view: everything, incl. address, emergency contacts, medical/allergies, T-shirt, past staff. Manager tools: offboarding, Generate Order, Sync from sheet, Compare sources.</td></tr>
+  <tr><td>Admin or manager</td><td>Full view: everything, incl. address, emergency contacts, medical/allergies, past staff. Manager tools: offboarding, Generate Order, Sync from sheet, Compare sources.</td></tr>
   <tr><td>Staff with <strong>Staff Directory</strong> checked in Manage Team (existing <code>appAccess: 'staff-directory'</code>)</td><td>Staff view: current staff, the fields in the table above (no address, medical or emergency). View only.</td></tr>
   <tr><td>Staff without the checkbox, self-made accounts, kiosk</td><td>No access: "You don't have access to the Staff Directory. Ask Christie or Anika."</td></tr>
 </table>
@@ -242,6 +248,12 @@ Celebrations 2a is built on B's sync.</p>
 <ul>
   <li><strong>Sheet sharing (Q7, Christie):</strong> set the Staff Info sheet's Share list to Christie, Anika and the admin account; general access "Restricted"; check the parent folder
     or shared drive doesn't grant more. Recorded before and re-checked after phase D.</li>
+  <li><strong>Existing Google sign-in in this project (R4 Claude-B3; checked Oct 2):</strong> Social Media Manager already has an OAuth client in <code>tinker-hq-apps</code>
+    (<code>929945075847-50g8…</code>, Picker with <code>drive.readonly</code>). The consent screen is <em>one per project</em>, so its user type is already set, and changing it could break
+    Social Media Manager. Rule: <strong>never change the existing consent screen's user type.</strong> If it's already Internal, add a new client and the <code>drive.file</code> scope there.
+    If it's External/testing (7-day expiry) or not Internal, the default becomes a <strong>separate small Cloud project inside the tinkerartstudio.com org</strong>, just for the Directory.
+    Then the client id, API key and Picker <code>appId</code> (that project's number, not <code>929945075847</code>) all come from it. Any later client-id change voids both managers' picks,
+    and phase C's "both managers sync" check must be redone.</li>
   <li><strong>GO / NO-GO: can the Google Cloud project use "Internal"?</strong> Only if <code>tinker-hq-apps</code> belongs to the tinkerartstudio.com Workspace organization. This decides the
     design (R2 Claude-M5, Codex-M1). In "External, testing", Google expires the grant every <strong>7 days</strong>, so you'd re-approve weekly. If Internal isn't available, the options are
     External "in production" (<code>drive.file</code> needs no Google review; an "unverified app" notice may show), or a separate small Cloud project inside the Workspace org just for this
@@ -250,13 +262,13 @@ Celebrations 2a is built on B's sync.</p>
   <li><strong>The Google Form itself</strong> (R3 Claude-M11): in the form's settings, "See summary charts and text responses" must be off for respondents, and "Edit after submit" considered.
     Otherwise people who filled in the form could see everyone's answers there.</li>
   <li><strong>A 15-minute spike with the real setup</strong> (R3 Claude-B1): Picker &rarr; grant &rarr; <code>values.get</code>, recording the exact error the Sheets API returns for a file that hasn't
-    been picked yet. That recording drives the code, not a guessed error name.</li>
+    been picked yet. That recording drives the code, not a guessed error name. Also record the published CSV's redirect host (for the CSP while the CSV still exists) (R4 Claude-B1).</li>
   <li><strong>Record the current published CSV URL</strong> in this plan before phase D, in case it's needed for a rollback (R3 Claude-M7).</li>
   <li><strong>Who has what access:</strong> a manager-only list of every account's role and Staff Directory checkbox, so Christie sees exactly who gets the full view, the staff view, or nothing before phase C ships.</li>
 </ul>
-<p><strong>Then Google Cloud</strong>, for project <code>tinker-hq-apps</code> (project number <code>929945075847</code>, already in the code):</p>
+<p><strong>Then Google Cloud</strong>, in whichever project the check above chose (<code>tinker-hq-apps</code>, number <code>929945075847</code>, or the new Directory-only project):</p>
 <ul>
-  <li>enable the <strong>Google Sheets API</strong> and the <strong>Google Picker API</strong>;</li>
+  <li>enable the <strong>Google Sheets API</strong>, the <strong>Google Picker API</strong> and the <strong>Google Drive API</strong> (the Picker needs Drive) (R4 Codex-B1);</li>
   <li>OAuth consent screen: Internal (or the fallback above); scope <code>drive.file</code> only;</li>
   <li>OAuth client ID (Web) with origins <code>https://tinker-staff-directory.netlify.app</code> and <code>http://localhost:8081</code>;</li>
   <li>a browser API key restricted to the Picker API, with referrers for those two origins <strong>and <code>https://docs.google.com/*</code></strong> (the Picker runs inside a Google frame) (R1 Codex-M2);</li>
@@ -274,9 +286,23 @@ Celebrations 2a is built on B's sync.</p>
     never load or listen to <code>staffDirectory</code>, and stale <code>tinkerOffboardingData</code> is cleared from their browser. This must ship <em>before</em> phase A tightens the rules,
     or checkbox staff could type exit-interview notes that look saved and aren't.</li>
   <li><code>saveDataToFirestore()</code> returns success or failure. Offboarding Save/Complete show an error on failure, never "Saved!" (R3 Claude-B3).</li>
-  <li>The Content-Security-Policy is written <em>complete</em> now, including what phase B will need: <code>script-src</code> apis.google.com, accounts.google.com; <code>frame-src</code>
-    docs.google.com, accounts.google.com; <code>connect-src</code> sheets.googleapis.com, content.googleapis.com, Firestore/Firebase endpoints; <code>style-src 'unsafe-inline'</code> for the injected
-    Google UI. It's delivered in a committed <code>_headers</code> file, which the archive-only deploy must include (R3 Claude-M5).</li>
+  <li>The Content-Security-Policy is written <em>host-by-host from the real <code>index.html</code></em> and includes what phase B will need (R3 Claude-M5, R4 Claude-B1):
+    <ul>
+      <li><code>script-src</code>: self, www.gstatic.com (Firebase SDK), apis.google.com, accounts.google.com;</li>
+      <li><code>style-src</code>: self, 'unsafe-inline', fonts.googleapis.com; <code>font-src</code>: fonts.gstatic.com;</li>
+      <li><code>connect-src</code>: identitytoolkit.googleapis.com, securetoken.googleapis.com, firestore.googleapis.com, sheets.googleapis.com, content.googleapis.com, and docs.google.com plus the
+        CSV's redirect host for as long as the CSV path exists;</li>
+      <li><code>frame-src</code>: docs.google.com, accounts.google.com.</li>
+    </ul>
+    It's delivered in a committed <code>_headers</code> file, which the archive-only deploy must include. Acceptance: sign in as each account type on the deployed site with <strong>zero</strong> CSP
+    violations in the console, and the staff list loads.</li>
+  <li><strong>Offboarding can never wipe itself</strong> (R4 Claude-B2):
+    <ul>
+      <li>loading returns loaded / absent / failed. On <em>failed</em>, Save and Complete are disabled ("Couldn't load offboarding history, reload before editing") and nothing is written;</li>
+      <li>saving writes only that one person's entry (a merge of <code>offboardingData.&lt;key&gt;</code>), never the whole map, so one save can't remove anyone else's record;</li>
+      <li>the Settings "Push Data to Firestore" seeding button is removed;</li>
+      <li>tests: load fails &rarr; save blocked; a save with an empty in-memory map leaves the other records intact.</li>
+    </ul></li>
   <li>Honest scope: phase 0 removes the script-injection risk and hides sensitive fields on screen. The data itself still reaches browsers via the CSV until phase C/D.</li>
   <li>Staff Directory deploy (Christie's OK). Inter-phase check: "phase 0 app + phase A rules" behaves correctly for every account type (R3 Codex-B1).</li>
 </ul></div>
@@ -314,8 +340,10 @@ Celebrations 2a is built on B's sync.</p>
       <li>load GIS + Picker;</li>
       <li>on <strong>Sync from sheet</strong> (admin/manager only, gated by a role-only <code>canSync</code>, never the existing <code>canWrite</code>), request a <code>drive.file</code> token
         with <code>hd: 'tinkerartstudio.com'</code> and <code>prompt: ''</code> after the first consent. No <code>login_hint</code> from the app sign-in, since that may be a different account (R2 Codex-M1);</li>
-      <li>open the Picker when this browser has no record of a pick for this Google account. Otherwise try <code>values.get</code>, and on any 403/404 (the Sheets API's way of saying
-        "not granted yet", per the spike) open the Picker once, retry, and only then report a sharing or wrong-file problem (R3 Claude-B1). Unit tests cover 403&rarr;pick&rarr;200 and 404&rarr;pick&rarr;404. Open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
+      <li>on every Sync: get a token, try <code>values.get</code>; on a 403/404 (the Sheets API's way of saying "not granted yet", per the spike) open the Picker once, retry, and only then report a
+        sharing or wrong-file problem (R3 Claude-B1). No "picked already" flag in the browser: Google's token doesn't say which account it belongs to (R4 Codex-M4). A "Switch Google account"
+        retry uses <code>prompt: 'select_account'</code>. The tab is found by its fixed id (gid <code>119449978</code>) via <code>spreadsheets.get</code>, not its name, and a range error (400) means "the
+        Staff Info tab changed", never the Picker branch (R4 Claude-L2). Unit tests cover 403&rarr;pick&rarr;200 and 404&rarr;pick&rarr;404. Open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
         and check the picked id equals the Staff Info id;</li>
       <li>call <code>values.get</code> with the pinned parameters;</li>
       <li>handle every failure path with a clear message: declined, popup blocked, picker cancelled, timeout, 403 (this Google account can't open the sheet), 404 (wrong file)
@@ -346,14 +374,18 @@ Celebrations 2a is built on B's sync.</p>
       <li><code>manager-only</code> (role check): Generate Order, Offboard, Settings, Open Spreadsheet, Sync, Compare, the Past/All/Offboarded status options, Missing or unclear dates,
         and the calendar export;</li>
       <li><code>staff-visible</code>: email and phone on cards, Send Email / Call links, Celebrations;</li>
-      <li><code>sensitive-profile</code> (manager only): address, emergency contacts, medical, T-shirt.</li>
+      <li><code>sensitive-profile</code> (manager only): address, emergency contacts, medical.</li>
     </ul>
-    One BDD line per site, checked for manager, checkbox staff and no-access accounts, including that no manager-only network call happens for staff.</li>
+    One BDD line per site, checked for manager, checkbox staff and no-access accounts, including that no manager-only network call happens for staff. All 14 existing <code>write-control</code>
+    sites get a destination (incl. Refresh &rarr; manager-only, and the calendar help section &rarr; manager-only), and the old <code>.read-only .write-control</code> CSS and <code>body.read-only</code> toggle are deleted
+    in the same commit (R4 Claude-L4).</li>
   <li>Offboarding data is never loaded for non-managers. Its listener is not started for them, and any <code>tinkerOffboardingData</code> left in browser storage is cleared on staff sign-in
     and on sign-out (R2 Codex-B2).</li>
-  <li>If the app can't read your account record (network hiccup), it says "Couldn't check your access, reload", never "You don't have access". The guard carries a <code>roleKnown</code> flag (R2 Claude-M4).</li>
+  <li>If the app can't read your account record (network hiccup), it says "Couldn't check your access, reload", never "You don't have access". The Directory's own copy of the guard carries a
+    <code>roleKnown</code> flag (a fork, noted in its header; other apps are unchanged) (R2 Claude-M4, R4 Claude-M4). The access check also treats <code>active: false</code> and the kiosk accounts as
+    "no access", which is tested (R4 Claude-M4).</li>
   <li>One adapter, <code>rosterDocToStaff(doc)</code>, rebuilds the staff objects the Directory already uses (<code>id</code>, <code>status</code>, <code>studioId</code>…), unit-tested key-for-key against what the
-    CSV path produces, minus the manager-only fields. <code>getDateProblems</code> drops its blank-status branch, since the sync now refuses blank statuses (R2 Claude-M1).</li>
+    CSV path produces, minus the manager-only fields. (The blank-status branch is removed; see the key lists section.)</li>
   <li>Then staff load the staff copy and managers the full copy. The CSV stops being fetched for display, but the comparison/recovery path stays until E (R1 Codex-M7).</li>
   <li>New messages:
     <ul>
@@ -394,6 +426,23 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 2 2026, design review round 4 (Codex + Claude). Accepted:
+    <ul>
+      <li>a host-by-host CSP + zero-violation sign-in test (Claude-B1);</li>
+      <li>offboarding load-failure blocking + per-person merge writes + the seed button removed (Claude-B2);</li>
+      <li>the consent screen is project-wide: <strong>verified that Social Media Manager already uses an OAuth client in tinker-hq-apps</strong>, so never change its user type; separate project by
+        default if it isn't Internal (Claude-B3);</li>
+      <li>the Drive API enabled (Codex-B1);</li>
+      <li>latest-Timestamp dedupe + confirms + same-name stop (Claude-M1, Codex-M2);</li>
+      <li>T-shirt dropped everywhere (Claude-M2, Codex-L6);</li>
+      <li>unknown status = hard stop; the blank-status branch removed (Claude-M3, Codex-M3);</li>
+      <li>archived/kiosk in the app check (Claude-M4);</li>
+      <li>one-shot reads (Claude-M5);</li>
+      <li>no per-account pick flag + Switch account (Codex-M4);</li>
+      <li>id/revision bound to the path (Codex-M5);</li>
+      <li>Claude-L1&ndash;L5.</li>
+    </ul>
+    Noted for later, out of scope: Social Media Manager asks for read access to <em>all</em> of Drive (<code>drive.readonly</code>).</li>
   <li>Oct 2 2026, design review round 3 (Codex + Claude). Accepted:
     <ul>
       <li>a Picker trigger driven by the recorded spike, not a guessed error name (Claude-B1);</li>
