@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: The staff sheet stops being public</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  pre { background: #f4f4f4; padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  .trap { background: #fdecea; border-left: 4px solid #c0392b; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: The staff sheet stops being public</h1>
+<p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v1</strong> &middot; <strong>execution-ready: false</strong> (waiting on Christie: Q1&ndash;Q4; then design review)</p>
+
+<div class="status">
+  <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
+  background-check or I-9 columns without being signed in <em>and</em> allowed. Staff who use the Staff Directory keep seeing it, with a trimmed set of fields.
+  Managers keep seeing everything they see today.
+  <br><strong>Why:</strong> today the app reads a public CSV link. Anyone who has it (any staff member can find it in their browser) can download the
+  whole sheet with no sign-in.
+  <br><strong>Approach (option 2, Christie's choice):</strong> a manager's browser reads the sheet with <em>their own</em> Google sign-in, then saves two copies to
+  Firestore: a <strong>full</strong> copy only managers can read, and a <strong>trimmed</strong> copy staff can read. The Staff Directory then loads from Firestore, never
+  from the sheet's public link, and the link is switched off.
+</div>
+
+<h2>What is wrong today</h2>
+<ul>
+  <li><code>js/config.js</code> holds the sheet's published CSV URL. <code>fetchStaffData()</code> downloads it for <strong>every</strong> signed-in user. "Read-only" staff mode only hides
+    buttons, so the full sheet is in every staff browser.</li>
+  <li>The sheet has 36 columns, including "Passed Background Check?", "Checked on National Sex Offender Website", "Completed i9, W4, Direct Deposit?",
+    "Eligible for rehire", COVID vaccine status, and Notes. The app doesn't even display most of these, but the public CSV contains them all.</li>
+  <li>The link works with no sign-in at all. Anyone it was ever shared with, or anyone who saw it in a browser, has permanent access until it's unpublished.</li>
+</ul>
+
+<h2>Design</h2>
+
+<h3>How the data flows</h3>
+<table>
+  <tr><th>Step</th><th>What happens</th></tr>
+  <tr><td>1. Manager opens the Staff Directory</td><td>As today, they sign in to the app (Firebase). If they're admin/manager, the app also asks Google for a short-lived,
+    <strong>read-only</strong> permission to read spreadsheets, via Google's own sign-in pop-up (Google Identity Services). The first time it asks "Allow Tinker Staff Directory to
+    view your Google Sheets?". After that it's usually silent.</td></tr>
+  <tr><td>2. Read the sheet</td><td>The browser calls the Google Sheets API for the Staff Info tab with that token. Only people whose Google account can already open the
+    sheet can read it: Google enforces the sheet's normal sharing.</td></tr>
+  <tr><td>3. Save two copies</td><td>Same parsing as today (<code>detectColumns</code> &rarr; staff objects). Then save:
+    <ul>
+      <li><code>staffRoster/full</code>: every field the app uses today, managers only;</li>
+      <li><code>staffRoster/team</code>: the trimmed fields (Q2), readable by staff.</li>
+    </ul>
+    The same sanity gate as the celebrations plan: no rows, a missing required column, or a big unconfirmed drop in staff count &rarr; save nothing.</td></tr>
+  <tr><td>4. Everyone else</td><td>Staff open the Staff Directory and it loads <code>staffRoster/team</code> from Firestore. Managers load <code>staffRoster/full</code>
+    (and refresh it from the sheet when they can).</td></tr>
+  <tr><td>5. Switch off the link</td><td>Once Firestore matches the sheet (verified), remove the CSV URL from the code. Then Christie unpublishes the sheet in Google Sheets
+    (File &rarr; Share &rarr; Publish to web &rarr; Stop publishing).</td></tr>
+</table>
+
+<h3>Why this is the secure option</h3>
+<ul>
+  <li><strong>No permanent key anywhere.</strong> The Google permission lives in the manager's browser, read-only, and expires within an hour. Nothing is stored on a server or in code.</li>
+  <li><strong>Firestore rules decide who sees what,</strong> not the page. A staff account physically can't download the full copy, even from the browser's developer tools.</li>
+  <li><strong>The sheet's own sharing stays the gatekeeper</strong> for the source data. Only Google accounts it's shared with can refresh the copy.</li>
+</ul>
+
+<h3>Freshness</h3>
+<ul>
+  <li>The Firestore copy updates whenever a manager opens the Staff Directory. A new hire who fills in the Google Form appears after the next manager visit, not instantly.</li>
+  <li>The Directory shows "Staff list synced from the sheet N hours ago" for managers. If the Google sign-in is declined or fails, managers still see the last saved copy, with a "Sync now" button.</li>
+  <li>The celebrations summary (plan <code>hq-celebrations-card</code>, phase 2a) is built from the same sync, so there's one sheet read, not two.</li>
+</ul>
+
+<h3>New Firestore rules (sketch; finalized in the rules phase)</h3>
+<pre>// staffRoster/full: the whole staff list as the Directory uses it. Admin/manager only.
+// staffRoster/team: the staff-safe fields. Any active, signed-in staff account (not the kiosk).
+match /staffRoster/{docId} {
+  allow get: if docId == 'team' &amp;&amp; !isKiosk() &amp;&amp; isActiveUser();
+  allow get: if docId == 'full' &amp;&amp; !isKiosk() &amp;&amp; isManagerOrAbove();
+  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove()
+    &amp;&amp; docId in ['full', 'team'] &amp;&amp; /* shape checks per Q2 */ true;
+  // no list, no delete
+}</pre>
+<p>Size: about 80 sheet rows &times; ~1.5 KB is roughly 120 KB, well under Firestore's 1 MiB per document. That's fine for years at this size. The rules
+phase adds a size check, and the plan notes when to split into per-person docs (past ~500 rows).</p>
+
+<h3>The mandatory data-source check (CLAUDE.md)</h3>
+<p>This plan changes the Directory's data source from the public CSV to Firestore, and then switches the CSV off. Before the switch, a manager verification step compares,
+for every row, the CSV, the Sheets API read, and the saved <code>staffRoster/full</code>: same row count, and the same value in every column the app uses. The CSV is
+removed only after that comparison passes and Christie confirms. Nothing in the sheet itself is touched; the sheet remains the source of truth.</p>
+
+<h2>Questions for Christie</h2>
+<div class="decision-needed"><strong>Q1 &mdash; Who can open the sheet in Google?</strong> The sync works for whoever's <em>Google</em> account can open the Staff Info sheet. Which admins/managers
+should be able to refresh the staff list, and do they have tinkerartstudio.com Google accounts the sheet is shared with? (Minimum: you. Others only matter for
+keeping it fresh when you're away.)</div>
+<div class="decision-needed"><strong>Q2 &mdash; What should staff see?</strong> Today staff see everything except the contact buttons. Proposed staff (trimmed) fields:
+<ul>
+  <li>name, preferred name, pronouns, position, studio;</li>
+  <li>email and phone (it's a staff directory);</li>
+  <li>birthday and start date (D4 in the celebrations plan);</li>
+  <li>favorite coffee, treats and snacks.</li>
+</ul>
+<strong>Managers only:</strong> home address, emergency contacts, medical/allergy notes, dietary restrictions, T-shirt size, and everything the app doesn't display today
+(background check, I-9, rehire eligibility, notes…, which are never copied at all).<br>
+Is dietary/allergy something staff should see (e.g. for team treats), or managers only?</div>
+<div class="decision-needed"><strong>Q3 &mdash; Google Cloud setup (a one-time step you'd do, with click-by-click instructions).</strong> Google requires an "OAuth client"
+for a website to ask for Sheets access. You'd create it in the Google Cloud console for the existing <code>tinker-hq-apps</code> project:
+<ul>
+  <li>enable the Sheets API;</li>
+  <li>set the consent screen to <em>Internal</em> (only tinkerartstudio.com accounts, so no Google review needed);</li>
+  <li>create a Web client allowed on <code>tinker-staff-directory.netlify.app</code> (plus a localhost address for testing).</li>
+</ul>
+I can't do this for you: it's an account setting. Are you OK doing it? About 10 minutes. The client ID it produces isn't a secret.</div>
+<div class="decision-needed"><strong>Q4 &mdash; Interim quick fix while this is built?</strong> Option 1 (publish only a trimmed tab) closes the worst columns within the day but means touching the sheet's
+publish settings twice. <em>Recommend:</em> skip it if this plan can ship within about a week; otherwise do it now.</div>
+
+<h2>Phases (outline; detailed after Q1&ndash;Q4 and design review)</h2>
+<div class="phase"><h3>A &mdash; Rules: <code>staffRoster</code></h3>
+<p>The block above, plus shape checks for both docs (field allow-lists from Q2, sizes). Tests: staff can get <code>team</code> only; managers get both; kiosk, bot, archived and
+signed-out are refused; no list, no delete; staff can't write; an extra or forbidden field in <code>team</code> (e.g. <code>address</code>) is refused. Deploy through the guard with your sha phrase.</p></div>
+<div class="phase"><h3>B &mdash; Google sign-in + sync (managers)</h3>
+<p>Load Google Identity Services; request <code>spreadsheets.readonly</code> for admin/manager only; read the tab via the Sheets API; reuse <code>detectColumns</code> and the parser;
+build <code>full</code> and <code>team</code> with tested builders; the sanity gate; save. Nothing changes for staff yet, and the CSV is still the display source in this phase,
+so it can be verified side by side.</p></div>
+<div class="phase"><h3>C &mdash; Verify, then switch the Directory to Firestore</h3>
+<p>The comparison tool (CSV vs Sheets API vs <code>full</code>, every row and column). After it passes and Christie confirms, staff load <code>team</code> and managers load
+<code>full</code>. The CSV URL is removed from <code>config.js</code>. Staff Directory deploy (your OK).</p></div>
+<div class="phase"><h3>D &mdash; Unpublish the sheet (Christie, in Google Sheets)</h3>
+<p>Stop publishing. Then check that the old CSV URL returns an error, and that the Directory still works for a staff account and a manager account.</p></div>
+
+<h2>Relationship to the celebrations plan</h2>
+<p>Celebrations phase 2a (summary + personal records) is built on top of phase B's sync, so both features share one sheet read and one sanity gate. The HQ card and
+greetings already read Firestore, so they're unaffected by the switch.</p>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li>Oct 1 2026: Option 2 chosen over a trimmed published tab (option 1) and a key-holding server (option 3): no permanent credential, and rules-enforced field split (Christie).</li>
+  <li>Oct 1 2026: Staff with access must keep seeing the Staff Directory (Christie).</li>
+</ul>
+</body>
+</html>
