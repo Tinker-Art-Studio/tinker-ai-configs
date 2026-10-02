@@ -1,0 +1,11 @@
+## Verdict: SAFE TO DEPLOY
+
+No blocking findings.
+
+1. **LOW — one denial test passes partly for the wrong reason.** [rules.test.js:3027](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/rules.test.js:3027) has non-managers update manager-only `appData`, so that transaction would fail independently of the `lessons_*` create restriction. The pre-seeded-config test at [rules.test.js:3036](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/rules.test.js:3036) correctly isolates the restriction, so coverage is not materially missing. **Fix:** pre-seed the entry in the first test or rename it to describe the atomic transaction denial.
+
+2. **LOW — near-1 MiB coverage does not exercise the new-key fence.** [rules.test.js:2829](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/rules.test.js:2829) tests Fall success and the old Spring fence, but not adding `spring-2027` to the large document. **Fix:** add one `assertFails` for a new top-level semester key using that fixture.
+
+The implementation otherwise matches Phase A exactly: fence placement, unfenced rollback, generic document lifecycle, literal Spring rules, and ordinary-grant exclusion are correct at [firestore.rules:686](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/firestore.rules:686), [firestore.rules:712](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/firestore.rules:712), [firestore.rules:775](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/firestore.rules:775), and [firestore.rules:787](/Users/christiehubley/studio-hub/.claude/worktrees/new-semesters-rules/firestore.rules:787). No role-escalation or curriculum-flow regression found.
+
+Rules-language usage is valid: `matches()` covers the whole string, anchored `replace()` extracts the key, `keys().toSet().difference().hasOnly()` is type-correct, malformed migration records fail closed, and the maximum path is three distinct document accesses—below Firebase’s limits. [Firebase String reference](https://firebase.google.com/docs/reference/rules/rules.String), [rules-condition limits](https://firebase.google.com/docs/firestore/security/rules-conditions).
