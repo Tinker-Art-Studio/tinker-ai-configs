@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v4</strong> after design review round 1 + Christie's Q5&ndash;Q7 &middot; <strong>execution-ready: false</strong> (design review round 2 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v5</strong> after design review rounds 1&ndash;2 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 3 next)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -37,6 +37,9 @@
 
 <h2>What is wrong today</h2>
 <ul>
+  <li><strong>Offboarding notes are open to checkbox staff.</strong> <code>staffDirectory/appData</code> (exit-interview notes, checklist state, past staff's names and emails) is
+    readable <em>and overwritable</em> by any staff member with the Staff Directory checkbox, and every Directory session downloads it and copies it into the browser's storage
+    (R2 both, blocking).</li>
   <li><strong>Any signed-in account sees everything in the Directory today</strong>, including home addresses, emergency contacts and medical notes in each profile
     ("read-only" mode only hides buttons). And anyone can create a Tinker account: the sign-in key is public, and new accounts get a staff record automatically (R1 Claude-B1).</li>
   <li><strong>Sheet text goes into the page as HTML</strong> (names, pronouns, favorites…). A form answer containing HTML/script would run in a manager's browser.
@@ -63,11 +66,11 @@
     sheet's normal sharing, so the person must be able to open the sheet anyway.</td></tr>
   <tr><td>3. Save two copies</td><td>Same parsing as today (<code>detectColumns</code> &rarr; staff objects). Then save:
     <ul>
-      <li><code>staffRosterFull/{id}</code>: every field the app uses today, one doc per sheet row, managers only;</li>
-      <li><code>staffRosterTeam/{id}</code>: the trimmed fields (Q2), one doc per <em>current</em> staff member, readable by managers and by staff with the Staff Directory checkbox.</li>
+      <li><code>staffRosterRevisions/{rev}/full/{id}</code>: every field the app uses today, one doc per sheet row, managers only;</li>
+      <li><code>staffRosterRevisions/{rev}/team/{id}</code>: the trimmed fields (Q2), one doc per <em>current</em> staff member, readable by managers and by staff with the Staff Directory checkbox.</li>
     </ul>
     See "Storage and rules" below: one document <em>per person</em>, so the database rules can check every field (R1 Codex-B1). See "Sync safety" for when nothing is saved.</td></tr>
-  <tr><td>4. Everyone else</td><td>Staff open the Staff Directory and it loads <code>staffRosterTeam</code> from Firestore. Managers load <code>staffRosterFull</code>,
+  <tr><td>4. Everyone else</td><td>Staff open the Staff Directory and it loads the current revision's <code>team</code> docs (via <code>staffRosterMeta/current</code>). Managers load its <code>full</code> docs,
     and refresh it with a <strong>Sync from sheet</strong> button (R1 both: Google can't hand out a token silently on page load).</td></tr>
   <tr><td>5. Switch off the link</td><td>Once Firestore matches the sheet (verified), remove the CSV URL from the code. Then Christie unpublishes the sheet in Google Sheets
     (File &rarr; Share &rarr; Publish to web &rarr; Stop publishing).</td></tr>
@@ -82,7 +85,8 @@
   <li>Not secrets, and stored in <code>config.js</code>: the OAuth client id, the Picker's browser API key (restricted in Google Cloud to the Picker API and the Directory's web
     addresses), the project number, and the sheet id. None of them grant access on their own.</li>
   <li><strong>Firestore rules decide who sees what, down to the field.</strong> Each person's staff-copy doc may contain <em>only</em> the allowed fields: the rules check every doc's
-    exact key list, so even a buggy or tampered sync can't put an address or medical note where staff can read it. (v2's single-list design couldn't do this, because rules can't look
+    exact key list, so even a buggy or tampered sync can't put an address or medical note where staff can read it. (Picking a wrong file in the Picker does add that file to the
+    app's access before the id check refuses it, so the honest claim is "only files you pick", not "only ever this one" (R2 Codex-M1).) (v2's single-list design couldn't do this, because rules can't look
     inside list items. Changed after R1 Codex-B1, Claude-M12.)</li>
   <li><strong>The sheet's own sharing stays the gatekeeper</strong> for the source data. Only Google accounts it's shared with can refresh the copy.</li>
 </ul>
@@ -95,34 +99,36 @@
   <li>The celebrations summary (plan <code>hq-celebrations-card</code>, phase 2a) is built in the same sync, so there's one sheet read.</li>
 </ul>
 
-<h3>Storage and rules (v3)</h3>
-<pre>// staffRosterFull/{id}: one doc per sheet row, every field the Directory uses. Admin/manager only.
-// staffRosterTeam/{id}: one doc per CURRENT staff member, staff-safe fields only. Readers per Q5.
-// Writes: admin/manager only, every doc shape-checked. A leaver's team doc becomes {current:false, revision, updatedAt}.
-match /staffRosterFull/{id} {
-  allow get, list: if !isKiosk() &amp;&amp; isManagerOrAbove();
-  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isFullRow(request.resource.data);
-}
-match /staffRosterTeam/{id} {
-  allow get, list: if !isKiosk() &amp;&amp; (isManagerOrAbove() || hasAppAccess('staff-directory'));
-  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isTeamRow(request.resource.data);
-}
-match /staffRosterMeta/{docId} {  // 'sync': last sync time, by whom, row counts, revision
-  allow get: if !isKiosk() &amp;&amp; (isManagerOrAbove() || hasAppAccess('staff-directory'));
-  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; docId == 'sync' &amp;&amp; isSyncMeta(request.resource.data);
-}
-// isTeamRow: keys().hasOnly([name, pronouns, studio, position, email, phone, birthday, startDate,
-//   favoriteCoffee, favoriteCandy, favoriteSnack, favoriteSalty, dietary, current, revision, updatedAt, updatedBy]),
-//   typed and length-capped, birthday M/D (no year), updatedBy == caller, updatedAt == request.time.
-//   No address / medical / emergency / T-shirt key can ever be written.
-// No delete anywhere: a removed person is marked, never deleted (the sheet stays the source of truth).</pre>
+<h3>Storage and rules (v5: staged revisions)</h3>
+<p>A sync never edits the live copy in place. It writes a complete <strong>new revision</strong> alongside the old one, checks it, then flips one pointer. Readers always see
+one whole, finished revision: never half old and half new (R2 both, blocking).</p>
+<pre>staffRosterRevisions/{rev}                  // header: {status: 'staging'|'complete', counts {full, team}, createdBy, createdAt (server time), previous}
+staffRosterRevisions/{rev}/full/{id}        // one doc per sheet row, every field the Directory uses          — admin/manager only
+staffRosterRevisions/{rev}/team/{id}        // one doc per CURRENT staff member, staff-safe fields only       — + staff with the checkbox
+staffRosterMeta/current                     // pointer: {revision, previous, updatedAt (server time), updatedBy} — readers start here</pre>
 <ul>
-  <li>No byte-size worry: each doc is one person (rules can't measure bytes; per-person docs make that moot) (R1 Claude-M8, Codex-M4).</li>
-  <li>Every sync stamps one <code>revision</code> on every doc it writes, plus <code>staffRosterMeta/sync</code>. Docs from an older revision that weren't rewritten
-    (someone removed from the sheet) are listed for a manager, never silently deleted.</li>
-  <li>Doc ids are stable, not row positions: <code>row-&lt;lowercased email&gt;</code>, or <code>row-name-&lt;name&gt;</code> without an email; collisions refuse the sync (R1 Claude-M5).</li>
-  <li><code>updatedAt == request.time</code> (a server timestamp), so "updated N days ago" can't be faked by a wrong clock (R1 Claude-M9).</li>
+  <li><strong>Sync:</strong> create the header as <code>staging</code> &rarr; write all <code>full</code> and <code>team</code> docs in chunks of 5 &rarr; read them back and check the counts and key sets &rarr;
+    mark the header <code>complete</code> &rarr; in one transaction, flip <code>staffRosterMeta/current</code> to the new revision. Any failure before the flip leaves the live copy exactly as it was.</li>
+  <li><strong>Two managers at once:</strong> the flip is compare-and-swap. The rule requires the new pointer's <code>previous</code> to equal the current <code>revision</code>, and the new revision's header
+    to exist and be <code>complete</code>. A second sync that started from the old pointer is refused and told to re-run.</li>
+  <li><strong>Readers:</strong> read the pointer, then that revision's <code>team</code> (staff) or <code>full</code> (managers). Rules let checkbox staff read only <code>team</code> under the revision the pointer names
+    (and its header). Staging revisions are invisible to staff.</li>
+  <li><strong>Rollback:</strong> the previous revision stays, so a manager can point back to it. Revisions older than the previous one can be deleted by managers (never the current or previous one).</li>
+  <li><strong>Rules check every doc's exact shape</strong> (<code>hasOnly</code> + <code>hasAll</code>), with separate schemas for: a current team row, a current full row, the header, and the pointer.
+    Team rows include only <code>current: true</code>; past staff are simply absent from <code>team</code>, so there are no tombstones to get wrong. Optional strings may be <code>''</code>
+    or match their pattern/cap (e.g. birthday <code>'' || M/D</code>), so a blank birthday doesn't make a sync fail (R2 Claude-B2, Codex-M3).</li>
+  <li><strong>Full rows have an exact allow-list too:</strong> background check, I-9, rehire, notes and the other never-copied columns have no key in either schema, so the rules refuse them
+    in <code>full</code> as well as <code>team</code>. Tested per field (R2 Codex-M3).</li>
+  <li>Per-field UTF-8 caps in the builder, with headroom under the rules' caps; an aggregate per-doc size check before writing (R2 Codex-M3).</li>
+  <li>Doc ids: a hash of the normalized email (or of the normalized name when there's no email), so they're path-safe for names with "/" or accents; collisions refuse the sync (R2 Codex-L1).</li>
+  <li>Timestamps are server time (<code>request.time</code>); <code>createdBy</code>/<code>updatedBy</code> must equal the caller.</li>
 </ul>
+<pre>// Legacy collection, tightened in the same rules deploy (R2 both, blocking):
+match /staffDirectory/{docId} {
+  allow read, create, update: if !isKiosk() &amp;&amp; isManagerOrAbove();   // was: || hasAppAccess('staff-directory')
+  allow delete: if isManagerOrAbove();
+}</pre>
+<p>Nothing else reads <code>staffDirectory</code> except HQ's dead birthday code, which the celebrations plan removes (checked).</p>
 
 <h3>Sync safety (R1 Codex-B2, Claude-B2, M1&ndash;M4, M11)</h3>
 <ul>
@@ -131,11 +137,11 @@ match /staffRosterMeta/{docId} {  // 'sync': last sync time, by whom, row counts
     and the risk of "phone" matching "Emergency Contact 1 - Phone". Fixture test: the real 36 headers &rarr; the full expected map; no two fields share a column.</li>
   <li><strong>Status must be C or P</strong> (or a known variant). Blank or unknown stops the sync for that row and lists it, so it can never default to "current" and leak into the staff copy.</li>
   <li>Sheets API call pinned: tab name, <code>majorDimension=ROWS</code>, <code>valueRenderOption=FORMATTED_VALUE</code>. Rows are padded to header width (the API trims trailing empties) and cells trimmed, like the CSV parser.</li>
-  <li><strong>Health checks before writing:</strong> zero rows; count of readable birthdays/start dates drops materially vs the stored copy; current-staff count drops by more than 3.
-    Any of these &rarr; a preview of names added and removed, and an explicit confirm.</li>
+  <li><strong>Every sync shows a "what changed" preview before publishing</strong>, and any removal, current&rarr;past change, id change, or loss of a previously filled field needs an explicit
+    confirm (R2 Codex-M2). Hard stops with no confirm: zero rows; readable birthdays or start dates down by more than 10% or more than 3 people versus the live revision.</li>
   <li>Every row carries every allow-listed key as a string (<code>''</code> when blank), so the Directory's existing code (e.g. <code>staff.email.toLowerCase()</code>) never crashes on a missing field.</li>
-  <li>Writes go in chunks of 5 (same 20-lookups-per-batch limit as the celebrations plan), full rows first, then team rows, then <code>staffRosterMeta/sync</code> last. A failed chunk stops the
-    run before the meta doc, so readers keep trusting the previous revision. One sync at a time per browser; a sync that started from an older sheet read than the current meta revision is refused.</li>
+  <li>Writes go in chunks of 5 (same 20-lookups-per-batch limit as the celebrations plan) into the staging revision. Publishing is the single pointer flip described above.</li>
+  <li>The manual CSV-file escape hatch feeds the <strong>same</strong> pipeline: header contract, validator, preview, staging, flip. There's no second, looser import path (R2 Codex-M2).</li>
   <li>The full roster is never written to localStorage (a shared manager browser keeps no medical data at rest) (R1 Claude-L7).</li>
 </ul>
 
@@ -205,8 +211,10 @@ Celebrations 2a is built on B's sync.</p>
 <ul>
   <li><strong>Sheet sharing (Q7, Christie):</strong> set the Staff Info sheet's Share list to Christie, Anika and the admin account; general access "Restricted"; check the parent folder
     or shared drive doesn't grant more. Recorded before and re-checked after phase D.</li>
-  <li><strong>Can the Google Cloud project use "Internal"?</strong> Only if <code>tinker-hq-apps</code> belongs to the tinkerartstudio.com Workspace organization. If it doesn't, the fallback is
-    "External, testing" with Christie and Anika as test users (<code>drive.file</code> needs no Google review either way; an "unverified app" notice appears).
+  <li><strong>GO / NO-GO: can the Google Cloud project use "Internal"?</strong> Only if <code>tinker-hq-apps</code> belongs to the tinkerartstudio.com Workspace organization. This decides the
+    design (R2 Claude-M5, Codex-M1). In "External, testing", Google expires the grant every <strong>7 days</strong>, so you'd re-approve weekly. If Internal isn't available, the options are
+    External "in production" (<code>drive.file</code> needs no Google review; an "unverified app" notice may show), or a separate small Cloud project inside the Workspace org just for this
+    sign-in. Decided with Christie <em>before</em> phase A.
     Also confirm Christie and Anika each have a <strong>tinkerartstudio.com Google account</strong> that can open the sheet. That Google account is separate from the Tinker app sign-in.</li>
   <li><strong>Who has what access:</strong> a manager-only list of every account's role and Staff Directory checkbox, so Christie sees exactly who gets the full view, the staff view, or nothing before phase C ships.</li>
 </ul>
@@ -229,7 +237,7 @@ Celebrations 2a is built on B's sync.</p>
   <li>Staff Directory deploy (Christie's OK). This is worth shipping on its own: it fixes an existing hole.</li>
 </ul></div>
 
-<div class="phase"><h3>A &mdash; Rules: <code>staffRosterFull</code> / <code>staffRosterTeam</code> / <code>staffRosterMeta</code> (studio-hub, via the guard)</h3>
+<div class="phase"><h3>A &mdash; Rules: <code>staffRosterRevisions</code> / <code>staffRosterMeta</code> + tighten <code>staffDirectory</code> (studio-hub, via the guard)</h3>
 <ul>
   <li>The blocks in "Storage and rules", with per-doc shape checks. Access uses the existing <code>appAccess: 'staff-directory'</code> checkbox. Nothing changes in Tinker HQ.
     The users rule already lets only admins and managers set app access.</li>
@@ -243,7 +251,11 @@ Celebrations 2a is built on B's sync.</p>
       <li>a team doc with an <code>address</code>/<code>medical</code>/emergency key is refused;</li>
       <li>a spoofed <code>updatedBy</code> or a client-clock <code>updatedAt</code> is refused;</li>
       <li>a doc id outside the pattern is refused;</li>
-      <li>a manager batch of 5 succeeds.</li>
+      <li>a manager batch of 5 succeeds;</li>
+      <li><code>staffDirectory/appData</code>: checkbox staff are denied get and update; managers are allowed (precedent: "Classbook — appData protected from staff");</li>
+      <li>the pointer flip: a stale <code>previous</code> is refused; flipping to a staging (incomplete) or missing revision is refused;</li>
+      <li>checkbox staff can read only <code>team</code> under the current revision, and are refused a staging revision, the previous revision and <code>full</code>;</li>
+      <li>a team row with every optional field <code>''</code> succeeds; a full row with any never-copied field is refused.</li>
     </ul></li>
   <li>Studio-hub <code>npm test</code> green; guard <code>--status</code>/<code>--diff</code> pasted verbatim; Christie's "approved to change firebase &lt;sha&gt;"; <code>--approved</code> (R1 Claude-L8).</li>
 </ul></div>
@@ -254,12 +266,12 @@ Celebrations 2a is built on B's sync.</p>
     <ul>
       <li>load GIS + Picker;</li>
       <li>on <strong>Sync from sheet</strong> (admin/manager only, gated by a role-only <code>canSync</code>, never the existing <code>canWrite</code>), request a <code>drive.file</code> token
-        with <code>hint</code> = the signed-in email and <code>prompt: ''</code> after the first consent;</li>
-      <li>first time per person, open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
+        with <code>hd: 'tinkerartstudio.com'</code> and <code>prompt: ''</code> after the first consent. No <code>login_hint</code> from the app sign-in, since that may be a different account (R2 Codex-M1);</li>
+      <li>try <code>values.get</code> first. Open the Picker only when Google says the app isn't authorized for the file (<code>appNotAuthorizedToFile</code>), then retry. Open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
         and check the picked id equals the Staff Info id;</li>
       <li>call <code>values.get</code> with the pinned parameters;</li>
       <li>handle every failure path with a clear message: declined, popup blocked, picker cancelled, timeout, 403 (this Google account can't open the sheet), 404 (wrong file)
-        (R1 Claude-B4, B7, L1; Codex-M1, M3).</li>
+        (R1 Claude-B4, B7, L1; Codex-M1, M3). Handle failures through GIS <code>error_callback</code> (R2 Codex-M1).</li>
     </ul></li>
   <li><code>js/roster-sync.js</code> (pure, tested): the header contract, row padding, status validation, the stable ids, <code>buildRosterDocs</code> &rarr; full rows + team rows + meta, the health checks,
     and the chunk plan. It also emits the celebrations summary, so phase 2a of that plan plugs in here.</li>
@@ -279,9 +291,21 @@ Celebrations 2a is built on B's sync.</p>
 <div class="phase"><h3>C &mdash; Verify, then switch the Directory to Firestore</h3>
 <ul>
   <li><strong>Both Christie and Anika</strong> sync successfully at least once, and a staff test account reads the staff copy (R1 Codex-M6).</li>
-  <li>The manager-only "Compare sources" panel (the normalized comparison above) shows zero unexplained differences, and Christie confirms.</li>
-  <li>The Directory's access check changes to the table in "Who sees what": manager tools are gated on role only (no longer on the checkbox); checkbox staff get the staff view;
-    everyone else gets the "no access" screen.</li>
+  <li>The manager-only "Compare sources" panel (the normalized comparison above) shows zero unexplained differences, and Christie confirms. It also checks that every offboarding record
+    (keyed by email) still matches a person in the new roster, listing any orphans by name, so no one's offboarding history quietly disappears (R2 Claude-M2).</li>
+  <li>The Directory's access check changes to the table in "Who sees what". The single <code>write-control</code>/<code>read-only</code> switch is replaced by explicit classes (R2 Claude-M3, Codex-M4):
+    <ul>
+      <li><code>manager-only</code> (role check): Generate Order, Offboard, Settings, Open Spreadsheet, Sync, Compare, the Past/All/Offboarded status options, Missing or unclear dates,
+        and the calendar export;</li>
+      <li><code>staff-visible</code>: email and phone on cards, Send Email / Call links, Celebrations;</li>
+      <li><code>sensitive-profile</code> (manager only): address, emergency contacts, medical, T-shirt.</li>
+    </ul>
+    One BDD line per site, checked for manager, checkbox staff and no-access accounts, including that no manager-only network call happens for staff.</li>
+  <li>Offboarding data is never loaded for non-managers. Its listener is not started for them, and any <code>tinkerOffboardingData</code> left in browser storage is cleared on staff sign-in
+    and on sign-out (R2 Codex-B2).</li>
+  <li>If the app can't read your account record (network hiccup), it says "Couldn't check your access, reload", never "You don't have access". The guard carries a <code>roleKnown</code> flag (R2 Claude-M4).</li>
+  <li>One adapter, <code>rosterDocToStaff(doc)</code>, rebuilds the staff objects the Directory already uses (<code>id</code>, <code>status</code>, <code>studioId</code>…), unit-tested key-for-key against what the
+    CSV path produces, minus the manager-only fields. <code>getDateProblems</code> drops its blank-status branch, since the sync now refuses blank statuses (R2 Claude-M1).</li>
   <li>Then staff load the staff copy and managers the full copy. The CSV stops being fetched for display, but the comparison/recovery path stays until E (R1 Codex-M7).</li>
   <li>New messages:
     <ul>
@@ -319,6 +343,19 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 2 2026, design review round 2 (Codex + Claude). Accepted:
+    <ul>
+      <li><code>staffDirectory</code> made manager-only, and offboarding data kept out of staff browsers (both, blocking);</li>
+      <li>staged revisions + compare-and-swap pointer, so readers never see a half-finished sync (both, blocking);</li>
+      <li>schemas allowing <code>''</code>, plus separate schemas incl. full rows (Claude-B2, Codex-M3);</li>
+      <li>the <code>rosterDocToStaff</code> adapter (Claude-M1); the offboarding-join orphan check (Claude-M2);</li>
+      <li>explicit UI classes instead of write-control (Claude-M3, Codex-M4);</li>
+      <li>the <code>roleKnown</code> flag (Claude-M4);</li>
+      <li>Internal as a go/no-go (7-day expiry in testing) (Claude-M5, Codex-M1);</li>
+      <li><code>hd</code> not <code>login_hint</code>; Picker on <code>appNotAuthorizedToFile</code>; <code>error_callback</code> (Codex-M1);</li>
+      <li>confirm every removal; one pipeline for the CSV importer (Codex-M2);</li>
+      <li>hashed path-safe ids (Codex-L1); the end-to-end tests.</li>
+    </ul></li>
   <li>Oct 2 2026: Q5&ndash;Q7 (Christie): Directory access uses the <strong>existing</strong> Manage Team "Staff Directory" checkbox. Staff with it get the staff view; only
     managers/admins see sensitive fields and manager tools, "just like all my other apps". The sheet is shared only with Christie, Anika and the admin account. Christie noted the
     access model was being re-asked; it's now stated once, in "Who sees what", and not reopened.</li>
