@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v5</strong> after design review rounds 1&ndash;2 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 3 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v6</strong> after design review rounds 1&ndash;3 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 4 next)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -113,14 +113,29 @@ staffRosterMeta/current                     // pointer: {revision, previous, upd
     to exist and be <code>complete</code>. A second sync that started from the old pointer is refused and told to re-run.</li>
   <li><strong>Readers:</strong> read the pointer, then that revision's <code>team</code> (staff) or <code>full</code> (managers). Rules let checkbox staff read only <code>team</code> under the revision the pointer names
     (and its header). Staging revisions are invisible to staff.</li>
-  <li><strong>Rollback:</strong> the previous revision stays, so a manager can point back to it. Revisions older than the previous one can be deleted by managers (never the current or previous one).</li>
+  <li><strong>Rollback:</strong> the previous revision stays, so a manager can point back to it.</li>
+  <li><strong>Retention:</strong> revisions are kept; nothing is deleted (R3 Claude-M8, Codex-M5). A new revision is only created when the sheet actually changed, so it's a handful a year
+    (~100 small docs each).</li>
+  <li><strong>The rules enforce the staging lifecycle</strong> (R3 Claude-M2, Codex-B2):
+    <ul>
+      <li>a header is created only as <code>staging</code>, by the caller as <code>createdBy</code>, under a new random revision id (create fails if the id exists);</li>
+      <li>only its creator moves it once to <code>complete</code>, with counts, <code>createdBy</code>, <code>createdAt</code> and <code>previous</code> unchanged; after that it's immutable;</li>
+      <li>row docs may only be <em>created</em>, only by the header's creator, and only while the header is <code>staging</code>. No row updates, ever. So nothing can touch the live revision.</li>
+    </ul></li>
+  <li><strong>First publish</strong> (R3 Claude-M1, Codex-B3): <code>staffRosterMeta/current</code> has a separate <code>create</code> rule (no existing doc, no <code>previous</code>, target header complete).
+    Every later flip is an <code>update</code> with compare-and-swap. Manager reads of a revision's <code>full</code> never depend on the pointer, so read-back works before the first publish.</li>
+  <li><strong>Reader race</strong> (R3 Claude-M9): if a manager publishes between a staff member's pointer read and their list query, the query is refused. The Directory re-reads the pointer
+    and retries once; a failed read shows "Couldn't load the staff list, reload", never "hasn't been synced yet".</li>
   <li><strong>Rules check every doc's exact shape</strong> (<code>hasOnly</code> + <code>hasAll</code>), with separate schemas for: a current team row, a current full row, the header, and the pointer.
     Team rows include only <code>current: true</code>; past staff are simply absent from <code>team</code>, so there are no tombstones to get wrong. Optional strings may be <code>''</code>
     or match their pattern/cap (e.g. birthday <code>'' || M/D</code>), so a blank birthday doesn't make a sync fail (R2 Claude-B2, Codex-M3).</li>
   <li><strong>Full rows have an exact allow-list too:</strong> background check, I-9, rehire, notes and the other never-copied columns have no key in either schema, so the rules refuse them
     in <code>full</code> as well as <code>team</code>. Tested per field (R2 Codex-M3).</li>
   <li>Per-field UTF-8 caps in the builder, with headroom under the rules' caps; an aggregate per-doc size check before writing (R2 Codex-M3).</li>
-  <li>Doc ids: a hash of the normalized email (or of the normalized name when there's no email), so they're path-safe for names with "/" or accents; collisions refuse the sync (R2 Codex-L1).</li>
+  <li>Doc ids: a hash of the normalized email (or of the normalized name when there's no email), so they're path-safe for names with "/" or accents (R2 Codex-L1).</li>
+  <li><strong>Duplicate rows</strong> (R3 Claude-B2). The sheet is a Form response tab, and today 3 emails appear twice (counted Oct 2: 81 rows, 0 without an email, 0 blank).
+    One row per person is kept: a C row beats P/OUTDATED rows, otherwise the latest Timestamp wins. Every dropped row is listed in the preview and as an intended difference in Compare.
+    The same id function is applied to the CSV rows, so Compare lines up by person.</li>
   <li>Timestamps are server time (<code>request.time</code>); <code>createdBy</code>/<code>updatedBy</code> must equal the caller.</li>
 </ul>
 <pre>// Legacy collection, tightened in the same rules deploy (R2 both, blocking):
@@ -129,6 +144,21 @@ match /staffDirectory/{docId} {
   allow delete: if isManagerOrAbove();
 }</pre>
 <p>Nothing else reads <code>staffDirectory</code> except HQ's dead birthday code, which the celebrations plan removes (checked).</p>
+
+<h3>The exact key lists (R3 Claude-M3)</h3>
+<p>One shared constant in <code>js/roster-sync.js</code>. The rules tests assert against the same lists. Derived from every <code>staff.&lt;field&gt;</code> the Directory and <code>celebrations.js</code> read today.</p>
+<pre>TEAM_KEYS = [id, name, pronouns, position, studioId, email, phone, birthday, startDate,
+             favoriteCoffee, favoriteCandy, favoriteSnack, favoriteSalty, dietary]          // + revision metadata
+FULL_KEYS = TEAM_KEYS + [status, statusRaw, address, emergencyContact1Name, emergencyContact1Phone,
+             emergencyContact2Name, emergencyContact2Phone, medical]                       // + revision metadata
+Deliberately dropped: firstName, lastName, preferredName (derived or wrong), interests, tshirtSize (parsed but shown nowhere), raw studio text.
+Never copied: every other sheet column.</pre>
+<ul>
+  <li><code>birthday</code> is stored as <code>M/D</code> (no year) in both copies. Team rows are current staff only, so they carry no status field; the reader adapter sets <code>status: 'current'</code>.</li>
+  <li><strong>Status cases</strong> (R3 Claude-M4): an all-blank row is skipped silently. C &rarr; current. P / past / former / inactive / OUTDATED &rarr; past (in <code>full</code> only).
+    A named row with a blank or unknown status goes into <code>full</code> only, flagged in the preview and a "fix in the sheet" list, and never into <code>team</code>.
+    (None exist today.) <code>getDateProblems</code> keeps its blank-status branch.</li>
+</ul>
 
 <h3>Sync safety (R1 Codex-B2, Claude-B2, M1&ndash;M4, M11)</h3>
 <ul>
@@ -147,7 +177,8 @@ match /staffDirectory/{docId} {
 
 <h3>The mandatory data-source check (CLAUDE.md)</h3>
 <p>This plan changes the Directory's data source from the public CSV to Firestore, and then switches the CSV off. Before the switch, a manager verification step compares,
-for every row, the CSV, the Sheets API read, and the saved Firestore copies: same people (by stable id), and the same <em>displayed</em> value in every column the app shows.
+for every row, the CSV, the Sheets API read, and the saved Firestore copies: same people (by stable id), and the same canonical value for <em>every</em> key in <code>FULL_KEYS</code>/<code>TEAM_KEYS</code>,
+not just what's on screen (e.g. <code>favoriteSalty</code> is only used by Generate Order) (R3 Codex-M4). Exact key sets and counts are asserted too.
 Values are normalized the way the Directory displays them (e.g. the birthday as "October 4"), with a short printed list of intended differences (birth year dropped,
 never-copied columns absent, past staff absent from the staff copy). It also checks that the staff copy holds current staff only and no forbidden field (R1 Claude-M1, Codex-B2). The CSV is
 removed only after that comparison passes and Christie confirms. Nothing in the sheet itself is touched; the sheet remains the source of truth.</p>
@@ -216,6 +247,11 @@ Celebrations 2a is built on B's sync.</p>
     External "in production" (<code>drive.file</code> needs no Google review; an "unverified app" notice may show), or a separate small Cloud project inside the Workspace org just for this
     sign-in. Decided with Christie <em>before</em> phase A.
     Also confirm Christie and Anika each have a <strong>tinkerartstudio.com Google account</strong> that can open the sheet. That Google account is separate from the Tinker app sign-in.</li>
+  <li><strong>The Google Form itself</strong> (R3 Claude-M11): in the form's settings, "See summary charts and text responses" must be off for respondents, and "Edit after submit" considered.
+    Otherwise people who filled in the form could see everyone's answers there.</li>
+  <li><strong>A 15-minute spike with the real setup</strong> (R3 Claude-B1): Picker &rarr; grant &rarr; <code>values.get</code>, recording the exact error the Sheets API returns for a file that hasn't
+    been picked yet. That recording drives the code, not a guessed error name.</li>
+  <li><strong>Record the current published CSV URL</strong> in this plan before phase D, in case it's needed for a rollback (R3 Claude-M7).</li>
   <li><strong>Who has what access:</strong> a manager-only list of every account's role and Staff Directory checkbox, so Christie sees exactly who gets the full view, the staff view, or nothing before phase C ships.</li>
 </ul>
 <p><strong>Then Google Cloud</strong>, for project <code>tinker-hq-apps</code> (project number <code>929945075847</code>, already in the code):</p>
@@ -232,9 +268,17 @@ Celebrations 2a is built on B's sync.</p>
 <ul>
   <li>Render all sheet text as text, never HTML (cards, modal, order list, Celebrations); escape attribute values; add a restrictive Content-Security-Policy that still allows
     Google's scripts and Firebase. Tests with <code>&lt;img onerror&gt;</code>, quote-breaking and SVG payloads (R1 Codex-B3).</li>
-  <li>Hide the manager-only profile sections (emergency contacts, medical/allergies, address, T-shirt) from staff instead of showing "N/A". Remove the sheet's edit link from the page for staff,
-    and from the "Setup required" notice (R1 Claude-M6, B3).</li>
-  <li>Staff Directory deploy (Christie's OK). This is worth shipping on its own: it fixes an existing hole.</li>
+  <li>Hide the sensitive profile sections (emergency contacts, medical/allergies, address) from <strong>everyone who isn't a manager or admin</strong>, using a <strong>role-only</strong>
+    check. Never the existing <code>canWrite</code>, which is true for checkbox staff (R3 Claude-M6). Remove the sheet's edit link for non-managers and from the "Setup required" notice (R1 Claude-M6, B3).</li>
+  <li><strong>Moved here from phase C</strong> (R3 Claude-B3, Codex-B1): the role-only <code>manager-only</code> gating of offboarding, Generate Order, Settings and Open Spreadsheet. Non-managers
+    never load or listen to <code>staffDirectory</code>, and stale <code>tinkerOffboardingData</code> is cleared from their browser. This must ship <em>before</em> phase A tightens the rules,
+    or checkbox staff could type exit-interview notes that look saved and aren't.</li>
+  <li><code>saveDataToFirestore()</code> returns success or failure. Offboarding Save/Complete show an error on failure, never "Saved!" (R3 Claude-B3).</li>
+  <li>The Content-Security-Policy is written <em>complete</em> now, including what phase B will need: <code>script-src</code> apis.google.com, accounts.google.com; <code>frame-src</code>
+    docs.google.com, accounts.google.com; <code>connect-src</code> sheets.googleapis.com, content.googleapis.com, Firestore/Firebase endpoints; <code>style-src 'unsafe-inline'</code> for the injected
+    Google UI. It's delivered in a committed <code>_headers</code> file, which the archive-only deploy must include (R3 Claude-M5).</li>
+  <li>Honest scope: phase 0 removes the script-injection risk and hides sensitive fields on screen. The data itself still reaches browsers via the CSV until phase C/D.</li>
+  <li>Staff Directory deploy (Christie's OK). Inter-phase check: "phase 0 app + phase A rules" behaves correctly for every account type (R3 Codex-B1).</li>
 </ul></div>
 
 <div class="phase"><h3>A &mdash; Rules: <code>staffRosterRevisions</code> / <code>staffRosterMeta</code> + tighten <code>staffDirectory</code> (studio-hub, via the guard)</h3>
@@ -253,7 +297,10 @@ Celebrations 2a is built on B's sync.</p>
       <li>a doc id outside the pattern is refused;</li>
       <li>a manager batch of 5 succeeds;</li>
       <li><code>staffDirectory/appData</code>: checkbox staff are denied get and update; managers are allowed (precedent: "Classbook — appData protected from staff");</li>
-      <li>the pointer flip: a stale <code>previous</code> is refused; flipping to a staging (incomplete) or missing revision is refused;</li>
+      <li>the pointer: the first create succeeds; a second create is refused; a stale <code>previous</code> is refused; flipping to a staging or missing revision is refused; rollback to the previous revision works;</li>
+      <li>the lifecycle: writing a row into a complete revision (current or not) is refused; <code>complete &rarr; staging</code> is refused; a non-creator can't add rows or complete a header; updating any row is refused;</li>
+      <li>the exact SDK sequence the Directory uses (get the pointer &rarr; list the revision's <code>team</code>) for staff, manager, no-access, archived and kiosk accounts, against the current, previous and staging revisions (R3 Codex-M6);</li>
+      <li>a sign-in token with no email is refused (the shared <code>isKiosk()</code> quirk), documented as intended (R3 Codex-L7);</li>
       <li>checkbox staff can read only <code>team</code> under the current revision, and are refused a staging revision, the previous revision and <code>full</code>;</li>
       <li>a team row with every optional field <code>''</code> succeeds; a full row with any never-copied field is refused.</li>
     </ul></li>
@@ -267,7 +314,8 @@ Celebrations 2a is built on B's sync.</p>
       <li>load GIS + Picker;</li>
       <li>on <strong>Sync from sheet</strong> (admin/manager only, gated by a role-only <code>canSync</code>, never the existing <code>canWrite</code>), request a <code>drive.file</code> token
         with <code>hd: 'tinkerartstudio.com'</code> and <code>prompt: ''</code> after the first consent. No <code>login_hint</code> from the app sign-in, since that may be a different account (R2 Codex-M1);</li>
-      <li>try <code>values.get</code> first. Open the Picker only when Google says the app isn't authorized for the file (<code>appNotAuthorizedToFile</code>), then retry. Open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
+      <li>open the Picker when this browser has no record of a pick for this Google account. Otherwise try <code>values.get</code>, and on any 403/404 (the Sheets API's way of saying
+        "not granted yet", per the spike) open the Picker once, retry, and only then report a sharing or wrong-file problem (R3 Claude-B1). Unit tests cover 403&rarr;pick&rarr;200 and 404&rarr;pick&rarr;404. Open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
         and check the picked id equals the Staff Info id;</li>
       <li>call <code>values.get</code> with the pinned parameters;</li>
       <li>handle every failure path with a clear message: declined, popup blocked, picker cancelled, timeout, 403 (this Google account can't open the sheet), 404 (wrong file)
@@ -312,7 +360,8 @@ Celebrations 2a is built on B's sync.</p>
       <li>"Staff list hasn't been synced yet: ask Christie or Anika to open the Directory and click Sync" replaces the old "publish your spreadsheet" notice;</li>
       <li>"updated N days ago" is shown to everyone (R1 Claude-M7).</li>
     </ul></li>
-  <li><strong>Rollback:</strong> re-publish the sheet in Google and revert the Directory commit. Also, a manager-only "import a CSV file" escape hatch, in case Google sync breaks after E (R1 Claude-M10).</li>
+  <li><strong>Rollback:</strong> the primary path is the manager-only "import a CSV file" (download the sheet as CSV &rarr; import; same pipeline), or pointing back to the previous revision.
+    Re-publishing may give the sheet a new link, so reverting the code would also need a config edit and a deploy (R3 Claude-M7).</li>
   <li>Staff Directory deploy (Christie's OK; archive-only deploy, sha as the message).</li>
 </ul></div>
 
@@ -329,6 +378,8 @@ Celebrations 2a is built on B's sync.</p>
 Keep the manual CSV-file importer as the escape hatch.</p></div>
 
 <h2>Relationship to the celebrations plan</h2>
+<p><strong>Order (R3 Claude-M10):</strong> celebrations phase 2a waits for this plan's phase B and consumes <code>roster-sync.js</code>'s output: one sheet read, one header contract. It doesn't
+use the CSV path or <code>detectColumns</code>. BDD: after a sync, <code>staffCelebrations/_summary.checkedAt</code> is newer than the sync. The celebrations plan is updated to say so.</p>
 <p>Celebrations phase 2a (summary + personal records) is built on top of phase B's sync, so both features share one sheet read and one sanity gate. The HQ card and
 greetings already read Firestore, so they're unaffected by the switch.</p>
 
@@ -343,6 +394,19 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 2 2026, design review round 3 (Codex + Claude). Accepted:
+    <ul>
+      <li>a Picker trigger driven by the recorded spike, not a guessed error name (Claude-B1);</li>
+      <li>the duplicate-row policy, from real counts (Claude-B2);</li>
+      <li>offboarding gating + the save-error fix moved into phase 0, before the rules (Claude-B3, Codex-B1);</li>
+      <li>the rules-enforced staging lifecycle (Claude-M2, Codex-B2); the first-publish create rule (Claude-M1, Codex-B3);</li>
+      <li>literal key lists (Claude-M3); status cases (Claude-M4);</li>
+      <li>a complete CSP in <code>_headers</code> (Claude-M5); a role-only sensitive-profile class in phase 0 (Claude-M6);</li>
+      <li>CSV import as the primary rollback (Claude-M7); revisions retained, no delete (Claude-M8, Codex-M5);</li>
+      <li>the reader race retry (Claude-M9); celebrations 2a ordered after phase B (Claude-M10);</li>
+      <li>the Google Form settings check (Claude-M11);</li>
+      <li>compare every key (Codex-M4); exact-SDK-sequence rules tests (Codex-M6); the no-email token test (Codex-L7).</li>
+    </ul></li>
   <li>Oct 2 2026, design review round 2 (Codex + Claude). Accepted:
     <ul>
       <li><code>staffDirectory</code> made manager-only, and offboarding data kept out of staff browsers (both, blocking);</li>
