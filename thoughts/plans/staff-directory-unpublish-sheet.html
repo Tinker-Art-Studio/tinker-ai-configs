@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v8</strong> after design review rounds 1&ndash;5 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 6 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v9</strong> after design review rounds 1&ndash;6 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (design review round 7 next)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -116,10 +116,11 @@ staffRosterMeta/current                     // pointer: {revision, previous, upd
   <li><strong>Rollback:</strong> the previous revision stays, so a manager can point back to it.</li>
   <li><strong>Retention:</strong> revisions are kept; nothing is deleted (R3 Claude-M8, Codex-M5). A new revision is only created when the sheet actually changed, so it's a handful a year
     (~100 small docs each).</li>
-  <li><strong>The rules enforce the staging lifecycle</strong> (R3 Claude-M2, Codex-B2):
+  <li><strong>The rules enforce the staging lifecycle</strong> (R3 Claude-M2, Codex-B2). The literal rules below are authoritative where wording differs:
     <ul>
       <li>a header is created only as <code>staging</code>, by the caller as <code>createdBy</code>, under a new random revision id (create fails if the id exists);</li>
-      <li>only its creator moves it once to <code>complete</code>, with counts, <code>createdBy</code>, <code>createdAt</code> and <code>previous</code> unchanged; after that it's immutable;</li>
+      <li>counts are set when the header is created (the builder knows every doc before the first write); only its creator moves it once to <code>complete</code>, with counts, <code>createdBy</code>,
+        <code>createdAt</code> and <code>previous</code> unchanged; after that it's immutable. A revision a sync abandons stays as an inert staging revision (cleanup from the Console only) (R6 Claude-L5);</li>
       <li>row docs may only be <em>created</em>, only by the header's creator, and only while the header is <code>staging</code>. No row updates, ever. So nothing can touch the live revision.</li>
     </ul></li>
   <li><strong>First publish</strong> (R3 Claude-M1, Codex-B3): <code>staffRosterMeta/current</code> has a separate <code>create</code> rule (no existing doc, no <code>previous</code>, target header complete).
@@ -148,6 +149,7 @@ staffRosterMeta/current                     // pointer: {revision, previous, upd
 <pre>// ── STAFF ROSTER (revisions) ── plan: staff-directory-unpublish-sheet.html
 match /staffRosterRevisions/{rev} {
   function hdr() { return get(/databases/$(database)/documents/staffRosterRevisions/$(rev)).data; }
+  function ownStaging() { let h = hdr(); return h.status == 'staging' &amp;&amp; h.createdBy == request.auth.uid; }   // one header lookup
   function isHeader(d) {
     return d.keys().hasOnly(['status','counts','createdBy','createdAt','previous'])
       &amp;&amp; d.keys().hasAll(['status','counts','createdBy','createdAt','previous'])
@@ -158,20 +160,21 @@ match /staffRosterRevisions/{rev} {
   allow get: if !isKiosk() &amp;&amp; hasAppAccess('staff-directory') &amp;&amp; rev == currentRev();
   allow create: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isHeader(request.resource.data)
     &amp;&amp; request.resource.data.status == 'staging' &amp;&amp; request.resource.data.createdBy == request.auth.uid
-    &amp;&amp; request.resource.data.createdAt == request.time;
+    &amp;&amp; request.resource.data.createdAt == request.time
+    &amp;&amp; request.resource.data.counts.team &gt; 0 &amp;&amp; request.resource.data.counts.full &gt;= request.resource.data.counts.team;  // counts set at create (R6 Claude-M3)
   allow update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isHeader(request.resource.data)
     &amp;&amp; resource.data.status == 'staging' &amp;&amp; request.resource.data.status == 'complete'
     &amp;&amp; resource.data.createdBy == request.auth.uid
-    &amp;&amp; fieldUnchanged('createdBy') &amp;&amp; fieldUnchanged('createdAt') &amp;&amp; fieldUnchanged('previous');
+    &amp;&amp; fieldUnchanged('createdBy') &amp;&amp; fieldUnchanged('createdAt') &amp;&amp; fieldUnchanged('previous') &amp;&amp; fieldUnchanged('counts');
 
   match /full/{id} {
     allow get, list: if !isKiosk() &amp;&amp; isManagerOrAbove();
-    allow create: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; hdr().status == 'staging' &amp;&amp; hdr().createdBy == request.auth.uid
+    allow create: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; ownStaging()
       &amp;&amp; isFullRow(request.resource.data) &amp;&amp; request.resource.data.id == id &amp;&amp; request.resource.data.revision == rev;
   }
   match /team/{id} {
     allow get, list: if !isKiosk() &amp;&amp; (isManagerOrAbove() || (hasAppAccess('staff-directory') &amp;&amp; rev == currentRev()));
-    allow create: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; hdr().status == 'staging' &amp;&amp; hdr().createdBy == request.auth.uid
+    allow create: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; ownStaging()
       &amp;&amp; isTeamRow(request.resource.data) &amp;&amp; request.resource.data.id == id &amp;&amp; request.resource.data.revision == rev;
   }
   // no update of rows, no delete anywhere
@@ -182,26 +185,65 @@ match /staffRosterMeta/{docId} {
       &amp;&amp; d.revision is string &amp;&amp; d.previous is string &amp;&amp; d.revision != d.previous
       &amp;&amp; d.updatedAt == request.time &amp;&amp; d.updatedBy == request.auth.uid;
   }
-  function targetOk(d) {
-    let h = get(/databases/$(database)/documents/staffRosterRevisions/$(d.revision)).data;
-    return h.status == 'complete' &amp;&amp; h.counts.team &gt; 0 &amp;&amp; h.counts.full &gt;= h.counts.team;
-  }
+  function target(d) { return get(/databases/$(database)/documents/staffRosterRevisions/$(d.revision)).data; }
+  function targetOk(d) { let h = target(d); return h.status == 'complete' &amp;&amp; h.counts.team &gt; 0 &amp;&amp; h.counts.full &gt;= h.counts.team; }
   allow get: if !isKiosk() &amp;&amp; (isManagerOrAbove() || hasAppAccess('staff-directory'));
   allow create: if docId == 'current' &amp;&amp; !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isPointer(request.resource.data)
-    &amp;&amp; request.resource.data.previous == '' &amp;&amp; targetOk(request.resource.data);
+    &amp;&amp; request.resource.data.previous == '' &amp;&amp; targetOk(request.resource.data) &amp;&amp; target(request.resource.data).previous == '';
   allow update: if docId == 'current' &amp;&amp; !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isPointer(request.resource.data)
-    &amp;&amp; request.resource.data.previous == resource.data.revision &amp;&amp; targetOk(request.resource.data);
+    &amp;&amp; request.resource.data.previous == resource.data.revision &amp;&amp; targetOk(request.resource.data)
+    &amp;&amp; (target(request.resource.data).previous == resource.data.revision          // forward: built on the live revision
+        || request.resource.data.revision == resource.data.previous);              // rollback: only to the immediate previous
+  // A sync staged on an older revision is refused even if retried (R6 Codex-M1).
 }
-// currentRev() = get(.../staffRosterMeta/current).data.revision (a top-level helper next to the others).
-// isTeamRow / isFullRow: hasOnly + hasAll over TEAM_KEYS / FULL_KEYS; every optional string is '' or matches its pattern/cap
-// (birthday '' or ^[0-9]{1,2}/[0-9]{1,2}$, others length-capped); birthdayMonthOnly is bool.
-// Lookups per row write: users (1-2) + header (1) + nothing else: chunks of 5 stay within 20.</pre>
+// ── Top-level helpers (next to the existing ones) ──
+function currentRev() {
+  return get(/databases/$(database)/documents/staffRosterMeta/current).data.revision;
+}
+function capStr(d, k, n) { return d[k] is string &amp;&amp; d[k].size() &lt;= n; }
+function isRosterId(v)   { return v is string &amp;&amp; v.matches('^[a-f0-9]{32}$'); }        // hex hash of the normalized email/name
+function isRevId(v)      { return v is string &amp;&amp; v.matches('^[A-Za-z0-9]{20}$'); }      // Firestore auto-id
+function isTeamFields(d) {
+  return isRosterId(d.id) &amp;&amp; isRevId(d.revision)
+    &amp;&amp; capStr(d,'name',120) &amp;&amp; d.name.size() &gt; 0
+    &amp;&amp; capStr(d,'pronouns',40) &amp;&amp; capStr(d,'position',80)
+    &amp;&amp; d.studioId in ['tinker','clayhub','both']
+    &amp;&amp; capStr(d,'email',120) &amp;&amp; (d.email == '' || d.email.matches('^[^@\s]+@[^@\s]+$'))
+    &amp;&amp; capStr(d,'phone',40)
+    &amp;&amp; d.birthday is string &amp;&amp; (d.birthday == '' || d.birthday.matches('^[0-9]{1,2}/[0-9]{1,2}$'))
+    &amp;&amp; d.birthdayMonthOnly is bool
+    &amp;&amp; capStr(d,'startDate',40)
+    &amp;&amp; capStr(d,'favoriteCoffee',200) &amp;&amp; capStr(d,'favoriteCandy',200)
+    &amp;&amp; capStr(d,'favoriteSnack',200) &amp;&amp; capStr(d,'favoriteSalty',200)
+    &amp;&amp; capStr(d,'dietary',300);
+}
+function teamKeys() {
+  return ['id','revision','name','pronouns','position','studioId','email','phone','birthday','birthdayMonthOnly',
+          'startDate','favoriteCoffee','favoriteCandy','favoriteSnack','favoriteSalty','dietary'];
+}
+function isTeamRow(d) { return d.keys().hasOnly(teamKeys()) &amp;&amp; d.keys().hasAll(teamKeys()) &amp;&amp; isTeamFields(d); }
+function fullKeys() {
+  return teamKeys().concat(['status','birthdayRaw','address','emergencyContact1Name','emergencyContact1Phone',
+                            'emergencyContact2Name','emergencyContact2Phone','medical']);
+}
+function isFullRow(d) {
+  return d.keys().hasOnly(fullKeys()) &amp;&amp; d.keys().hasAll(fullKeys()) &amp;&amp; isTeamFields(d)
+    &amp;&amp; d.status in ['current','past'] &amp;&amp; capStr(d,'birthdayRaw',40) &amp;&amp; capStr(d,'address',300)
+    &amp;&amp; capStr(d,'emergencyContact1Name',120) &amp;&amp; capStr(d,'emergencyContact1Phone',40)
+    &amp;&amp; capStr(d,'emergencyContact2Name',120) &amp;&amp; capStr(d,'emergencyContact2Phone',40)
+    &amp;&amp; capStr(d,'medical',500);
+}
+// Every key is always present ('' when blank), so hasAll + hasOnly pins the exact set. The builder mirrors these caps
+// with UTF-8 headroom and the same patterns; a shared test fixture runs builder output through a JS copy of these checks.
+// Lookups per row create: users (≤2) + header (1, bound once) = ≤3. A batch is at most 5 documents total,
+// counting full and team together (≤15 of 20). (R6 Claude-M4, Codex-B2)</pre>
 <pre>// Legacy collection, tightened in the same rules deploy (R2 both, blocking):
 match /staffDirectory/{docId} {
   allow read, create, update: if !isKiosk() &amp;&amp; isManagerOrAbove();   // was: || hasAppAccess('staff-directory')
-  allow delete: if isManagerOrAbove();
+  allow delete: if !isKiosk() &amp;&amp; isManagerOrAbove();                 // kiosk excluded on delete too (R6 both)
 }</pre>
-<p>Nothing else reads <code>staffDirectory</code> except HQ's dead birthday code, which the celebrations plan removes (checked).</p>
+<p>Nothing else reads <code>staffDirectory</code> except HQ's ineffective birthday check, which still runs on every HQ load. After phase A it will log a harmless permission error for
+non-managers (inside its try/catch) until the celebrations plan's phase 2b removes it. That's expected console noise, not a rules regression (R6 Claude-L1).</p>
 
 <h3>The exact key lists (R3 Claude-M3)</h3>
 <p>One shared constant in <code>js/roster-sync.js</code>. The rules tests assert against the same lists. Derived from every <code>staff.&lt;field&gt;</code> the Directory and <code>celebrations.js</code> read today.</p>
@@ -214,8 +256,9 @@ Deliberately dropped: firstName, lastName, preferredName (derived or wrong), int
 Never copied: every other sheet column.</pre>
 <ul>
   <li><code>birthday</code> is stored as <code>M/D</code> (no year) in both copies, plus <code>birthdayMonthOnly</code> (true/false) so the "≈ month only" marker survives (R5 Claude-M5).
-    When a birthday can't be read, <code>birthdayRaw</code> (capped) keeps the sheet's text in <em>full only</em>, so managers still see "Birthday not readable: 'ask me'". Team rows carry no status field;
-    the reader adapter sets <code>status: 'current'</code>.</li>
+    <code>birthdayRaw</code> (capped) always keeps the sheet's text, in <em>full only</em>, so managers' "Missing or unclear dates" can still quote it. <code>rosterDocToStaff</code> carries
+    <code>birthdayMonthOnly</code> through, and <code>getCelebrations</code>/<code>getDateProblems</code> prefer it when present (falling back to parsing for the CSV path until E). Test:
+    <code>{birthday:'7/1', birthdayMonthOnly:true}</code> yields the month-only marker and a problems entry (R6 Claude-M2). Team rows carry no status field; the adapter sets <code>status: 'current'</code>.</li>
   <li><strong>Status cases</strong> (R3 Claude-M4): an all-blank row is skipped silently. C &rarr; current. P / past / former / inactive / OUTDATED &rarr; past (in <code>full</code> only).
     A named row with a blank or unknown status <strong>stops the whole sync</strong> before anything is written, and names the row to fix in the sheet (R4 Codex-M3; none exist today).
     <code>getDateProblems</code>'s blank-status branch and its test are removed: dead logic now, and it would flag everyone on a staff account (R4 Claude-M3).</li>
@@ -227,9 +270,10 @@ Never copied: every other sheet column.</pre>
     renamed, duplicated or ambiguous header stops the sync and names the column. No "save anyway" for structural problems. This also fixes the "preferred name" bug
     and the risk of "phone" matching "Emergency Contact 1 - Phone". Fixture test: the real 36 headers &rarr; the full expected map; no two fields share a column.</li>
   <li><strong>Status must be C or P</strong> (or a known variant). Blank or unknown stops the sync for that row and lists it, so it can never default to "current" and leak into the staff copy.</li>
-  <li>Sheets API call pinned: the tab found by gid <code>119449978</code> (currently "Form Responses 1"; the quoted title is used in the range), <code>majorDimension=ROWS</code>, <code>valueRenderOption=FORMATTED_VALUE</code> (R5 Claude-L1). Rows are padded to header width (the API trims trailing empties) and cells trimmed, like the CSV parser.</li>
+  <li>Sheets API call pinned: the tab found by gid <code>119449978</code> (currently "Form Responses 1"; the title is quoted in the range, with any apostrophe doubled, and unit-tested) (R6 Claude-L3), <code>majorDimension=ROWS</code>, <code>valueRenderOption=FORMATTED_VALUE</code> (R5 Claude-L1). Rows are padded to header width (the API trims trailing empties) and cells trimmed, like the CSV parser.</li>
   <li><strong>Every sync shows a "what changed" preview before publishing</strong>, and any removal, current&rarr;past change, id change, or loss of a previously filled field needs an explicit
-    confirm (R2 Codex-M2). Hard stops with no confirm: zero rows; readable birthdays or start dates down by more than 10% or more than 3 people versus the live revision.
+    confirm (R2 Codex-M2). Hard stops with no confirm, all measured on the <strong>team</strong> (current staff) set versus the live revision: zero rows; current staff down by more than 10% or more
+    than 3 people; more than 3 people flipping current&rarr;past in one sync; readable birthdays or start dates down by more than 10% or more than 3. Affected names are printed (R6 Claude-M6).
     The first sync has no live revision to compare against, so it keeps only the absolute gates (zero rows, header contract, status), and Compare sources is the gate (R4 Claude-L1).</li>
   <li>Every row carries every allow-listed key as a string (<code>''</code> when blank), so the Directory's existing code (e.g. <code>staff.email.toLowerCase()</code>) never crashes on a missing field.</li>
   <li>Writes go in chunks of 5 (same 20-lookups-per-batch limit as the celebrations plan) into the staging revision. Publishing is the single pointer flip described above.</li>
@@ -306,14 +350,15 @@ Celebrations 2a is built on B's sync.</p>
     or shared drive doesn't grant more. Recorded before and re-checked after phase D.</li>
   <li><strong>Existing Google sign-in in this project (R4 Claude-B3; checked Oct 2):</strong> Social Media Manager already has an OAuth client in <code>tinker-hq-apps</code>
     (<code>929945075847-50g8…</code>, Picker with <code>drive.readonly</code>). The consent screen is <em>one per project</em>, so its user type is already set, and changing it could break
-    Social Media Manager. Rule: <strong>never change the existing consent screen's user type.</strong> If it's already Internal, add a new client and the <code>drive.file</code> scope there.
-    If it's External/testing (7-day expiry) or not Internal, the default becomes a <strong>separate small Cloud project inside the tinkerartstudio.com org</strong>, just for the Directory.
+    Social Media Manager. Rule: <strong>never change the existing consent screen's user type or publishing status</strong> (publishing it would submit Social Media Manager's restricted
+    <code>drive.readonly</code> scope for Google review) (R6 Claude-M5). Exactly two branches: it's already <strong>Internal</strong> &rarr; add a new client and the <code>drive.file</code> scope there;
+    anything else &rarr; a <strong>separate small Cloud project inside the tinkerartstudio.com org</strong>, just for the Directory.
     Then the client id, API key and Picker <code>appId</code> (that project's number, not <code>929945075847</code>) all come from it. Any later client-id change voids both managers' picks,
     and phase C's "both managers sync" check must be redone.</li>
-  <li><strong>GO / NO-GO: can the Google Cloud project use "Internal"?</strong> Only if <code>tinker-hq-apps</code> belongs to the tinkerartstudio.com Workspace organization. This decides the
-    design (R2 Claude-M5, Codex-M1). In "External, testing", Google expires the grant every <strong>7 days</strong>, so you'd re-approve weekly. If Internal isn't available, the options are
-    External "in production" (<code>drive.file</code> needs no Google review; an "unverified app" notice may show), or a separate small Cloud project inside the Workspace org just for this
-    sign-in. Decided with Christie <em>before</em> phase A.
+  <li><strong>GO / NO-GO:</strong> is the existing consent screen Internal (which needs <code>tinker-hq-apps</code> in the tinkerartstudio.com organization)? If not, the Directory-only project must
+    itself sit inside the organization so it can be Internal. If neither is possible, stop and decide with Christie before phase A. (The earlier "7-day expiry" reason was wrong for this
+    sign-in flow, which has no refresh tokens; the spike records real Testing-mode behaviour if it ever comes up) (R6 Claude-M7).</li>
+  <li>OAuth origins are production + localhost only, so Sync fails with <code>origin_mismatch</code> on Netlify draft/preview deploys. That's expected, not a Picker problem (R6 Claude-L4).</li>
     Also confirm Christie and Anika each have a <strong>tinkerartstudio.com Google account</strong> that can open the sheet. That Google account is separate from the Tinker app sign-in.</li>
   <li><strong>The Google Form itself</strong> (R3 Claude-M11): in the form's settings, "See summary charts and text responses" must be off for respondents, and "Edit after submit" considered.
     Otherwise people who filled in the form could see everyone's answers there.</li>
@@ -344,7 +389,8 @@ Celebrations 2a is built on B's sync.</p>
   <li><strong>Moved here from phase C</strong> (R3 Claude-B3, Codex-B1): the role-only <code>manager-only</code> gating of offboarding, Generate Order, Settings and Open Spreadsheet. Non-managers
     never load or listen to <code>staffDirectory</code>, and stale <code>tinkerOffboardingData</code> is cleared from their browser. This must ship <em>before</em> phase A tightens the rules,
     or checkbox staff could type exit-interview notes that look saved and aren't.</li>
-  <li>BDD, run <em>against the CSV source</em>: checkbox staff open a profile with a filled medical cell, and the medical text appears nowhere in the page while dietary does (R5 Claude-B1).</li>
+  <li>For non-managers, <code>openStaffModal</code> <strong>never writes</strong> the address, emergency-contact or medical text into the page (it skips those assignments, not just hides the rows) (R6 Claude-M1).
+    BDD, run <em>against the CSV source</em>: checkbox staff open a profile with filled medical/address/emergency cells, and none of those strings is in <code>document.body.innerHTML</code>, while dietary is.</li>
   <li><code>saveDataToFirestore()</code> returns success or failure. Offboarding Save/Complete show an error on failure, never "Saved!" (R3 Claude-B3).</li>
   <li>The Content-Security-Policy is written <em>host-by-host from the real <code>index.html</code></em> and includes what phase B will need (R3 Claude-M5, R4 Claude-B1):
     <ul>
@@ -360,7 +406,9 @@ Celebrations 2a is built on B's sync.</p>
     with <strong>zero</strong> CSP violations, and the staff list loads (R5 Claude-M3). The final host list is confirmed from the spike's console.</li>
   <li><strong>Offboarding can never wipe itself</strong> (R4 Claude-B2):
     <ul>
-      <li>loading returns loaded / absent / failed. On <em>failed</em>, Save and Complete are disabled ("Couldn't load offboarding history, reload before editing") and nothing is written;</li>
+      <li>loading returns loaded / absent / failed. On <em>failed</em>, Save and Complete are disabled ("Couldn't load offboarding history, reload before editing") and nothing is written.
+        On <em>absent</em>, the first save creates the document once (<code>set</code> of just that one entry); after that, saves use the one-entry update (R6 Codex-M2). Complete Offboarding runs its
+        Hiring-app and other follow-ups only after the Firestore write succeeds;</li>
       <li>saving writes only that one person's entry, never the whole map, so one save can't remove anyone else's record. The keys are email addresses, which contain dots, so the write uses
         <code>update(new firebase.firestore.FieldPath('offboardingData', key), data)</code>, <strong>never</strong> a dotted string path (which would nest under <code>…@tinkerartstudio → com</code>) (R5 both);</li>
       <li>test: save for <code>a.b@c.com</code>, re-read, <code>offboardingData['a.b@c.com']</code> is the written object, and no new sibling key appears;</li>
@@ -385,7 +433,10 @@ Celebrations 2a is built on B's sync.</p>
       <li>a team doc with an <code>address</code>/<code>medical</code>/emergency key is refused;</li>
       <li>a spoofed <code>updatedBy</code> or a client-clock <code>updatedAt</code> is refused;</li>
       <li>a doc id outside the pattern is refused;</li>
-      <li>a manager batch of 5 succeeds;</li>
+      <li>a <strong>mixed</strong> manager batch (3 <code>full</code> + 2 <code>team</code> in one batch) succeeds (R6 Claude-M4);</li>
+      <li>a row whose <code>id</code> isn't a 32-char hex hash, or whose <code>revision</code> differs from its path, is refused; a header created with zero counts, or with counts changed at complete, is refused;</li>
+      <li>CAS: revision C staged on A, then B published, then flipping to C is refused (incl. a retried transaction); rollback to any revision other than the immediate previous is refused (R6 Codex-M1);</li>
+      <li>a manager-role kiosk and a no-email token cannot delete <code>staffDirectory/appData</code>; a normal manager can (R6 both);</li>
       <li><code>staffDirectory/appData</code>: checkbox staff are denied get and update; managers are allowed (precedent: "Classbook — appData protected from staff");</li>
       <li>the pointer: the first create succeeds; a second create is refused; a stale <code>previous</code> is refused; flipping to a staging or missing revision is refused; rollback to the previous revision works;</li>
       <li>the first header (<code>previous: ''</code>) completes; the first pointer create succeeds (R5 Claude-B3);</li>
@@ -404,7 +455,8 @@ Celebrations 2a is built on B's sync.</p>
     <ul>
       <li>load GIS + Picker;</li>
       <li>on <strong>Sync from sheet</strong> (admin/manager only, gated by a role-only <code>canSync</code>, never the existing <code>canWrite</code>), request a <code>drive.file</code> token
-        with <code>hosted_domain: 'tinkerartstudio.com'</code> (GIS's actual field name; a hint, not enforcement) and <code>prompt: ''</code> after the first consent. No <code>login_hint</code> (R2 Codex-M1, R5 Claude-M4);</li>
+        with <code>hd: 'tinkerartstudio.com'</code> (the <code>TokenClientConfig</code> field per Google's GIS reference; a hint, not enforcement) and <code>prompt: ''</code> after the first consent.
+        No <code>login_hint</code> (R2 Codex-M1, R6 Codex-L1; R5's "hosted_domain" was wrong). The spike confirms the field takes effect;</li>
       <li><strong>Pop-ups only from a click</strong> (R5 Claude-M4): the Google scripts load at page start for managers, never on click; the Sync handler's <em>first</em> statement requests the token;
         every retry ("Pick the Staff Info sheet", "Try a different Google account") is a new button the manager clicks, never a request chained after an awaited call. The spike confirms this in
         the browser Christie and Anika actually use (likely Safari);</li>
@@ -494,6 +546,21 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 2 2026, design review round 6 (Codex + Claude). Accepted:
+    <ul>
+      <li>the complete literal row schemas, <code>currentRev()</code> and id patterns (Codex-B2);</li>
+      <li>kiosk excluded from the legacy delete (both);</li>
+      <li>CAS bound to the target header + rollback only to the immediate previous (Codex-M1);</li>
+      <li>first save creates the offboarding doc when absent (Codex-M2);</li>
+      <li>sensitive text never written into the page for non-managers (Claude-M1);</li>
+      <li><code>birthdayMonthOnly</code> read through + <code>birthdayRaw</code> always in full (Claude-M2);</li>
+      <li>counts at create (Claude-M3); the header bound once + 5 docs per batch total + a mixed-batch test (Claude-M4);</li>
+      <li>never change the shared consent screen's publishing status (Claude-M5);</li>
+      <li>health gates on the team set + new hard stops (Claude-M6);</li>
+      <li>the wrong 7-day claim removed (Claude-M7);</li>
+      <li>the GIS field is <code>hd</code> (Codex-L1, reversing R5);</li>
+      <li>Claude-L1&ndash;L5.</li>
+    </ul></li>
   <li>Oct 2 2026, design review round 5 (Codex + Claude). Accepted:
     <ul>
       <li>row-level medical hiding with a CSV-source BDD (Claude-B1);</li>
