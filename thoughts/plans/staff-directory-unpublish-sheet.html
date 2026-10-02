@@ -22,7 +22,7 @@
 <body>
 <h1>Plan: The staff sheet stops being public</h1>
 <p><strong>App:</strong> Staff Directory (<code>~/tinker-staff-directory</code>) + Firestore rules (<code>~/studio-hub/firestore.rules</code>, project <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v2</strong> (Q1&ndash;Q4 answered) &middot; <strong>execution-ready: false</strong> (design review round 1 next)</p>
+<strong>Drafted:</strong> Oct 1 2026 &middot; <strong>v3</strong> after design review round 1 (Codex + Claude) &middot; <strong>execution-ready: false</strong> (waiting on Christie: Q5&ndash;Q7)</p>
 
 <div class="status">
   <strong>Goal:</strong> the Staff Info Google Sheet is no longer "published to web". Nobody can open staff addresses, emergency contacts, medical notes,
@@ -37,6 +37,10 @@
 
 <h2>What is wrong today</h2>
 <ul>
+  <li><strong>Any signed-in account sees everything in the Directory today</strong>, including home addresses, emergency contacts and medical notes in each profile
+    ("read-only" mode only hides buttons). And anyone can create a Tinker account: the sign-in key is public, and new accounts get a staff record automatically (R1 Claude-B1).</li>
+  <li><strong>Sheet text goes into the page as HTML</strong> (names, pronouns, favorites…). A form answer containing HTML/script would run in a manager's browser.
+    That matters much more once a Google token and the full roster are on the page (R1 Codex-B3).</li>
   <li><code>js/config.js</code> holds the sheet's published CSV URL. <code>fetchStaffData()</code> downloads it for <strong>every</strong> signed-in user. "Read-only" staff mode only hides
     buttons, so the full sheet is in every staff browser.</li>
   <li>The sheet has 36 columns, including "Passed Background Check?", "Checked on National Sex Offender Website", "Completed i9, W4, Direct Deposit?",
@@ -59,12 +63,12 @@
     sheet's normal sharing, so the person must be able to open the sheet anyway.</td></tr>
   <tr><td>3. Save two copies</td><td>Same parsing as today (<code>detectColumns</code> &rarr; staff objects). Then save:
     <ul>
-      <li><code>staffRoster/full</code>: every field the app uses today, managers only;</li>
-      <li><code>staffRoster/team</code>: the trimmed fields (Q2), readable by staff.</li>
+      <li><code>staffRosterFull/{id}</code>: every field the app uses today, one doc per sheet row, managers only;</li>
+      <li><code>staffRosterTeam/{id}</code>: the trimmed fields (Q2), one doc per <em>current</em> staff member, readable by staff with Directory access (Q5).</li>
     </ul>
-    The same sanity gate as the celebrations plan: no rows, a missing required column, or a big unconfirmed drop in staff count &rarr; save nothing.</td></tr>
-  <tr><td>4. Everyone else</td><td>Staff open the Staff Directory and it loads <code>staffRoster/team</code> from Firestore. Managers load <code>staffRoster/full</code>
-    (and refresh it from the sheet when they can).</td></tr>
+    See "Storage and rules" below: one document <em>per person</em>, so the database rules can check every field (R1 Codex-B1). See "Sync safety" for when nothing is saved.</td></tr>
+  <tr><td>4. Everyone else</td><td>Staff open the Staff Directory and it loads <code>staffRosterTeam</code> from Firestore. Managers load <code>staffRosterFull</code>,
+    and refresh it with a <strong>Sync from sheet</strong> button (R1 both: Google can't hand out a token silently on page load).</td></tr>
   <tr><td>5. Switch off the link</td><td>Once Firestore matches the sheet (verified), remove the CSV URL from the code. Then Christie unpublishes the sheet in Google Sheets
     (File &rarr; Share &rarr; Publish to web &rarr; Stop publishing).</td></tr>
 </table>
@@ -72,37 +76,74 @@
 <h3>Why this is the secure option</h3>
 <ul>
   <li><strong>No permanent key anywhere.</strong> The Google token lives in the manager's browser, expires within an hour, and is never saved (not in localStorage, Firestore or code).</li>
-  <li><strong>Least privilege:</strong> <code>drive.file</code> + Picker means the app can only ever reach the one sheet each person picked. Even a bug or a malicious script on the
+  <li><strong>Least privilege:</strong> <code>drive.file</code> + Picker means the app can only ever reach the one sheet each person picked. Honest caveat: <code>drive.file</code>
+    isn't read-only. It technically allows editing the picked file, though the app only ever calls the read endpoint (R1 Codex-B4). It's also Google's non-sensitive tier, so no Google review. Even a bug or a malicious script on the
     page couldn't read anything else in their Google account.</li>
   <li>Not secrets, and stored in <code>config.js</code>: the OAuth client id, the Picker's browser API key (restricted in Google Cloud to the Picker API and the Directory's web
     addresses), the project number, and the sheet id. None of them grant access on their own.</li>
-  <li><strong>Firestore rules decide who sees what,</strong> not the page. A staff account physically can't download the full copy, even from the browser's developer tools.</li>
+  <li><strong>Firestore rules decide who sees what, down to the field.</strong> Each person's staff-copy doc may contain <em>only</em> the allowed fields: the rules check every doc's
+    exact key list, so even a buggy or tampered sync can't put an address or medical note where staff can read it. (v2's single-list design couldn't do this, because rules can't look
+    inside list items. Changed after R1 Codex-B1, Claude-M12.)</li>
   <li><strong>The sheet's own sharing stays the gatekeeper</strong> for the source data. Only Google accounts it's shared with can refresh the copy.</li>
 </ul>
 
 <h3>Freshness</h3>
 <ul>
-  <li>The Firestore copy updates whenever a manager opens the Staff Directory. A new hire who fills in the Google Form appears after the next manager visit, not instantly.</li>
-  <li>The Directory shows "Staff list synced from the sheet N hours ago" for managers. If the Google sign-in is declined or fails, managers still see the last saved copy, with a "Sync now" button.</li>
-  <li>The celebrations summary (plan <code>hq-celebrations-card</code>, phase 2a) is built from the same sync, so there's one sheet read, not two.</li>
+  <li>The copy updates when Christie or Anika clicks <strong>Sync from sheet</strong>. A click is needed because Google only issues the short-lived token in response to one.
+    After the first time it's usually one click with no extra prompts (R1 Claude-B4, Codex-M1).</li>
+  <li>Everyone sees "Staff list updated N days ago". Managers see it amber after 7 days, with the Sync button right there.</li>
+  <li>The celebrations summary (plan <code>hq-celebrations-card</code>, phase 2a) is built in the same sync, so there's one sheet read.</li>
 </ul>
 
-<h3>New Firestore rules (sketch; finalized in the rules phase)</h3>
-<pre>// staffRoster/full: the whole staff list as the Directory uses it. Admin/manager only.
-// staffRoster/team: the staff-safe fields. Any active, signed-in staff account (not the kiosk).
-match /staffRoster/{docId} {
-  allow get: if docId == 'team' &amp;&amp; !isKiosk() &amp;&amp; isActiveUser();
-  allow get: if docId == 'full' &amp;&amp; !isKiosk() &amp;&amp; isManagerOrAbove();
-  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove()
-    &amp;&amp; docId in ['full', 'team'] &amp;&amp; /* shape checks per Q2 */ true;
-  // no list, no delete
-}</pre>
-<p>Size: about 80 sheet rows &times; ~1.5 KB is roughly 120 KB, well under Firestore's 1 MiB per document. That's fine for years at this size. The rules
-phase adds a size check, and the plan notes when to split into per-person docs (past ~500 rows).</p>
+<h3>Storage and rules (v3)</h3>
+<pre>// staffRosterFull/{id}: one doc per sheet row, every field the Directory uses. Admin/manager only.
+// staffRosterTeam/{id}: one doc per CURRENT staff member, staff-safe fields only. Readers per Q5.
+// Writes: admin/manager only, every doc shape-checked. A leaver's team doc becomes {current:false, revision, updatedAt}.
+match /staffRosterFull/{id} {
+  allow get, list: if !isKiosk() &amp;&amp; isManagerOrAbove();
+  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isFullRow(request.resource.data);
+}
+match /staffRosterTeam/{id} {
+  allow get, list: if !isKiosk() &amp;&amp; (isManagerOrAbove() || &lt;Q5&gt;);
+  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; isTeamRow(request.resource.data);
+}
+match /staffRosterMeta/{docId} {  // 'sync': last sync time, by whom, row counts, revision
+  allow get: if !isKiosk() &amp;&amp; (isManagerOrAbove() || &lt;Q5&gt;);
+  allow create, update: if !isKiosk() &amp;&amp; isManagerOrAbove() &amp;&amp; docId == 'sync' &amp;&amp; isSyncMeta(request.resource.data);
+}
+// isTeamRow: keys().hasOnly([name, pronouns, studio, position, email, phone, birthday, startDate,
+//   favoriteCoffee, favoriteCandy, favoriteSnack, favoriteSalty, dietary, current, revision, updatedAt, updatedBy]),
+//   typed and length-capped, birthday M/D (no year), updatedBy == caller, updatedAt == request.time.
+//   No address / medical / emergency / T-shirt key can ever be written.
+// No delete anywhere: a removed person is marked, never deleted (the sheet stays the source of truth).</pre>
+<ul>
+  <li>No byte-size worry: each doc is one person (rules can't measure bytes; per-person docs make that moot) (R1 Claude-M8, Codex-M4).</li>
+  <li>Every sync stamps one <code>revision</code> on every doc it writes, plus <code>staffRosterMeta/sync</code>. Docs from an older revision that weren't rewritten
+    (someone removed from the sheet) are listed for a manager, never silently deleted.</li>
+  <li>Doc ids are stable, not row positions: <code>row-&lt;lowercased email&gt;</code>, or <code>row-name-&lt;name&gt;</code> without an email; collisions refuse the sync (R1 Claude-M5).</li>
+  <li><code>updatedAt == request.time</code> (a server timestamp), so "updated N days ago" can't be faked by a wrong clock (R1 Claude-M9).</li>
+</ul>
+
+<h3>Sync safety (R1 Codex-B2, Claude-B2, M1&ndash;M4, M11)</h3>
+<ul>
+  <li><strong>Exact header contract, not fuzzy matching:</strong> the sync uses a pinned list of the sheet's exact column headers for every copied field. A missing,
+    renamed, duplicated or ambiguous header stops the sync and names the column. No "save anyway" for structural problems. This also fixes the "preferred name" bug
+    and the risk of "phone" matching "Emergency Contact 1 - Phone". Fixture test: the real 36 headers &rarr; the full expected map; no two fields share a column.</li>
+  <li><strong>Status must be C or P</strong> (or a known variant). Blank or unknown stops the sync for that row and lists it, so it can never default to "current" and leak into the staff copy.</li>
+  <li>Sheets API call pinned: tab name, <code>majorDimension=ROWS</code>, <code>valueRenderOption=FORMATTED_VALUE</code>. Rows are padded to header width (the API trims trailing empties) and cells trimmed, like the CSV parser.</li>
+  <li><strong>Health checks before writing:</strong> zero rows; count of readable birthdays/start dates drops materially vs the stored copy; current-staff count drops by more than 3.
+    Any of these &rarr; a preview of names added and removed, and an explicit confirm.</li>
+  <li>Every row carries every allow-listed key as a string (<code>''</code> when blank), so the Directory's existing code (e.g. <code>staff.email.toLowerCase()</code>) never crashes on a missing field.</li>
+  <li>Writes go in chunks of 5 (same 20-lookups-per-batch limit as the celebrations plan), full rows first, then team rows, then <code>staffRosterMeta/sync</code> last. A failed chunk stops the
+    run before the meta doc, so readers keep trusting the previous revision. One sync at a time per browser; a sync that started from an older sheet read than the current meta revision is refused.</li>
+  <li>The full roster is never written to localStorage (a shared manager browser keeps no medical data at rest) (R1 Claude-L7).</li>
+</ul>
 
 <h3>The mandatory data-source check (CLAUDE.md)</h3>
 <p>This plan changes the Directory's data source from the public CSV to Firestore, and then switches the CSV off. Before the switch, a manager verification step compares,
-for every row, the CSV, the Sheets API read, and the saved <code>staffRoster/full</code>: same row count, and the same value in every column the app uses. The CSV is
+for every row, the CSV, the Sheets API read, and the saved Firestore copies: same people (by stable id), and the same <em>displayed</em> value in every column the app shows.
+Values are normalized the way the Directory displays them (e.g. the birthday as "October 4"), with a short printed list of intended differences (birth year dropped,
+never-copied columns absent, past staff absent from the staff copy). It also checks that the staff copy holds current staff only and no forbidden field (R1 Claude-M1, Codex-B2). The CSV is
 removed only after that comparison passes and Christie confirms. Nothing in the sheet itself is touched; the sheet remains the source of truth.</p>
 
 <h2>What each copy holds (Q2, Christie)</h2>
@@ -125,6 +166,21 @@ removed only after that comparison passes and Christie confirms. Nothing in the 
     The sheet has no preferred-name column, so the Directory uses "Name". The mapping is fixed so "preferred" can't match the coffee question (Christie: full name is fine).</li>
 </ul>
 
+<h2>New questions for Christie (from review round 1)</h2>
+<div class="decision-needed"><strong>Q5 &mdash; Who may open the Staff Directory?</strong> Today it's any account that can sign in, and anyone can create an account
+(the sign-in key is public and new accounts get a staff record automatically). After this plan, the staff copy (names, emails, phones, birthdays, dietary) would be readable by:
+<ul>
+  <li><strong>(a) Recommended:</strong> only accounts you or Anika grant "Staff Directory" access in Tinker HQ's Manage Team (a new checkbox), plus managers.
+    One-time: tick it for current staff. Closes the self-made-account hole.</li>
+  <li><strong>(b)</strong> any signed-in account, as today. Simpler, but a self-made account could read the staff copy.</li>
+</ul></div>
+<div class="decision-needed"><strong>Q6 &mdash; Staff who have the existing "Staff Directory" app-access override.</strong> Today that override lets a staff member use manager tools in the Directory
+(offboarding checklist, Generate Order). Which copy should they read: the <strong>staff copy</strong> (recommended: they keep offboarding and ordering, which need only name, email
+and favorites, but don't see addresses or medical notes), or the full one? Do you know who has it? The plan lists every account's access in Setup so you can see.</div>
+<div class="decision-needed"><strong>Q7 &mdash; Who can open the sheet itself in Google?</strong> Unpublishing only stops the anonymous link. If the sheet, or its folder, is shared with
+staff, the whole company, or "anyone with the link", those people can still open it in Google and see every column. Setup includes checking the sheet's Share settings together;
+the goal is just you and Anika (plus anyone who truly needs to edit it). Is that right? Also: does Anika have a tinkerartstudio.com Google account the sheet is shared with?</div>
+
 <h2>Answered questions</h2>
 <table>
   <tr><th></th><th>Christie, Oct 1</th></tr>
@@ -138,50 +194,94 @@ removed only after that comparison passes and Christie confirms. Nothing in the 
 <p><strong>Order:</strong> Setup (Christie) &rarr; A rules (guard) &rarr; B sync, built alongside the CSV &rarr; C verify + switch (Netlify) &rarr; D unpublish (Christie) &rarr; E retire the CSV path.
 Celebrations 2a is built on B's sync.</p>
 
-<div class="phase"><h3>Setup &mdash; Google Cloud (Christie, about 10 minutes; Claude gives exact clicks)</h3>
-<p>In the Google Cloud console for project <code>tinker-hq-apps</code>:</p>
+<div class="phase"><h3>Setup &mdash; checks and Google Cloud (Christie, about 20 minutes; Claude gives exact clicks)</h3>
+<p><strong>First, three checks</strong> (R1 Claude-B3, B7, M10; Codex-B5):</p>
+<ul>
+  <li><strong>Sheet sharing (Q7):</strong> open the Staff Info sheet &rarr; Share. Record who has access and the general-access setting (and the parent folder's / shared drive's).
+    Restrict to Christie + Anika (+ editors who truly need it). Repeat after phase D.</li>
+  <li><strong>Can the Google Cloud project use "Internal"?</strong> Only if <code>tinker-hq-apps</code> belongs to the tinkerartstudio.com Workspace organization. If it doesn't, the fallback is
+    "External, testing" with Christie and Anika as test users (<code>drive.file</code> needs no Google review either way; an "unverified app" notice appears).
+    Also confirm Christie and Anika each have a <strong>tinkerartstudio.com Google account</strong> that can open the sheet. That Google account is separate from the Tinker app sign-in.</li>
+  <li><strong>Who has what access</strong> (for Q5/Q6): a manager-only list of every account's role and app access, so Christie sees exactly who gets the staff copy, the full copy, or nothing.</li>
+</ul>
+<p><strong>Then Google Cloud</strong>, for project <code>tinker-hq-apps</code> (project number <code>929945075847</code>, already in the code):</p>
 <ul>
   <li>enable the <strong>Google Sheets API</strong> and the <strong>Google Picker API</strong>;</li>
-  <li>OAuth consent screen: <strong>Internal</strong> (tinkerartstudio.com accounts only, so no Google verification); scope <code>drive.file</code> only;</li>
-  <li>create an <strong>OAuth client ID</strong> (Web) with authorized JavaScript origins <code>https://tinker-staff-directory.netlify.app</code> and <code>http://localhost:8081</code>;</li>
-  <li>create a <strong>browser API key</strong> restricted to the Picker API and those two origins;</li>
-  <li>copy the client id, API key and project number into chat. They aren't secrets.</li>
-</ul>
-<p>If the Workspace admin settings block third-party app access, the Internal app may need allowing in the Workspace admin console. The steps cover checking that.</p></div>
+  <li>OAuth consent screen: Internal (or the fallback above); scope <code>drive.file</code> only;</li>
+  <li>OAuth client ID (Web) with origins <code>https://tinker-staff-directory.netlify.app</code> and <code>http://localhost:8081</code>;</li>
+  <li>a browser API key restricted to the Picker API, with referrers for those two origins <strong>and <code>https://docs.google.com/*</code></strong> (the Picker runs inside a Google frame) (R1 Codex-M2);</li>
+  <li>if Workspace's admin controls restrict apps, allow this internal app there;</li>
+  <li>copy the client id and API key into chat. They aren't secrets.</li>
+</ul></div>
 
-<div class="phase"><h3>A &mdash; Rules: <code>staffRoster</code> (studio-hub, via the guard)</h3>
+<div class="phase"><h3>0 &mdash; Make the Directory safe to hold a Google token (before anything else)</h3>
 <ul>
-  <li><code>staffRoster/team</code>: GET by any active non-kiosk user. <code>staffRoster/full</code>: GET by admin/manager (non-kiosk). Create/update: admin/manager only. No list, no delete.</li>
-  <li>Shape checks: <code>team</code> = <code>{staff: list &le; 300, updatedAt, updatedBy}</code>, and <code>full</code> the same with its own list. List items can't be inspected by rules, so
-    the builders' tests pin each row's exact key set. <code>team</code> rows have an allow-list without address, medical or emergency keys, enforced by test.</li>
-  <li>Tests in the same style as <code>staffCelebrations</code>, incl. a kiosk with a manager doc, the override staff, archived, bot, signed-out, and a size near the cap.</li>
+  <li>Render all sheet text as text, never HTML (cards, modal, order list, Celebrations); escape attribute values; add a restrictive Content-Security-Policy that still allows
+    Google's scripts and Firebase. Tests with <code>&lt;img onerror&gt;</code>, quote-breaking and SVG payloads (R1 Codex-B3).</li>
+  <li>Hide the manager-only profile sections (emergency contacts, medical/allergies, address, T-shirt) from staff instead of showing "N/A". Remove the sheet's edit link from the page for staff,
+    and from the "Setup required" notice (R1 Claude-M6, B3).</li>
+  <li>Staff Directory deploy (Christie's OK). This is worth shipping on its own: it fixes an existing hole.</li>
+</ul></div>
+
+<div class="phase"><h3>A &mdash; Rules: <code>staffRosterFull</code> / <code>staffRosterTeam</code> / <code>staffRosterMeta</code> (studio-hub, via the guard)</h3>
+<ul>
+  <li>The blocks in "Storage and rules", with per-doc shape checks. If Q5 = (a), Tinker HQ's Manage Team also gets a "Staff Directory (view)" checkbox writing
+    <code>appAccess: 'staff-directory-view'</code>. The users rule already lets only admins and managers set app access.</li>
+  <li>Rules tests:
+    <ul>
+      <li>a self-made account (own users doc, staff, no app access) is <strong>denied</strong> the staff copy (if Q5 = a);</li>
+      <li>an override staff member per Q6;</li>
+      <li>staff can't read full, and can't write anything;</li>
+      <li>kiosk (incl. a manager-role kiosk), bot, archived and signed-out are refused;</li>
+      <li>no delete;</li>
+      <li>a team doc with an <code>address</code>/<code>medical</code>/emergency key is refused;</li>
+      <li>a spoofed <code>updatedBy</code> or a client-clock <code>updatedAt</code> is refused;</li>
+      <li>a doc id outside the pattern is refused;</li>
+      <li>a manager batch of 5 succeeds.</li>
+    </ul></li>
+  <li>Studio-hub <code>npm test</code> green; guard <code>--status</code>/<code>--diff</code> pasted verbatim; Christie's "approved to change firebase &lt;sha&gt;"; <code>--approved</code> (R1 Claude-L8).</li>
 </ul></div>
 
 <div class="phase"><h3>B &mdash; Sync (managers), alongside the CSV</h3>
 <ul>
-  <li><code>js/google-sheet.js</code>: load GIS + Picker; get a <code>drive.file</code> token for admin/manager only; Picker on first use (check the picked id equals the Staff Info id);
-    <code>values.get</code> on the Staff Info tab; return rows in the same shape the CSV parser produces, so <code>detectColumns</code> and the staff-object builder are reused unchanged.</li>
-  <li><code>js/roster-sync.js</code> (pure, tested): <code>buildRosterDocs(rows, columnMap)</code> &rarr; <code>{full, team}</code>, plus the sanity gate (zero rows / missing required
-    column / &gt;40% swing needs a confirm; first run exempt from the swing check), and "write only when changed".</li>
-  <li>Save with explicit refs <code>staffRoster/full</code> + <code>staffRoster/team</code>; awaited; one notice on failure; never <code>appData</code>.</li>
-  <li><strong>Display still comes from the CSV</strong> in this phase, so B can ship and be compared side by side without any staff-visible change.</li>
-  <li>The token is held in memory only. If the Google sign-in is declined or fails, the Directory works exactly as before; managers see "Couldn't sync from the sheet" with a Sync button.</li>
-  <li>Tests (<code>node --test</code>):
+  <li><code>js/google-sheet.js</code>:
     <ul>
-      <li>exact key sets for <code>full</code> and <code>team</code> rows; <code>team</code> never contains address, medical, emergency, T-shirt, or past staff;</li>
-      <li>never-copied columns (background check etc.) never appear in either;</li>
-      <li>the "preferred" mapping no longer binds the coffee question;</li>
-      <li>the sanity gate cases;</li>
-      <li>Sheets API row shape &rarr; the same staff objects as the CSV for a fixture.</li>
+      <li>load GIS + Picker;</li>
+      <li>on <strong>Sync from sheet</strong> (admin/manager only, gated by a role-only <code>canSync</code>, never the existing <code>canWrite</code>), request a <code>drive.file</code> token
+        with <code>hint</code> = the signed-in email and <code>prompt: ''</code> after the first consent;</li>
+      <li>first time per person, open the Picker with <code>setOAuthToken</code>, <code>setDeveloperKey</code> and <code>setAppId</code>, a spreadsheets view that includes "shared with me" and shared drives,
+        and check the picked id equals the Staff Info id;</li>
+      <li>call <code>values.get</code> with the pinned parameters;</li>
+      <li>handle every failure path with a clear message: declined, popup blocked, picker cancelled, timeout, 403 (this Google account can't open the sheet), 404 (wrong file)
+        (R1 Claude-B4, B7, L1; Codex-M1, M3).</li>
+    </ul></li>
+  <li><code>js/roster-sync.js</code> (pure, tested): the header contract, row padding, status validation, the stable ids, <code>buildRosterDocs</code> &rarr; full rows + team rows + meta, the health checks,
+    and the chunk plan. It also emits the celebrations summary, so phase 2a of that plan plugs in here.</li>
+  <li><strong>Display still comes from the CSV</strong> in this phase. B ships with no change staff can see, and the copies can be compared side by side.</li>
+  <li>Tests (<code>node --test tests/</code>, the Directory's existing runner):
+    <ul>
+      <li>the real-headers fixture &rarr; the exact map; a renamed, missing or duplicated header stops the sync;</li>
+      <li>"phone" doesn't bind the emergency phone; "preferred" doesn't bind coffee;</li>
+      <li>blank or unknown status &rarr; refused; ragged Sheets rows &rarr; the same objects as the padded CSV;</li>
+      <li>the team key set is exact, with no past staff; never-copied columns are absent everywhere;</li>
+      <li>an all-blank-optional row renders a card and opens the modal without error;</li>
+      <li>the health checks; chunk order (meta last); a failed chunk means no meta write;</li>
+      <li>persistence: pick once, quit the browser, reopen, and Sync succeeds with no re-pick (a manual check, recorded) (R1 Claude-L5).</li>
     </ul></li>
 </ul></div>
 
 <div class="phase"><h3>C &mdash; Verify, then switch the Directory to Firestore</h3>
 <ul>
-  <li>A manager-only "Compare sources" panel: CSV vs the Sheets API read vs the saved <code>staffRoster/full</code>, row count and every displayed column per row, with differences listed.
-    It must show <strong>zero differences</strong>, and Christie confirms (the CLAUDE.md data-source rule).</li>
-  <li>Then: staff load <code>staffRoster/team</code>; managers load <code>staffRoster/full</code> and sync from the sheet in the background. The CSV is no longer fetched by anyone.</li>
-  <li>Staff Directory deploy (Christie's OK; archive-only deploy, as in the celebrations plan).</li>
+  <li><strong>Both Christie and Anika</strong> sync successfully at least once, and a staff test account reads the staff copy (R1 Codex-M6).</li>
+  <li>The manager-only "Compare sources" panel (the normalized comparison above) shows zero unexplained differences, and Christie confirms.</li>
+  <li>Then staff load the staff copy and managers the full copy. The CSV stops being fetched for display, but the comparison/recovery path stays until E (R1 Codex-M7).</li>
+  <li>New messages:
+    <ul>
+      <li>"Staff list hasn't been synced yet: ask Christie or Anika to open the Directory and click Sync" replaces the old "publish your spreadsheet" notice;</li>
+      <li>"updated N days ago" is shown to everyone (R1 Claude-M7).</li>
+    </ul></li>
+  <li><strong>Rollback:</strong> re-publish the sheet in Google and revert the Directory commit. Also, a manager-only "import a CSV file" escape hatch, in case Google sync breaks after E (R1 Claude-M10).</li>
+  <li>Staff Directory deploy (Christie's OK; archive-only deploy, sha as the message).</li>
 </ul></div>
 
 <div class="phase"><h3>D &mdash; Unpublish (Christie, in Google Sheets)</h3>
@@ -193,20 +293,8 @@ Celebrations 2a is built on B's sync.</p>
 </ul></div>
 
 <div class="phase"><h3>E &mdash; Retire the CSV path</h3>
-<p>Remove the CSV URL, <code>parseCSV</code> fetch path and the "Setup Required / publish your sheet" notice from the code. Update the help text.</p></div>
-
-<div class="phase"><h3>A &mdash; Rules: <code>staffRoster</code></h3>
-<p>The block above, plus shape checks for both docs (field allow-lists from Q2, sizes). Tests: staff can get <code>team</code> only; managers get both; kiosk, bot, archived and
-signed-out are refused; no list, no delete; staff can't write; an extra or forbidden field in <code>team</code> (e.g. <code>address</code>) is refused. Deploy through the guard with your sha phrase.</p></div>
-<div class="phase"><h3>B &mdash; Google sign-in + sync (managers)</h3>
-<p>Load Google Identity Services; request <code>spreadsheets.readonly</code> for admin/manager only; read the tab via the Sheets API; reuse <code>detectColumns</code> and the parser;
-build <code>full</code> and <code>team</code> with tested builders; the sanity gate; save. Nothing changes for staff yet, and the CSV is still the display source in this phase,
-so it can be verified side by side.</p></div>
-<div class="phase"><h3>C &mdash; Verify, then switch the Directory to Firestore</h3>
-<p>The comparison tool (CSV vs Sheets API vs <code>full</code>, every row and column). After it passes and Christie confirms, staff load <code>team</code> and managers load
-<code>full</code>. The CSV URL is removed from <code>config.js</code>. Staff Directory deploy (your OK).</p></div>
-<div class="phase"><h3>D &mdash; Unpublish the sheet (Christie, in Google Sheets)</h3>
-<p>Stop publishing. Then check that the old CSV URL returns an error, and that the Directory still works for a staff account and a manager account.</p></div>
+<p>Remove the CSV URL, the CSV fetch path, the old "publish your sheet" notice and the unused <code>CONFIG.staffColumns</code> (R1 Claude-L9). Update the help text.
+Keep the manual CSV-file importer as the escape hatch.</p></div>
 
 <h2>Relationship to the celebrations plan</h2>
 <p>Celebrations phase 2a (summary + personal records) is built on top of phase B's sync, so both features share one sheet read and one sanity gate. The HQ card and
@@ -223,6 +311,27 @@ greetings already read Firestore, so they're unaffected by the switch.</p>
   <li>Oct 1 2026: Q3 = Christie asked whether Google access covers everything or just this sheet. Answered: the standard Sheets permission covers <em>every</em> sheet she can
     open (read-only). Proposed instead: Google Picker + <code>drive.file</code>, which covers only the one sheet picked. Pending Christie's choice.</li>
   <li>Oct 1 2026: Q4 = no interim quick fix; solve it properly (Christie).</li>
+  <li>Oct 1 2026, design review round 1 (Codex + Claude). Accepted:
+    <ul>
+      <li>per-person docs so the rules enforce the field split (Codex-B1, Claude-M12);</li>
+      <li>an exact header contract and status validation instead of fuzzy matching (Codex-B2, Claude-B2);</li>
+      <li>phase 0: XSS fix + hide manager-only sections (Codex-B3, Claude-M6);</li>
+      <li>stale duplicate phases with the wrong scope removed (both);</li>
+      <li>sheet-sharing audit in Setup (Claude-B3, Codex-B5);</li>
+      <li>a Sync button instead of a silent sync (Claude-B4, Codex-M1);</li>
+      <li>a role-only canSync (Claude-B6, Codex-M3);</li>
+      <li>Internal-consent and Google-account checks in Setup (Claude-B7);</li>
+      <li>normalized comparison (Claude-M1);</li>
+      <li>pinned Sheets parameters + health checks (Claude-M2, M11);</li>
+      <li>chunked writes with meta last (Claude-M3, Codex-M5);</li>
+      <li>all keys present (Claude-M4); stable ids (Claude-M5);</li>
+      <li>new messages + staleness for everyone (Claude-M7);</li>
+      <li>per-doc sizes (Claude-M8, Codex-M4); server timestamps (Claude-M9);</li>
+      <li>rollback + an access inventory (Claude-M10);</li>
+      <li>the Picker referrer (Codex-M2); both managers preflight (Codex-M6); the CSV kept until E (Codex-M7);</li>
+      <li>all LOWs.</li>
+    </ul>
+    New questions Q5&ndash;Q7 for Christie.</li>
   <li>Oct 1 2026: Follow-ups answered. Narrow one-file Google access (<code>drive.file</code> + Picker): yes. Staff see the full "Name" (no preferred-name column exists): yes.
     Staff see dietary only; medical/allergies stays managers-only (Christie). Plan &rarr; v2.</li>
 </ul>
