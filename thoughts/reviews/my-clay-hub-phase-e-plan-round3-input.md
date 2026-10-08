@@ -1,0 +1,6 @@
+## Plan review, round 3 — My Clay Hub Phase E (v3)
+Read-only: read files only; do not modify anything, release anything, or use the network; never read ~/.config/configstore/firebase-tools.json.
+
+Plan: /Users/christiehubley/tinker-ai-configs/thoughts/plans/my-clay-hub-phase-e-link.html (v3). Earlier rounds: /Users/christiehubley/tinker-ai-configs/thoughts/reviews/my-clay-hub-phase-e-plan-round{1,2}-{codex,claude}.md; round-1 brief (context, repos, invariants): …-round1-input.md. The plan's "Reviews → Round 2" table maps each round-2 finding to its v3 resolution. The installed CLI is /opt/homebrew/lib/node_modules/firebase-tools (15.22.3) if you need to check event-trigger behaviour.
+
+Please: (1) verify each round-2 finding is genuinely resolved; (2) look for new problems v3 introduced — especially the reconcile change set (source-driven vs date-driven counting, held, race-safe removals), the one-transaction recompute, settings/linkLimits as an override (is a Console-written override safe? should it be scoped/audited?), Q9's per-service invoker grant and its attestation, the E-7/E-8 order (pause, Q9, K13, first fill, proof, attest), the stop runbook; (3) anything still preventing "ready". Verdict (ready / ready after fixes / not ready), numbered findings blocking / should-fix / nit with section or file:line.
