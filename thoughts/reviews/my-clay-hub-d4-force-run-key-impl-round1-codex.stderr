@@ -1,0 +1,1700 @@
+Reading additional input from stdin...
+OpenAI Codex v0.147.0
+--------
+workdir: /Users/christiehubley/my-clay-hub
+model: gpt-5.6-sol
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: none
+reasoning summaries: none
+session id: 01a11bca-a426-70a3-89f7-f9ff90bcfb17
+--------
+user
+## Change under review
+PR Tinker-Art-Studio/my-clay-hub#12, branch d4-force-run-key, commit 884d5f2 (base main 6c543ff). Repo: /Users/christiehubley/my-clay-hub (read any file you need; do NOT modify files, run deploys, or touch any network service).
+
+My Clay Hub's weekly vault export (Cloud Function `vaultExport`, onSchedule "every sunday 09:00" UTC, retries 3 at ~10/20/40 min) keys each run by a date: folder `weekly/<YYYY-MM-DD>-<6 chars>/`. Before exporting it checks whether that date already has a complete folder ("already done") or a running export ("resume"); that's how retries never make a second copy (plan V7).
+
+Finding (production, Oct 7 2026): a Cloud Scheduler **Force run** on a Wednesday arrived with `X-CloudScheduler-ScheduleTime` = the job's NEXT scheduled time (Sunday 2026-10-11T09:00Z), so `runKey` returned "2026-10-11". A weekday catch-up run would therefore take the coming Sunday's key and that Sunday's real run would skip as "already done". The old tests assumed a Force run arrives with no header.
+
+Fix: `runKey(scheduleTime, nowMs)` — if the parsed scheduled time is later than now, key by now's UTC date; otherwise by the scheduled time's UTC date (unchanged). A real run and its retries carry a constant scheduled time at/before now (J15: the header "contains the original scheduled invocation time and remains constant across retry attempts").
+
+## Acceptance criteria
+- Real Sunday runs and all their retries keep the Sunday key.
+- Any Force run, on any day/time (incl. Sunday before or after 09:00 UTC, late Saturday UTC), keys by the UTC date it actually runs.
+- No path where a Force run could get a key for a date that hasn't happened yet; no path where a real run changes key between retries.
+- Tests prove it and the new test fails on the old code (checked: 1 failure on old code, 46/46 pass with the fix, Node 22).
+- Docs (FUNCTIONS-ROLLBACK.md §10, DATA-RESTORE.md §1, DECISIONS #64) are accurate.
+
+## Please check especially
+1. Clock skew: could Scheduler deliver a real scheduled run slightly BEFORE its scheduleTime (so `t > now`)? If so the key would be "now"'s date — is that ever a different date than the scheduled date given the 09:00 UTC schedule? Is a tolerance needed?
+2. `nowMs` source: runExport passes `start = now()` — confirm the key is computed once per run and never recomputed mid-run (export-run.js around line 93-110).
+3. Interaction with the "already done" / "resume" logic and the freshness check (freshness.js) — any new way to get a duplicate, a skipped week, or a false alarm?
+4. Interaction with DATA-RESTORE.md's pre-restore copy guidance (line ~42) — still correct?
+5. Anything else wrong, missing or overstated in the diff, tests or docs.
+
+Reply with: a verdict (safe to merge / merge after fixes / not ready), then findings numbered, each marked blocking / should-fix / nit, with file:line.
+
+## Diff
+diff --git a/FUNCTIONS-ROLLBACK.md b/FUNCTIONS-ROLLBACK.md
+index b272525..f6ec2d4 100644
+--- a/FUNCTIONS-ROLLBACK.md
++++ b/FUNCTIONS-ROLLBACK.md
+@@ -212,6 +212,9 @@ while the newest complete copy is at most 7 days 18 hours old. Plan: `~/tinker-a
+ 
+ - **To stop exports at once:** Cloud Scheduler → `firebase-schedule-vaultExport-us-central1` → **Pause** (§9). Never
+   delete the function or the job by hand. Pausing means the freshness alert fires in about 8 days; that's expected.
++- **A manual catch-up run:** Cloud Scheduler → the job → **Force run**. Google sends a Force run the job's *next*
++  scheduled time (seen Oct 7 2026), so `vaultExport` keys a run whose scheduled time is still in the future by the day
++  it actually runs. A weekday catch-up therefore never takes the coming Sunday's key, and Sunday still exports.
+ - **A failure email** (log-based alert on `vaultexport` errors, V13): read the function's log. Its first line holds the
+   run's scheduleTime and key (the date); the error names the operation and the prefix. Scheduler retries three times
+   (about 10, 20, 40 minutes apart). A retry never starts a second export while the first is visible: it finds the
+diff --git a/docs/my-clay-hub/DATA-RESTORE.md b/docs/my-clay-hub/DATA-RESTORE.md
+index 96f051e..3412654 100644
+--- a/docs/my-clay-hub/DATA-RESTORE.md
++++ b/docs/my-clay-hub/DATA-RESTORE.md
+@@ -20,7 +20,8 @@ The vault is the last resort, because it lives outside the project that could fa
+ ## 1. Choose the folder
+ 
+ In `tinker-hq-vault` → Cloud Storage → `my-clay-hub-vault-exports` → `weekly/`, each export is a folder named
+-`<YYYY-MM-DD>-<6 characters>/`, the UTC date of the Sunday it was made (or of a manual "Force run").
++`<YYYY-MM-DD>-<6 characters>/`, the UTC date of the Sunday it was made (or, for a manual "Force run", the UTC date
++of the day it actually ran).
+ 
+ **Use only a complete folder.** A folder is complete when it holds a file named after the folder itself:
+ `weekly/2026-10-04-ab12cd/2026-10-04-ab12cd.overall_export_metadata`. The 56-day lifecycle deletes a folder's files
+diff --git a/docs/my-clay-hub/DECISIONS.md b/docs/my-clay-hub/DECISIONS.md
+index b2e376d..67a1600 100644
+--- a/docs/my-clay-hub/DECISIONS.md
++++ b/docs/my-clay-hub/DECISIONS.md
+@@ -78,3 +78,4 @@ These come from the foundation plan (`~/tinker-ai-configs/thoughts/plans/clayhub
+ | 61 | D2 | Oct 1 | **IAM readings only when needed** (replaces "after every deploy"). The functions guard records `attest_needed` and why: needed for an unverified deploy, the first deploy of a codebase, a changed function set, declarations, IAM expectations, `firebase.json` or `.firebaserc`, a Google API turned on during the deploy, or a reading still owed. Otherwise "not needed", naming the attestation it relies on. | Christie asked why each deploy needed so many Console screenshots. The automatic checks (hash, settings, the unauthenticated probe) still run every time. A role changed by hand in the Console isn't seen, so take a reading after one. |
+ | 62 | D-4 | Oct 1 | **Scheduled functions in the functions guard** (F13 amended for schedules only; plan `my-clay-hub-d4-vault-export`, V2/V3). A function is declared `"trigger": "https"` or `"trigger": "schedule"`; a declaration's keys are exact. A schedule declares its schedule, `timeZone` `"UTC"` and all five retry values, and no invoker (the CLI makes the runtime account its only caller); the guard and the backstop refuse a manifest whose values differ or are unset. The CLI can't read a Cloud Scheduler job, so Christie reads it in the Console and `--attest` checks it (`scheduler_attested`; the complete job list = every DEPLOYED schedule, i.e. each codebase's newest attempt). **Exception to "every HTTP response sets `x-tinker-reached`":** scheduled functions, whose response firebase-functions writes itself; the unauthenticated probe must still be refused. | M6 required the guard to read the schedule back before D-4's function ships; the CLI never clears a retry setting removed from code, and can't see a job at all. Christie chose the header exception (O6). |
+ | 63 | D-4 | Oct 2 | **The weekly vault export** (plan `my-clay-hub-d4-vault-export`, V1, V4–V12, O5). A second functions codebase, `vault`, separate from the canary: `vaultExport` (scheduled, Sundays 09:00 UTC, 3 retries about 10/20/40 min apart, 30-min timeout) copies the whole database to its own folder `weekly/<UTC date>-<6 chars>/` in bucket **`my-clay-hub-vault-exports`** in `tinker-hq-vault` (US multi-region, 56-day lifecycle, 7-day soft delete, no versioning, no retention lock), and waits for Google to finish, every call held to the run's 1,500 s budget; it succeeds only when the export is done, error-free, SUCCESSFUL, at the expected prefix, and its folder is complete. A retry finds a complete folder ("already done") or the running export ("resume") before it starts anything; a rare duplicate is a second complete copy in its own folder, never a mixed one (O5). `vaultFresh` answers a Monitoring uptime check: 200 while the newest complete copy is at most 7 d 18 h old (the email lands at about 8 days). Accounts: `vault-export@` (custom role `vaultExporter`: export + operations get/list; `vaultLister` on the bucket), `vault-watch@` (`vaultLister` on the bucket only), the Firestore service agent (`firestoreExportWriter` on the bucket only, granted in V-4). No deployed function or service account can import into production (only Christie, as Owner, by hand: DATA-RESTORE.md). Built on `@google-cloud/firestore-api` 0.2.0 (where Firestore 9.3.0's admin client and protos live) rather than `@google-cloud/firestore` as the plan first named. Restoring: DATA-RESTORE.md. | The project's own backups (PITR, daily backups) live inside the project that could fail; this is the off-project copy that gates real member data (Phase E). Christie chose US, the uptime check and the 7 d 18 h threshold (O2, O4), a rare duplicate over a lock (O5), and a restore rehearsal after Phase E (O3). |
++| 64 | D-4 | Oct 7 | **A Force run is keyed by the day it actually runs.** V-4's failure-first Force run (Wed Oct 7) showed Cloud Scheduler sends a Force run the job's *next* scheduled time (Sunday Oct 11 09:00 UTC), not "now" as the V7 tests assumed, so a weekday catch-up run would have taken the coming Sunday's key and that Sunday's real run would have skipped as "already done". `runKey` now keys a scheduled time still in the future by today's UTC date; a real run and its retries (J15) keep their scheduled date. Until this ships: no Force run at all (on any day, including a Sunday after 09:00 UTC, it would take a later Sunday's key), and V-4's first real export is Sunday Oct 11's scheduled run. | Christie chose it (fix next, before Phase E; don't hold V-4)
+diff --git a/functions/vault/export-run.js b/functions/vault/export-run.js
+index 3a00016..23d86cb 100644
+--- a/functions/vault/export-run.js
++++ b/functions/vault/export-run.js
+@@ -44,10 +44,14 @@ function randomSuffix() {
+ }
+ 
+ // The run key: the UTC date of the scheduled time. The SDK passes "now" when the header is missing (J6); so does this.
++// A scheduled time still in the future is a manual "Force run": Cloud Scheduler sends the job's NEXT scheduled time
++// (observed in V-4, Oct 7 2026: a Wednesday Force run arrived with Sunday's 09:00), so it is keyed by today instead —
++// otherwise a weekday catch-up run would take Sunday's key and Sunday's real run would skip as "already done".
++// A real run and its retries always carry a time at or before now (J15), so they keep the scheduled date.
+ function runKey(scheduleTime, nowMs) {
+   const t = scheduleTime === undefined || scheduleTime === null || scheduleTime === '' ? new Date(nowMs) : new Date(scheduleTime);
+   if (Number.isNaN(t.getTime())) throw new Error(`scheduleTime ${JSON.stringify(scheduleTime)} is not a time`);
+-  return t.toISOString().slice(0, 10);
++  return (t.getTime() > nowMs ? new Date(nowMs) : t).toISOString().slice(0, 10);
+ }
+ 
+ // V8: the start of the current minute, minus one minute (in the past, on a whole minute, inside any retention window).
+diff --git a/tests/functions/vault/export-run.test.js b/tests/functions/vault/export-run.test.js
+index 972d4ec..4199c71 100644
+--- a/tests/functions/vault/export-run.test.js
++++ b/tests/functions/vault/export-run.test.js
+@@ -332,18 +332,36 @@ test('an export that finishes between the folder listing and the operation listi
+ });
+ 
+ test('the run key is the UTC date of the scheduled time — across a year end, and from "now" when the header is missing', () => {
+-  assert.equal(runKey('2026-12-31T23:59:59.999Z', 0), '2026-12-31');
+-  assert.equal(runKey('2027-01-01T00:00:00.000Z', 0), '2027-01-01');
+-  assert.equal(runKey('2027-01-03T02:00:00-07:00', 0), '2027-01-03', 'a Denver-offset time is still its UTC date');
++  const LATER = Date.parse('2027-02-01T00:00:00Z');   // a real run and its retries arrive at or after their scheduled time
++  assert.equal(runKey('2026-12-31T23:59:59.999Z', LATER), '2026-12-31');
++  assert.equal(runKey('2027-01-01T00:00:00.000Z', LATER), '2027-01-01');
++  assert.equal(runKey('2027-01-03T02:00:00-07:00', LATER), '2027-01-03', 'a Denver-offset time is still its UTC date');
++  assert.equal(runKey(SUNDAY, Date.parse(SUNDAY)), KEY, 'exactly on time is the scheduled date');
++  assert.equal(runKey(SUNDAY, Date.parse('2026-10-04T09:40:00Z')), KEY, 'a retry 40 min later keeps Sunday');
+   assert.equal(runKey(undefined, Date.parse('2027-01-01T00:00:01Z')), '2027-01-01');
+   assert.equal(runKey('', Date.parse('2026-12-31T23:59:00Z')), '2026-12-31');
+   assert.throws(() => runKey('not a time', 0), /is not a time/);
+   assert.equal(snapshotTimeMs(Date.parse('2027-01-01T00:00:30.500Z')), Date.parse('2026-12-31T23:59:00Z'));
+ });
+ 
+-test('a run with the header missing uses the clock for its key, and a Force run on another day is its own key', async () => {
++test('a run with the header missing uses the clock for its key', async () => {
+   const { a, run } = setup({ start: '2026-10-07T15:30:00Z' });
+   const r = await run(undefined);
+   assert.equal(r.key, '2026-10-07');
+   assert.equal(a.exports[0].outputUriPrefix, gs('weekly/2026-10-07-aaaaaa'));
+ });
++
++test('a Force run carries the NEXT scheduled time (observed Oct 7 2026) and is keyed by the day it actually runs', async () => {
++  // A Wednesday Force run arrived with scheduleTime = the coming Sunday 09:00 UTC.
++  assert.equal(runKey('2026-10-11T02:00:00-07:00', Date.parse('2026-10-07T18:54:31Z')), '2026-10-07');
++  // On Sunday before 09:00 the next scheduled time is the same day; after 09:00 it is next Sunday. Both key to today.
++  assert.equal(runKey('2026-10-11T09:00:00Z', Date.parse('2026-10-11T06:00:00Z')), '2026-10-11');
++  assert.equal(runKey('2026-10-18T09:00:00Z', Date.parse('2026-10-11T15:00:00Z')), '2026-10-11');
++  // Late on a Saturday (UTC), still Saturday's key — never the coming Sunday's.
++  assert.equal(runKey('2026-10-11T09:00:00Z', Date.parse('2026-10-10T23:59:59Z')), '2026-10-10');
++
++  const { a, run } = setup({ start: '2026-10-07T18:54:31Z' });
++  const r = await run('2026-10-11T09:00:00Z');
++  assert.equal(r.key, '2026-10-07');
++  assert.equal(a.exports[0].outputUriPrefix, gs('weekly/2026-10-07-aaaaaa'), "not Sunday's key, so Sunday's real run still exports");
++});
+codex
+I’ll inspect the exact commit against its base, plus the export/resume/freshness and restore paths. I’ll keep this read-only and won’t contact any service.
+exec
+/bin/zsh -lc 'git status --short && git diff --stat 6c543ff..884d5f2 && git diff --check 6c543ff..884d5f2 && git show --no-ext-diff --format=fuller --stat 884d5f2' in /Users/christiehubley/my-clay-hub
+ succeeded in 0ms:
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-iroF7oSt' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-unhzAKh9' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Mgjdl15u' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-PnajYMHA' (errno=Operation not permitted)
+ FUNCTIONS-ROLLBACK.md                    |  3 +++
+ docs/my-clay-hub/DATA-RESTORE.md         |  3 ++-
+ docs/my-clay-hub/DECISIONS.md            |  1 +
+ functions/vault/export-run.js            |  6 +++++-
+ tests/functions/vault/export-run.test.js | 26 ++++++++++++++++++++++----
+ 5 files changed, 33 insertions(+), 6 deletions(-)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Jx3HEvch' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-bH9p2YiN' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-7ePPM7Lt' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-T8oX8z5a' (errno=Operation not permitted)
+commit 884d5f2c6dac209ebe21113a18b0bdba0105abd7
+Author:     Christie Hubley <christie@tinkerartstudio.com>
+AuthorDate: Wed Oct 7 13:24:49 2026 -0600
+Commit:     Christie Hubley <christie@tinkerartstudio.com>
+CommitDate: Wed Oct 7 13:24:49 2026 -0600
+
+    D-4: a Force run is keyed by the day it actually runs (DECISIONS #64)
+    
+    V-4's failure-first Force run (Oct 7) showed Cloud Scheduler sends a Force run
+    the job's NEXT scheduled time, not now, so a weekday catch-up would take the
+    coming Sunday's key and that Sunday's real run would skip as "already done".
+    runKey now keys a scheduled time still in the future by today's UTC date; a
+    real run and its retries keep their scheduled date. New test fails on the old
+    code. Runbook (FUNCTIONS-ROLLBACK.md §10) and DATA-RESTORE.md updated.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+ FUNCTIONS-ROLLBACK.md                    |  3 +++
+ docs/my-clay-hub/DATA-RESTORE.md         |  3 ++-
+ docs/my-clay-hub/DECISIONS.md            |  1 +
+ functions/vault/export-run.js            |  6 +++++-
+ tests/functions/vault/export-run.test.js | 26 ++++++++++++++++++++++----
+ 5 files changed, 33 insertions(+), 6 deletions(-)
+
+exec
+/bin/zsh -lc "nl -ba functions/vault/export-run.js | sed -n '1,260p'
+nl -ba functions/vault/freshness.js | sed -n '1,260p'
+nl -ba docs/my-clay-hub/DATA-RESTORE.md | sed -n '1,110p'
+nl -ba FUNCTIONS-ROLLBACK.md | sed -n '190,245p'" in /Users/christiehubley/my-clay-hub
+ succeeded in 0ms:
+     1	// One scheduled run of the weekly vault export (V7, V8). Pure: the Firestore admin client, the vault bucket, the clock,
+     2	// the sleep, the time limit, the random suffix and the log are all passed in, so tests/functions/vault/ drives every
+     3	// branch with fakes.
+     4	//
+     5	// The run key is the UTC date of the scheduled time (J15: Cloud Scheduler's retries carry the same scheduled time).
+     6	// Then, in order:
+     7	//   1. Done already? Any COMPLETE folder weekly/<key>-*/ → "already done"; nothing is started.
+     8	//   2. Running already? This database's operations, filtered to exports whose prefix is gs://<bucket>/weekly/<key>-:
+     9	//      one not done → wait on it. One done SUCCESSFUL → its folder must now be complete ("already done"), else throw
+    10	//      (inconsistent: a person looks). Ones that FAILED, were CANCELLED or carry an error are history: logged, never
+    11	//      resumed, their prefixes never reused.
+    12	//   3. Otherwise export to a fresh prefix weekly/<key>-<6 chars> and wait on it — unless less than START_RESERVE_MS of
+    13	//      the budget is left, when it throws instead and the next retry starts it.
+    14	// The budget is 1,500 s from the start of the run, and it bounds EVERY call to Google as well as the waiting (each call
+    15	// gets only the time that's left, deadline.js), so the error and its alert always happen before Cloud Run's 1,800 s
+    16	// kill; the next retry resumes at step 2. Success needs: done, no error, state SUCCESSFUL, the expected prefix, and
+    17	// the complete folder visible in the bucket. Anything else throws.
+    18	//
+    19	// A rare duplicate (two runs racing, or a lost reply not yet listed) is a second COMPLETE copy in its own folder, never
+    20	// a mixed one (Christie, O5). State is the bucket plus the operation list; there is no Firestore collection.
+    21	'use strict';
+    22	
+    23	const { randomInt } = require('node:crypto');
+    24	const C = require('./vault-config');
+    25	const { listFolders, completeMetadata, folderName } = require('./vault-bucket');
+    26	const { makeLimiter, limitedBucket, realTimeLimit } = require('./deadline');
+    27	
+    28	const EXPORT_TYPE_URL = 'type.googleapis.com/google.firestore.admin.v1.ExportDocumentsMetadata';
+    29	const STATES = new Set(['INITIALIZING', 'PROCESSING', 'CANCELLING', 'FINALIZING', 'SUCCESSFUL', 'FAILED', 'CANCELLED']);
+    30	const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    31	
+    32	// The export metadata, decoded with the generated protobuf classes of the pinned @google-cloud/firestore-api (the
+    33	// package whose client produced the operation), with the numeric operationState mapped to its name.
+    34	function decodeExportMetadata(bytes) {
+    35	  const { protos } = require('@google-cloud/firestore-api');
+    36	  const M = protos.google.firestore.admin.v1.ExportDocumentsMetadata;
+    37	  return M.toObject(M.decode(bytes), { enums: String, longs: String });
+    38	}
+    39	
+    40	function randomSuffix() {
+    41	  let s = '';
+    42	  for (let i = 0; i < 6; i += 1) s += SUFFIX_ALPHABET[randomInt(SUFFIX_ALPHABET.length)];
+    43	  return s;
+    44	}
+    45	
+    46	// The run key: the UTC date of the scheduled time. The SDK passes "now" when the header is missing (J6); so does this.
+    47	function runKey(scheduleTime, nowMs) {
+    48	  const t = scheduleTime === undefined || scheduleTime === null || scheduleTime === '' ? new Date(nowMs) : new Date(scheduleTime);
+    49	  if (Number.isNaN(t.getTime())) throw new Error(`scheduleTime ${JSON.stringify(scheduleTime)} is not a time`);
+    50	  return t.toISOString().slice(0, 10);
+    51	}
+    52	
+    53	// V8: the start of the current minute, minus one minute (in the past, on a whole minute, inside any retention window).
+    54	function snapshotTimeMs(nowMs) {
+    55	  return Math.floor(nowMs / 60000) * 60000 - 60000;
+    56	}
+    57	
+    58	const trimSlash = (s) => (s.endsWith('/') ? s.slice(0, -1) : s);
+    59	
+    60	// gs://<bucket>/weekly/2026-10-04-ab12cd → weekly/2026-10-04-ab12cd/
+    61	function folderOf(outputUriPrefix) {
+    62	  const head = `gs://${C.BUCKET}/`;
+    63	  if (typeof outputUriPrefix !== 'string' || !outputUriPrefix.startsWith(head)) throw new Error(`${JSON.stringify(outputUriPrefix)} is not in gs://${C.BUCKET}`);
+    64	  return `${trimSlash(outputUriPrefix.slice(head.length))}/`;
+    65	}
+    66	
+    67	// A listed or fetched google.longrunning.Operation, as the gRPC client returns it (metadata is a raw Any whose type
+    68	// URL field keeps its proto name, type_url). Returns null for an operation that isn't an export (another type URL, or
+    69	// no metadata at all); throws for an export whose metadata can't be decoded or has no output prefix. The state is
+    70	// returned as decoded (a name, or a number Google added later); checkState() judges it only for OUR exports, so an
+    71	// unrecognised export elsewhere (another date, another bucket) can't fail every run while it stays listed.
+    72	function readExportOperation(op, decode) {
+    73	  if (op === null || typeof op !== 'object' || typeof op.name !== 'string' || op.name === '') throw new Error('an operation without a name');
+    74	  const any = op.metadata;
+    75	  const typeUrl = any && typeof any === 'object' ? (any.type_url ?? any.typeUrl) : undefined;
+    76	  if (typeUrl !== EXPORT_TYPE_URL) return null;
+    77	  let meta;
+    78	  try {
+    79	    meta = decode(any.value);
+    80	  } catch (e) {
+    81	    throw new Error(`operation ${op.name}: its export metadata can't be decoded (${e.message})`);
+    82	  }
+    83	  if (!meta || typeof meta.outputUriPrefix !== 'string' || meta.outputUriPrefix === '') throw new Error(`operation ${op.name}: an export with no output prefix`);
+    84	  return { name: op.name, done: op.done === true, error: op.error || null, state: meta.operationState, outputUriPrefix: meta.outputUriPrefix };
+    85	}
+    86	
+    87	function checkState(op) {
+    88	  if (!STATES.has(op.state)) throw new Error(`operation ${op.name}: unknown export state ${JSON.stringify(op.state)}`);
+    89	  return op;
+    90	}
+    91	
+    92	async function runExport({
+    93	  admin, bucket: rawBucket, scheduleTime, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    94	  timeLimit = realTimeLimit, random = randomSuffix, log = () => {}, decode = decodeExportMetadata,
+    95	}) {
+    96	  const start = now();
+    97	  const key = runKey(scheduleTime, start);
+    98	  const datePrefix = `${C.WEEKLY}${key}-`;
+    99	  const uriPrefix = `gs://${C.BUCKET}/${datePrefix}`;
+   100	  const limit = makeLimiter({ deadline: start + C.WAIT_BUDGET_MS, now, timeLimit });
+   101	  const bucket = limitedBucket(rawBucket, limit);
+   102	  // The Firestore admin client's own timeout for one call (and its retries): the time left, at most 90 s, so a slow
+   103	  // call fails fast as well as within the budget. The operation listing's value is fixed when the listing starts and
+   104	  // reused for every page (gax); the wall-clock limit around each page bounds it all the same.
+   105	  const callOptions = () => ({ timeout: Math.max(1, Math.min(limit.left(), C.CALL_TIMEOUT_MS)) });
+   106	  log('start', { scheduleTime: scheduleTime || null, key });
+   107	  const finish = (decision, prefix, operation) => {
+   108	    log('end', { scheduleTime: scheduleTime || null, key, decision, prefix, operation: operation || null });
+   109	    return { key, decision, prefix, operation: operation || null };
+   110	  };
+   111	
+   112	  try {
+   113	    // 1. Done already?
+   114	    const folders = await listFolders(bucket, datePrefix, C.FOLDER_CAP_PER_DATE);
+   115	    for (const folder of folders) {
+   116	      if (await completeMetadata(bucket, folder)) return finish('already done', folder);
+   117	    }
+   118	
+   119	    // 2. Running already?
+   120	    const database = admin.databasePath(C.PROJECT, C.DATABASE);
+   121	    const ours = [];
+   122	    let examined = 0;
+   123	    const listing = admin.listOperationsAsync({ name: database, pageSize: 100 }, callOptions())[Symbol.asyncIterator]();
+   124	    for (;;) {
+   125	      const { value: raw, done } = await limit('listing operations', listing.next());
+   126	      if (done) break;
+   127	      examined += 1;
+   128	      if (examined > C.OPERATION_CAP) throw new Error(`more than ${C.OPERATION_CAP} operations listed; refusing to read that as "none running"`);
+   129	      const op = readExportOperation(raw, decode);
+   130	      if (op && trimSlash(op.outputUriPrefix).startsWith(uriPrefix)) ours.push(checkState(op));
+   131	    }
+   132	    ours.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+   133	    for (const op of ours.filter((o) => o.done)) {
+   134	      if (op.error || op.state === 'FAILED' || op.state === 'CANCELLED') {
+   135	        log('history', { key, operation: op.name, state: op.state, error: op.error ? `${op.error.code} ${op.error.message}` : null, prefix: op.outputUriPrefix });
+   136	        continue;
+   137	      }
+   138	      if (op.state !== 'SUCCESSFUL') throw new Error(`operation ${op.name} is done in state ${op.state} with no error (inconsistent; a person looks)`);
+   139	      // Reachable: the export can finish between step 1's listing and this one.
+   140	      const folder = folderOf(op.outputUriPrefix);
+   141	      if (await completeMetadata(bucket, folder)) return finish('already done', folder, op.name);
+   142	      throw new Error(`operation ${op.name} finished SUCCESSFUL but ${folder} holds no complete export (inconsistent; a person looks)`);
+   143	    }
+   144	    const running = ours.find((o) => !o.done);
+   145	    if (running) {
+   146	      log('resume', { key, operation: running.name, prefix: running.outputUriPrefix });
+   147	      const folder = await waitFor({ admin, bucket, name: running.name, expected: running.outputUriPrefix, limit, callOptions, sleep, decode });
+   148	      return finish('resumed', folder, running.name);
+   149	    }
+   150	
+   151	    // 3. A fresh prefix: never one already seen, as a folder or as an operation's prefix. A choice: with under 5 minutes
+   152	    // of budget left the run doesn't start an export it couldn't wait for and verify (it throws, and the next retry
+   153	    // starts it with a full budget); if every retry ran that short, the week gets no copy and the freshness alert says so.
+   154	    if (limit.left() < C.START_RESERVE_MS) {
+   155	      throw new Error(`only ${Math.round(limit.left() / 1000)} s of the budget left, too little to start an export; the next retry starts it`);
+   156	    }
+   157	    const taken = new Set([...folders.map(folderName), ...ours.map((o) => folderName(folderOf(o.outputUriPrefix)))]);
+   158	    let suffix;
+   159	    for (let tries = 0; ; tries += 1) {
+   160	      suffix = random();
+   161	      if (typeof suffix !== 'string' || !/^[a-z0-9]{6}$/.test(suffix)) throw new Error(`bad prefix suffix ${JSON.stringify(suffix)}`);
+   162	      if (!taken.has(`${key}-${suffix}`)) break;
+   163	      if (tries >= 5) throw new Error(`no free prefix suffix after ${tries + 1} tries`);
+   164	    }
+   165	    const outputUriPrefix = `${uriPrefix}${suffix}`;
+   166	    const snapshotMs = snapshotTimeMs(now());
+   167	    const [lro] = await limit('starting the export', admin.exportDocuments({
+   168	      name: database, outputUriPrefix, collectionIds: [], namespaceIds: [],
+   169	      snapshotTime: { seconds: snapshotMs / 1000, nanos: 0 },
+   170	    }, callOptions()));
+   171	    const name = lro && lro.name;
+   172	    if (typeof name !== 'string' || name === '') throw new Error(`the export to ${outputUriPrefix} returned no operation name`);
+   173	    log('started', { key, operation: name, prefix: outputUriPrefix, snapshotTime: new Date(snapshotMs).toISOString() });
+   174	    const folder = await waitFor({ admin, bucket, name, expected: outputUriPrefix, limit, callOptions, sleep, decode });
+   175	    return finish('exported', folder, name);
+   176	  } catch (e) {
+   177	    throw new Error(`vaultExport ${key}: ${e.message}`, { cause: e });
+   178	  }
+   179	}
+   180	
+   181	async function waitFor({ admin, bucket, name, expected, limit, callOptions, sleep, decode }) {
+   182	  for (;;) {
+   183	    const [raw] = await limit(`reading operation ${name}`, admin.getOperation({ name }, callOptions()));
+   184	    const read = readExportOperation(raw, decode);
+   185	    if (!read) throw new Error(`operation ${name} is not an export`);
+   186	    const op = checkState(read);
+   187	    if (op.name !== name) throw new Error(`asked for operation ${name}, got ${op.name}`);
+   188	    if (trimSlash(op.outputUriPrefix) !== trimSlash(expected)) throw new Error(`operation ${name} exports to ${op.outputUriPrefix}, expected ${expected}`);
+   189	    if (op.done) {
+   190	      if (op.error) throw new Error(`export ${name} failed: ${op.error.code} ${op.error.message}`);
+   191	      if (op.state !== 'SUCCESSFUL') throw new Error(`export ${name} finished in state ${op.state}`);
+   192	      const folder = folderOf(op.outputUriPrefix);
+   193	      if (!(await completeMetadata(bucket, folder))) throw new Error(`export ${name} says SUCCESSFUL but ${folder} holds no complete export`);
+   194	      return folder;
+   195	    }
+   196	    // Only `done` is final; the state can reach SUCCESSFUL a moment before it, so a not-done export is still waited on.
+   197	    // After a sleep there must still be time to read the operation again; otherwise give up now, saying why.
+   198	    if (limit.left() <= C.POLL_MS) throw new Error(`export ${name} is still running (${op.state}) at the ${C.WAIT_BUDGET_MS / 1000} s budget; the next retry resumes waiting on it`);
+   199	    await sleep(C.POLL_MS);
+   200	  }
+   201	}
+   202	
+   203	module.exports = { EXPORT_TYPE_URL, runExport, runKey, snapshotTimeMs, folderOf, readExportOperation, checkState, decodeExportMetadata, randomSuffix };
+     1	// vaultFresh's answer (V9): is the newest COMPLETE export in the vault bucket at most 7 days 18 hours old? An uptime
+     2	// check calls it every 15 minutes; failing for 6 hours emails Christie, so the email lands at about 8 days. Pure: the
+     3	// bucket and the clock are passed in.
+     4	//
+     5	//   200 {case: "fresh"} — the newest complete export is at most 7 d 18 h old;
+     6	//   503 {case: "stale"} — it's older;  503 {case: "none"} — there's no complete export at all;
+     7	//   500 {case: "error"} — anything else (the handler catches it), e.g. vault-watch@ can no longer list the bucket.
+     8	// The body holds only the case, the folder name and its age: never member data (there is none in a listing anyway).
+     9	'use strict';
+    10	
+    11	const C = require('./vault-config');
+    12	const { listFolders, completeMetadata } = require('./vault-bucket');
+    13	const { makeLimiter, limitedBucket, realTimeLimit } = require('./deadline');
+    14	
+    15	async function checkFreshness({ bucket, now = Date.now }) {
+    16	  let newest = null;
+    17	  for (const folder of await listFolders(bucket, C.WEEKLY, C.FOLDER_CAP_ALL)) {
+    18	    const meta = await completeMetadata(bucket, folder);
+    19	    if (!meta) continue;
+    20	    const created = Date.parse(meta.metadata && meta.metadata.timeCreated);
+    21	    if (Number.isNaN(created)) throw new Error(`${meta.name}: the listing gave no timeCreated`);
+    22	    if (!newest || created > newest.created) newest = { folder, created };
+    23	  }
+    24	  if (!newest) return { status: 503, body: { case: 'none', folder: null, ageHours: null } };
+    25	  const ageMs = now() - newest.created;
+    26	  const body = { folder: newest.folder, ageHours: Math.round(ageMs / 360000) / 10 };
+    27	  return ageMs <= C.FRESH_MS ? { status: 200, body: { case: 'fresh', ...body } } : { status: 503, body: { case: 'stale', ...body } };
+    28	}
+    29	
+    30	// The handler's answer: checkFreshness, with any error (a listing refused or too slow, a bucket the client can't build)
+    31	// as a 500 whose body says only "error"; the reason goes to the log. Every listing is held to FRESH_BUDGET_MS in all,
+    32	// so the answer always comes before the function's 30 s timeout (impl review round 1).
+    33	async function answerFreshness({ bucket, now = Date.now, timeLimit = realTimeLimit, logError = () => {} }) {
+    34	  try {
+    35	    const limit = makeLimiter({ deadline: now() + C.FRESH_BUDGET_MS, now, timeLimit });
+    36	    return await checkFreshness({ bucket: limitedBucket(typeof bucket === 'function' ? bucket() : bucket, limit), now });
+    37	  } catch (e) {
+    38	    logError(`vaultFresh: ${e.message}`);
+    39	    return { status: 500, body: { case: 'error', folder: null, ageHours: null } };
+    40	  }
+    41	}
+    42	
+    43	module.exports = { checkFreshness, answerFreshness };
+     1	# My Clay Hub: restoring data from the vault (`my-clay-hub` project)
+     2	
+     3	The runbook for getting data back **from the weekly off-project copy** (plan `my-clay-hub-d4-vault-export`, V14).
+     4	Restoring is a change to production data: nothing here runs without Christie's explicit go-ahead for that restore.
+     5	Claude never runs an import; Christie does every step in the Console (there's no gcloud on this laptop).
+     6	
+     7	## Which backup to use first
+     8	
+     9	`my-clay-hub` has four kinds of backup (DECISIONS #44). Use the nearest one that has what you need:
+    10	
+    11	| Backup | Where | Kept | Use it when |
+    12	|---|---|---|---|
+    13	| Point-in-time recovery | inside `my-clay-hub` | 7 days, to the minute | a recent mistake: read or restore the database as it was at a moment this week |
+    14	| Managed daily backup | inside `my-clay-hub` | 98 days | an older mistake, while the project itself is fine |
+    15	| Delete protection | inside `my-clay-hub` | — | stops the database itself being deleted |
+    16	| **The vault export** | bucket `my-clay-hub-vault-exports` in **`tinker-hq-vault`** | 56 days (about 8 weekly copies), plus 7 days of soft delete | the project's own backups are gone or can't be trusted (a deleted or compromised project) |
+    17	
+    18	The vault is the last resort, because it lives outside the project that could fail.
+    19	
+    20	## 1. Choose the folder
+    21	
+    22	In `tinker-hq-vault` → Cloud Storage → `my-clay-hub-vault-exports` → `weekly/`, each export is a folder named
+    23	`<YYYY-MM-DD>-<6 characters>/`, the UTC date of the Sunday it was made (or of a manual "Force run").
+    24	
+    25	**Use only a complete folder.** A folder is complete when it holds a file named after the folder itself:
+    26	`weekly/2026-10-04-ab12cd/2026-10-04-ab12cd.overall_export_metadata`. The 56-day lifecycle deletes a folder's files
+    27	gradually (over up to a day), so an old folder can be half there. A folder without that file is never used.
+    28	
+    29	Pick the newest complete folder from **before** the problem began. Two folders on the same date are both complete
+    30	copies (a rare duplicate, by design). Either one will do; take the later one.
+    31	
+    32	## 2. Decide where it goes: a scratch database, or production
+    33	
+    34	**An import overwrites documents that have the same path and deletes nothing.** Into a database that already holds
+    35	data, it's a merge, not a rollback: documents created after the export stay, and documents deleted since come back.
+    36	
+    37	- **Rehearsals, and "what did it look like?"**: import into a **new, empty** database in `my-clay-hub` (for example
+    38	  `restore-2026-10-04`), never `(default)`. Nothing the app reads changes. Create it in **production mode**, so its
+    39	  rules deny every read and write from the start, and check its Rules tab says so before importing: it will hold
+    40	  real member data, and this repo's `firestore.rules` covers `(default)` only. Delete the scratch database afterwards.
+    41	- **A real restore into `(default)`**: first make a **new, verified** copy of the database as it is now, so the
+    42	  restore itself can be undone. Don't use a Force run of `vaultExport` for this: if today's UTC date already has a
+    43	  complete folder it correctly does nothing ("already done"). Instead, in `my-clay-hub` → Firestore → `(default)` →
+    44	  Import/Export → **Export**: the entire database, to a folder name never used before,
+    45	  `gs://my-clay-hub-vault-exports/manual/pre-restore-<YYYY-MM-DD>-<HHMM UTC>` (an export can't reuse a folder). Wait
+    46	  until **that export's own operation** shows as finished successfully on the Import/Export page, then check that its
+    47	  new folder holds its own `.overall_export_metadata` file (named after that folder). Only then go on.
+    48	  (Point-in-time recovery also keeps the pre-restore state readable for 7 days, but it isn't a copy you can check.)
+    49	  Then decide with Christie what "restore" means: a merge (import over the top), or a true rollback (clearing the
+    50	  affected collections first, which is a bulk delete: snapshot, approval and the delete rules in the global CLAUDE.md
+    51	  all apply).
+    52	
+    53	## 3. The temporary read grant (tinker-hq-vault)
+    54	
+    55	The import is done by the **importing database's Firestore service agent**, which needs to read the vault bucket.
+    56	For `my-clay-hub` that's `service-760301318440@gcp-sa-firestore.iam.gserviceaccount.com` (shown on Firestore →
+    57	Import/Export as "Import/Export jobs run as"). It already holds `firestoreExportWriter` on the vault bucket, for the
+    58	weekly export, but that role can't read files.
+    59	
+    60	1. **Before:** screenshots of `tinker-hq-vault-backups` (Configuration and Permissions) and of `tinker-hq-vault`'s
+    61	   IAM page, with Google-provided grants shown, exactly as in V-1.
+    62	2. `tinker-hq-vault` → IAM → Roles: if it doesn't exist yet, create **`vaultImportReader`** with exactly
+    63	   `storage.buckets.get` and `storage.objects.get`.
+    64	3. `my-clay-hub-vault-exports` → Permissions → Grant access: `vaultImportReader` to the service agent above.
+    65	   **On the bucket only, never on the project.**
+    66	4. Wait a few minutes for the grant to take effect.
+    67	
+    68	## 4. Import
+    69	
+    70	The person importing needs `datastore.databases.import`. Only Christie (Owner) holds it, and no service account does.
+    71	
+    72	1. `my-clay-hub` → Firestore → choose the target database (step 2) → Import/Export → **Import**.
+    73	2. Browse to the chosen folder and select its `.overall_export_metadata` file.
+    74	3. Start the import. It runs as an operation: watch it on the Import/Export page until it finishes, and keep a
+    75	   screenshot of the result.
+    76	4. Check the result: the collections and a few known documents are there, with the values expected for that date.
+    77	
+    78	## 5. Remove the grant
+    79	
+    80	1. Remove `vaultImportReader` from the service agent on `my-clay-hub-vault-exports`. Leave the role defined; it's
+    81	   harmless unused.
+    82	2. **After:** the same screenshots as step 3.1. The staff bucket and the project IAM must match the "before" readings
+    83	   exactly. The vault bucket's Permissions are back to V-1's two `vaultLister` grants plus the agent's `firestoreExportWriter`.
+    84	3. Record it in `DECISIONS.md` (date, folder, target database, what was restored, the before/after check).
+    85	
+    86	## If something goes wrong
+    87	
+    88	- **The import is refused for permission:** the read grant (step 3) is missing or hasn't taken effect yet. Wait a few
+    89	  minutes and try once more. If it's still refused, **stop**: record the exact denied permission and principal, and
+    90	  change nothing until Christie approves that specific widening (on the bucket only), which then goes in the record.
+    91	- **No complete folder in the vault:** the freshness alert should already have emailed (V9). Fall back to the in-project
+    92	  backups, and treat the missing vault copy as its own incident (FUNCTIONS-ROLLBACK.md §9 for the job).
+    93	- **Export files were deleted:** soft delete keeps deleted objects for 7 days. In `tinker-hq-vault` → Cloud Storage →
+    94	  the bucket, show soft-deleted objects and restore the folder first. After 7 days a deletion is permanent (V12).
+    95	
+    96	The first restore rehearsal happens in Phase E, once real member data exists (Christie, O3), into a scratch database.
+   190	- **Stopping a scheduled function: PAUSE its job** (Cloud Scheduler → the job → Pause). It is immediate and
+   191	  reversible (Resume), and changes nothing the CLI reads, so a deploy still verifies. The Scheduler reading does see it:
+   192	  a PAUSED job makes `scheduler_attested=no` until it's resumed and read again. The guard never deletes a function or a
+   193	  job. Pause first whenever a Scheduler reading comes back `no`, then diagnose.
+   194	- **Partial states** (the CLI creates or patches the job *after* the function):
+   195	  - the function is live but its job is missing (the job's creation failed; the deploy exits non-zero): fix the cause,
+   196	    then re-run the same sha under the same approval — the job is created then;
+   197	  - the job kept its **old** schedule or retry settings (the function updated, the job's patch failed): the Scheduler
+   198	    reading shows it (`no`); pause the job, then re-run the same sha;
+   199	  - a schedule **removed from code** leaves its job behind, still calling the function. The deploy itself can't see
+   200	    the job; the next Scheduler reading does (an extra job in the complete list → `scheduler_attested=no`). So before
+   201	    such a change, pause the job, and ask Christie: deleting a job has no guarded path.
+   202	- **The header exception (Christie, Oct 1, O6):** a scheduled function's HTTP response is written by firebase-functions
+   203	  itself, so it cannot carry `x-tinker-reached`. The unauthenticated probe still runs on its `uri` and must be refused
+   204	  (a public scheduled function would also start a real run). Nothing in the code can make a schedule public: the
+   205	  pinned CLI sets its `run.invoker` to the runtime account (J3), and the probe and the IAM reading check the result.
+   206	
+   207	## 10. The vault codebase (D-4)
+   208	
+   209	`vault/vaultExport` copies the whole database to `gs://my-clay-hub-vault-exports/weekly/<date>-<6 chars>/` in
+   210	`tinker-hq-vault` every Sunday 09:00 UTC, and waits for Google to finish. `vault/vaultFresh` answers an uptime check: 200
+   211	while the newest complete copy is at most 7 days 18 hours old. Plan: `~/tinker-ai-configs/thoughts/plans/my-clay-hub-d4-vault-export.html`.
+   212	
+   213	- **To stop exports at once:** Cloud Scheduler → `firebase-schedule-vaultExport-us-central1` → **Pause** (§9). Never
+   214	  delete the function or the job by hand. Pausing means the freshness alert fires in about 8 days; that's expected.
+   215	- **A failure email** (log-based alert on `vaultexport` errors, V13): read the function's log. Its first line holds the
+   216	  run's scheduleTime and key (the date); the error names the operation and the prefix. Scheduler retries three times
+   217	  (about 10, 20, 40 minutes apart). A retry never starts a second export while the first is visible: it finds the
+   218	  complete folder ("already done") or waits on the running export ("resume").
+   219	- **A freshness email** (V9): `vaultFresh`'s body says `stale`, `none` or `error`. `error` usually means `vault-watch@`
+   220	  can't list the bucket (its `vaultLister` grant on the bucket).
+   221	- **Two grants live in `tinker-hq-vault`, on the vault bucket only:** `vaultLister` (to `vault-export@` and
+   222	  `vault-watch@`, V-1) and `firestoreExportWriter` (to the Firestore service agent, V-4). `--attest` reads only
+   223	  `my-clay-hub`'s IAM, so their record is V-1/V-4's screenshots and the exports themselves.
+   224	- **Restoring from the vault:** `docs/my-clay-hub/DATA-RESTORE.md`.
+
+codex
+The worktree is on the base/older content, so I’m reading the committed PR snapshots directly rather than checking out the branch. The key is indeed computed once from the captured start time; I’m now tracing how date-prefix matching and freshness behave with multiple same-week folders.
+exec
+/bin/zsh -lc "git show 884d5f2:functions/vault/export-run.js | nl -ba | sed -n '1,220p'
+git show 884d5f2:functions/vault/freshness.js | nl -ba | sed -n '1,120p'
+git show 884d5f2:docs/my-clay-hub/DATA-RESTORE.md | nl -ba | sed -n '18,55p'
+git show 884d5f2:FUNCTIONS-ROLLBACK.md | nl -ba | sed -n '207,232p'
+git show 884d5f2:docs/my-clay-hub/DECISIONS.md | nl -ba | tail -n 12
+git show 884d5f2:tests/functions/vault/export-run.test.js | nl -ba | sed -n '300,410p'" in /Users/christiehubley/my-clay-hub
+ succeeded in 0ms:
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-uY0IRiLw' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-8T4b4nBP' (errno=Operation not permitted)
+     1	// One scheduled run of the weekly vault export (V7, V8). Pure: the Firestore admin client, the vault bucket, the clock,
+     2	// the sleep, the time limit, the random suffix and the log are all passed in, so tests/functions/vault/ drives every
+     3	// branch with fakes.
+     4	//
+     5	// The run key is the UTC date of the scheduled time (J15: Cloud Scheduler's retries carry the same scheduled time).
+     6	// Then, in order:
+     7	//   1. Done already? Any COMPLETE folder weekly/<key>-*/ → "already done"; nothing is started.
+     8	//   2. Running already? This database's operations, filtered to exports whose prefix is gs://<bucket>/weekly/<key>-:
+     9	//      one not done → wait on it. One done SUCCESSFUL → its folder must now be complete ("already done"), else throw
+    10	//      (inconsistent: a person looks). Ones that FAILED, were CANCELLED or carry an error are history: logged, never
+    11	//      resumed, their prefixes never reused.
+    12	//   3. Otherwise export to a fresh prefix weekly/<key>-<6 chars> and wait on it — unless less than START_RESERVE_MS of
+    13	//      the budget is left, when it throws instead and the next retry starts it.
+    14	// The budget is 1,500 s from the start of the run, and it bounds EVERY call to Google as well as the waiting (each call
+    15	// gets only the time that's left, deadline.js), so the error and its alert always happen before Cloud Run's 1,800 s
+    16	// kill; the next retry resumes at step 2. Success needs: done, no error, state SUCCESSFUL, the expected prefix, and
+    17	// the complete folder visible in the bucket. Anything else throws.
+    18	//
+    19	// A rare duplicate (two runs racing, or a lost reply not yet listed) is a second COMPLETE copy in its own folder, never
+    20	// a mixed one (Christie, O5). State is the bucket plus the operation list; there is no Firestore collection.
+    21	'use strict';
+    22	
+    23	const { randomInt } = require('node:crypto');
+    24	const C = require('./vault-config');
+    25	const { listFolders, completeMetadata, folderName } = require('./vault-bucket');
+    26	const { makeLimiter, limitedBucket, realTimeLimit } = require('./deadline');
+    27	
+    28	const EXPORT_TYPE_URL = 'type.googleapis.com/google.firestore.admin.v1.ExportDocumentsMetadata';
+    29	const STATES = new Set(['INITIALIZING', 'PROCESSING', 'CANCELLING', 'FINALIZING', 'SUCCESSFUL', 'FAILED', 'CANCELLED']);
+    30	const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    31	
+    32	// The export metadata, decoded with the generated protobuf classes of the pinned @google-cloud/firestore-api (the
+    33	// package whose client produced the operation), with the numeric operationState mapped to its name.
+    34	function decodeExportMetadata(bytes) {
+    35	  const { protos } = require('@google-cloud/firestore-api');
+    36	  const M = protos.google.firestore.admin.v1.ExportDocumentsMetadata;
+    37	  return M.toObject(M.decode(bytes), { enums: String, longs: String });
+    38	}
+    39	
+    40	function randomSuffix() {
+    41	  let s = '';
+    42	  for (let i = 0; i < 6; i += 1) s += SUFFIX_ALPHABET[randomInt(SUFFIX_ALPHABET.length)];
+    43	  return s;
+    44	}
+    45	
+    46	// The run key: the UTC date of the scheduled time. The SDK passes "now" when the header is missing (J6); so does this.
+    47	// A scheduled time still in the future is a manual "Force run": Cloud Scheduler sends the job's NEXT scheduled time
+    48	// (observed in V-4, Oct 7 2026: a Wednesday Force run arrived with Sunday's 09:00), so it is keyed by today instead —
+    49	// otherwise a weekday catch-up run would take Sunday's key and Sunday's real run would skip as "already done".
+    50	// A real run and its retries always carry a time at or before now (J15), so they keep the scheduled date.
+    51	function runKey(scheduleTime, nowMs) {
+    52	  const t = scheduleTime === undefined || scheduleTime === null || scheduleTime === '' ? new Date(nowMs) : new Date(scheduleTime);
+    53	  if (Number.isNaN(t.getTime())) throw new Error(`scheduleTime ${JSON.stringify(scheduleTime)} is not a time`);
+    54	  return (t.getTime() > nowMs ? new Date(nowMs) : t).toISOString().slice(0, 10);
+    55	}
+    56	
+    57	// V8: the start of the current minute, minus one minute (in the past, on a whole minute, inside any retention window).
+    58	function snapshotTimeMs(nowMs) {
+    59	  return Math.floor(nowMs / 60000) * 60000 - 60000;
+    60	}
+    61	
+    62	const trimSlash = (s) => (s.endsWith('/') ? s.slice(0, -1) : s);
+    63	
+    64	// gs://<bucket>/weekly/2026-10-04-ab12cd → weekly/2026-10-04-ab12cd/
+    65	function folderOf(outputUriPrefix) {
+    66	  const head = `gs://${C.BUCKET}/`;
+    67	  if (typeof outputUriPrefix !== 'string' || !outputUriPrefix.startsWith(head)) throw new Error(`${JSON.stringify(outputUriPrefix)} is not in gs://${C.BUCKET}`);
+    68	  return `${trimSlash(outputUriPrefix.slice(head.length))}/`;
+    69	}
+    70	
+    71	// A listed or fetched google.longrunning.Operation, as the gRPC client returns it (metadata is a raw Any whose type
+    72	// URL field keeps its proto name, type_url). Returns null for an operation that isn't an export (another type URL, or
+    73	// no metadata at all); throws for an export whose metadata can't be decoded or has no output prefix. The state is
+    74	// returned as decoded (a name, or a number Google added later); checkState() judges it only for OUR exports, so an
+    75	// unrecognised export elsewhere (another date, another bucket) can't fail every run while it stays listed.
+    76	function readExportOperation(op, decode) {
+    77	  if (op === null || typeof op !== 'object' || typeof op.name !== 'string' || op.name === '') throw new Error('an operation without a name');
+    78	  const any = op.metadata;
+    79	  const typeUrl = any && typeof any === 'object' ? (any.type_url ?? any.typeUrl) : undefined;
+    80	  if (typeUrl !== EXPORT_TYPE_URL) return null;
+    81	  let meta;
+    82	  try {
+    83	    meta = decode(any.value);
+    84	  } catch (e) {
+    85	    throw new Error(`operation ${op.name}: its export metadata can't be decoded (${e.message})`);
+    86	  }
+    87	  if (!meta || typeof meta.outputUriPrefix !== 'string' || meta.outputUriPrefix === '') throw new Error(`operation ${op.name}: an export with no output prefix`);
+    88	  return { name: op.name, done: op.done === true, error: op.error || null, state: meta.operationState, outputUriPrefix: meta.outputUriPrefix };
+    89	}
+    90	
+    91	function checkState(op) {
+    92	  if (!STATES.has(op.state)) throw new Error(`operation ${op.name}: unknown export state ${JSON.stringify(op.state)}`);
+    93	  return op;
+    94	}
+    95	
+    96	async function runExport({
+    97	  admin, bucket: rawBucket, scheduleTime, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    98	  timeLimit = realTimeLimit, random = randomSuffix, log = () => {}, decode = decodeExportMetadata,
+    99	}) {
+   100	  const start = now();
+   101	  const key = runKey(scheduleTime, start);
+   102	  const datePrefix = `${C.WEEKLY}${key}-`;
+   103	  const uriPrefix = `gs://${C.BUCKET}/${datePrefix}`;
+   104	  const limit = makeLimiter({ deadline: start + C.WAIT_BUDGET_MS, now, timeLimit });
+   105	  const bucket = limitedBucket(rawBucket, limit);
+   106	  // The Firestore admin client's own timeout for one call (and its retries): the time left, at most 90 s, so a slow
+   107	  // call fails fast as well as within the budget. The operation listing's value is fixed when the listing starts and
+   108	  // reused for every page (gax); the wall-clock limit around each page bounds it all the same.
+   109	  const callOptions = () => ({ timeout: Math.max(1, Math.min(limit.left(), C.CALL_TIMEOUT_MS)) });
+   110	  log('start', { scheduleTime: scheduleTime || null, key });
+   111	  const finish = (decision, prefix, operation) => {
+   112	    log('end', { scheduleTime: scheduleTime || null, key, decision, prefix, operation: operation || null });
+   113	    return { key, decision, prefix, operation: operation || null };
+   114	  };
+   115	
+   116	  try {
+   117	    // 1. Done already?
+   118	    const folders = await listFolders(bucket, datePrefix, C.FOLDER_CAP_PER_DATE);
+   119	    for (const folder of folders) {
+   120	      if (await completeMetadata(bucket, folder)) return finish('already done', folder);
+   121	    }
+   122	
+   123	    // 2. Running already?
+   124	    const database = admin.databasePath(C.PROJECT, C.DATABASE);
+   125	    const ours = [];
+   126	    let examined = 0;
+   127	    const listing = admin.listOperationsAsync({ name: database, pageSize: 100 }, callOptions())[Symbol.asyncIterator]();
+   128	    for (;;) {
+   129	      const { value: raw, done } = await limit('listing operations', listing.next());
+   130	      if (done) break;
+   131	      examined += 1;
+   132	      if (examined > C.OPERATION_CAP) throw new Error(`more than ${C.OPERATION_CAP} operations listed; refusing to read that as "none running"`);
+   133	      const op = readExportOperation(raw, decode);
+   134	      if (op && trimSlash(op.outputUriPrefix).startsWith(uriPrefix)) ours.push(checkState(op));
+   135	    }
+   136	    ours.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+   137	    for (const op of ours.filter((o) => o.done)) {
+   138	      if (op.error || op.state === 'FAILED' || op.state === 'CANCELLED') {
+   139	        log('history', { key, operation: op.name, state: op.state, error: op.error ? `${op.error.code} ${op.error.message}` : null, prefix: op.outputUriPrefix });
+   140	        continue;
+   141	      }
+   142	      if (op.state !== 'SUCCESSFUL') throw new Error(`operation ${op.name} is done in state ${op.state} with no error (inconsistent; a person looks)`);
+   143	      // Reachable: the export can finish between step 1's listing and this one.
+   144	      const folder = folderOf(op.outputUriPrefix);
+   145	      if (await completeMetadata(bucket, folder)) return finish('already done', folder, op.name);
+   146	      throw new Error(`operation ${op.name} finished SUCCESSFUL but ${folder} holds no complete export (inconsistent; a person looks)`);
+   147	    }
+   148	    const running = ours.find((o) => !o.done);
+   149	    if (running) {
+   150	      log('resume', { key, operation: running.name, prefix: running.outputUriPrefix });
+   151	      const folder = await waitFor({ admin, bucket, name: running.name, expected: running.outputUriPrefix, limit, callOptions, sleep, decode });
+   152	      return finish('resumed', folder, running.name);
+   153	    }
+   154	
+   155	    // 3. A fresh prefix: never one already seen, as a folder or as an operation's prefix. A choice: with under 5 minutes
+   156	    // of budget left the run doesn't start an export it couldn't wait for and verify (it throws, and the next retry
+   157	    // starts it with a full budget); if every retry ran that short, the week gets no copy and the freshness alert says so.
+   158	    if (limit.left() < C.START_RESERVE_MS) {
+   159	      throw new Error(`only ${Math.round(limit.left() / 1000)} s of the budget left, too little to start an export; the next retry starts it`);
+   160	    }
+   161	    const taken = new Set([...folders.map(folderName), ...ours.map((o) => folderName(folderOf(o.outputUriPrefix)))]);
+   162	    let suffix;
+   163	    for (let tries = 0; ; tries += 1) {
+   164	      suffix = random();
+   165	      if (typeof suffix !== 'string' || !/^[a-z0-9]{6}$/.test(suffix)) throw new Error(`bad prefix suffix ${JSON.stringify(suffix)}`);
+   166	      if (!taken.has(`${key}-${suffix}`)) break;
+   167	      if (tries >= 5) throw new Error(`no free prefix suffix after ${tries + 1} tries`);
+   168	    }
+   169	    const outputUriPrefix = `${uriPrefix}${suffix}`;
+   170	    const snapshotMs = snapshotTimeMs(now());
+   171	    const [lro] = await limit('starting the export', admin.exportDocuments({
+   172	      name: database, outputUriPrefix, collectionIds: [], namespaceIds: [],
+   173	      snapshotTime: { seconds: snapshotMs / 1000, nanos: 0 },
+   174	    }, callOptions()));
+   175	    const name = lro && lro.name;
+   176	    if (typeof name !== 'string' || name === '') throw new Error(`the export to ${outputUriPrefix} returned no operation name`);
+   177	    log('started', { key, operation: name, prefix: outputUriPrefix, snapshotTime: new Date(snapshotMs).toISOString() });
+   178	    const folder = await waitFor({ admin, bucket, name, expected: outputUriPrefix, limit, callOptions, sleep, decode });
+   179	    return finish('exported', folder, name);
+   180	  } catch (e) {
+   181	    throw new Error(`vaultExport ${key}: ${e.message}`, { cause: e });
+   182	  }
+   183	}
+   184	
+   185	async function waitFor({ admin, bucket, name, expected, limit, callOptions, sleep, decode }) {
+   186	  for (;;) {
+   187	    const [raw] = await limit(`reading operation ${name}`, admin.getOperation({ name }, callOptions()));
+   188	    const read = readExportOperation(raw, decode);
+   189	    if (!read) throw new Error(`operation ${name} is not an export`);
+   190	    const op = checkState(read);
+   191	    if (op.name !== name) throw new Error(`asked for operation ${name}, got ${op.name}`);
+   192	    if (trimSlash(op.outputUriPrefix) !== trimSlash(expected)) throw new Error(`operation ${name} exports to ${op.outputUriPrefix}, expected ${expected}`);
+   193	    if (op.done) {
+   194	      if (op.error) throw new Error(`export ${name} failed: ${op.error.code} ${op.error.message}`);
+   195	      if (op.state !== 'SUCCESSFUL') throw new Error(`export ${name} finished in state ${op.state}`);
+   196	      const folder = folderOf(op.outputUriPrefix);
+   197	      if (!(await completeMetadata(bucket, folder))) throw new Error(`export ${name} says SUCCESSFUL but ${folder} holds no complete export`);
+   198	      return folder;
+   199	    }
+   200	    // Only `done` is final; the state can reach SUCCESSFUL a moment before it, so a not-done export is still waited on.
+   201	    // After a sleep there must still be time to read the operation again; otherwise give up now, saying why.
+   202	    if (limit.left() <= C.POLL_MS) throw new Error(`export ${name} is still running (${op.state}) at the ${C.WAIT_BUDGET_MS / 1000} s budget; the next retry resumes waiting on it`);
+   203	    await sleep(C.POLL_MS);
+   204	  }
+   205	}
+   206	
+   207	module.exports = { EXPORT_TYPE_URL, runExport, runKey, snapshotTimeMs, folderOf, readExportOperation, checkState, decodeExportMetadata, randomSuffix };
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-PgI6W9R1' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-IHMmhQ2T' (errno=Operation not permitted)
+     1	// vaultFresh's answer (V9): is the newest COMPLETE export in the vault bucket at most 7 days 18 hours old? An uptime
+     2	// check calls it every 15 minutes; failing for 6 hours emails Christie, so the email lands at about 8 days. Pure: the
+     3	// bucket and the clock are passed in.
+     4	//
+     5	//   200 {case: "fresh"} — the newest complete export is at most 7 d 18 h old;
+     6	//   503 {case: "stale"} — it's older;  503 {case: "none"} — there's no complete export at all;
+     7	//   500 {case: "error"} — anything else (the handler catches it), e.g. vault-watch@ can no longer list the bucket.
+     8	// The body holds only the case, the folder name and its age: never member data (there is none in a listing anyway).
+     9	'use strict';
+    10	
+    11	const C = require('./vault-config');
+    12	const { listFolders, completeMetadata } = require('./vault-bucket');
+    13	const { makeLimiter, limitedBucket, realTimeLimit } = require('./deadline');
+    14	
+    15	async function checkFreshness({ bucket, now = Date.now }) {
+    16	  let newest = null;
+    17	  for (const folder of await listFolders(bucket, C.WEEKLY, C.FOLDER_CAP_ALL)) {
+    18	    const meta = await completeMetadata(bucket, folder);
+    19	    if (!meta) continue;
+    20	    const created = Date.parse(meta.metadata && meta.metadata.timeCreated);
+    21	    if (Number.isNaN(created)) throw new Error(`${meta.name}: the listing gave no timeCreated`);
+    22	    if (!newest || created > newest.created) newest = { folder, created };
+    23	  }
+    24	  if (!newest) return { status: 503, body: { case: 'none', folder: null, ageHours: null } };
+    25	  const ageMs = now() - newest.created;
+    26	  const body = { folder: newest.folder, ageHours: Math.round(ageMs / 360000) / 10 };
+    27	  return ageMs <= C.FRESH_MS ? { status: 200, body: { case: 'fresh', ...body } } : { status: 503, body: { case: 'stale', ...body } };
+    28	}
+    29	
+    30	// The handler's answer: checkFreshness, with any error (a listing refused or too slow, a bucket the client can't build)
+    31	// as a 500 whose body says only "error"; the reason goes to the log. Every listing is held to FRESH_BUDGET_MS in all,
+    32	// so the answer always comes before the function's 30 s timeout (impl review round 1).
+    33	async function answerFreshness({ bucket, now = Date.now, timeLimit = realTimeLimit, logError = () => {} }) {
+    34	  try {
+    35	    const limit = makeLimiter({ deadline: now() + C.FRESH_BUDGET_MS, now, timeLimit });
+    36	    return await checkFreshness({ bucket: limitedBucket(typeof bucket === 'function' ? bucket() : bucket, limit), now });
+    37	  } catch (e) {
+    38	    logError(`vaultFresh: ${e.message}`);
+    39	    return { status: 500, body: { case: 'error', folder: null, ageHours: null } };
+    40	  }
+    41	}
+    42	
+    43	module.exports = { checkFreshness, answerFreshness };
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-LC02pr70' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zqa8hcSX' (errno=Operation not permitted)
+    18	The vault is the last resort, because it lives outside the project that could fail.
+    19	
+    20	## 1. Choose the folder
+    21	
+    22	In `tinker-hq-vault` → Cloud Storage → `my-clay-hub-vault-exports` → `weekly/`, each export is a folder named
+    23	`<YYYY-MM-DD>-<6 characters>/`, the UTC date of the Sunday it was made (or, for a manual "Force run", the UTC date
+    24	of the day it actually ran).
+    25	
+    26	**Use only a complete folder.** A folder is complete when it holds a file named after the folder itself:
+    27	`weekly/2026-10-04-ab12cd/2026-10-04-ab12cd.overall_export_metadata`. The 56-day lifecycle deletes a folder's files
+    28	gradually (over up to a day), so an old folder can be half there. A folder without that file is never used.
+    29	
+    30	Pick the newest complete folder from **before** the problem began. Two folders on the same date are both complete
+    31	copies (a rare duplicate, by design). Either one will do; take the later one.
+    32	
+    33	## 2. Decide where it goes: a scratch database, or production
+    34	
+    35	**An import overwrites documents that have the same path and deletes nothing.** Into a database that already holds
+    36	data, it's a merge, not a rollback: documents created after the export stay, and documents deleted since come back.
+    37	
+    38	- **Rehearsals, and "what did it look like?"**: import into a **new, empty** database in `my-clay-hub` (for example
+    39	  `restore-2026-10-04`), never `(default)`. Nothing the app reads changes. Create it in **production mode**, so its
+    40	  rules deny every read and write from the start, and check its Rules tab says so before importing: it will hold
+    41	  real member data, and this repo's `firestore.rules` covers `(default)` only. Delete the scratch database afterwards.
+    42	- **A real restore into `(default)`**: first make a **new, verified** copy of the database as it is now, so the
+    43	  restore itself can be undone. Don't use a Force run of `vaultExport` for this: if today's UTC date already has a
+    44	  complete folder it correctly does nothing ("already done"). Instead, in `my-clay-hub` → Firestore → `(default)` →
+    45	  Import/Export → **Export**: the entire database, to a folder name never used before,
+    46	  `gs://my-clay-hub-vault-exports/manual/pre-restore-<YYYY-MM-DD>-<HHMM UTC>` (an export can't reuse a folder). Wait
+    47	  until **that export's own operation** shows as finished successfully on the Import/Export page, then check that its
+    48	  new folder holds its own `.overall_export_metadata` file (named after that folder). Only then go on.
+    49	  (Point-in-time recovery also keeps the pre-restore state readable for 7 days, but it isn't a copy you can check.)
+    50	  Then decide with Christie what "restore" means: a merge (import over the top), or a true rollback (clearing the
+    51	  affected collections first, which is a bulk delete: snapshot, approval and the delete rules in the global CLAUDE.md
+    52	  all apply).
+    53	
+    54	## 3. The temporary read grant (tinker-hq-vault)
+    55	
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-asx9fANZ' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-xyPUO5Yv' (errno=Operation not permitted)
+   207	## 10. The vault codebase (D-4)
+   208	
+   209	`vault/vaultExport` copies the whole database to `gs://my-clay-hub-vault-exports/weekly/<date>-<6 chars>/` in
+   210	`tinker-hq-vault` every Sunday 09:00 UTC, and waits for Google to finish. `vault/vaultFresh` answers an uptime check: 200
+   211	while the newest complete copy is at most 7 days 18 hours old. Plan: `~/tinker-ai-configs/thoughts/plans/my-clay-hub-d4-vault-export.html`.
+   212	
+   213	- **To stop exports at once:** Cloud Scheduler → `firebase-schedule-vaultExport-us-central1` → **Pause** (§9). Never
+   214	  delete the function or the job by hand. Pausing means the freshness alert fires in about 8 days; that's expected.
+   215	- **A manual catch-up run:** Cloud Scheduler → the job → **Force run**. Google sends a Force run the job's *next*
+   216	  scheduled time (seen Oct 7 2026), so `vaultExport` keys a run whose scheduled time is still in the future by the day
+   217	  it actually runs. A weekday catch-up therefore never takes the coming Sunday's key, and Sunday still exports.
+   218	- **A failure email** (log-based alert on `vaultexport` errors, V13): read the function's log. Its first line holds the
+   219	  run's scheduleTime and key (the date); the error names the operation and the prefix. Scheduler retries three times
+   220	  (about 10, 20, 40 minutes apart). A retry never starts a second export while the first is visible: it finds the
+   221	  complete folder ("already done") or waits on the running export ("resume").
+   222	- **A freshness email** (V9): `vaultFresh`'s body says `stale`, `none` or `error`. `error` usually means `vault-watch@`
+   223	  can't list the bucket (its `vaultLister` grant on the bucket).
+   224	- **Two grants live in `tinker-hq-vault`, on the vault bucket only:** `vaultLister` (to `vault-export@` and
+   225	  `vault-watch@`, V-1) and `firestoreExportWriter` (to the Firestore service agent, V-4). `--attest` reads only
+   226	  `my-clay-hub`'s IAM, so their record is V-1/V-4's screenshots and the exports themselves.
+   227	- **Restoring from the vault:** `docs/my-clay-hub/DATA-RESTORE.md`.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-gotOPWsf' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-gLtFszTg' (errno=Operation not permitted)
+    70	| 53 | D22 | Sep 27 | **The one-way link, "re-read, then send a snapshot"** (supersedes #23's "no copy"). When a member record changes, the link re-reads that member's current truth and sends a complete snapshot, stamped with when it was read. The newest snapshot always wins. Only name, email, status dates, member-since and `phoneLast4` are copied. | Correct even when changes arrive late, twice or out of order, and through deletes and email changes. |
+    71	| 54 | D23 | Sep 27 | 2nd-generation Cloud Functions. Database location, trigger location and function region recorded separately. Retries explicitly on. Explicit `maxInstances`, one Admin app per instance, and an Artifact Registry cleanup policy. | 1st gen can't be upgraded in place later. Retries are off by default. |
+    72	| 55 | — | Sep 27 | **No recurring bookings** (for example "every Tuesday 6–9") in My Clay Hub for now. Members book each session individually, within the 14-day window. | Christie: "let's start simpler without it." The old Clay Hub Booking notes said members used recurring bookings in Skedda, so this is a deliberate choice, not an oversight. It can be revisited later as its own decision. |
+    73	| 56 | C6 | Sep 28 | **Every booking belongs wholly to its start date's week.** A booking is `[start, end)`; no booked minute is at or after that day's closing time; an end of 12:00 AM adds no minutes to the next day. A booking with any minute in the next day is malformed (no `weekKey`). Phase F's settings must reject a closing time later than 12:00 AM. | Phase D plan (Codex review): the data model gave each booking one `weekKey` but never said what a Monday-crossing booking does. SPEC §4–5 already rule overnight bookings out. |
+    74	| 57 | C7 | Sep 28 | `weekKey` is **ISO-8601**, with the ISO week-year and a two-digit week (`2026-W09`; 2027-01-01 → `2026-W53`). | At a year boundary, two readings of "week" give different keys. |
+    75	| 58 | C8 | Sep 28 | A pause whose end is before its start is **malformed**, so `deriveStatus` gives `review` (rule 7). | Otherwise it would fall through to `active` silently; `review` is how #34 handles every other data gap. |
+    76	| 59 | — | Sep 28 | A pause with a start date but **no end date** gives **`review`**, not "paused indefinitely" (rule 7 as written). The member can sign in and see the feed but can't book; staff see a flag and add the end date, and the pause's booking cancellation happens then. | Christie chose it over the alternatives. The D-5 implementation review found Membership Manager's Quick Log can save a pause with a blank end, so this is a reachable state, not a typo. |
+    77	| 60 | D2 | Oct 1 | `functions/iam-expectations.json` allows **exactly one** Editor holder: `760301318440@cloudservices.gserviceaccount.com` (the Google APIs Service Agent). Editor held by anyone else, a build account above all, is still a difference. | Google granted it Editor during the first functions deploy (when the CLI turned on the Firebase Extensions API). It's Google-managed, nothing we deploy runs as it, and Google advises against removing its grant. Christie chose to allow it rather than remove it. |
+    78	| 61 | D2 | Oct 1 | **IAM readings only when needed** (replaces "after every deploy"). The functions guard records `attest_needed` and why: needed for an unverified deploy, the first deploy of a codebase, a changed function set, declarations, IAM expectations, `firebase.json` or `.firebaserc`, a Google API turned on during the deploy, or a reading still owed. Otherwise "not needed", naming the attestation it relies on. | Christie asked why each deploy needed so many Console screenshots. The automatic checks (hash, settings, the unauthenticated probe) still run every time. A role changed by hand in the Console isn't seen, so take a reading after one. |
+    79	| 62 | D-4 | Oct 1 | **Scheduled functions in the functions guard** (F13 amended for schedules only; plan `my-clay-hub-d4-vault-export`, V2/V3). A function is declared `"trigger": "https"` or `"trigger": "schedule"`; a declaration's keys are exact. A schedule declares its schedule, `timeZone` `"UTC"` and all five retry values, and no invoker (the CLI makes the runtime account its only caller); the guard and the backstop refuse a manifest whose values differ or are unset. The CLI can't read a Cloud Scheduler job, so Christie reads it in the Console and `--attest` checks it (`scheduler_attested`; the complete job list = every DEPLOYED schedule, i.e. each codebase's newest attempt). **Exception to "every HTTP response sets `x-tinker-reached`":** scheduled functions, whose response firebase-functions writes itself; the unauthenticated probe must still be refused. | M6 required the guard to read the schedule back before D-4's function ships; the CLI never clears a retry setting removed from code, and can't see a job at all. Christie chose the header exception (O6). |
+    80	| 63 | D-4 | Oct 2 | **The weekly vault export** (plan `my-clay-hub-d4-vault-export`, V1, V4–V12, O5). A second functions codebase, `vault`, separate from the canary: `vaultExport` (scheduled, Sundays 09:00 UTC, 3 retries about 10/20/40 min apart, 30-min timeout) copies the whole database to its own folder `weekly/<UTC date>-<6 chars>/` in bucket **`my-clay-hub-vault-exports`** in `tinker-hq-vault` (US multi-region, 56-day lifecycle, 7-day soft delete, no versioning, no retention lock), and waits for Google to finish, every call held to the run's 1,500 s budget; it succeeds only when the export is done, error-free, SUCCESSFUL, at the expected prefix, and its folder is complete. A retry finds a complete folder ("already done") or the running export ("resume") before it starts anything; a rare duplicate is a second complete copy in its own folder, never a mixed one (O5). `vaultFresh` answers a Monitoring uptime check: 200 while the newest complete copy is at most 7 d 18 h old (the email lands at about 8 days). Accounts: `vault-export@` (custom role `vaultExporter`: export + operations get/list; `vaultLister` on the bucket), `vault-watch@` (`vaultLister` on the bucket only), the Firestore service agent (`firestoreExportWriter` on the bucket only, granted in V-4). No deployed function or service account can import into production (only Christie, as Owner, by hand: DATA-RESTORE.md). Built on `@google-cloud/firestore-api` 0.2.0 (where Firestore 9.3.0's admin client and protos live) rather than `@google-cloud/firestore` as the plan first named. Restoring: DATA-RESTORE.md. | The project's own backups (PITR, daily backups) live inside the project that could fail; this is the off-project copy that gates real member data (Phase E). Christie chose US, the uptime check and the 7 d 18 h threshold (O2, O4), a rare duplicate over a lock (O5), and a restore rehearsal after Phase E (O3). |
+    81	| 64 | D-4 | Oct 7 | **A Force run is keyed by the day it actually runs.** V-4's failure-first Force run (Wed Oct 7) showed Cloud Scheduler sends a Force run the job's *next* scheduled time (Sunday Oct 11 09:00 UTC), not "now" as the V7 tests assumed, so a weekday catch-up run would have taken the coming Sunday's key and that Sunday's real run would have skipped as "already done". `runKey` now keys a scheduled time still in the future by today's UTC date; a real run and its retries (J15) keep their scheduled date. Until this ships: no Force run at all (on any day, including a Sunday after 09:00 UTC, it would take a later Sunday's key), and V-4's first real export is Sunday Oct 11's scheduled run. | Christie chose it (fix next, before Phase E; don't hold V-4)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-hY8a91Ub' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-N0izssM4' (errno=Operation not permitted)
+   300	});
+   301	
+   302	test('with less than 5 minutes of budget left after the reads, no export is started (the next retry starts it)', async () => {
+   303	  const { a, b, k, run } = setup();
+   304	  const getFiles = b.getFiles.bind(b);
+   305	  b.getFiles = async (q) => { k.advance(C.WAIT_BUDGET_MS - C.START_RESERVE_MS + 1000); return getFiles(q); };   // a slow listing
+   306	  await assert.rejects(run(), /only \d+ s of the budget left, too little to start an export; the next retry starts it/);
+   307	  assert.equal(a.exports.length, 0);
+   308	});
+   309	
+   310	test('a fresh suffix never repeats a folder or an operation prefix already seen for the date', async () => {
+   311	  const { a, b, run } = setup();
+   312	  b.add(`weekly/${KEY}-aaaaaa/all_namespaces/all_kinds/output-0`, '2026-10-04T09:00:00Z');   // an incomplete folder
+   313	  a.seed({ prefix: gs(`weekly/${KEY}-bbbbbb`), done: true, outcome: 'FAILED', error: { code: 7, message: 'denied' } });
+   314	  const r = await run();
+   315	  assert.equal(r.prefix, `weekly/${KEY}-cccccc/`);
+   316	  assert.equal(a.exports[0].outputUriPrefix, gs(`weekly/${KEY}-cccccc`));
+   317	});
+   318	
+   319	test('an export that finishes between the folder listing and the operation listing → "already done", nothing started', async () => {
+   320	  const { a, b, run } = setup();
+   321	  const name = a.seed({ prefix: gs(`weekly/${KEY}-justin`), done: true, outcome: 'SUCCESSFUL' });
+   322	  const getFiles = b.getFiles.bind(b);
+   323	  let first = true;
+   324	  b.getFiles = async (q) => {
+   325	    const r = await getFiles(q);
+   326	    if (first && q.delimiter) { first = false; b.addExport(`weekly/${KEY}-justin/`); }   // it lands just after step 1
+   327	    return r;
+   328	  };
+   329	  const r = await run();
+   330	  assert.deepEqual(r, { key: KEY, decision: 'already done', prefix: `weekly/${KEY}-justin/`, operation: name });
+   331	  assert.equal(a.exports.length, 0);
+   332	});
+   333	
+   334	test('the run key is the UTC date of the scheduled time — across a year end, and from "now" when the header is missing', () => {
+   335	  const LATER = Date.parse('2027-02-01T00:00:00Z');   // a real run and its retries arrive at or after their scheduled time
+   336	  assert.equal(runKey('2026-12-31T23:59:59.999Z', LATER), '2026-12-31');
+   337	  assert.equal(runKey('2027-01-01T00:00:00.000Z', LATER), '2027-01-01');
+   338	  assert.equal(runKey('2027-01-03T02:00:00-07:00', LATER), '2027-01-03', 'a Denver-offset time is still its UTC date');
+   339	  assert.equal(runKey(SUNDAY, Date.parse(SUNDAY)), KEY, 'exactly on time is the scheduled date');
+   340	  assert.equal(runKey(SUNDAY, Date.parse('2026-10-04T09:40:00Z')), KEY, 'a retry 40 min later keeps Sunday');
+   341	  assert.equal(runKey(undefined, Date.parse('2027-01-01T00:00:01Z')), '2027-01-01');
+   342	  assert.equal(runKey('', Date.parse('2026-12-31T23:59:00Z')), '2026-12-31');
+   343	  assert.throws(() => runKey('not a time', 0), /is not a time/);
+   344	  assert.equal(snapshotTimeMs(Date.parse('2027-01-01T00:00:30.500Z')), Date.parse('2026-12-31T23:59:00Z'));
+   345	});
+   346	
+   347	test('a run with the header missing uses the clock for its key', async () => {
+   348	  const { a, run } = setup({ start: '2026-10-07T15:30:00Z' });
+   349	  const r = await run(undefined);
+   350	  assert.equal(r.key, '2026-10-07');
+   351	  assert.equal(a.exports[0].outputUriPrefix, gs('weekly/2026-10-07-aaaaaa'));
+   352	});
+   353	
+   354	test('a Force run carries the NEXT scheduled time (observed Oct 7 2026) and is keyed by the day it actually runs', async () => {
+   355	  // A Wednesday Force run arrived with scheduleTime = the coming Sunday 09:00 UTC.
+   356	  assert.equal(runKey('2026-10-11T02:00:00-07:00', Date.parse('2026-10-07T18:54:31Z')), '2026-10-07');
+   357	  // On Sunday before 09:00 the next scheduled time is the same day; after 09:00 it is next Sunday. Both key to today.
+   358	  assert.equal(runKey('2026-10-11T09:00:00Z', Date.parse('2026-10-11T06:00:00Z')), '2026-10-11');
+   359	  assert.equal(runKey('2026-10-18T09:00:00Z', Date.parse('2026-10-11T15:00:00Z')), '2026-10-11');
+   360	  // Late on a Saturday (UTC), still Saturday's key — never the coming Sunday's.
+   361	  assert.equal(runKey('2026-10-11T09:00:00Z', Date.parse('2026-10-10T23:59:59Z')), '2026-10-10');
+   362	
+   363	  const { a, run } = setup({ start: '2026-10-07T18:54:31Z' });
+   364	  const r = await run('2026-10-11T09:00:00Z');
+   365	  assert.equal(r.key, '2026-10-07');
+   366	  assert.equal(a.exports[0].outputUriPrefix, gs('weekly/2026-10-07-aaaaaa'), "not Sunday's key, so Sunday's real run still exports");
+   367	});
+
+exec
+/bin/zsh -lc "git show 884d5f2:functions/vault/index.js | nl -ba | sed -n '1,180p'
+git show 884d5f2:functions/vault/vault-config.js | nl -ba | sed -n '1,180p'
+git show 884d5f2:tests/functions/vault/export-run.test.js | nl -ba | sed -n '1,180p'
+rg -n \"scheduleTime|runKey|Force run|fresh\" functions/vault tests/functions/vault docs/my-clay-hub FUNCTIONS-ROLLBACK.md" in /Users/christiehubley/my-clay-hub
+ succeeded in 0ms:
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-vVgkLCWH' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-zzfRxTnl' (errno=Operation not permitted)
+     1	// My Clay Hub, functions codebase `vault` (D-4): the weekly off-project copy of the database, and its freshness check.
+     2	// Plan: ~/tinker-ai-configs/thoughts/plans/my-clay-hub-d4-vault-export.html. Both functions are declared in
+     3	// ../declarations.json and deploy only through scripts/deploy-functions.sh --codebase vault. Never grant run.invoker by
+     4	// hand. Every option the guard checks is written out here, never left to Google's defaults.
+     5	'use strict';
+     6	
+     7	const { onSchedule } = require('firebase-functions/scheduler');
+     8	const { onRequest } = require('firebase-functions/https');
+     9	const logger = require('firebase-functions/logger');
+    10	const { withReached } = require('./reached');
+    11	const C = require('./vault-config');
+    12	const { runExport } = require('./export-run');
+    13	const { answerFreshness } = require('./freshness');
+    14	const { firestoreAdmin, vaultBucket } = require('./clients');
+    15	
+    16	// Every Sunday 09:00 UTC (V5), retried 3 times about 10, 20 and 40 minutes after a failed attempt ends (V6). A thrown
+    17	// error is logged at ERROR and answered 500 by the SDK — the failure alert's signal (V13). Its only caller is its own
+    18	// runtime account, which the CLI sets for a schedule (J3); x-tinker-reached can't be set here (the SDK writes the
+    19	// response; Christie, O6), and the guard still requires Google to refuse an unauthenticated request.
+    20	exports.vaultExport = onSchedule(
+    21	  {
+    22	    schedule: 'every sunday 09:00',
+    23	    timeZone: 'UTC',
+    24	    retryCount: 3,
+    25	    maxRetrySeconds: 0,
+    26	    minBackoffSeconds: 600,
+    27	    maxBackoffSeconds: 3600,
+    28	    maxDoublings: 2,
+    29	    region: 'us-central1',
+    30	    serviceAccount: C.EXPORT_ACCOUNT,
+    31	    ingressSettings: 'ALLOW_ALL',
+    32	    maxInstances: 1,
+    33	    minInstances: 0,
+    34	    concurrency: 1,
+    35	    cpu: 1,
+    36	    timeoutSeconds: 1800,
+    37	    memory: '512MiB',
+    38	  },
+    39	  async (event) => {
+    40	    await runExport({
+    41	      admin: firestoreAdmin(),
+    42	      bucket: vaultBucket(),
+    43	      scheduleTime: event.scheduleTime,
+    44	      log: (what, fields) => logger.info(`vaultExport ${what}`, fields),
+    45	    });
+    46	  },
+    47	);
+    48	
+    49	// The freshness check (V9), called only by the Monitoring service agent's uptime check.
+    50	exports.vaultFresh = onRequest(
+    51	  {
+    52	    invoker: [C.MONITORING_AGENT],
+    53	    region: 'us-central1',
+    54	    serviceAccount: C.WATCH_ACCOUNT,
+    55	    ingressSettings: 'ALLOW_ALL',
+    56	    maxInstances: 1,
+    57	    minInstances: 0,
+    58	    concurrency: 10,
+    59	    cpu: 1,
+    60	    timeoutSeconds: 30,
+    61	    memory: '256MiB',
+    62	  },
+    63	  withReached('vaultFresh', async (req, res) => {
+    64	    // vaultBucket is passed uncalled, so an error building the client is answered 500 too.
+    65	    const answer = await answerFreshness({ bucket: vaultBucket, logError: (m) => logger.error(m) });
+    66	    res.status(answer.status).json(answer.body);
+    67	  }),
+    68	);
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-xXzEqaNb' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-Hr70oq0h' (errno=Operation not permitted)
+     1	// Every fixed name the vault codebase uses, in one place (no params, no environment variables: F13). Plan:
+     2	// ~/tinker-ai-configs/thoughts/plans/my-clay-hub-d4-vault-export.html (V4, V5, V6, V9, V10).
+     3	'use strict';
+     4	
+     5	module.exports = Object.freeze({
+     6	  // The database exported, named explicitly (no project discovery, V4).
+     7	  PROJECT: 'my-clay-hub',
+     8	  DATABASE: '(default)',
+     9	  // The vault bucket, in tinker-hq-vault (V10; created in V-1, Oct 2 2026). Exports go to weekly/<YYYY-MM-DD>-<6 chars>/.
+    10	  BUCKET: 'my-clay-hub-vault-exports',
+    11	  WEEKLY: 'weekly/',
+    12	
+    13	  // Runtime accounts (V4). vault-export@ holds projects/my-clay-hub/roles/vaultExporter (export + operations get/list)
+    14	  // and vaultLister on the vault bucket; vault-watch@ holds only vaultLister on the vault bucket.
+    15	  EXPORT_ACCOUNT: 'vault-export@my-clay-hub.iam.gserviceaccount.com',
+    16	  WATCH_ACCOUNT: 'vault-watch@my-clay-hub.iam.gserviceaccount.com',
+    17	  // vaultFresh's only caller: the Monitoring notification service agent, as read in V-0 step 7 (never assembled).
+    18	  MONITORING_AGENT: 'service-760301318440@gcp-sa-monitoring-notification.iam.gserviceaccount.com',
+    19	
+    20	  // V7: one run spends at most 1,500 s (Cloud Run kills it at 1,800 s) on its calls and its waiting, polling every 15 s,
+    21	  // and never starts an export with less than 5 minutes of that left; folder and operation caps.
+    22	  WAIT_BUDGET_MS: 1500 * 1000,
+    23	  POLL_MS: 15 * 1000,
+    24	  START_RESERVE_MS: 300 * 1000,
+    25	  CALL_TIMEOUT_MS: 90 * 1000,   // the most any one Firestore admin call is given
+    26	  FOLDER_CAP_PER_DATE: 50,
+    27	  OPERATION_CAP: 1000,
+    28	
+    29	  // V9: fresh while the newest complete export is at most 7 days 18 hours old; at most 500 folders under weekly/.
+    30	  FRESH_MS: (7 * 24 + 18) * 3600 * 1000,
+    31	  FOLDER_CAP_ALL: 500,
+    32	  // vaultFresh has 30 s (its timeout); its listings get 20 s in all, so it always answers (500 "error") in time.
+    33	  FRESH_BUDGET_MS: 20 * 1000,
+    34	  // Any one folder listing reads at most this many pages (a page holds up to 1,000 entries).
+    35	  LIST_PAGE_CAP: 100,
+    36	});
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-0Zu7CE13' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-BCBM4UDq' (errno=Operation not permitted)
+     1	// The weekly export's run logic (D-4, V7/V8) with fake clients: functions/vault/export-run.js. Runs in session 1 of
+     2	// scripts/functions-emulator.mjs (it needs Node 22 and functions/vault/node_modules) but talks to no emulator and
+     3	// never to Google.
+     4	import { test } from 'node:test';
+     5	import assert from 'node:assert/strict';
+     6	import { BUCKET, DB, EXPORT_TYPE, INDEX_TYPE, clock, fakeAdmin, fakeBucket, fakeTimeLimit, hang, settlesWithin, rawOperation, rawOperationList, requireVault } from './fakes.js';
+     7	
+     8	const { runExport, runKey, snapshotTimeMs, readExportOperation, checkState, decodeExportMetadata } = requireVault('./export-run.js');
+     9	const C = requireVault('./vault-config.js');
+    10	
+    11	const SUNDAY = '2026-10-04T09:00:00.000Z';
+    12	const KEY = '2026-10-04';
+    13	const gs = (folder) => `gs://${BUCKET}/${folder}`;
+    14	let suffixes;
+    15	function nextSuffix() { return suffixes.shift(); }
+    16	function setup({ objects = [], admin = {}, bucket = {}, start } = {}) {
+    17	  suffixes = ['aaaaaa', 'bbbbbb', 'cccccc', 'dddddd'];
+    18	  const b = fakeBucket(objects, bucket);
+    19	  const a = fakeAdmin(b, admin);
+    20	  const k = clock(start);
+    21	  const tl = fakeTimeLimit(k);
+    22	  const logs = [];
+    23	  // run() is Sunday's scheduled run; run(undefined) is a run whose header was missing.
+    24	  const run = (...args) => runExport({ admin: a, bucket: b, scheduleTime: args.length ? args[0] : SUNDAY, now: k.now, sleep: k.sleep, random: nextSuffix,
+    25	    timeLimit: tl, log: (what, fields) => logs.push({ what, ...fields }) });
+    26	  return { a, b, k, tl, logs, run };
+    27	}
+    28	
+    29	test('a first run exports to weekly/<date>-<6 chars>, waits, and succeeds only when the complete folder is there', async () => {
+    30	  const { a, b, logs, run, k } = setup();
+    31	  const r = await run();
+    32	  assert.deepEqual(r, { key: KEY, decision: 'exported', prefix: `weekly/${KEY}-aaaaaa/`, operation: `${DB}/operations/AXBkx1` });
+    33	  assert.equal(a.exports.length, 1);
+    34	  const [req] = a.exports;
+    35	  assert.deepEqual(Object.keys(req).sort(), ['collectionIds', 'name', 'namespaceIds', 'outputUriPrefix', 'snapshotTime']);
+    36	  assert.equal(req.name, DB);
+    37	  assert.equal(req.outputUriPrefix, gs(`weekly/${KEY}-aaaaaa`));
+    38	  assert.deepEqual(req.collectionIds, []);
+    39	  assert.deepEqual(req.namespaceIds, []);
+    40	  // V8: the start of the current minute minus one minute, whole seconds, no nanos.
+    41	  assert.deepEqual(req.snapshotTime, { seconds: Date.parse('2026-10-04T08:59:00.000Z') / 1000, nanos: 0 });
+    42	  assert.ok(b.objects.some((o) => o.name === `weekly/${KEY}-aaaaaa/${KEY}-aaaaaa.overall_export_metadata`));
+    43	  assert.equal(k.slept, 2 * C.POLL_MS, 'polled every 15 s until done');
+    44	  // The per-run log: first scheduleTime and the key, at the end the decision and the prefix.
+    45	  assert.deepEqual(logs[0], { what: 'start', scheduleTime: SUNDAY, key: KEY });
+    46	  assert.deepEqual(logs.at(-1), { what: 'end', scheduleTime: SUNDAY, key: KEY, decision: 'exported', prefix: `weekly/${KEY}-aaaaaa/`, operation: `${DB}/operations/AXBkx1` });
+    47	  assert.ok(logs.some((l) => l.what === 'started' && l.prefix === gs(`weekly/${KEY}-aaaaaa`) && l.snapshotTime === '2026-10-04T08:59:00.000Z'));
+    48	});
+    49	
+    50	test('a complete folder for the date → "already done": no export, no operation read', async () => {
+    51	  const { a, b, run } = setup();
+    52	  b.addExport(`weekly/${KEY}-zzzzzz/`);
+    53	  const r = await run();
+    54	  assert.equal(r.decision, 'already done');
+    55	  assert.equal(r.prefix, `weekly/${KEY}-zzzzzz/`);
+    56	  assert.equal(a.exports.length, 0);
+    57	  assert.equal(a.listings, 0);
+    58	});
+    59	
+    60	test('a folder without its metadata file, or with a metadata file named for another folder, is not complete', async () => {
+    61	  const { a, b, run } = setup();
+    62	  b.add(`weekly/${KEY}-half00/all_namespaces/all_kinds/output-0`, '2026-10-04T09:00:00Z');   // lifecycle half-deleted
+    63	  b.add(`weekly/${KEY}-wrong0/${KEY}-other0.overall_export_metadata`, '2026-10-04T09:00:00Z');
+    64	  b.add(`weekly/${KEY}-wrong0/x/${KEY}-wrong0.overall_export_metadata`, '2026-10-04T09:00:00Z');   // one level too deep
+    65	  b.add(`weekly/${KEY}-partl0/${KEY}-partl0.overall_export_metadata.partial`, '2026-10-04T09:00:00Z');   // a longer name
+    66	  const r = await run();
+    67	  assert.equal(r.decision, 'exported');
+    68	  assert.equal(a.exports.length, 1);
+    69	});
+    70	
+    71	test('"the export succeeded but the run died before returning" → the retry finds it and starts nothing', async () => {
+    72	  const { a, run } = setup();
+    73	  await run();
+    74	  const again = await run();   // Scheduler's retry: same scheduled time
+    75	  assert.equal(again.decision, 'already done');
+    76	  assert.equal(again.prefix, `weekly/${KEY}-aaaaaa/`);
+    77	  assert.equal(a.exports.length, 1);
+    78	});
+    79	
+    80	test('a running export for the date is resumed, and no second one is started', async () => {
+    81	  const { a, logs, run } = setup();
+    82	  const name = a.seed({ prefix: gs(`weekly/${KEY}-runnin`), pollsToFinish: 2 });
+    83	  const r = await run();
+    84	  assert.deepEqual(r, { key: KEY, decision: 'resumed', prefix: `weekly/${KEY}-runnin/`, operation: name });
+    85	  assert.equal(a.exports.length, 0);
+    86	  assert.ok(logs.some((l) => l.what === 'resume' && l.operation === name));
+    87	});
+    88	
+    89	test('a done-FAILED (or CANCELLED) export for the date is history: logged, never resumed, never reused → a new prefix', async () => {
+    90	  const { a, logs, run } = setup();
+    91	  const failed = a.seed({ prefix: gs(`weekly/${KEY}-failed`), done: true, outcome: 'FAILED', error: { code: 7, message: 'denied' } });
+    92	  const cancelled = a.seed({ prefix: gs(`weekly/${KEY}-cancel`), done: true, outcome: 'CANCELLED' });
+    93	  const r = await run();
+    94	  assert.equal(r.decision, 'exported');
+    95	  assert.equal(a.exports[0].outputUriPrefix, gs(`weekly/${KEY}-aaaaaa`));
+    96	  assert.ok(!a.gets.includes(failed) && !a.gets.includes(cancelled), 'neither was waited on');
+    97	  assert.deepEqual(logs.filter((l) => l.what === 'history').map((l) => l.operation).sort(), [failed, cancelled].sort());
+    98	});
+    99	
+   100	test('a failed attempt (the bootstrap: no grant yet) throws; the retry gets a NEW prefix and succeeds', async () => {
+   101	  const { a, run } = setup({ admin: { outcome: 'FAILED', pollsToFinish: 1 } });
+   102	  await assert.rejects(run(), /vaultExport 2026-10-04: export .*AXBkx1 failed: 7 PERMISSION_DENIED/);
+   103	  a.defaults.outcome = 'SUCCESSFUL';   // the grant is made
+   104	  const r = await run();
+   105	  assert.equal(r.decision, 'exported');
+   106	  assert.equal(r.prefix, `weekly/${KEY}-bbbbbb/`);
+   107	  assert.deepEqual(a.exports.map((e) => e.outputUriPrefix), [gs(`weekly/${KEY}-aaaaaa`), gs(`weekly/${KEY}-bbbbbb`)]);
+   108	});
+   109	
+   110	test('an export for ANOTHER date is ignored (neither resumed nor counted as done)', async () => {
+   111	  const { a, b, run } = setup();
+   112	  a.seed({ prefix: gs('weekly/2026-10-03-yester') });
+   113	  b.addExport('weekly/2026-09-27-lastwk/');
+   114	  const r = await run();
+   115	  assert.equal(r.decision, 'exported');
+   116	  assert.equal(a.exports.length, 1);
+   117	});
+   118	
+   119	test('an operation not visible on the first retry but visible on the next: at most one extra copy, each in its own folder', async () => {
+   120	  const { a, run } = setup({ admin: { pollsToFinish: 10_000 } });
+   121	  // Attempt 1: the export starts server-side, but its reply is lost.
+   122	  a.fail.afterExport = () => { throw new Error('14 UNAVAILABLE: reply lost'); };
+   123	  await assert.rejects(run(), /reply lost/);
+   124	  const lost = [...a.ops.keys()][0];
+   125	  a.ops.get(lost).hidden = true;   // Google hasn't listed it yet
+   126	  delete a.fail.afterExport;
+   127	  // Retry 1 sees nothing running, so it starts its own export, and runs out of budget waiting on it.
+   128	  await assert.rejects(run(), /still running .* the next retry resumes/);
+   129	  assert.equal(a.exports.length, 2);
+   130	  assert.notEqual(a.exports[0].outputUriPrefix, a.exports[1].outputUriPrefix);
+   131	  // Retry 2: both are listed now; it waits on one of them and starts nothing.
+   132	  a.ops.get(lost).hidden = false;
+   133	  for (const op of a.ops.values()) op.pollsToFinish = op.polls + 2;
+   134	  const r = await run();
+   135	  assert.equal(r.decision, 'resumed');
+   136	  assert.equal(r.operation, lost);
+   137	  assert.equal(a.exports.length, 2, 'no third export');
+   138	});
+   139	
+   140	test('two runs starting in the same second, both finding nothing, export to two distinct prefixes — two complete copies', async () => {
+   141	  const b = fakeBucket();
+   142	  const a = fakeAdmin(b, { pollsToFinish: 2 });
+   143	  suffixes = ['first0', 'second'];
+   144	  const go = () => { const k = clock(); return runExport({ admin: a, bucket: b, scheduleTime: SUNDAY, now: k.now, sleep: k.sleep, random: nextSuffix }); };
+   145	  const [x, y] = await Promise.all([go(), go()]);
+   146	  assert.notEqual(x.prefix, y.prefix);
+   147	  assert.deepEqual([x.prefix, y.prefix].sort(), [`weekly/${KEY}-first0/`, `weekly/${KEY}-second/`]);
+   148	  for (const p of [x.prefix, y.prefix]) assert.ok(b.objects.some((o) => o.name === `${p}${p.slice(7, -1)}.overall_export_metadata`), `${p} is complete`);
+   149	});
+   150	
+   151	test('the wait budget: still running at 1,500 s → throws (an error, so the alert fires); the next retry resumes the same export', async () => {
+   152	  const { a, k, run } = setup({ admin: { pollsToFinish: 10_000 } });
+   153	  const t0 = k.now();
+   154	  await assert.rejects(run(), /AXBkx1 is still running \(PROCESSING\) at the 1500 s budget; the next retry resumes waiting on it/);
+   155	  const waited = k.now() - t0;
+   156	  assert.ok(waited <= C.WAIT_BUDGET_MS && waited > C.WAIT_BUDGET_MS - 2 * C.POLL_MS, `gave up after ${waited} ms`);
+   157	  a.ops.get(`${DB}/operations/AXBkx1`).pollsToFinish = a.ops.get(`${DB}/operations/AXBkx1`).polls + 1;
+   158	  const r = await run();
+   159	  assert.equal(r.decision, 'resumed');
+   160	  assert.equal(a.exports.length, 1);
+   161	});
+   162	
+   163	test('done SUCCESSFUL but no complete folder → throws (inconsistent); so does SUCCESSFUL-but-empty while waiting', async () => {
+   164	  const { a, run } = setup();
+   165	  a.seed({ prefix: gs(`weekly/${KEY}-noflda`), done: true, outcome: 'SUCCESSFUL' });
+   166	  await assert.rejects(run(), /finished SUCCESSFUL but weekly\/2026-10-04-noflda\/ holds no complete export/);
+   167	  assert.equal(a.exports.length, 0);
+   168	
+   169	  const s = setup({ admin: { pollsToFinish: 1 } });
+   170	  s.a.exportDocuments = ((orig) => async (req) => { const r = await orig(req); s.a.ops.get(r[0].name).writesFolder = false; return r; })(s.a.exportDocuments);
+   171	  await assert.rejects(s.run(), /says SUCCESSFUL but weekly\/2026-10-04-aaaaaa\/ holds no complete export/);
+   172	});
+   173	
+   174	test('done with no error but an unfinished state → throws; an unknown or unspecified state → throws', async () => {
+   175	  let s = setup();
+   176	  s.a.seed({ prefix: gs(`weekly/${KEY}-oddone`), done: true, outcome: 'PROCESSING' });
+   177	  await assert.rejects(s.run(), /is done in state PROCESSING with no error/);
+   178	  s = setup();
+   179	  s.a.seed({ prefix: gs(`weekly/${KEY}-unspec`), state: 'OPERATION_STATE_UNSPECIFIED' });
+   180	  await assert.rejects(s.run(), /unknown export state "OPERATION_STATE_UNSPECIFIED"/);
+FUNCTIONS-ROLLBACK.md:4:canary (Phase D2), and `vault`, the weekly vault export and its freshness check (D-4 — §9, §10). Rules have their own runbook: `RULES-ROLLBACK.md`. Plan and design:
+FUNCTIONS-ROLLBACK.md:84:   The guard makes a **fresh worktree for every run**, retries included: a successful backstop leaves the sealed
+FUNCTIONS-ROLLBACK.md:178:  8-day freshness alert is what catches a job that stops running. Headers: Cloud Scheduler itself adds
+FUNCTIONS-ROLLBACK.md:214:  delete the function or the job by hand. Pausing means the freshness alert fires in about 8 days; that's expected.
+FUNCTIONS-ROLLBACK.md:216:  run's scheduleTime and key (the date); the error names the operation and the prefix. Scheduler retries three times
+FUNCTIONS-ROLLBACK.md:219:- **A freshness email** (V9): `vaultFresh`'s body says `stale`, `none` or `error`. `error` usually means `vault-watch@`
+docs/my-clay-hub/DECISIONS.md:50:| 33 | D3 | Sep 27 | **Member sign-in is gated by a claim.** After a magic-link or Google sign-in, `claimMembership` finds exactly one live member with that verified email and a sign-in-eligible status, then sets the claim. Every member rule also checks the member's **live** status. No paid "blocking function". | Only real members get in. A pause or offboarding takes effect immediately, not at the next token refresh. |
+functions/vault/export-run.js:12://   3. Otherwise export to a fresh prefix weekly/<key>-<6 chars> and wait on it — unless less than START_RESERVE_MS of
+functions/vault/export-run.js:47:function runKey(scheduleTime, nowMs) {
+functions/vault/export-run.js:48:  const t = scheduleTime === undefined || scheduleTime === null || scheduleTime === '' ? new Date(nowMs) : new Date(scheduleTime);
+functions/vault/export-run.js:49:  if (Number.isNaN(t.getTime())) throw new Error(`scheduleTime ${JSON.stringify(scheduleTime)} is not a time`);
+functions/vault/export-run.js:93:  admin, bucket: rawBucket, scheduleTime, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+functions/vault/export-run.js:97:  const key = runKey(scheduleTime, start);
+functions/vault/export-run.js:106:  log('start', { scheduleTime: scheduleTime || null, key });
+functions/vault/export-run.js:108:    log('end', { scheduleTime: scheduleTime || null, key, decision, prefix, operation: operation || null });
+functions/vault/export-run.js:151:    // 3. A fresh prefix: never one already seen, as a folder or as an operation's prefix. A choice: with under 5 minutes
+functions/vault/export-run.js:153:    // starts it with a full budget); if every retry ran that short, the week gets no copy and the freshness alert says so.
+functions/vault/export-run.js:203:module.exports = { EXPORT_TYPE_URL, runExport, runKey, snapshotTimeMs, folderOf, readExportOperation, checkState, decodeExportMetadata, randomSuffix };
+functions/vault/vault-bucket.js:3:// and freshness.js (V9).
+docs/my-clay-hub/DATA-RESTORE.md:23:`<YYYY-MM-DD>-<6 characters>/`, the UTC date of the Sunday it was made (or of a manual "Force run").
+docs/my-clay-hub/DATA-RESTORE.md:42:  restore itself can be undone. Don't use a Force run of `vaultExport` for this: if today's UTC date already has a
+docs/my-clay-hub/DATA-RESTORE.md:91:- **No complete folder in the vault:** the freshness alert should already have emailed (V9). Fall back to the in-project
+tests/functions/vault/wiring.test.js:18:    await vaultExport.run({ scheduleTime: '2026-10-04T09:00:00Z' });
+functions/vault/vault-config.js:29:  // V9: fresh while the newest complete export is at most 7 days 18 hours old; at most 500 folders under weekly/.
+tests/functions/vault/freshness.test.js:1:// vaultFresh's answer (D-4, V9) with a fake bucket: functions/vault/freshness.js. 200 while the newest COMPLETE
+tests/functions/vault/freshness.test.js:7:const { checkFreshness, answerFreshness } = requireVault('./freshness.js');
+tests/functions/vault/freshness.test.js:20:test('7 d 17 h after the newest complete export → 200 fresh; 7 d 19 h → 503 stale', async () => {
+tests/functions/vault/freshness.test.js:22:    { status: 200, body: { case: 'fresh', folder: 'weekly/2026-10-04-newest/', ageHours: 185 } });
+tests/functions/vault/freshness.test.js:25:  // The boundary: exactly 7 d 18 h is still fresh.
+tests/functions/vault/freshness.test.js:77:test('a metadata object with no timeCreated in the listing is an error, not "fresh"', async () => {
+functions/vault/package.json:4:  "description": "My Clay Hub's weekly vault export and its freshness check, codebase vault (D-4). Deployed only by scripts/deploy-functions.sh.",
+tests/functions/vault/export-run.test.js:8:const { runExport, runKey, snapshotTimeMs, readExportOperation, checkState, decodeExportMetadata } = requireVault('./export-run.js');
+tests/functions/vault/export-run.test.js:24:  const run = (...args) => runExport({ admin: a, bucket: b, scheduleTime: args.length ? args[0] : SUNDAY, now: k.now, sleep: k.sleep, random: nextSuffix,
+tests/functions/vault/export-run.test.js:44:  // The per-run log: first scheduleTime and the key, at the end the decision and the prefix.
+tests/functions/vault/export-run.test.js:45:  assert.deepEqual(logs[0], { what: 'start', scheduleTime: SUNDAY, key: KEY });
+tests/functions/vault/export-run.test.js:46:  assert.deepEqual(logs.at(-1), { what: 'end', scheduleTime: SUNDAY, key: KEY, decision: 'exported', prefix: `weekly/${KEY}-aaaaaa/`, operation: `${DB}/operations/AXBkx1` });
+tests/functions/vault/export-run.test.js:144:  const go = () => { const k = clock(); return runExport({ admin: a, bucket: b, scheduleTime: SUNDAY, now: k.now, sleep: k.sleep, random: nextSuffix }); };
+tests/functions/vault/export-run.test.js:310:test('a fresh suffix never repeats a folder or an operation prefix already seen for the date', async () => {
+tests/functions/vault/export-run.test.js:335:  assert.equal(runKey('2026-12-31T23:59:59.999Z', 0), '2026-12-31');
+tests/functions/vault/export-run.test.js:336:  assert.equal(runKey('2027-01-01T00:00:00.000Z', 0), '2027-01-01');
+tests/functions/vault/export-run.test.js:337:  assert.equal(runKey('2027-01-03T02:00:00-07:00', 0), '2027-01-03', 'a Denver-offset time is still its UTC date');
+tests/functions/vault/export-run.test.js:338:  assert.equal(runKey(undefined, Date.parse('2027-01-01T00:00:01Z')), '2027-01-01');
+tests/functions/vault/export-run.test.js:339:  assert.equal(runKey('', Date.parse('2026-12-31T23:59:00Z')), '2026-12-31');
+tests/functions/vault/export-run.test.js:340:  assert.throws(() => runKey('not a time', 0), /is not a time/);
+tests/functions/vault/export-run.test.js:344:test('a run with the header missing uses the clock for its key, and a Force run on another day is its own key', async () => {
+functions/vault/package-lock.json:1261:        "fresh": "^2.0.0",
+functions/vault/package-lock.json:1488:    "node_modules/fresh": {
+functions/vault/package-lock.json:1490:      "resolved": "https://registry.npmjs.org/fresh/-/fresh-2.0.0.tgz",
+functions/vault/package-lock.json:2672:        "fresh": "^2.0.0",
+functions/vault/index.js:1:// My Clay Hub, functions codebase `vault` (D-4): the weekly off-project copy of the database, and its freshness check.
+functions/vault/index.js:13:const { answerFreshness } = require('./freshness');
+functions/vault/index.js:43:      scheduleTime: event.scheduleTime,
+functions/vault/index.js:49:// The freshness check (V9), called only by the Monitoring service agent's uptime check.
+functions/vault/freshness.js:5://   200 {case: "fresh"} — the newest complete export is at most 7 d 18 h old;
+functions/vault/freshness.js:27:  return ageMs <= C.FRESH_MS ? { status: 200, body: { case: 'fresh', ...body } } : { status: 503, body: { case: 'stale', ...body } };
+tests/functions/vault/surface.test.js:1:// The REAL clients' surface, offline (D-4, V-3): the methods export-run.js and freshness.js call exist on the pinned
+tests/functions/vault/surface.test.js:50:  for (const f of ['export-run.js', 'freshness.js', 'vault-bucket.js', 'index.js']) {
+
+exec
+/bin/zsh -lc "git show 884d5f2:FUNCTIONS-ROLLBACK.md | nl -ba | sed -n '166,188p'
+git show 884d5f2:docs/my-clay-hub/DATA-RESTORE.md | sed -n '38,50p'
+git diff --unified=80 6c543ff..884d5f2 -- functions/vault/export-run.js tests/functions/vault/export-run.test.js" in /Users/christiehubley/my-clay-hub
+ succeeded in 0ms:
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-nzgZ3VbK' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-maQqLtQ2' (errno=Operation not permitted)
+   166	guard refuses a manifest whose schedule or any retry value differs from the declaration, or is unset (the CLI never
+   167	clears a retry setting removed from code, J5). Plan: `~/tinker-ai-configs/thoughts/plans/my-clay-hub-d4-vault-export.html`.
+   168	
+   169	- **The Scheduler job can only be read in the Console.** `functions:list` shows a scheduled function as
+   170	  `scheduleTrigger: {}` and nothing else (J1). So a deploy of a codebase with a schedule **always** needs Christie's
+   171	  reading (`attest_needed` says "the codebase has a schedule"): Cloud Scheduler → region `us-central1` → the **complete**
+   172	  list of job names, and, for each of the codebase's scheduled functions, its job's name
+   173	  (`firebase-schedule-<id>-us-central1`, the id's case kept), state, schedule, time zone, target URL, HTTP method, the
+   174	  OIDC service account and audience, body, headers, attempt deadline and the five retry values. **Every duration is a
+   175	  whole number of seconds** (30m → 1800, 10m → 600, 1h → 3600), counts are numbers, never text. The deploy prints the
+   176	  exact shape. `--attest` records `scheduler_attested=yes|no|n/a`; `--status` shows it (`unknown (recorded before D-4)`
+   177	  for an attest record written before D-4). It proves what the Console showed then, not later drift; the vault export's
+   178	  8-day freshness alert is what catches a job that stops running. Headers: Cloud Scheduler itself adds
+   179	  `User-Agent: Google-Cloud-Scheduler`; read every header shown — that one is expected, any other is a finding. A job
+   180	  with no OIDC service account can't be written in the reading's shape: that is itself a finding.
+   181	- **The attest record format.** D-4's guard writes `format=tinker-functions-attest-2`, which always has a
+   182	  `scheduler_attested` line. A format-1 record (before D-4) without it reads as `unknown (recorded before D-4)`; a
+   183	  format-2 record without it is corrupted and `--status` refuses (exit 19) — sort it out by hand, as §4 does for a stray
+   184	  tag, with Christie's approval.
+   185	- **A declaration from before D-4** (exactly `serviceAccount`, `invoker`, `ingress`, no `trigger`) is read as an HTTP
+   186	  one only when `--reverify` / `--reconcile` rebuild an attempt made then; a new deploy must declare its `trigger`.
+   187	- **The expected job list uses each other codebase's newest attempt, verified or not.** If such an attempt failed
+   188	  after dropping a schedule from its declarations, its job (still in Cloud Scheduler) shows up as an extra job and
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-9DZd9Yzy' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-9YjOMmY8' (errno=Operation not permitted)
+- **Rehearsals, and "what did it look like?"**: import into a **new, empty** database in `my-clay-hub` (for example
+  `restore-2026-10-04`), never `(default)`. Nothing the app reads changes. Create it in **production mode**, so its
+  rules deny every read and write from the start, and check its Rules tab says so before importing: it will hold
+  real member data, and this repo's `firestore.rules` covers `(default)` only. Delete the scratch database afterwards.
+- **A real restore into `(default)`**: first make a **new, verified** copy of the database as it is now, so the
+  restore itself can be undone. Don't use a Force run of `vaultExport` for this: if today's UTC date already has a
+  complete folder it correctly does nothing ("already done"). Instead, in `my-clay-hub` → Firestore → `(default)` →
+  Import/Export → **Export**: the entire database, to a folder name never used before,
+  `gs://my-clay-hub-vault-exports/manual/pre-restore-<YYYY-MM-DD>-<HHMM UTC>` (an export can't reuse a folder). Wait
+  until **that export's own operation** shows as finished successfully on the Import/Export page, then check that its
+  new folder holds its own `.overall_export_metadata` file (named after that folder). Only then go on.
+  (Point-in-time recovery also keeps the pre-restore state readable for 7 days, but it isn't a copy you can check.)
+  Then decide with Christie what "restore" means: a merge (import over the top), or a true rollback (clearing the
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-iNEUjYgD' (errno=Operation not permitted)
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-asfhGuuN' (errno=Operation not permitted)
+diff --git a/functions/vault/export-run.js b/functions/vault/export-run.js
+index 3a00016..23d86cb 100644
+--- a/functions/vault/export-run.js
++++ b/functions/vault/export-run.js
+@@ -1,130 +1,134 @@
+ // One scheduled run of the weekly vault export (V7, V8). Pure: the Firestore admin client, the vault bucket, the clock,
+ // the sleep, the time limit, the random suffix and the log are all passed in, so tests/functions/vault/ drives every
+ // branch with fakes.
+ //
+ // The run key is the UTC date of the scheduled time (J15: Cloud Scheduler's retries carry the same scheduled time).
+ // Then, in order:
+ //   1. Done already? Any COMPLETE folder weekly/<key>-*/ → "already done"; nothing is started.
+ //   2. Running already? This database's operations, filtered to exports whose prefix is gs://<bucket>/weekly/<key>-:
+ //      one not done → wait on it. One done SUCCESSFUL → its folder must now be complete ("already done"), else throw
+ //      (inconsistent: a person looks). Ones that FAILED, were CANCELLED or carry an error are history: logged, never
+ //      resumed, their prefixes never reused.
+ //   3. Otherwise export to a fresh prefix weekly/<key>-<6 chars> and wait on it — unless less than START_RESERVE_MS of
+ //      the budget is left, when it throws instead and the next retry starts it.
+ // The budget is 1,500 s from the start of the run, and it bounds EVERY call to Google as well as the waiting (each call
+ // gets only the time that's left, deadline.js), so the error and its alert always happen before Cloud Run's 1,800 s
+ // kill; the next retry resumes at step 2. Success needs: done, no error, state SUCCESSFUL, the expected prefix, and
+ // the complete folder visible in the bucket. Anything else throws.
+ //
+ // A rare duplicate (two runs racing, or a lost reply not yet listed) is a second COMPLETE copy in its own folder, never
+ // a mixed one (Christie, O5). State is the bucket plus the operation list; there is no Firestore collection.
+ 'use strict';
+ 
+ const { randomInt } = require('node:crypto');
+ const C = require('./vault-config');
+ const { listFolders, completeMetadata, folderName } = require('./vault-bucket');
+ const { makeLimiter, limitedBucket, realTimeLimit } = require('./deadline');
+ 
+ const EXPORT_TYPE_URL = 'type.googleapis.com/google.firestore.admin.v1.ExportDocumentsMetadata';
+ const STATES = new Set(['INITIALIZING', 'PROCESSING', 'CANCELLING', 'FINALIZING', 'SUCCESSFUL', 'FAILED', 'CANCELLED']);
+ const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+ 
+ // The export metadata, decoded with the generated protobuf classes of the pinned @google-cloud/firestore-api (the
+ // package whose client produced the operation), with the numeric operationState mapped to its name.
+ function decodeExportMetadata(bytes) {
+   const { protos } = require('@google-cloud/firestore-api');
+   const M = protos.google.firestore.admin.v1.ExportDocumentsMetadata;
+   return M.toObject(M.decode(bytes), { enums: String, longs: String });
+ }
+ 
+ function randomSuffix() {
+   let s = '';
+   for (let i = 0; i < 6; i += 1) s += SUFFIX_ALPHABET[randomInt(SUFFIX_ALPHABET.length)];
+   return s;
+ }
+ 
+ // The run key: the UTC date of the scheduled time. The SDK passes "now" when the header is missing (J6); so does this.
++// A scheduled time still in the future is a manual "Force run": Cloud Scheduler sends the job's NEXT scheduled time
++// (observed in V-4, Oct 7 2026: a Wednesday Force run arrived with Sunday's 09:00), so it is keyed by today instead —
++// otherwise a weekday catch-up run would take Sunday's key and Sunday's real run would skip as "already done".
++// A real run and its retries always carry a time at or before now (J15), so they keep the scheduled date.
+ function runKey(scheduleTime, nowMs) {
+   const t = scheduleTime === undefined || scheduleTime === null || scheduleTime === '' ? new Date(nowMs) : new Date(scheduleTime);
+   if (Number.isNaN(t.getTime())) throw new Error(`scheduleTime ${JSON.stringify(scheduleTime)} is not a time`);
+-  return t.toISOString().slice(0, 10);
++  return (t.getTime() > nowMs ? new Date(nowMs) : t).toISOString().slice(0, 10);
+ }
+ 
+ // V8: the start of the current minute, minus one minute (in the past, on a whole minute, inside any retention window).
+ function snapshotTimeMs(nowMs) {
+   return Math.floor(nowMs / 60000) * 60000 - 60000;
+ }
+ 
+ const trimSlash = (s) => (s.endsWith('/') ? s.slice(0, -1) : s);
+ 
+ // gs://<bucket>/weekly/2026-10-04-ab12cd → weekly/2026-10-04-ab12cd/
+ function folderOf(outputUriPrefix) {
+   const head = `gs://${C.BUCKET}/`;
+   if (typeof outputUriPrefix !== 'string' || !outputUriPrefix.startsWith(head)) throw new Error(`${JSON.stringify(outputUriPrefix)} is not in gs://${C.BUCKET}`);
+   return `${trimSlash(outputUriPrefix.slice(head.length))}/`;
+ }
+ 
+ // A listed or fetched google.longrunning.Operation, as the gRPC client returns it (metadata is a raw Any whose type
+ // URL field keeps its proto name, type_url). Returns null for an operation that isn't an export (another type URL, or
+ // no metadata at all); throws for an export whose metadata can't be decoded or has no output prefix. The state is
+ // returned as decoded (a name, or a number Google added later); checkState() judges it only for OUR exports, so an
+ // unrecognised export elsewhere (another date, another bucket) can't fail every run while it stays listed.
+ function readExportOperation(op, decode) {
+   if (op === null || typeof op !== 'object' || typeof op.name !== 'string' || op.name === '') throw new Error('an operation without a name');
+   const any = op.metadata;
+   const typeUrl = any && typeof any === 'object' ? (any.type_url ?? any.typeUrl) : undefined;
+   if (typeUrl !== EXPORT_TYPE_URL) return null;
+   let meta;
+   try {
+     meta = decode(any.value);
+   } catch (e) {
+     throw new Error(`operation ${op.name}: its export metadata can't be decoded (${e.message})`);
+   }
+   if (!meta || typeof meta.outputUriPrefix !== 'string' || meta.outputUriPrefix === '') throw new Error(`operation ${op.name}: an export with no output prefix`);
+   return { name: op.name, done: op.done === true, error: op.error || null, state: meta.operationState, outputUriPrefix: meta.outputUriPrefix };
+ }
+ 
+ function checkState(op) {
+   if (!STATES.has(op.state)) throw new Error(`operation ${op.name}: unknown export state ${JSON.stringify(op.state)}`);
+   return op;
+ }
+ 
+ async function runExport({
+   admin, bucket: rawBucket, scheduleTime, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+   timeLimit = realTimeLimit, random = randomSuffix, log = () => {}, decode = decodeExportMetadata,
+ }) {
+   const start = now();
+   const key = runKey(scheduleTime, start);
+   const datePrefix = `${C.WEEKLY}${key}-`;
+   const uriPrefix = `gs://${C.BUCKET}/${datePrefix}`;
+   const limit = makeLimiter({ deadline: start + C.WAIT_BUDGET_MS, now, timeLimit });
+   const bucket = limitedBucket(rawBucket, limit);
+   // The Firestore admin client's own timeout for one call (and its retries): the time left, at most 90 s, so a slow
+   // call fails fast as well as within the budget. The operation listing's value is fixed when the listing starts and
+   // reused for every page (gax); the wall-clock limit around each page bounds it all the same.
+   const callOptions = () => ({ timeout: Math.max(1, Math.min(limit.left(), C.CALL_TIMEOUT_MS)) });
+   log('start', { scheduleTime: scheduleTime || null, key });
+   const finish = (decision, prefix, operation) => {
+     log('end', { scheduleTime: scheduleTime || null, key, decision, prefix, operation: operation || null });
+     return { key, decision, prefix, operation: operation || null };
+   };
+ 
+   try {
+     // 1. Done already?
+     const folders = await listFolders(bucket, datePrefix, C.FOLDER_CAP_PER_DATE);
+     for (const folder of folders) {
+       if (await completeMetadata(bucket, folder)) return finish('already done', folder);
+     }
+ 
+     // 2. Running already?
+     const database = admin.databasePath(C.PROJECT, C.DATABASE);
+     const ours = [];
+     let examined = 0;
+     const listing = admin.listOperationsAsync({ name: database, pageSize: 100 }, callOptions())[Symbol.asyncIterator]();
+     for (;;) {
+       const { value: raw, done } = await limit('listing operations', listing.next());
+       if (done) break;
+       examined += 1;
+       if (examined > C.OPERATION_CAP) throw new Error(`more than ${C.OPERATION_CAP} operations listed; refusing to read that as "none running"`);
+       const op = readExportOperation(raw, decode);
+       if (op && trimSlash(op.outputUriPrefix).startsWith(uriPrefix)) ours.push(checkState(op));
+diff --git a/tests/functions/vault/export-run.test.js b/tests/functions/vault/export-run.test.js
+index 972d4ec..4199c71 100644
+--- a/tests/functions/vault/export-run.test.js
++++ b/tests/functions/vault/export-run.test.js
+@@ -255,95 +255,113 @@ test('production-shaped operations: an export decodes; an index build is skipped
+   assert.throws(() => checkState(u), /op\/u: unknown export state 42/);
+ });
+ 
+ test('an export in an unknown state: ignored when it is clearly not ours (another date), refused when it is', async () => {
+   let s = setup();
+   s.a.seed({ prefix: gs('weekly/2026-09-27-oldone'), state: 'OPERATION_STATE_UNSPECIFIED' });
+   assert.equal((await s.run()).decision, 'exported');
+   s = setup();
+   s.a.seed({ prefix: gs(`weekly/${KEY}-ourone`), state: 'OPERATION_STATE_UNSPECIFIED' });
+   await assert.rejects(s.run(), /unknown export state "OPERATION_STATE_UNSPECIFIED"/);
+   assert.equal(s.a.exports.length, 0);
+ });
+ 
+ test('every call to Google is held to the time left: a hung bucket listing throws within the budget and starts nothing', async () => {
+   const { a, b, k, tl, run } = setup();
+   b.getFiles = () => hang();
+   const t0 = k.now();
+   await assert.rejects(settlesWithin(run()), /listing gs:\/\/.*weekly\/2026-10-04- did not answer within 1500 s \(the run's budget\)/);
+   assert.ok(k.now() - t0 <= C.WAIT_BUDGET_MS);
+   assert.equal(a.exports.length, 0);
+   assert.equal(tl.calls[0].ms, C.WAIT_BUDGET_MS);
+ });
+ 
+ test('a hung operation read late in the wait is bounded by what is left, never past the budget', async () => {
+   const { a, k, tl, run } = setup({ admin: { pollsToFinish: 10_000 } });
+   const getOperation = a.getOperation;
+   let reads = 0;
+   a.getOperation = (req, opts) => { reads += 1; return reads === 60 ? hang() : getOperation(req, opts); };
+   const t0 = k.now();
+   await assert.rejects(settlesWithin(run()), /reading operation .*AXBkx1 did not answer within \d+ s/);
+   assert.equal(k.now() - t0, C.WAIT_BUDGET_MS, 'it gave up exactly at the budget');
+   const last = tl.calls.at(-1);
+   assert.ok(last.ms < C.WAIT_BUDGET_MS && last.ms > 0, `the hung read got only the ${last.ms} ms left`);
+ });
+ 
+ test('the client is told the time left too, so it stops retrying at the deadline', async () => {
+   const { a, run } = setup();
+   const seen = [];
+   const { exportDocuments, getOperation, listOperationsAsync } = a;
+   a.exportDocuments = (req, opts) => { seen.push(['export', opts]); return exportDocuments(req, opts); };
+   a.getOperation = (req, opts) => { seen.push(['get', opts]); return getOperation(req, opts); };
+   a.listOperationsAsync = (req, opts) => { seen.push(['list', opts]); return listOperationsAsync(req, opts); };
+   await run();
+   assert.deepEqual([...new Set(seen.map(([what]) => what))].sort(), ['export', 'get', 'list']);
+   for (const [what, opts] of seen) assert.ok(opts && opts.timeout > 0 && opts.timeout <= C.CALL_TIMEOUT_MS, `${what}: ${JSON.stringify(opts)}`);
+ });
+ 
+ test('with less than 5 minutes of budget left after the reads, no export is started (the next retry starts it)', async () => {
+   const { a, b, k, run } = setup();
+   const getFiles = b.getFiles.bind(b);
+   b.getFiles = async (q) => { k.advance(C.WAIT_BUDGET_MS - C.START_RESERVE_MS + 1000); return getFiles(q); };   // a slow listing
+   await assert.rejects(run(), /only \d+ s of the budget left, too little to start an export; the next retry starts it/);
+   assert.equal(a.exports.length, 0);
+ });
+ 
+ test('a fresh suffix never repeats a folder or an operation prefix already seen for the date', async () => {
+   const { a, b, run } = setup();
+   b.add(`weekly/${KEY}-aaaaaa/all_namespaces/all_kinds/output-0`, '2026-10-04T09:00:00Z');   // an incomplete folder
+   a.seed({ prefix: gs(`weekly/${KEY}-bbbbbb`), done: true, outcome: 'FAILED', error: { code: 7, message: 'denied' } });
+   const r = await run();
+   assert.equal(r.prefix, `weekly/${KEY}-cccccc/`);
+   assert.equal(a.exports[0].outputUriPrefix, gs(`weekly/${KEY}-cccccc`));
+ });
+ 
+ test('an export that finishes between the folder listing and the operation listing → "already done", nothing started', async () => {
+   const { a, b, run } = setup();
+   const name = a.seed({ prefix: gs(`weekly/${KEY}-justin`), done: true, outcome: 'SUCCESSFUL' });
+   const getFiles = b.getFiles.bind(b);
+   let first = true;
+   b.getFiles = async (q) => {
+     const r = await getFiles(q);
+     if (first && q.delimiter) { first = false; b.addExport(`weekly/${KEY}-justin/`); }   // it lands just after step 1
+     return r;
+   };
+   const r = await run();
+   assert.deepEqual(r, { key: KEY, decision: 'already done', prefix: `weekly/${KEY}-justin/`, operation: name });
+   assert.equal(a.exports.length, 0);
+ });
+ 
+ test('the run key is the UTC date of the scheduled time — across a year end, and from "now" when the header is missing', () => {
+-  assert.equal(runKey('2026-12-31T23:59:59.999Z', 0), '2026-12-31');
+-  assert.equal(runKey('2027-01-01T00:00:00.000Z', 0), '2027-01-01');
+-  assert.equal(runKey('2027-01-03T02:00:00-07:00', 0), '2027-01-03', 'a Denver-offset time is still its UTC date');
++  const LATER = Date.parse('2027-02-01T00:00:00Z');   // a real run and its retries arrive at or after their scheduled time
++  assert.equal(runKey('2026-12-31T23:59:59.999Z', LATER), '2026-12-31');
++  assert.equal(runKey('2027-01-01T00:00:00.000Z', LATER), '2027-01-01');
++  assert.equal(runKey('2027-01-03T02:00:00-07:00', LATER), '2027-01-03', 'a Denver-offset time is still its UTC date');
++  assert.equal(runKey(SUNDAY, Date.parse(SUNDAY)), KEY, 'exactly on time is the scheduled date');
++  assert.equal(runKey(SUNDAY, Date.parse('2026-10-04T09:40:00Z')), KEY, 'a retry 40 min later keeps Sunday');
+   assert.equal(runKey(undefined, Date.parse('2027-01-01T00:00:01Z')), '2027-01-01');
+   assert.equal(runKey('', Date.parse('2026-12-31T23:59:00Z')), '2026-12-31');
+   assert.throws(() => runKey('not a time', 0), /is not a time/);
+   assert.equal(snapshotTimeMs(Date.parse('2027-01-01T00:00:30.500Z')), Date.parse('2026-12-31T23:59:00Z'));
+ });
+ 
+-test('a run with the header missing uses the clock for its key, and a Force run on another day is its own key', async () => {
++test('a run with the header missing uses the clock for its key', async () => {
+   const { a, run } = setup({ start: '2026-10-07T15:30:00Z' });
+   const r = await run(undefined);
+   assert.equal(r.key, '2026-10-07');
+   assert.equal(a.exports[0].outputUriPrefix, gs('weekly/2026-10-07-aaaaaa'));
+ });
++
++test('a Force run carries the NEXT scheduled time (observed Oct 7 2026) and is keyed by the day it actually runs', async () => {
++  // A Wednesday Force run arrived with scheduleTime = the coming Sunday 09:00 UTC.
++  assert.equal(runKey('2026-10-11T02:00:00-07:00', Date.parse('2026-10-07T18:54:31Z')), '2026-10-07');
++  // On Sunday before 09:00 the next scheduled time is the same day; after 09:00 it is next Sunday. Both key to today.
++  assert.equal(runKey('2026-10-11T09:00:00Z', Date.parse('2026-10-11T06:00:00Z')), '2026-10-11');
++  assert.equal(runKey('2026-10-18T09:00:00Z', Date.parse('2026-10-11T15:00:00Z')), '2026-10-11');
++  // Late on a Saturday (UTC), still Saturday's key — never the coming Sunday's.
++  assert.equal(runKey('2026-10-11T09:00:00Z', Date.parse('2026-10-10T23:59:59Z')), '2026-10-10');
++
++  const { a, run } = setup({ start: '2026-10-07T18:54:31Z' });
++  const r = await run('2026-10-11T09:00:00Z');
++  assert.equal(r.key, '2026-10-07');
++  assert.equal(a.exports[0].outputUriPrefix, gs('weekly/2026-10-07-aaaaaa'), "not Sunday's key, so Sunday's real run still exports");
++});
+
+codex
+Verdict: **merge after fixes**
+
+1. **[blocking] Force-run retries can change keys across UTC midnight.** [functions/vault/export-run.js:51](/Users/christiehubley/my-clay-hub/functions/vault/export-run.js:51), [tests/functions/vault/export-run.test.js:354](/Users/christiehubley/my-clay-hub/tests/functions/vault/export-run.test.js:354)
+
+   A late-Saturday Force run demonstrates the gap:
+
+   - Initial attempt at `2026-10-10T23:59:59Z`, header `2026-10-11T09:00:00Z` → key `2026-10-10`.
+   - Retry after midnight with the same header at `2026-10-11T00:10:00Z` → key `2026-10-11`.
+
+   Because “already done” and “resume” only search the computed date prefix ([export-run.js:118](/Users/christiehubley/my-clay-hub/functions/vault/export-run.js:118), [export-run.js:134](/Users/christiehubley/my-clay-hub/functions/vault/export-run.js:134)), the retry ignores the Saturday folder/operation and may start a second Sunday export. Sunday’s scheduled run can then skip as already done. A first attempt may run for 25 minutes, so midnight crossing is realistic even before retry backoff.
+
+   The new test checks only a successful first attempt, not retry stability across midnight. Add a failure/resume test spanning midnight. More fundamentally, `scheduleTime` plus the current clock cannot distinguish “Saturday Force-run retry” from “new Sunday Force run”; a stable identifier/state or a different manual-run mechanism is needed. A clock-skew tolerance does not solve that ambiguity.
+
+   The runbook’s unconditional retry claim is consequently overstated at [FUNCTIONS-ROLLBACK.md:220](/Users/christiehubley/my-clay-hub/FUNCTIONS-ROLLBACK.md:220), as is Decision #64’s implication that the change fully handles Force runs at [docs/my-clay-hub/DECISIONS.md:81](/Users/christiehubley/my-clay-hub/docs/my-clay-hub/DECISIONS.md:81).
+
+Other requested checks:
+
+- Ordinary Scheduler clock skew needs no tolerance for this `09:00 UTC` schedule: even a slightly early delivery still falls on the same UTC Sunday. Only implausible skew of at least nine hours would change the date.
+- The key is computed exactly once from `start = now()` and retained for the invocation: [export-run.js:100](/Users/christiehubley/my-clay-hub/functions/vault/export-run.js:100).
+- Freshness uses metadata-object `timeCreated`, not the folder’s date key, so the change itself introduces no false freshness alarm: [freshness.js:20](/Users/christiehubley/my-clay-hub/functions/vault/freshness.js:20).
+- The pre-restore guidance remains correct: a Force run cannot guarantee a new uniquely identifiable copy, whereas the explicit `manual/pre-restore-*` export does: [DATA-RESTORE.md:42](/Users/christiehubley/my-clay-hub/docs/my-clay-hub/DATA-RESTORE.md:42).
+tokens used
+51,028
