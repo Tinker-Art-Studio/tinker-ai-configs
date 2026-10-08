@@ -1,0 +1,13 @@
+## Findings
+
+- **MEDIUM** — [js/app.js:4740](/Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/phase15/js/app.js:4740), [js/app.js:4753](/Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/phase15/js/app.js:4753): deletion fails open for an unrecognized, non-empty `semesterType`. For example, a weekly semester with a typo such as `semesterType: "weeky"` would show Delete, skip the weekly refusal, receive the camp-season confirmation, and have its appData entry removed, orphaning its lessons. A future fourth semester type would behave the same way. Fix: expose and execute removal only when `isCampSeason(key) || isDayOffYear(key)`; refuse every other type. Add an invalid-type regression test.
+
+- **LOW** — [e2e/data-safety.spec.js:8953](/Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/phase15/e2e/data-safety.spec.js:8953), [e2e/data-safety.spec.js:8992](/Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/phase15/e2e/data-safety.spec.js:8992): the new tests cover legacy/own-doc weekly refusal and camp-button visibility, but do not read Fall’s actual server lesson map before and after, test malformed types, assert SDOC button visibility, or exercise successful deletion of an empty SDOC year. Fix: add those assertions, especially the malformed-type case that exposes the finding above.
+
+- **LOW** — [classbook-data-safety-remaining-stages.html:1803](/Users/christiehubley/tinker-ai-configs/thoughts/plans/classbook-data-safety-remaining-stages.html:1803), [e2e/helpers/firestore.js:276](/Users/christiehubley/tinker-spring-curriculum/.claude/worktrees/phase15/e2e/helpers/firestore.js:276): Phase 15 still says the old delete redesign is open, and the test helper says it mirrors the now-removed `deleteLessonData()`. Record the October product decision: weekly deletion was removed, camp deletion was superseded by camp seasons, and cutProjects/changeLog can no longer become newly orphaned through weekly deletion. Describe the helper as test-only cleanup.
+
+No other production caller or UI path deletes a weekly semester or its lessons. Untyped semesters correctly default to weekly; `summer-2026` remains the intentional camp exception. Valid camp and SDOC creation paths always stamp their types, and their current removal/cache-cleanup branches remain intact. No new writes, collections, or rules changes were introduced.
+
+Static syntax and diff checks passed. Per instruction, I did not run `npm test`.
+
+**NEEDS FIXES**
