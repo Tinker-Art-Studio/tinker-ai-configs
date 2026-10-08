@@ -36,7 +36,7 @@
   <strong>Not in this plan:</strong> any screen, sign-in provider or <code>claimMembership</code> (Phase F); the Tinker HQ tile and the Manage Team <code>my-clay-hub</code> box (Phase F); "change email" in Membership Manager (B4, its own plan); <code>kioskLookup</code>; any write back to Membership Manager (never, D6).<br>
   <strong>Risk:</strong> <strong>HIGH.</strong> The first Cloud Functions ever in <code>tinker-hq-apps</code>, the project every staff app shares; real member personal data crossing projects for the first time; IAM changes in both projects, including one Google makes on its own (K13).<br>
   <strong>Size:</strong> roughly 2 weeks at the D-4 cadence (several review rounds per PR). Christie's hands-on time ≈ 6–10 h (decisions, Console/IAM steps, approvals, a 3-member spot check).<br>
-  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — draft Oct 8, 2026. Needs Christie's answers to Q1–Q5 and a second-model plan review.
+  <strong>Status:</strong> <span class="status-tag not-ready">execution-ready: false</span> — v2, Oct 8, 2026, rewritten after review round 1 (Codex "not ready", 9 blocking; Claude "ready after fixes", 3 blocking). Needs Christie's answers to Q1–Q8 and review round 2.
 </div>
 
 <h2>Already decided (not reopened here)</h2>
@@ -48,184 +48,238 @@
   <li><strong>#63 / #64</strong>: the vault gate; Force runs keyed by the day they run (deploys Monday Oct 12).</li>
 </ul>
 
-<h2 id="facts">Facts this plan relies on (research, Oct 8)</h2>
+<h2 id="facts">Facts this plan relies on (research Oct 8; corrected after review round 1)</h2>
 <table>
 <tr><th>#</th><th>Fact</th><th>Source</th></tr>
-<tr><td>F1</td><td><code>clayHub_members</code>: 66 docs, all with a valid <code>memberId</code> (<code>m_</code> + UUID v4). Doc id = email lowercased with <code>/</code> and <code>.</code> → <code>_</code>. <strong>No stored <code>emailLower</code></strong> (the link computes it). Saves write only changed fields; blank top-level fields are stripped.</td><td>clay-hub-membership firebase-data.js:85-94, 155-208; member-status.js:668-682; save-safety plan log (66/66)</td></tr>
-<tr><td>F2</td><td>Fields the link needs: <code>memberId</code>, <code>email</code>, <code>name</code> (one string), <code>phone</code> (free text; legacy values untidied), <code>stage</code> (onboarding|touring|active|paused|offboarding|cancelled), <code>scheduledPause</code> (null or 3 shapes, <code>startDate</code>/<code>endDate</code>), <code>pauseHistory[]</code> (<code>startDate</code>/<code>endDate</code> or legacy <code>start</code>/<code>end</code>; may carry <code>priorTerm:true</code>), <code>scheduledCancellation.finalAccessDate</code>, <code>memberSince</code>, <code>retired</code>. All dates <code>YYYY-MM-DD</code>.</td><td>app.js:500, 550-560, 935-938, 3540-3651, 3761-3774; member-status.js:32-36, 721-725</td></tr>
-<tr><td>F3</td><td><strong>Never copy</strong> (save-safety plan): <code>keypadCode</code>, <code>keypadUserId</code>, <code>staffNotes</code>, <code>notes</code>, <code>application</code>, <code>actions</code>, the full phone, the shelf fields, leftover billing fields. Not yet in DATA-MODEL.md.</td><td>clay-hub-membership-save-safety.html, "What My Clay Hub's link needs"</td></tr>
-<tr><td>F4</td><td><strong>"Change email" (B4) is not built</strong>: nothing writes <code>retired</code> today, though the B0 rules already freeze retired docs. Residual: a manager can delete and re-create a member doc with a <em>new</em> memberId (create is unrestricted).</td><td>grep; save-safety plan B4; foundation Sep 28 log</td></tr>
-<tr><td>F5</td><td><code>users/{uid}</code>: <code>{name, email, role (admin|manager|staff), studios, appAccess[], active?}</code>; a missing <code>active</code> means true. Managers/admins are saved with <code>appAccess: []</code>. <strong>The <code>my-clay-hub</code> appAccess key doesn't exist yet</strong> (Phase F adds the box).</td><td>studio-hub js/app.js:148-155, 1144-1145, 1339-1347; firestore.rules:24-38, 67-73, 111-187</td></tr>
-<tr><td>F6</td><td><code>deriveStatus(source, todayDenver)</code> reads <code>stage</code>, <code>scheduledPause</code>, every <code>pauseHistory</code> entry (including <code>priorTerm</code> ones — a malformed old entry gives <code>review</code>), <code>scheduledCancellation.finalAccessDate</code>, <code>tombstone</code>, <code>retired</code>. DATA-MODEL warns: feed it the source shape, not a flattened one.</td><td>shared/derive-status.js:6-17, 30-35, 74-80; DATA-MODEL.md:86-88</td></tr>
-<tr><td>F7</td><td>studio-hub has <strong>no Cloud Functions and no functions guard</strong>. my-clay-hub's guard (<code>scripts/deploy-functions.sh</code>, 1,303 lines + 944 tests) handles HTTP and schedules only and refuses every other trigger kind by name (F13/V3).</td><td>studio-hub tree; my-clay-hub scripts/deploy-functions.sh:155-215, predeploy-check.sh:221-255</td></tr>
-<tr><td>F8</td><td><strong>K13</strong>: the first event-triggered deploy grants the default Compute account project-wide <code>run.invoker</code> and <code>eventarc.eventReceiver</code>; a failed deploy still enables APIs and creates service agents. <strong>Round-1 finding</strong>: the CLI's retry prompt for event triggers conflicts with "never --force" — the plan shipping the first event trigger must add a narrow retry-approval path. <strong>K10</strong>: the env check pins <code>EVENTARC_CLOUD_EVENT_SOURCE</code> to <code>projects/my-clay-hub/…</code>.</td><td>firebase-functions-deploy-guard.html</td></tr>
-<tr><td>F9</td><td>The guard requires every schedule's <code>timeZone</code> to be <code>"UTC"</code>. The foundation plan says "3:30 AM Denver" for the recompute (see Q1).</td><td>predeploy-check.sh:249</td></tr>
-<tr><td>F10</td><td>A cross-project bucket grant to a <code>my-clay-hub</code> account was accepted in <code>tinker-hq-vault</code> (V-1), so domain-restricted sharing isn't blocking cross-project principals in this organization. The <code>run.invoker</code> binding for <code>clayhub-link@tinker-hq-apps</code> still has to be proven in E-6.</td><td>D-4 Decisions log, Oct 2</td></tr>
-<tr><td>F11</td><td>No staff-app server code found using <code>tinker-hq-apps</code>' default Compute account (Recap's scripts use a key file for <code>firebase-adminsdk</code>). E-5 verifies in IAM before changing anything.</td><td>grep of recap, studio-hub, clay-hub-membership, tinker-timeclock</td></tr>
+<tr><td>F1</td><td><code>clayHub_members</code>: every doc the app writes has a valid <code>memberId</code> (<code>m_</code> + UUID v4; the app can't create a doc without one). The count, 66/66 valid and unique, comes from the dated Sep 28 backup log, not from code. Doc id = email lowercased with <code>/</code> and <code>.</code> → <code>_</code>. <strong>No stored <code>emailLower</code></strong>. Saves write only changed fields; blank top-level fields are stripped.</td><td>clay-hub-membership firebase-data.js:85-94, 155-208; member-status.js:668-682; save-safety plan log</td></tr>
+<tr><td>F2</td><td>Source fields the link reads (and nothing else): <code>memberId</code>, <code>email</code>, <code>name</code> (one string), <code>phone</code> (free text), <code>stage</code>, <code>scheduledPause</code> (null or one of three shapes), <code>pauseHistory[]</code> (modern <code>startDate</code>/<code>endDate</code> or legacy <code>start</code>/<code>end</code>; may carry <code>priorTerm</code>), <code>scheduledCancellation.finalAccessDate</code>, <code>memberSince</code>, <code>retired</code>. <strong>The pause and cancellation objects also carry <code>notes</code>, <code>type</code>, <code>lastBilling</code>, <code>processDate</code>, Sawyer and audit fields</strong> — never copied (see the contract).</td><td>app.js:500, 550-560, 935-938, 3540-3651, 3761-3774; member-status.js:32-36, 721-725</td></tr>
+<tr><td>F3</td><td>Never copy: <code>keypadCode</code>, <code>keypadUserId</code>, <code>staffNotes</code>, <code>notes</code>, <code>application</code>, <code>actions</code>, the full phone, the shelf fields, billing fields — at any nesting level.</td><td>save-safety plan, "What My Clay Hub's link needs"</td></tr>
+<tr><td>F4</td><td>"Change email" (B4) isn't built; nothing writes <code>retired</code> today. Authorized Clay Hub writers can create documents with no rules-level schema or memberId check (so a delete + re-create can carry a new memberId).</td><td>grep; studio-hub firestore.rules:942</td></tr>
+<tr><td>F5</td><td><code>users/{uid}</code>: the link uses only <code>name</code>, <code>role</code>, <code>active</code>, <code>appAccess</code>. Docs carry other fields too (<code>email</code>, <code>createdAt</code>, <code>pin</code>, …), and admins can write other users' docs, so the rules don't guarantee shapes: the link must fail closed on anything unexpected. Missing <code>active</code> means true. Managers/admins are saved with <code>appAccess: []</code>. The <code>my-clay-hub</code> key doesn't exist yet.</td><td>studio-hub js/app.js:148-155, 1144-1145, 1339-1347; firestore.rules:24-38, 67-73, 111-187</td></tr>
+<tr><td>F6</td><td><code>deriveStatus(source, todayDenver)</code> needs the <em>source shape</em> (<code>stage</code>, <code>scheduledPause</code>, <code>pauseHistory</code>, <code>scheduledCancellation.finalAccessDate</code>, <code>tombstone</code>, <code>retired</code>). It reads every pause entry including <code>priorTerm</code> ones (intended), and turns an unknown stage, a malformed or missing date, or a non-object pause into <code>review</code>. So malformed values must reach it, as values that are still malformed.</td><td>shared/derive-status.js:6-17, 30-35, 74-80; DATA-MODEL.md:86-88</td></tr>
+<tr><td>F7</td><td>studio-hub has no functions and no functions guard. Its <strong>rules guard</strong> runs <code>npm test</code> in a worktree and takes <code>firebase.json</code>, <code>package.json</code> and <code>predeploy-check.sh</code> from <code>origin/main</code>'s tip; its backstop accepts only firestore and storage targets. Anything E-3/E-4 adds there can break every staff app's rules deploy and rollback.</td><td>studio-hub scripts/deploy-rules.sh:204-209, 348; predeploy-check.sh:22-24</td></tr>
+<tr><td>F8</td><td>K13: the first event-triggered deploy grants the default Compute account project-wide <code>run.invoker</code> and <code>eventarc.eventReceiver</code>; a failed deploy still enables APIs and creates service agents. The runtime identity of a trigger and the identity that delivers its events are different things. The CLI prompts before enabling retries on an event trigger. K10 pins <code>EVENTARC_CLOUD_EVENT_SOURCE</code> to my-clay-hub.</td><td>firebase-functions-deploy-guard.html</td></tr>
+<tr><td>F9</td><td>The guard requires UTC schedules with all five retry values declared; an empty invoker list is refused; <code>["private"]</code> means no callers.</td><td>predeploy-check.sh:242-249; deploy-functions.sh:184, 358</td></tr>
+<tr><td>F10</td><td>One cross-project grant into <code>tinker-hq-vault</code> was accepted (V-1). Organization policies can differ by project, so the <code>run.invoker</code> binding is proven only by E-7's first real call.</td><td>D-4 log, Oct 2</td></tr>
+<tr><td>F11</td><td>A code search found no staff-app server code using <code>tinker-hq-apps</code>' default Compute account. That is <em>not</em> enough to change a production account: E-5 adds a workload inventory and an audit-log check.</td><td>grep</td></tr>
+<tr><td>F12</td><td>Firestore IAM can't be limited to one collection: <code>clayhub-link@</code>'s read role covers the whole <code>tinker-hq-apps</code> database (payroll included). Accepted residual: read-only, one runtime, guarded code.</td><td>Firestore IAM model</td></tr>
 </table>
 
 <h2 id="open">Questions for Christie</h2>
 <table>
-<tr><th>#</th><th>Question</th><th>Recommendation</th></tr>
-<tr><td>Q1</td><td>The daily status recompute: the guard only allows UTC schedules (F9). "3:30 AM Denver" isn't a fixed UTC time.</td><td><strong>09:30 UTC daily</strong> = 3:30 AM MDT / 2:30 AM MST — always after Denver midnight and before the studio opens at 5 AM; the code still computes "today" in Denver time. Keeps the guard's UTC-only rule.</td></tr>
-<tr><td>Q2</td><td><code>tinker-hq-apps</code>' functions guard (M1) is big: a port of my-clay-hub's guard plus database-trigger support. Inside this plan or its own plan?</td><td><strong>Inside, as E-3, its own branch and PR with its own review rounds</strong> (expect 3–5, like D2 and PR #11). It has no purpose outside Phase E.</td></tr>
-<tr><td>Q3</td><td>K13: Google's first database-trigger deploy gives <code>tinker-hq-apps</code>' default Compute account project-wide invoke rights — in the project every staff app shares.</td><td><strong>Neutralize first, then remove the auto-grants.</strong> Before the first trigger deploy, do for <code>tinker-hq-apps</code> what D2-1 did for <code>my-clay-hub</code> (strip the Compute account's broad roles after an IAM reading). After the deploy, remove the project-wide <code>run.invoker</code>/<code>eventarc.eventReceiver</code> Google added to it, and make the guard's attestation fail if they're present. E-3 first confirms in Google's docs and a scratch check which identity actually delivers trigger events, so removing them can't silently stop the link (the triggers run as <code>clayhub-link@</code>, which holds <code>eventReceiver</code> itself).</td></tr>
-<tr><td>Q4</td><td>The staff roster: the <code>my-clay-hub</code> Manage Team box doesn't exist yet (F5), so only managers/admins would be mirrored now.</td><td><strong>Build it now</strong> — same machinery, small — honouring the box key the day Phase F adds it. Today it would mirror the managers/admins only.</td></tr>
-<tr><td>Q5</td><td>"Change email" isn't built (F4); a delete + re-create gives a member a new memberId.</td><td><strong>Handle both anyway</strong> (tested, per D22), and accept the residual: the old memberId tombstones (status <code>removed</code>), the new one starts fresh. Phase F decides what the member sees. B4 stays its own plan.</td></tr>
+<tr><th>#</th><th>Question</th><th>Recommendation (both reviewers agree with Q1–Q5)</th></tr>
+<tr><td>Q1</td><td>The guard allows only UTC schedules; "3:30 AM Denver" isn't one.</td><td><strong>09:30 UTC daily</strong> = 3:30 AM MDT / 2:30 AM MST: after Denver midnight, before the 5 AM opening, all year. Recorded as a change to SPEC's "3:30 AM" before any code.</td></tr>
+<tr><td>Q2</td><td>The <code>tinker-hq-apps</code> functions guard: inside this plan or its own?</td><td><strong>Inside, as E-3: its own branch, PR and review rounds</strong>, treated as the highest-risk PR (it lives next to every staff app's rules guard).</td></tr>
+<tr><td>Q3</td><td>K13: Google's first trigger deploy gives the default Compute account project-wide invoke rights in the staff apps' project.</td><td><strong>Audit, neutralize, deploy, remove, then prove.</strong> E-5 inventories every workload and checks recent audit logs before touching the account. After E-7's deploy, remove Google's two grants, and only count it done when a real event is delivered <em>after</em> the removal. The guard's attestation then refuses if they come back.</td></tr>
+<tr><td>Q4</td><td>The staff roster, with no My Clay Hub box in Tinker HQ yet.</td><td><strong>Build the machinery now, no Tinker HQ UI.</strong> It mirrors managers/admins until Phase F adds the box. Strict input, fails closed.</td></tr>
+<tr><td>Q5</td><td>"Change email" isn't built; a delete + re-create gives a new memberId.</td><td><strong>Treat it as a new identity:</strong> the old memberId becomes a tombstone (<code>removed</code>), the new one starts fresh. B4 stays its own plan.</td></tr>
+<tr><td>Q6 <em>(new)</em></td><td>A "Quick Log" pause request (no <code>scheduledAt</code>) is never started by Membership Manager, but <code>deriveStatus</code> treats its dates as a real pause, so My Clay Hub would show the member as <strong>paused</strong> (no booking) for those dates.</td><td><strong>Ask you.</strong> Option A: count it (dates are dates; staff fix the record). Option B: ignore pause records without <code>scheduledAt</code> until processed — a change to <code>deriveStatus</code>, reviewed on its own.</td></tr>
+<tr><td>Q7 <em>(new)</em></td><td>When a member is removed, does My Clay Hub keep their name, email and phone digits?</td><td><strong>No: a tombstone keeps only</strong> <code>memberId</code>, <code>tombstone:true</code>, <code>status:'removed'</code>, <code>sourceReadTime</code>, <code>updatedAt</code>. Their profile is replaced the same way. (Membership Manager still has the record.)</td></tr>
+<tr><td>Q8 <em>(new)</em></td><td>The safety stops at 66 members: "10% of statuses" is 7 people, and the 1st of a month can legitimately move that many (pauses starting and ending).</td><td><strong>Stop only above max(10%, 10 members)</strong> for status changes and max(5%, 4 members) for removals; the first fill (an empty collection) is exempt; a stop writes nothing and emails you.</td></tr>
 </table>
 
+<h2 id="contract">The link contract (E-1 writes it down once; both sides test against it)</h2>
+<table>
+<tr><th>Part</th><th>Exact rule</th></tr>
+<tr><td>Envelope</td><td><code>{v:1, kind, readTime, …}</code>. <code>kind</code> ∈ <code>member</code> | <code>staff</code> | <code>reconcile</code>. Any other key, version or kind → 400.</td></tr>
+<tr><td><code>readTime</code></td><td><code>{seconds: "&lt;decimal string&gt;", nanos: &lt;int 0..999999999&gt;}</code>, taken from the source read's <code>Timestamp</code> with nanosecond precision; stored as a Firestore <code>Timestamp</code>; compared as (seconds, nanos). Later → apply; equal or earlier → "stale" (200, nothing written). Out-of-range or non-canonical → 400.</td></tr>
+<tr><td><code>member</code></td><td><code>{memberId, snapshot}</code> or <code>{memberId, tombstone:true}</code>. <code>snapshot</code> is <strong>rebuilt</strong> from allowed keys, never copied and trimmed: <code>name</code>, <code>email</code>, <code>emailLower</code>, <code>stage</code>, <code>memberSince</code>, <code>phoneLast4</code>, <code>retired</code>, <code>scheduledPause: {startDate, endDate} | null</code>, <code>pauseHistory: [{startDate, endDate, priorTerm?}]</code> (legacy <code>start</code>/<code>end</code> mapped to the modern names, the modern value winning as in <code>deriveStatus</code>), <code>scheduledCancellation: {finalAccessDate} | null</code>.</td></tr>
+<tr><td>Malformed values</td><td>Never rejected, never carried raw: a string value goes as-is (<code>deriveStatus</code> judges it); a non-string where a date or stage belongs, or a non-object pause, becomes the marker string <code>"!malformed"</code>, which <code>deriveStatus</code> already treats as malformed → <code>review</code>. Tested for each.</td></tr>
+<tr><td><code>phoneLast4</code></td><td>The last 4 ASCII digits of <code>phone</code> after removing every non-digit; fewer than 4 digits or no phone → <code>null</code>. Computed in <code>tinker-hq-apps</code>.</td></tr>
+<tr><td>Computed on receipt</td><td><code>firstName</code> and <code>lastInitial</code> from <code>name</code>; <code>status</code> from <code>deriveStatus</code>.</td></tr>
+<tr><td><code>staff</code></td><td><code>{uid, staff: {name, role, active, grant}}</code> or <code>{uid, tombstone:true}</code>. Sender rule, fail-closed: <code>role</code> must be exactly <code>admin</code>|<code>manager</code>|<code>staff</code>; <code>active</code> a boolean or absent (true); <code>appAccess</code> absent or an array of strings. <code>grant</code> = active and (role is manager/admin, or <code>appAccess</code> contains <code>my-clay-hub</code>). Anything malformed → tombstone + an alert naming the uid only. Never email, PIN or <code>appAccess</code>.</td></tr>
+<tr><td><code>reconcile</code></td><td><code>{scope: 'members'|'staff', items: [the same member/staff entries for every live source record]}</code> — the complete set at one readTime. The receiver computes everything (see E-2).</td></tr>
+<tr><td>Tombstone (stored)</td><td>Replaces the document: <code>{memberId, tombstone:true, status:'removed', sourceReadTime, updatedAt}</code>; <code>memberProfiles/{memberId}</code> and <code>staffRoster/staff_{uid}</code> likewise. A later live snapshot restores only the allowlist.</td></tr>
+<tr><td>Responses</td><td>200 <code>{result: applied|stale|unchanged}</code>; 400 for a malformed envelope; 409 for a reconcile stopped by a threshold; 5xx only for real failures. The sender throws (so retries happen) only on 5xx, 429 and timeouts.</td></tr>
+<tr><td>Logging</td><td>Never request bodies, names, emails, phone digits, notes or source documents — only memberId/uid, kind, result and counts.</td></tr>
+</table>
+
+<h2 id="settings">Functions and their settings</h2>
+<table>
+<tr><th>Function</th><th>Project / codebase</th><th>Trigger</th><th>Runs as</th><th>Settings</th></tr>
+<tr><td><code>ingestMemberUpdate</code></td><td>my-clay-hub / <code>members</code></td><td>https, invoker <code>clayhub-link@tinker-hq-apps</code></td><td><code>ingest@</code></td><td>timeout 120 s (a reconcile is one call of at most 500 writes), memory 512MiB, cpu 1, concurrency 10, maxInstances 3</td></tr>
+<tr><td><code>recomputeStatuses</code></td><td>my-clay-hub / <code>members</code></td><td>schedule <code>every day 09:30</code> UTC; retryCount 2, maxRetrySeconds 0, minBackoff 600, maxBackoff 1200, maxDoublings 1</td><td><code>ingest@</code></td><td>timeout 300 s, memory 256MiB, maxInstances 1, concurrency 1</td></tr>
+<tr><td><code>onClayHubMemberWritten</code></td><td>tinker-hq-apps / <code>clayhub-link</code></td><td>Firestore <code>document.written</code> on <code>clayHub_members/{docId}</code>, <code>(default)</code>, nam5, retry true</td><td><code>clayhub-link@</code></td><td>timeout 60 s, memory 256MiB, maxInstances 5</td></tr>
+<tr><td><code>onStaffUserWritten</code></td><td>tinker-hq-apps / <code>clayhub-link</code></td><td>Firestore <code>document.written</code> on <code>users/{uid}</code>, retry true</td><td><code>clayhub-link@</code></td><td>as above</td></tr>
+<tr><td><code>reconcileLink</code></td><td>tinker-hq-apps / <code>clayhub-link</code></td><td>schedule <code>every 6 hours from 01:15 to 19:15</code> UTC (01:15, 07:15, 13:15, 19:15); retryCount 1, maxRetrySeconds 0, minBackoff 600, maxBackoff 600, maxDoublings 0</td><td><code>clayhub-link@</code></td><td>timeout 300 s, memory 512MiB, maxInstances 1, concurrency 1</td></tr>
+</table>
+<p class="note">Exact values are reviewed in E-2/E-4's PRs; the guard refuses anything that differs from the declaration. The ingest URL is a hard-coded constant in the sender, tested.</p>
+
 <h2>Phases</h2>
-<div class="note">Order: E-0, E-1, E-2 and E-3 can proceed in parallel branches. E-4 needs E-1 (the contract) and E-3 (its guard). E-5 (Console/IAM) before E-6/E-7. <strong>E-7 onward waits for the vault gate.</strong> Every PR: Codex + Claude implementation review, Christie's "okay to merge". Every deploy: that project's guard, <code>--diff</code> pasted, Christie's "approved to change firebase &lt;sha&gt;" for that sha and that project.</div>
+<div class="note"><strong>Order:</strong> E-pre first. E-0, E-1, E-2 and E-3 can then proceed on separate branches. E-4 needs E-1 and E-3. E-5 before E-6. <strong>E-7 onward waits for every gate</strong> (listed in E-7). Every PR: Codex + Claude implementation review, then Christie's "okay to merge". Every deploy: that project's guard, <code>--diff</code> pasted, and Christie's "approved to change firebase &lt;sha&gt;" for that exact sha and project.</div>
+
+<div class="phase">
+<h3>E-pre — Decisions written down before any code <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p>Christie's answers to Q1–Q8 → DECISIONS rows in my-clay-hub; SPEC.md (§3, the recompute time) and DATA-MODEL.md (the contract above, the never-copy list, tombstones) updated in one docs PR.</p>
+</div>
 
 <div class="phase">
 <h3>E-0 — studio-hub: the users-rules pins <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p>A comment on the <code>users</code> rules naming My Clay Hub's dependency (the staff roster reads <code>role</code>, <code>active</code>, <code>appAccess</code>). Tests for what rules.test.js:790-845 doesn't cover yet: role self-promotion on create, and <code>active</code> on self-update. Rules behaviour unchanged; a comment-only rules change still ships through studio-hub's rules guard (free, sha phrase) so the deployed file matches <code>main</code>.</p>
-<p><strong>Acceptance:</strong> the two new tests fail against a deliberately loosened copy and pass against the real rules; the full studio-hub suite passes; nothing else in <code>firestore.rules</code> changes.</p>
+<p>A comment on the <code>users</code> rules naming My Clay Hub's dependency (<code>name</code>, <code>role</code>, <code>active</code>, <code>appAccess</code>). Tests only for what isn't covered yet (rules.test.js already pins self-granted appAccess and studios): role self-promotion on create (<code>manager</code>, <code>admin</code>), and <code>active</code> on self-update. The comment ships through studio-hub's rules guard (free, sha phrase) so the deployed file matches <code>main</code>.</p>
 <div class="bdd">Given a signed-in user with no users doc
-When they create their own doc with role 'manager'
+When they create their own doc with role 'manager' (or 'admin')
 Then the write is denied
 
 Given a staff user
-When they update their own doc setting active:true (or false)
+When they update their own doc changing active
 Then the write is denied</div>
 </div>
 
 <div class="phase">
-<h3>E-1 — The link contract (both repos, docs + fixtures) <span class="status-tag not-ready">execution-ready: false</span></h3>
-<ul>
-  <li>DATA-MODEL.md: the exact <strong>snapshot envelope</strong> (<code>{v:1, kind:'member'|'staff', memberId|uid, readTime, snapshot|tombstone:true}</code>), the <strong>allowlist</strong> of copied fields (F2, with <code>emailLower</code> and <code>phoneLast4</code> computed in <code>tinker-hq-apps</code>), and the <strong>never-copy list</strong> (F3).</li>
-  <li>One JSON fixture set (valid and invalid envelopes, every D4 row, both pause spellings, <code>priorTerm</code>, retired/tombstone) committed byte-identical in both repos, with a test in each that pins its sha-256 — so the sender's builder and the receiver's validator are tested against the same examples and can't drift silently.</li>
-</ul>
-<p><strong>Acceptance:</strong> the envelope, allowlist and never-copy list are written down once; both repos' tests load the same fixtures and fail if either copy changes.</p>
+<h3>E-1 — The contract as code fixtures (both repos) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p>One fixture set — source docs (including every forbidden field at every nesting level, both pause spellings, <code>priorTerm</code>, malformed dates/stages/pauses, phones of every shape, users docs with malformed role/active/appAccess) and the exact envelopes they must produce — committed byte-identical in both repos, with a test in each pinning its sha-256.</p>
+<p><strong>Acceptance:</strong> both repos' tests load the same fixtures and fail if either copy changes.</p>
 </div>
 
 <div class="phase">
-<h3>E-2 — my-clay-hub: the receiving side (codebase <code>members</code>, branch, PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>E-2 — my-clay-hub: the receiving side (codebase <code>members</code>) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ul>
-  <li><code>ingestMemberUpdate</code> — <code>onRequest</code>, declared <code>trigger: https</code>, <code>invoker: [clayhub-link@tinker-hq-apps.iam.gserviceaccount.com]</code>, runs as <code>ingest@my-clay-hub</code>. Strict envelope check; transaction: drop unless <code>readTime</code> is later than the stored <code>sourceReadTime</code> (none stored → accept); <code>deriveStatus</code> on the source shape; write <code>members/{memberId}</code> and the <code>memberProfiles/{memberId}</code> allowlist (or for staff, <code>staffRoster/staff_{uid}</code>); a tombstone sets <code>tombstone:true, status:'removed'</code> and never deletes. <code>withReached()</code> on every response.</li>
-  <li><code>recomputeStatuses</code> — a daily schedule at <strong>09:30 UTC</strong> (Q1): re-derives every member's status for today's Denver date; writes only changed statuses; stops and alerts if it would change more than 10% of statuses.</li>
-  <li><code>firestore.rules</code>: explicit blocks for <code>members</code>, <code>memberProfiles</code>, <code>staffRoster</code> — <strong>deny all client access</strong> for now (no sign-in exists until Phase F, which adds the member's own-profile read); rules tests for each, in the same commit.</li>
-  <li>Declarations, iam-expectations (the new runtime account and its one custom role), FUNCTIONS-ROLLBACK.md section. The existing guard already supports HTTP and schedules; the cross-project invoker is just a declared member.</li>
+  <li><strong><code>ingestMemberUpdate</code></strong> (settings above). <code>member</code>/<code>staff</code>: one transaction — read the target doc(s), apply the readTime gate, derive status from the stored source shape, write <code>members</code> and <code>memberProfiles</code> together (or <code>staffRoster</code>), or replace them with tombstones.</li>
+  <li><strong><code>reconcile</code></strong> (one call): validate the whole batch first; read every target; work out the effective change set after the readTime gate (additions, updates, status changes, removals = held live records absent from the batch); apply Q8's thresholds (denominator = live records held; additions don't count; the first fill into an empty collection is exempt); if it passes, write everything in one transaction (≤ 500 writes; refuse above that with an alert — far beyond today's size); if not, write nothing, answer 409, log the counts. Staff the same.</li>
+  <li><strong><code>recomputeStatuses</code></strong> (09:30 UTC): a dry run over every live member first (Q8 threshold → stop, nothing written); then per member a transaction that re-reads the doc and re-derives from its current stored source shape, writing <code>members.status</code> and <code>memberProfiles.status</code> together only if it changed. An ingest landing in between is never overwritten, because the transaction re-reads.</li>
+  <li><strong><code>firestore.rules</code></strong>: explicit deny-all blocks for <code>members</code>, <code>memberProfiles</code>, <code>staffRoster</code> with rules tests (no sign-in exists until Phase F, which adds a member's own-profile read). These deploy through the rules guard <em>before</em> the function.</li>
+  <li>Declarations, iam-expectations (<code>ingest@</code> and its custom role), and a FUNCTIONS-ROLLBACK section including the stop/resume runbook (below).</li>
 </ul>
-<p><strong>Tests first</strong> (emulator; Node 22): field mapping and the allowlist (never-copy fields rejected if present); the readTime gate (late, duplicate, equal, out-of-order, none stored); tombstone and re-appearance; staff kind; strict rejection of every malformed envelope fixture; every D4 row through the real <code>deriveStatus</code> including <code>priorTerm</code>; the round trip DATA-MODEL warns about (a flattened record must not read as "no pause"); positive pairs for every "writes nothing" case; the recompute's 10% stop; rules deny every client operation on the three collections.</p>
-<div class="bdd">Given members/m_7Q has sourceReadTime T5
-When a snapshot for m_7Q with readTime T4 arrives (late)
-Then nothing is written, and the response says "stale"
+<p><strong>Tests first</strong> (emulator, Node 22): every fixture; the readTime gate (earlier, equal, same millisecond with different nanos, malformed); tombstone replaces all former personal data, re-appearance restores only the allowlist; every D4 row through the real <code>deriveStatus</code>, including <code>priorTerm</code> and each malformed value → <code>review</code>; reconcile: first fill exempt, exact threshold boundaries, small denominators, additions, already-tombstoned members, a stale item inside a batch, a stop leaving both collections untouched; recompute vs ingest in both orders, threshold stop with zero writes, tombstones excluded, profile kept in step; staff: unticking and demotion tombstone, a malformed role never grants; rules deny every client operation; no log line contains a fixture's name, email or phone.</p>
+<div class="bdd">Given members/m_7Q holds sourceReadTime (100 s, 500 ns)
+When a snapshot with readTime (100 s, 400 ns) arrives
+Then nothing is written and the answer is "stale"
 
-Given Jane is active
-When a snapshot arrives with scheduledPause 2027-01-02..2027-02-01 and today (Denver) is 2027-01-15
-Then members/m_7Q.status is 'paused' and memberProfiles/m_7Q shows the pause, with no phoneLast4
-
-Given an envelope that carries keypadCode
+Given a reconcile batch that would remove 6 of 66 members
 When it is posted
-Then it is rejected (400) and nothing is written</div>
+Then nothing is written, the answer is 409, and the stop alert fires
+
+Given a source pause whose endDate is the number 20270201 (malformed)
+When its snapshot is ingested
+Then the member's status is 'review', and the stored pause holds "!malformed", not the number</div>
 </div>
 
 <div class="phase">
-<h3>E-3 — studio-hub: <code>tinker-hq-apps</code>' own functions guard (branch, PR, its own review rounds) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>E-3 — studio-hub: <code>tinker-hq-apps</code>' functions guard (highest-risk PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ul>
-  <li>Port my-clay-hub's <code>deploy-functions.sh</code>, <code>predeploy-check.sh</code> (functions part), discovery, hashing, receipts and their test suites into studio-hub, pinned to project <code>tinker-hq-apps</code>; receipts under <code>deployed/tinker-hq-apps/functions-&lt;cb&gt;/…</code>. Generalize what's my-clay-hub-specific (K10's <code>EVENTARC_CLOUD_EVENT_SOURCE</code>, the pinned <code>FIREBASE_CONFIG</code>, iam-expectations).</li>
-  <li><strong>New trigger kind: Firestore document events</strong> — declared as <code>trigger: "firestore"</code> with the exact event type (<code>document.written</code>), document path, database <code>(default)</code>, Eventarc location <code>nam5</code>, <code>retry: true</code>, service account; the sealed manifest must match exactly, everything else still refused by name.</li>
-  <li><strong>The retry-approval path</strong> (round-1 finding): the CLI asks before enabling retries on an event trigger; the guard answers only that one prompt, only for declared event triggers, never with <code>--force</code>.</li>
-  <li><strong>K13</strong> (Q3): the attestation fails if the Compute account (or anyone not declared) holds project-wide <code>run.invoker</code> or <code>eventarc.eventReceiver</code>; FUNCTIONS-ROLLBACK documents removing Google's auto-grants after the first deploy. First, confirm from Google's docs (and a read of the deployed trigger) which identity delivers the events.</li>
-  <li>CLAUDE.md (global and studio-hub): the new guard, its commands, and that it never touches <code>my-clay-hub</code>.</li>
+  <li>A <strong>separate</strong> guard: <code>scripts/deploy-functions.sh</code>, its own predeploy backstop and test suite, pinned to <code>tinker-hq-apps</code>; receipts under <code>deployed/tinker-hq-apps/functions-&lt;cb&gt;/…</code>. Generalize K10's event-source pin and the pinned config.</li>
+  <li><strong>The rules guard stays untouched:</strong> <code>deploy-rules.sh</code>, its <code>predeploy-check.sh</code> path for firestore/storage, and what <code>npm test</code> runs are unchanged; the functions suites live under their own npm script, not <code>npm test</code>. A new test in the rules guard's suite proves a rules deploy still needs neither Node 22 nor any functions install.</li>
+  <li><strong>Firestore event triggers</strong>: declared <code>trigger: "firestore"</code> with event type, document path, database, location <code>nam5</code>, <code>retry: true</code>, service account; the sealed manifest must match exactly; every other kind still refused by name.</li>
+  <li><strong>The retry prompt</strong>: the guard answers only the CLI's retry-enable prompt, only for declared event triggers, matched on the exact prompt text; any other prompt, changed wording, or end of input → stop. Never <code>--force</code>.</li>
+  <li><strong>Attestation</strong> extends to event-triggered services (their Cloud Run invoker list), refuses any undeclared project-wide <code>run.invoker</code> or <code>eventarc.eventReceiver</code> holder, and reads the Pub/Sub service agent's Token Creator grant.</li>
 </ul>
-<p><strong>Acceptance:</strong> the guard's own test suite (ported + new) passes; it refuses a manifest whose trigger, path, location, retry or account differs from the declaration; it cannot deploy to any project but <code>tinker-hq-apps</code>; the existing rules guard and all staff-app tests are unaffected.</p>
+<p><strong>Acceptance:</strong> the new suite passes (ported + new: unexpected prompt, wording drift, EOF, partial deploy continued on the same sha, every undeclared setting refused); the rules guard's suite passes unchanged plus its new isolation test; a dry <code>deploy-rules.sh --status</code> and <code>--diff</code> still work on the branch; the guard cannot target any project but <code>tinker-hq-apps</code>.</p>
 </div>
 
 <div class="phase">
-<h3>E-4 — studio-hub: the <code>clayhub-link</code> codebase (branch, PR) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>E-4 — studio-hub: the <code>clayhub-link</code> codebase <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ul>
-  <li><code>onClayHubMemberWritten</code> — Firestore trigger on <code>clayHub_members/{docId}</code>, <code>retry: true</code>, runs as <code>clayhub-link@</code>. Collects memberIds from before and after; for each, one query on <code>memberId</code>; builds the snapshot (allowlist only, <code>emailLower</code>, <code>phoneLast4</code> from the digits of <code>phone</code>), or tombstone, or conflict (log an error, send nothing); POSTs to <code>ingestMemberUpdate</code>'s exact URL with an OIDC token. A doc with no memberId: skipped with an error log.</li>
-  <li><code>onStaffUserWritten</code> — trigger on <code>users/{uid}</code>: staff kind; projected only for explicit grants (active, and manager/admin role, or <code>appAccess</code> containing <code>my-clay-hub</code>); otherwise a tombstone.</li>
-  <li><code>reconcileMembers</code> — every 6 h (UTC). One read-only transaction pinned to a single readTime over all of <code>clayHub_members</code> and the staff users; sends every member (and a tombstone for each memberId my-clay-hub holds that no live doc has — the list comes back from ingest, which can read its own collection). A partial read changes nothing and alerts; would change more than 10% of statuses or remove more than 5% of members → stops and alerts.</li>
+  <li><code>onClayHubMemberWritten</code>: memberIds from before and after; for each, one query on <code>memberId</code> only (its <code>QuerySnapshot.readTime</code>); build the contract envelope; conflict (more than one live doc) → log an error naming the memberId, send nothing; no memberId → error log naming the doc id only.</li>
+  <li><code>onStaffUserWritten</code>: re-read <code>users/{uid}</code> (a missing doc → tombstone) and use that read's <code>DocumentSnapshot.readTime</code>; the fail-closed staff rule.</li>
+  <li><code>reconcileLink</code>: one read-only transaction pinned to a single readTime over all of <code>clayHub_members</code> and all of <code>users</code>; any read error → send nothing, error log; then one <code>reconcile</code> call per scope. A 409 is logged as the stop.</li>
+  <li>The OIDC token from the metadata server, audience = the ingest URL constant.</li>
 </ul>
-<p><strong>Tests first</strong> (Firestore emulator for the source; ingest faked; contract fixtures): late and duplicate deliveries; delete and re-create; email change with the retired-old event arriving before and after the new one; two live docs → conflict, nothing sent; memberId changing A→B and A→B→C; a live doc with no <code>retired</code> field stays live; reconcile vs trigger in both arrival orders; a partial source read; the blast-radius stops; never-copy fields never leave (a source doc with every forbidden field produces a snapshot with none of them); 120 re-saved members with one real change → exactly one projection changed.</p>
-<div class="bdd">Given Jane changes email: the batch writes jane@new (live) and retires jane@old
-When the two trigger events arrive old-first, new-first, or one is retried later
-Then the only envelopes sent describe one live member with jane@new's fields, never a tombstone after the live one
+<p><strong>Tests first</strong> (Firestore emulator for the source; ingest faked): every fixture; late and duplicate deliveries; delete and re-create in both event orders; an email change with the retired-old event before and after the new one; two live docs → nothing sent; memberId A→B and A→B→C; a doc with no <code>retired</code> field is live; a partial source read; a 400/stale/409 returns normally (no retry), a 5xx/429/timeout throws; 120 re-saved members with one real change → exactly one envelope that changes anything; no write API is ever called (the codebase imports no write methods; checked by a test); no log contains personal data.</p>
+<div class="bdd">Given Jane changes email: jane@new written live and jane@old retired in one batch
+When the two events arrive old-first, new-first, or one is retried later
+Then every envelope sent for her memberId describes the one live doc, jane@new
 
-Given two live clayHub_members docs share memberId m_7Q
-When either is saved
-Then nothing is sent for m_7Q and an error is logged naming m_7Q (not the email)
-
-Given the reconcile's source read fails on page 2 of 3
-When it runs
-Then nothing is sent and an error is logged</div>
+Given a users doc with role 'Manager' (wrong case) and appAccess containing 'my-clay-hub'
+When it is saved
+Then the staff envelope is a tombstone and an error names only the uid</div>
 </div>
 
 <div class="phase">
-<h3>E-5 — Christie: identities and IAM in both projects (Claude verifies, read-only) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>E-5 — Christie: identities and IAM (Claude reads before and after) <span class="status-tag not-ready">execution-ready: false</span></h3>
 <ol>
-  <li><code>tinker-hq-apps</code> IAM reading, before (Google-provided grants shown).</li>
-  <li><code>tinker-hq-apps</code>: enable the APIs (run, eventarc, cloudfunctions, cloudbuild, artifactregistry, pubsub, cloudscheduler, iamcredentials); wait for the service agents; create <code>gcf-artifacts</code>; neutralize both build candidates and give the one Google builds with only the three build roles (as D2-1 did for <code>my-clay-hub</code>) — after confirming in IAM that no staff-app server uses them (F11).</li>
-  <li><code>tinker-hq-apps</code>: service account <code>clayhub-link@</code>; a custom role with only <code>datastore.entities.get</code> and <code>datastore.entities.list</code>; grant it and <code>eventarc.eventReceiver</code> to <code>clayhub-link@</code>.</li>
-  <li><code>my-clay-hub</code>: service account <code>ingest@</code>; a custom role with get, list, create, update (no delete); grant it.</li>
-  <li>After-readings in both projects: exactly the planned changes.</li>
+  <li><strong>Inventory first</strong> (read-only): <code>tinker-hq-apps</code>' IAM with Google-provided grants; every service account and what uses it; Cloud Run services, Cloud Functions, Scheduler jobs, build triggers, VMs, App Engine (and the App Engine default account); 30 days of audit logs for the default Compute and App Engine accounts. If anything uses them, stop and re-plan.</li>
+  <li><code>tinker-hq-apps</code>: enable the APIs (run, eventarc, cloudfunctions, cloudbuild, artifactregistry, pubsub, cloudscheduler, iamcredentials); list the service agents and grants that creates (the expected rows are recorded here before the next step); create <code>gcf-artifacts</code>; neutralize both build candidates and give the one Google builds with only the three build roles (as D2-1).</li>
+  <li><code>tinker-hq-apps</code>: <code>clayhub-link@</code>; a custom role with exactly <code>datastore.entities.get</code> and <code>datastore.entities.list</code>; grant it and <code>eventarc.eventReceiver</code>.</li>
+  <li><code>my-clay-hub</code>: <code>ingest@</code>; a custom role with get, list, create, update, no delete; grant it.</li>
+  <li>After-readings: each project differs from its before-reading by exactly the recorded rows. Christie opens two staff apps (they still work).</li>
 </ol>
-<p><strong>Acceptance:</strong> each project's before/after IAM differs only by the planned rows; no project-level grant to anyone else; the staff apps still work (Christie opens two of them).</p>
 </div>
 
 <div class="phase">
-<h3>E-6 — Deploy the receiving side (my-clay-hub guard) <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p><code>--diff --codebase members</code>; Christie's phrase; deploy; readings and <code>--attest</code>. Then a probe: an unauthenticated POST gets 403; a real OIDC call from <code>clayhub-link@</code> — made by a one-off, logged invocation in <code>tinker-hq-apps</code> carrying a <strong>synthetic test member</strong> (<code>m_00000000-…</code>, never a real person) — is accepted; then that test member is tombstoned the same way. The members rules deploy through the rules guard in the same release window.</p>
-<p><strong>Acceptance:</strong> verified, attested, 403 for strangers, 200 for the link, the test member left as a tombstone only.</p>
+<h3>E-6 — Deploy the receiving side (my-clay-hub) <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p>Rules first (rules guard, its own phrase), then <code>--diff --codebase members</code>, Christie's phrase, deploy, readings, <code>--attest</code>. Probe: an unauthenticated POST gets 403; the invoker reading shows exactly <code>clayhub-link@tinker-hq-apps</code>. No real data and no synthetic member: the first authenticated call is E-8's logged first fill.</p>
 </div>
 
 <div class="phase">
-<h3>E-7 — Deploy the link (tinker-hq-apps guard) — <strong>after the vault gate</strong> <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p>Check the gate (V-4 complete). <code>--diff --codebase clayhub-link</code> on studio-hub's new guard; Christie's phrase for that sha and project; deploy (the retry-approval path answers the event-trigger prompt); K13 clean-up and its reading; <code>--attest</code>. From this moment every staff edit flows.</p>
-<p><strong>Acceptance:</strong> verified and attested; no undeclared project-wide invoker/eventReceiver holder; the staff apps still work.</p>
-</div>
-
-<div class="phase">
-<h3>E-8 — Initial fill, spot check, alerts <span class="status-tag not-ready">execution-ready: false</span></h3>
+<h3>E-7 — Alerts, then deploy the link (tinker-hq-apps) — after every gate <span class="status-tag not-ready">execution-ready: false</span></h3>
+<p><strong>Gates, all required:</strong> V-4 complete (<code>deploy_verified</code>, <code>iam_attested</code>, <code>scheduler_attested</code> all yes, and a verified complete export); DECISIONS #64's fix deployed and attested; E-pre done; E-6 verified and attested.</p>
 <ol>
-  <li>One reconcile run (a logged, guarded invocation). Expect 66 members (and the managers/admins in <code>staffRoster</code>).</li>
-  <li>Christie spot-checks three real members (one active, one paused or with a pause history, one offboarding/cancelled if any) against Membership Manager: status, dates, no forbidden field.</li>
-  <li>A real edit test: Christie changes one harmless field on one member; the projection matches within a minute.</li>
-  <li>Log-based alerts (Christie, both projects): link conflicts, skipped no-memberId docs, reconcile failures/stops, ingest errors, recompute stops — to the existing email channel(s).</li>
+  <li>Log-based alerts first, in both projects, to the existing email channel: link conflicts, docs without memberId, staff fail-closed, reconcile/recompute stops and failures, ingest 5xx.</li>
+  <li>Deploy right after a reconcile boundary (e.g. 07:20 UTC), so the next scheduled reconcile is hours away. <code>--diff --codebase clayhub-link</code>; Christie's phrase for that sha and project; deploy (the guard answers the retry prompt); readings; <code>--attest</code>.</li>
+  <li><strong>K13</strong>: remove Google's project-wide <code>run.invoker</code> and <code>eventarc.eventReceiver</code> from the Compute account (Christie); re-attest.</li>
+</ol>
+</div>
+
+<div class="phase">
+<h3>E-8 — First fill, proof, spot check, fresh vault copy <span class="status-tag not-ready">execution-ready: false</span></h3>
+<ol>
+  <li>Force run <code>reconcileLink</code> (Christie clicks; logged): the first real cross-project OIDC call and the first fill. Expect every live member in <code>members</code> and the managers/admins in <code>staffRoster</code>; counts match Membership Manager.</li>
+  <li><strong>Delivery after K13 removal</strong>: Christie changes one harmless field on one member; the projection matches within a minute. Until this passes, K13 isn't done (if it fails: restore the grant, record why, re-plan).</li>
+  <li>Spot check three members (active; paused or with pause history; offboarding/cancelled if any) against Membership Manager: status, dates, and no forbidden field anywhere in the stored docs.</li>
+  <li>Force run the vault export (allowed once #64 is live) and verify the new complete folder: the first off-project copy holding real member data. The vault plan's restore rehearsal follows.</li>
 </ol>
 </div>
 
 <div class="phase">
 <h3>E-9 — Close <span class="status-tag not-ready">execution-ready: false</span></h3>
-<p>SPEC/DATA-MODEL/OPEN-ITEMS updated; DECISIONS rows for Q1–Q5; the resilience report's IAM inventory; both repos' CLAUDE.md; the foundation plan's Phase E marked done.</p>
+<p>OPEN-ITEMS, the resilience report's IAM inventory (both projects, including F12's residual), both repos' CLAUDE.md, the foundation plan's Phase E marked done.</p>
 </div>
+
+<h2 id="stop">Stopping the link (runbook, written in E-2)</h2>
+<ol>
+  <li><strong>Immediately</strong> (Christie, Console): pause <code>reconcileLink</code> and <code>recomputeStatuses</code> in Cloud Scheduler; on Cloud Run <code>ingestmemberupdate</code> → Permissions, remove <code>clayhub-link@</code>'s invoker. (An emergency removal is allowed; granting by hand never is.) Trigger deliveries then fail and Eventarc retries them for up to its retention window; alert emails are rate-limited to one per hour per policy.</li>
+  <li><strong>Then</strong> record it: a guarded redeploy of <code>members</code> with <code>invoker: ["private"]</code> (sha phrase), attested.</li>
+  <li><strong>To resume</strong>: fix the cause; guarded redeploy with the declared invoker; resume both jobs; Force run <code>reconcileLink</code> to catch up whatever the retries dropped.</li>
+</ol>
 
 <h2>Firebase safety checklist</h2>
 <ul>
-  <li>Every new collection (<code>members</code>, <code>memberProfiles</code>, <code>staffRoster</code>) gets an explicit rule and rules tests in the same commit as the code that writes it (E-2).</li>
-  <li>The only writer to <code>my-clay-hub</code>'s member data is <code>ingestMemberUpdate</code> (a transaction; partial updates; never deletes; strips undefined/empty).</li>
-  <li>Nothing ever writes to <code>tinker-hq-apps</code>: <code>clayhub-link@</code> holds read-only rights; tested in E-6 (a write attempt is refused).</li>
-  <li>Emulator tests only; no test reaches either production project; the CLI credential file is never read.</li>
-  <li>Bulk effect is bounded: reconcile and recompute stop above 10% status changes / 5% removals.</li>
-  <li>Vault gate before real data; the vault export keeps running weekly.</li>
+  <li>Every new collection gets an explicit rule and rules tests in the same commit as the code that writes it, deployed before the function (E-2, E-6).</li>
+  <li>Writers to my-clay-hub's member data: <code>ingestMemberUpdate</code> (single and reconcile) and <code>recomputeStatuses</code> (status fields only) — both as <code>ingest@</code>, transactions, never deletes.</li>
+  <li>Nothing writes to <code>tinker-hq-apps</code>: <code>clayhub-link@</code> holds only get/list; the codebase uses no write API (tested).</li>
+  <li>No forbidden field at any nesting level, and no full phone, crosses projects (contract + fixtures); no personal data in logs.</li>
+  <li>Emulator tests only; neither guard can reach the other project; the CLI credential file is never read.</li>
+  <li>Bulk changes bounded (Q8) and atomic: a stopped reconcile or recompute writes nothing.</li>
 </ul>
 
 <h2>Completeness check — if it's interrupted</h2>
 <ul>
-  <li>E-0…E-4 are code on branches: nothing live until merged and deployed.</li>
-  <li>E-5 halfway: Console state visible; re-read and continue. Nothing uses the accounts until E-6.</li>
-  <li>E-6 deployed but E-7 not: ingest is live with no callers except the probe — harmless.</li>
-  <li>E-7 deployed but E-8 not run: triggers send only members whose docs are edited; the projection is partial and nothing reads it (no sign-in until Phase F). The next 6-hourly reconcile fills it anyway.</li>
-  <li>Stop the link at once: pause the reconcile job and remove <code>run.invoker</code> on <code>ingestmemberupdate</code> by redeploying with an empty invoker list (guarded); triggers then fail and retry harmlessly.</li>
+  <li>E-pre…E-4: docs and code on branches; nothing live until merged and deployed.</li>
+  <li>E-5 halfway: Console state is visible; re-read and continue. Nothing uses the accounts until E-6.</li>
+  <li>E-6 deployed, E-7 not: ingest is live with no caller — harmless.</li>
+  <li>E-7 deployed, E-8 not: triggers send each member whose doc is edited; nothing reads the projection (no sign-in until Phase F); the next scheduled reconcile fills the rest.</li>
+  <li>E-7's K13 removal done but delivery unproven: E-8 step 2 is the gate; restore the grant if it fails.</li>
 </ul>
 
 <h2>Resume instructions</h2>
 <ul>
-  <li>Read this plan's Status and the newest Decisions-log entry.</li>
+  <li>Read Status and the newest Decisions-log entry.</li>
   <li>Branches: <code>git -C ~/my-clay-hub branch -a</code>, <code>git -C ~/studio-hub branch -a</code> (names start <code>phase-e-</code>); open PRs and their review state.</li>
   <li>Deploy state: each project's <code>scripts/deploy-functions.sh --status --codebase &lt;cb&gt;</code> (fetch first).</li>
-  <li>Reviews: <code>~/tinker-ai-configs/thoughts/reviews/my-clay-hub-phase-e-*</code>.</li>
+  <li>Reviews: <code>~/tinker-ai-configs/thoughts/reviews/my-clay-hub-phase-e-plan-round&lt;n&gt;-*</code>.</li>
 </ul>
 
 <h2 id="reviews">Reviews</h2>
-<p>None yet.</p>
+<h3>Round 1 (Oct 8) — Codex "not ready" (9 blocking); Claude "ready after fixes" (3 blocking)</h3>
+<table>
+<tr><th>Finding</th><th>Resolution (v2)</th></tr>
+<tr><td>The 10%/5% stops can't work from the sender, a partial reconcile isn't atomic, the first fill would trip them (both, blocking)</td><td>The <code>reconcile</code> kind: the receiver computes the whole change set and writes all-or-nothing; denominators defined; first fill exempt; Q8 floors.</td></tr>
+<tr><td>Nested notes/billing would leak; strict validation would hide malformed values from <code>deriveStatus</code> (both, blocking)</td><td>The contract: snapshots rebuilt from allowed keys at every level; malformed values carried as <code>"!malformed"</code>; fixtures for each.</td></tr>
+<tr><td>readTime has no wire format; same-millisecond reads collapse (both)</td><td>{seconds, nanos}, stored as a Timestamp, compared as a pair; tests.</td></tr>
+<tr><td>Staff input must fail closed; F5 overstated the schema (Codex, blocking; Claude should-fix)</td><td>The staff rule in the contract; F5 corrected; tests.</td></tr>
+<tr><td>K13 relies on an unproven delivery identity; a code search isn't a workload audit (Codex, blocking)</td><td>E-5 inventory and audit logs; E-8 step 2 proves delivery after the removal; Q3 rewritten.</td></tr>
+<tr><td>The E-6 OIDC probe had no mechanism; the synthetic member (Codex, blocking; Claude should-fix)</td><td>Dropped: E-6 proves 403 and the invoker reading; the first authenticated call is E-8's logged first fill.</td></tr>
+<tr><td>The stop procedure is refused by the guard (both)</td><td>"Stopping the link": Console pause + invoker removal, then a guarded <code>["private"]</code> redeploy.</td></tr>
+<tr><td>Decisions and gates too late (Codex, blocking)</td><td>E-pre; E-7 lists every gate, including #64; E-8 adds a fresh vault copy.</td></tr>
+<tr><td>Recompute needs atomicity and race handling (Codex, blocking)</td><td>Dry run, then per-member transactions re-reading; profiles in step; tests both orders.</td></tr>
+<tr><td>Adding functions to studio-hub can break the rules guard (Claude, blocking)</td><td>E-3: rules guard untouched, functions suites outside <code>npm test</code>, an isolation test, a dry rules <code>--status</code>/<code>--diff</code>.</td></tr>
+<tr><td>Should-fix: settings; alerts before go-live; schedule boundary; retry handling; tombstone privacy; Quick Log pauses; phone rule; URL constant; App Engine account, Pub/Sub Token Creator; F4/F10/F11 wording; read access to the whole database</td><td>The settings table; E-7 step 1 and its timing; the Responses row; Q7; Q6; the phone row; the note; E-3/E-5; facts corrected; F12.</td></tr>
+</table>
 
 <h2>Decisions log</h2>
 <ul>
-  <li><strong>Oct 8:</strong> drafted from the foundation plan's Phase E outline after research (F1–F11). Open: Q1–Q5.</li>
+  <li><strong>Oct 8:</strong> v1 drafted from the foundation plan's Phase E outline after research (F1–F11).</li>
+  <li><strong>Oct 8:</strong> review round 1 (Codex "not ready", 9 blocking; Claude "ready after fixes", 3 blocking, 13 should-fix) → v2: the contract, the receiver-side reconcile, E-pre, the stop runbook, the settings table, E-5's audit, the K13 proof; Q6–Q8 added. Review files <code>thoughts/reviews/my-clay-hub-phase-e-plan-round1-*</code>.</li>
 </ul>
 
 </body>
