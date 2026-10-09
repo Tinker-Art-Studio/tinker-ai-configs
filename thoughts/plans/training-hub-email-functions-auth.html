@@ -20,7 +20,7 @@
 <body>
 <h1>Plan: Training Hub email functions auth</h1>
 <p><strong>App:</strong> Training Hub (<code>~/Documents/New project</code>, site <code>tinker-training-hub</code>, Firebase <code>tinker-hq-apps</code>) &middot;
-<strong>Drafted:</strong> Oct 9 2026 (Christie away; <strong>plan only, nothing implemented</strong>) &middot; <strong>execution-ready: false</strong>, waiting on Christie's review and decisions A&ndash;C &middot;
+<strong>Drafted:</strong> Oct 9 2026 (Christie away; <strong>plan only, nothing implemented</strong>) &middot; <strong>v2</strong> after plan review r1 (Claude agent and Codex: both READY WITH CHANGES, all applied; see <em>v2 changes</em> and D3–D12) &middot; <strong>execution-ready: false</strong>, waiting on Christie's review and decisions A&ndash;C &middot;
 <strong>No rules change.</strong></p>
 
 <div class="status">
@@ -43,14 +43,14 @@
   <li><strong>Verify the Firebase ID token</strong> from <code>Authorization: Bearer &lt;idToken&gt;</code> using <a href="https://github.com/panva/jose"><code>jose</code></a> (one small dependency with no sub-dependencies; it runs on Netlify's Node runtime).
     <ul>
       <li>The keys come from Google's public JWKS: <code>https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com</code> via <code>createRemoteJWKSet</code>, cached by jose.</li>
-      <li>Check <code>alg: RS256</code>, <code>iss = https://securetoken.google.com/tinker-hq-apps</code>, <code>aud = tinker-hq-apps</code>, <code>exp</code>/<code>iat</code> (jose does this), and a non-empty <code>sub</code>.</li>
+      <li>Check <code>algorithms:['RS256']</code>, <code>iss = https://securetoken.google.com/tinker-hq-apps</code> and <code>aud = tinker-hq-apps</code>. jose handles <code>exp</code> and <code>nbf</code>; <strong><code>iat</code> and <code>auth_time</code> are checked explicitly</strong> (both numeric and not in the future). <code>sub</code> must be a non-empty string of at most 128 characters and must not be the reminder-bot uid (D3).</li>
       <li>The project id is a <strong>constant in code</strong>, not an env var, so a mis-set variable can't point verification at another project.</li>
     </ul></li>
   <li><strong>Check the role against Firestore, rules-enforced.</strong>
     <ul>
       <li>The function makes a <code>GET https://firestore.googleapis.com/v1/projects/tinker-hq-apps/databases/(default)/documents/users/{sub}</code> carrying the <em>caller's own</em> ID token.</li>
       <li>The existing self-read rule (<code>users</code>: <code>request.auth.uid == userId</code>) allows exactly that one doc. The function can therefore read nothing the signed-in user couldn't already read in the app, and it holds no credential of its own.</li>
-      <li>It requires <code>role ∈ {admin, manager}</code> and <code>active != false</code>, the same as the rules' <code>isManagerOrAbove()</code>.</li>
+      <li>It requires <code>fields.role.stringValue ∈ {admin, manager}</code> and an <code>active</code> field that is <strong>absent or exactly <code>booleanValue: true</code></strong>, the same as the rules' <code>get('active', true) == true</code>. A string <code>"false"</code>, a null or any other type is refused (D4). The request uses <code>mask.fieldPaths=role&amp;mask.fieldPaths=active</code>, so no other users-doc field reaches the function, and <code>sub</code> is URL-encoded.</li>
       <li>A missing doc, a failed read or any other value returns 403.</li>
     </ul></li>
   <li><strong>Client:</strong> each of the four <code>fetch</code> calls adds <code>Authorization: Bearer ${await firebase.auth().currentUser.getIdToken()}</code> through one helper <code>authorizedFetch()</code>. On a 401/403 the manager sees "Email not sent — please reload and sign in again" (the publish and share paths already surface failures; the two assignment paths are fire-and-forget today and will log and show a notice).</li>
@@ -64,7 +64,7 @@
 
 <h3>Why not <code>firebase-admin</code> (option B)</h3>
 <ul>
-  <li>It needs a <strong>service-account private key</strong> stored as a Netlify env var. That key bypasses every Firestore rule, for every staff app, and anyone holding it has full database access. Netlify also caps a function's env vars at 4 KB in total, and a service-account JSON is about 2.3 KB.</li>
+  <li>For the role read, it needs a <strong>service-account private key</strong> stored as a Netlify env var. That key bypasses Firestore rules for every staff app, up to whatever its IAM role allows (it can be least-privileged, but it is still outside rules). <em>(v2: corrected.)</em> The 4 KB env-var total applies only in Netlify's Lambda-compatibility mode, and the key (~2.3 KB) would fit anyway, so size is not a blocker. <code>verifyIdToken</code> alone, without <code>checkRevoked</code>, needs no key.</li>
   <li>It adds a large dependency (about 30 MB installed) and slower cold starts.</li>
   <li>It conflicts with the standing direction: no credential that skips rules (the <code>backup-js-uses-cli-token</code> and <code>firebase-agent-defense-hardening</code> notes).</li>
   <li>The only thing it buys is <code>verifyIdToken(token, checkRevoked)</code>. Option A instead has up to a ~1 hour window in which a token stays valid after an account is disabled. Archiving (<code>active:false</code>) is still enforced immediately, because the role read goes through rules.</li>
@@ -73,12 +73,25 @@
   <strong>Note for Christie:</strong> step 2 is a raw Firestore REST call. The CLAUDE.md rule against raw REST calls is about the <em>Firebase CLI's cached token</em>, which bypasses rules. This call carries the <em>signed-in user's own</em> token and is rules-enforced, the same as the app's SDK reads. I believe it is within that rule, but it's your call (decision A).
 </div>
 
+
+<h2>v2 changes from plan review r1</h2>
+<ul>
+  <li><strong>Hardening added to the same pass (D5):</strong>
+    <ul>
+      <li>Strict type and length validation on every payload field through the existing <code>boundedString</code> pattern. Today <code>memberName.split</code> (assignment:59) and <code>observerName.trim</code> (observation:57) throw on a non-string, outside the try block.</li>
+      <li>Cap <code>items</code> (e.g. 50) and title length. Strip CR/LF from the subject. Bound <code>dueAt</code> to a sane window, cap scheduled reminders per request, and <strong>check the reminder send's <code>{error}</code></strong> (assignment:205, never checked today). Write down the reminder timezone.</li>
+      <li>The CC comes from the <em>verified token's email</em>, and <code>observerEmail</code> from the body is ignored. Consider taking <code>sharerName</code> from the verified identity too.</li>
+    </ul></li>
+  <li><strong>Never log</strong> <code>event.headers</code> or the token. The Firestore and JWKS hosts are hard-coded constants. <strong>No CORS headers are added</strong>: a cross-origin request carrying a token fails preflight, which is correct. A JWKS fetch timeout maps to 503. jose's key cache lasts only per warm instance, so a cold start costs one extra fetch.</li>
+  <li><strong>Client (D8):</strong> <code>FirebaseCompatAuth.currentUser</code> gains <code>getIdToken()</code> in the type. <code>authorizedFetch()</code> refuses when <code>currentUser</code> is null and passes an <code>AbortSignal</code> through. A 401/403 is <em>not</em> logged as sent.</li>
+  <li><strong>Extra tests:</strong> future or missing <code>iat</code>/<code>auth_time</code>; the reminder-bot uid; a malformed REST <code>active</code> (string, null); 404 and 403 from REST both → 403; reminder rejection; recipient-uid binding; payload validation. <code>npm test</code> (Vitest) is run explicitly before deploying, because <code>scripts/deploy.sh</code> runs only the demo Playwright suite.</li>
+</ul>
 <h2>Secrets / env vars on Netlify</h2>
 <table>
 <tr><th>Variable</th><th>Option A (recommended)</th><th>Option B</th></tr>
 <tr><td><code>RESEND_API_KEY</code></td><td>Already set, unchanged.</td><td>Unchanged.</td></tr>
 <tr><td>New secret</td><td><strong>None.</strong> The Google public keys are fetched at runtime and the project id is a code constant.</td><td><code>FIREBASE_SERVICE_ACCOUNT_JSON</code> (or base64), marked secret and scoped to Functions only. Christie would create the key in the Google Cloud Console and paste it into Netlify.</td></tr>
-<tr><td>Optional</td><td><code>EMAIL_DRY_RUN=1</code>, for <strong>local and test only</strong>: the function returns 200 "dry run" without calling Resend. It's fail-safe (it can only stop mail), and it must never be set on the production site.</td><td>Same.</td></tr>
+<tr><td>Optional</td><td><strong>None (v2).</strong> The <code>EMAIL_DRY_RUN</code> idea is dropped. Set in production by mistake, it would return 200 and the client would log unsent mail as "sent". Tests inject a fake Resend instead (D6).</td><td>Same.</td></tr>
 </table>
 
 <h2>Testing without production</h2>
@@ -96,7 +109,7 @@
       <li>This proves the self-read rule allows the role read and refuses it for another uid.</li>
       <li>The emulator base URL is chosen only from an explicit test-only constructor argument, never from an env var in production code.</li>
     </ul></li>
-  <li><strong>Local end-to-end:</strong> run <code>netlify functions:serve</code> with <code>EMAIL_DRY_RUN=1</code> and a dev build. A signed-in emulator manager sees "Email sent (dry run)", and a curl with no token gets 401. No real mail is sent.</li>
+  <li><strong>Local end-to-end (v2, narrowed; D7):</strong> this only proves "no or garbage token → 401" against the bundled function, using <code>netlify dev --offline</code> with <code>RESEND_API_KEY</code> unset. That way the CLI can't pull the real key from the linked site, and nothing can send. An emulator-signed-in manager <em>can't</em> pass locally: emulator tokens are unsigned, and production code has no emulator bypass (D2). The manager-passes path is covered by the unit and handler tests, and by the emulator integration test (test-only constructor overriding the REST base URL <em>and</em> the project id, because a demo- project emulator refuses <code>tinker-hq-apps</code> paths).</li>
   <li><strong>After deploy (Christie):</strong>
     <ul>
       <li>One real publish to the test account (<code>test@tinkerartstudio.com</code>) succeeds.</li>
@@ -124,13 +137,13 @@
 <ul><li>Rules: unchanged; this relies on the existing users self-read rule.</li><li>No Firestore writes added.</li><li>No credential that bypasses rules (option A).</li></ul>
 
 <h2>Completeness / interruption</h2>
-<p>Client and functions deploy together in one Netlify deploy. A half-done branch is never deployed. Rollback is the previous deploy (<code>2e969a1</code> or later) through Netlify's "Publish deploy", which restores the old open behaviour but loses no data.</p>
+<p>Client and functions deploy together in one Netlify deploy (atomic). A half-done branch is never deployed. <strong>v2:</strong> rolling back through "Publish deploy" would knowingly re-open the public relay, and reminders already scheduled with Resend can't be recalled. So the rollback plan is a prepared forward-fix, and a plain rollback is only for "managers can't send at all". Stale tabs: the two assignment paths are fire-and-forget (<code>console.warn</code> only), so a welcome email from a pre-deploy tab could drop silently. After deploying, ask managers to reload, and check the email logs the next day (D9).</p>
 
 <h2>Decisions needed from Christie</h2>
 <div class="decision-needed">
 <ul>
   <li><strong>A.</strong> Option A (jose + rules-enforced role read with the user's own token; no new secret) or option B (firebase-admin + a service-account key on Netlify)? <strong>Recommended: A.</strong></li>
-  <li><strong>B.</strong> Should recipients also be restricted to people already in Training Hub (a users doc whose email matches)? It stops a compromised manager account mailing outsiders. The catch: the first-assignment email to a brand-new hire runs before their users doc may exist. Recommended: not now.</li>
+  <li><strong>B (v2, recommendation changed):</strong> bind recipients to users docs: the client sends a <em>uid</em>, and the function reads that doc's email with the manager's own token (<code>allow read: if isManagerOrAbove()</code>). r1 showed that every recipient already has a users doc: assignment targets come from <code>users</code> (<code>browserFirebaseAdapter.ts:74-80</code>) and share recipients carry a uid. This closes "mail any address" in all three functions with no new credential. <strong>Recommended: yes, in the same pass.</strong> Your call, since it changes the request shape.</li>
   <li><strong>C.</strong> Keep sending <code>tempPassword</code> in the first-assignment email at all? It's plaintext in an inbox; Studio Hub's "Add team member" already shows it to you to share.</li>
 </ul>
 </div>
@@ -139,6 +152,16 @@
 <ul>
   <li><strong>D1 (Oct 9):</strong> all three functions go through one shared guard in one commit (the "fixing one leaves two open" note).</li>
   <li><strong>D2 (Oct 9):</strong> the project id is a code constant; the emulator URL is a constructor argument only, so production can never be pointed at an emulator by an env var.</li>
+  <li><strong>D3 (r1):</strong> explicit <code>iat</code>/<code>auth_time</code>/<code>sub</code> checks. My v1 wrongly said jose checks <code>iat</code>.</li>
+  <li><strong>D4 (r1, both reviewers):</strong> <code>active</code> is parsed strictly to match the rules.</li>
+  <li><strong>D5 (r1):</strong> payload validation, reminder caps and the reminder error check join this pass.</li>
+  <li><strong>D6 (r1, both):</strong> <code>EMAIL_DRY_RUN</code> dropped; tests use an injected fake Resend.</li>
+  <li><strong>D7 (r1):</strong> local end-to-end narrowed to 401-only, run offline with no key.</li>
+  <li><strong>D8 (r1):</strong> client token helper details.</li>
+  <li><strong>D9 (r1):</strong> forward-fix rollback; managers reload after deploy.</li>
+  <li><strong>D10 (r1):</strong> decision B now recommended (bind recipients by uid).</li>
+  <li><strong>D11 (r1):</strong> the option B comparison corrected (IAM scope, 4 KB only in Lambda-compat mode). The recommendation stays A.</li>
+  <li><strong>D12 (r1):</strong> confirmed by both reviewers: the users self-read rule allows the role read; users docs are keyed by uid; the JWKS URL is valid; jose bundles under <code>"type":"module"</code>; Firebase documents REST with an ID token as rules-enforced, so this fits the no-raw-REST-with-the-CLI-token rule.</li>
 </ul>
 </body>
 </html>

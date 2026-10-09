@@ -15,7 +15,7 @@
 <body>
 <h1>Plan: Classbook check-live retries CDN lag</h1>
 <p><strong>App:</strong> The Classbook (<code>~/tinker-spring-curriculum</code>) &middot; <strong>Branch:</strong> <code>claude/check-live-retry</code> (worktree <code>.claude/worktrees/check-live-retry</code>, from origin/main <code>5360e6d</code>) &middot;
-<strong>Drafted:</strong> Oct 9 2026 (Christie away) &middot; <strong>execution-ready: false</strong> until review &middot; <strong>No Firestore, no deploy.</strong></p>
+<strong>Drafted:</strong> Oct 9 2026 (Christie away) &middot; <strong>v2</strong> after plan review r1 (Claude: READY WITH CHANGES, all applied as D3–D8; Codex: READY WITH CHANGES, applied as D9) &middot; <strong>execution-ready: true</strong> (branch only) &middot; <strong>No Firestore, no deploy.</strong></p>
 
 <div class="status"><strong>Goal:</strong> after <code>npm run deploy</code>, <code>[check-live] FAILED</code> means something is really wrong, not that Netlify's CDN hadn't caught up yet. The script keeps re-checking for about 30 seconds before it gives up.</div>
 
@@ -60,6 +60,13 @@
 <ul>
   <li><strong>D1 (Oct 9):</strong> MISSING is not retried, but 404-path failures are, since a stale cached deploy can lag too.</li>
   <li><strong>D2 (Oct 9):</strong> the same change for Training Hub and Studio Hub's own check-live scripts is left as a follow-up. They're separate repos, and this item was Classbook.</li>
+  <li><strong>D3 (r1):</strong> the test copies <code>scripts/check-live.sh</code> into <code>$TMP/scripts/</code> with its own <code>$TMP/dist</code>, so the script's <code>cd "$(dirname "$0")/.."</code> lands in the temp tree. No <code>CHECK_LIVE_DIST</code> override.</li>
+  <li><strong>D4 (r1):</strong> every curl gets <code>--connect-timeout 5 --max-time 15</code>. The budget is measured from a <code>date +%s</code> start, not by summing sleeps. A failed curl counts as DIFF (<code>-f</code> plus its exit status), so an empty error body can't match an empty file.</li>
+  <li><strong>D5 (r1):</strong> private paths are fetched with <code>?nocache=</code> as well. Before printing <code>ok</code>, one final full pass re-checks <em>every</em> item, so an early cached 404 (or match) from the previous deploy can't lock in a pass.</li>
+  <li><strong>D6 (r1):</strong> a missing <code>dist/index.html</code> is an immediate FAILED. Before this, no dist/ meant nothing was compared and it printed <code>ok</code>.</li>
+  <li><strong>D7 (r1):</strong> the base URL is always printed, with a loud warning when it isn't the default. <code>deploy.sh</code> runs the check with <code>env -u CHECK_LIVE_BASE</code>, so a stray shell variable can't redirect a real post-deploy check.</li>
+  <li><strong>D8 (r1):</strong> timeout and interval must be positive integers, or the script exits 2. Retry rounds print only the items still failing. Extra test cases: server down (must FAIL, never ok), no dist/, and the stale-404 lock-in. The test server binds to 127.0.0.1, is killed by a trap, and the test refuses any non-127.0.0.1 base.</li>
+  <li><strong>D9 (r1, Codex):</strong> a faithful fetch writes to a temp file and is hashed only after curl succeeds with a 2xx status. A transport error, 404 or 5xx is a retryable DIFF, so an error body can never "match". The worklists are newline-delimited temp files (no subshell state). The final sleep is capped to the remaining budget. <code>?nocache=</code> is kept but described honestly: Netlify ignores it in the cache key, and freshness comes from atomic deploys, so a pass proves only what the edge we reached served. Extra test cases: an empty local file plus a refused connection; a faithful 404/500; a private path exposed then 404; passing items not re-requested; a zero or invalid interval refused.</li>
 </ul>
 </body>
 </html>
