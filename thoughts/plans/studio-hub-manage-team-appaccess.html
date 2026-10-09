@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Studio Hub Manage Team keeps app access</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Studio Hub Manage Team keeps app access</h1>
+<p><strong>App:</strong> Studio Hub / Tinker HQ (<code>~/studio-hub</code>, project <code>tinker-hq-apps</code>) &middot;
+<strong>Branch:</strong> <code>claude/manage-team-appaccess</code> (worktree <code>studio-hub/.claude/worktrees/manage-team-appaccess</code>, from origin/main <code>742372a</code>) &middot;
+<strong>Drafted:</strong> Oct 9 2026 (Christie away; autonomous session) &middot; <strong>v2</strong> after design review r1 (Claude agent: READY WITH CHANGES; Codex: NOT READY — all findings applied, see D6–D12) &middot; <strong>execution-ready: true</strong> (Christie away: proceeding on a branch only; she reviews before merge) &middot;
+<strong>No rules change. No deploy. No production data touched.</strong></p>
+
+<div class="status">
+  <strong>Goal:</strong> when Christie presses <em>Save</em> on someone in Manage Team, the only app access that changes is the checkboxes she actually changed. Nothing else gets quietly removed, and nobody's role silently turns into Admin.
+</div>
+
+<h2>What's wrong today (confirmed against origin/main <code>742372a</code>)</h2>
+<p><code>saveUser()</code> in <code>js/app.js:1145</code> writes <code>appAccess: role === 'staff' ? appAccess : []</code>, where <code>appAccess</code> is just the ticked checkboxes. The status then says "Saved!". This causes four separate traps:</p>
+<table>
+<tr><th>#</th><th>Who</th><th>What happens on Save</th><th>Does it matter?</th></tr>
+<tr><td>T1</td><td>Anyone whose role is <code>admin</code> or <code>manager</code></td><td><code>appAccess</code> is overwritten with <code>[]</code>, even for a name-only edit.</td><td>Mostly hidden, because the rules give manager+ access everywhere (<em>corrected in v2</em>: Classbook <code>prepCycleConfig</code> is covered by the general manager+ curriculum rule, and <code>rules.test.js:2787</code> proves it). Real effects: a manager later demoted to staff has lost every earlier grant, and one client gate ignores role (the Summer Camp co-teacher picker, see the appendix).</td></tr>
+<tr><td>T2</td><td>Staff whose <code>appAccess</code> holds an id that has <em>no checkbox</em></td><td>That id is wiped. No checkbox exists for <code>classbook-admin</code>, <code>team</code> or <code>kpi</code>, yet the rules check all three (<code>hasAppAccess('classbook-admin')</code> ×16, <code>'team'</code> ×2, <code>'kpi'</code> ×1). Studio Hub's checkbox writes <code>curriculum-admin</code> and <code>kpi-dashboard</code> instead.</td><td><strong>Yes, this is the likeliest real loss.</strong> Any of the people granted Training Hub on Sep 30 who had <code>classbook-admin</code>/<code>team</code>/<code>kpi</code> (granted in the Console or elsewhere) lost it when Christie ticked Training and saved.</td></tr>
+<tr><td>T3</td><td>Anyone whose stored role is <em>not</em> exactly admin/manager/staff (missing, capitalised, legacy value)</td><td>The role <code>&lt;select&gt;</code> has no matching option, so the browser shows the first one, <strong>Admin</strong>. The card still shows staff checkboxes, because <code>isAdmin</code>/<code>isManager</code> are false. Save then writes <code>role: 'admin'</code> and wipes appAccess.</td><td><strong>Real, not hypothetical: <code>'prep'</code> is a live role</strong> (Summer Camp App <code>js/auth.js:200</code> Prep tab set; Classbook <code>js/app.js:300</code>; the rules suite seeds <code>{role:'prep', appAccess:['summer-camp']}</code>). Saving any prep user in Manage Team makes them an <strong>admin</strong> and drops their Summer Camp grant.</td></tr>
+<tr><td>T4</td><td>Changing someone's role from Manager/Admin back to Staff in the card</td><td>Staff checkboxes re-render from the <em>currently ticked</em> boxes. There are none (the manager card has none), so every box shows unticked and Save writes <code>[]</code>.</td><td>Yes, but no longer silent once T1 is fixed: the boxes will show their stored grants.</td></tr>
+</table>
+<p><strong>T5 (found in review r1): stored XSS into Christie's admin session.</strong> <code>renderUserCard()</code> puts <code>user.name</code> into <code>value="…"</code> and <code>user.email</code> into <code>innerHTML</code> raw. <code>nameForOnclick</code> escapes only <code>'</code> inside an inline <code>onclick</code>. The self-update rule lets <em>any</em> signed-in user change their own <code>name</code>, so markup there would run when an admin opens Manage Team and could make admin writes. Fixed in this branch: everything is escaped, and the inline handlers are replaced by listeners.</p>
+<p>Also found: <code>private-events</code> appears twice in <code>MANAGER_ONLY_APPS</code>, so there are two checkboxes for one grant. Unticking one leaves access on, and ticking both stores a duplicate.</p>
+
+<h2>Affected roles (from the code only, not the live database)</h2>
+<p>Filled from the code sweep, see the Research appendix. Summary for Christie's Sep 30 check:</p>
+<ul>
+  <li><strong>Staff you ticked Training for on Sep 30:</strong> check each person's <code>appAccess</code> in the Console for anything Studio Hub has no checkbox for (<code>classbook-admin</code>, <code>team</code>, <code>kpi</code>). If one of those was there before Sep 30, it's gone now (T2). The Console has no history, so the before-state can only come from memory or a backup.</li>
+  <li><strong>Managers/admins</strong> saved in Manage Team at any time: their appAccess is <code>[]</code> (T1). Today that only shows in the Summer Camp co-teacher picker ("no Classbook access") and on later demotion.</li>
+  <li><strong>Prep-role users (Summer Camp prep team)</strong>: any prep user saved in Manage Team is now <code>role:'admin'</code> with <code>appAccess:[]</code> (T3). <strong>Check the Users list for unexpected admins</strong>, especially anyone you'd call prep team.</li>
+  <li><strong>Roles found in code:</strong> admin, manager, staff, prep. Nothing else is written to users docs (Director/Other are Summer Camp <em>team</em> roles, not user roles).</li>
+</ul>
+
+<h2>Design (v2)</h2>
+<ol>
+  <li><strong>Delta, not snapshot (D6).</strong> Each rendered checkbox records whether it was ticked when the card was drawn (<code>data-initial</code>). On Save, the change is only what the user toggled: <em>added</em> = boxes unticked at render and ticked now; <em>removed</em> = boxes ticked at render and unticked now. The new appAccess = <strong>fresh stored list</strong> (read in the transaction) − removed + added, de-duplicated, keeping the stored order. As a result:
+    <ul><li>ids with no checkbox (T2) are untouched;</li>
+    <li>a grant another tab added or removed after the card loaded is untouched unless Christie toggled that same box;</li>
+    <li>a card with no checkboxes (admin/manager) writes no <code>appAccess</code> at all (T1).</li></ul>
+    Pure helper: <code>computeAppAccess(fresh, boxes)</code>, where <code>boxes</code> is <code>null</code> or <code>[{id, checked, initial}]</code>, and it returns <code>undefined</code> = don't write.</li>
+  <li>New file <code>js/team-helpers.js</code>, the same pattern as <code>js/archive-helpers.js</code> (no DOM; a browser global plus <code>module.exports</code>):
+    <ul>
+      <li><code>KNOWN_ROLES = ['admin','manager','staff','prep']</code>. 'prep' gets staff-style checkboxes (D5).</li>
+      <li><code>buildTeamMemberUpdate({role, studios, name, fresh, boxes})</code> returns <code>{updates}</code>, or <code>{error}</code> for an unrecognised role.</li>
+      <li><code>roleSelectOptions(storedRole)</code>: the four roles. An unrecognised or missing stored role adds a selected <code>value=""</code> "Unrecognised role (x) — choose one" placeholder, so nothing defaults to Admin. Saving with it refuses (T3).</li>
+      <li><code>escapeHtml()</code> for every interpolated value (T5).</li>
+    </ul></li>
+  <li><code>saveUser()</code>: one Firestore transaction that reads the user doc, computes the update from the fresh data, and calls <code>transaction.update</code> (partial, never set). A missing doc shows "This person no longer exists — reload". The roster add (<code>addToTinkerTickerRoster</code>) stays a separate step after it, as today (D10). It uses the <em>final</em> appAccess to decide on timeclock.</li>
+  <li>Role-change re-render: staff-style boxes are redrawn from the <em>stored-at-load</em> grants, with <code>initial</code> = stored, so the delta is zero (T4). Unsaved ticks are lost when switching to admin/manager and back; this is documented.</li>
+  <li>Hidden grants are shown read-only under the boxes ("Also has (not editable here): classbook-admin, team"), so nothing is invisible (D8).</li>
+  <li><code>renderUserCard()</code>: every field is escaped, and the inline <code>onclick</code> on Save/Archive/Reactivate is replaced by listeners bound to the card (T5).</li>
+  <li>The duplicate <code>private-events</code> is removed. The team list sort is fixed so admins (<code>roleOrder 0</code>) sort first, not last (D11).</li>
+  <li><code>createTeamMember()</code>: the role list is unchanged (admin/manager/staff). Prep is edit-only in this branch (D9). Its success HTML escapes name and email.</li>
+</ol>
+<p><strong>Not changed:</strong> the KPI checkbox id (<code>kpi-dashboard</code> vs the rules' <code>kpi</code>) is a question for Christie (Q2), because renaming either side changes who has access.</p>
+
+<div class="phase">
+<h3>Phase 1: failing test first (execution-ready: false)</h3>
+<p><strong>Acceptance:</strong> new test files <code>team-helpers.test.js</code> (pure) and <code>team-save.test.js</code> (emulator, real rules) are added to <code>test:rules</code>. They reproduce T1–T5 against today's logic, which is copied verbatim into the helper as <code>legacyAppAccess()</code>, and fail. Committed alone on the branch as the red state.</p>
+<p><strong>Test list (r1 findings 4/6):</strong></p>
+<ul>
+  <li>Delta: add one; remove one; hidden ids survive both; a concurrent add of an offered id survives an untouched unticked box; a concurrent removal is not undone by an untouched ticked box; <code>boxes:null</code> → no write; fresh missing or not an array; de-dup.</li>
+  <li>Roles: options for admin/manager/staff/prep/'Staff'/undefined; the placeholder value <code>""</code> is refused.</li>
+  <li><code>escapeHtml</code> on <code>"&gt;&lt;img onerror&gt;</code>, quotes and ampersands.</li>
+  <li>Emulator, rules-enforced:
+    <ul><li>admin saves another user (transaction allowed);</li>
+    <li>manager saves another user, role unchanged → allowed;</li>
+    <li>manager changes role → denied;</li>
+    <li>manager saves own card with appAccess omitted → allowed (today's <code>[]</code> is denied if they had grants).</li></ul></li>
+</ul>
+<div class="bdd"><strong>Given</strong> staff <code>{appAccess:['training','classbook-admin']}</code> <strong>when</strong> an admin saves with Training ticked <strong>then</strong> <code>classbook-admin</code> is still stored (fails today).</div>
+<div class="bdd"><strong>Given</strong> a manager with <code>['classbook-admin']</code> <strong>when</strong> an admin changes only their name <strong>then</strong> appAccess is unchanged (fails today).</div>
+<div class="bdd"><strong>Given</strong> a prep user <code>{role:'prep', appAccess:['summer-camp']}</code> <strong>when</strong> saved untouched <strong>then</strong> the role is still <code>prep</code> and the grant is kept (fails today: admin + <code>[]</code>).</div>
+<div class="bdd"><strong>Given</strong> a stored role <code>'Staff'</code> (unrecognised) <strong>when</strong> saved without choosing <strong>then</strong> the helper refuses and nothing is written (fails today: admin).</div>
+<p>Tests write through <code>@firebase/rules-unit-testing</code> as an authenticated admin with the real rules, so the update must also be permitted by the rules.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 2: the fix (execution-ready: false)</h3>
+<p><strong>Acceptance:</strong> all Phase 1 tests pass, and the whole <code>npm test</code> passes (rules and guard; the count is printed). Ticking or unticking a box still adds or removes exactly that grant.</p>
+<div class="bdd"><strong>Happy:</strong> staff with <code>['training']</code>, untick Training → <code>[]</code>.</div>
+<div class="bdd"><strong>Edge:</strong> staff promoted to manager keeps the stored appAccess; demoted back, the boxes show those grants ticked.</div>
+<div class="bdd"><strong>Edge:</strong> another tab added <code>team</code> after the card loaded → Save keeps <code>team</code> (transaction reads fresh).</div>
+<div class="bdd"><strong>Failure:</strong> the write is denied (e.g. a manager editing an admin's role) → "Error saving", nothing partial written.</div>
+<p>UI wiring check: a <code>grep</code> asserts that <code>saveUser</code> calls <code>buildTeamMemberUpdate</code> inside <code>runTransaction</code>, that <code>index.html</code> and <code>scripts/build-dist.sh</code> load and ship <code>js/team-helpers.js</code>, and that there are no inline <code>onclick</code>s left in <code>renderUserCard</code>. The rest is covered by implementation review (D4; Studio Hub has no browser harness).</p>
+</div>
+
+<div class="phase">
+<h3>Phase 3: implementation review</h3>
+<p>An in-session Claude agent and <code>codex exec</code> review the actual diff. Findings are fixed or logged. A PR is opened from <code>claude/manage-team-appaccess</code> and <strong>not merged</strong>. Deploying is Christie's call (<code>npm run deploy</code>, Netlify credits).</p>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+  <li>Rules change: <strong>none</strong>. The admin <code>allow write</code> and manager update rules already permit this.</li>
+  <li><code>update</code>, not <code>set</code>: yes (<code>transaction.update</code>).</li>
+  <li>Empty fields: <code>name</code> is already trimmed. An empty <code>appAccess</code> array is a meaningful value and is kept. No <code>undefined</code> is possible.</li>
+  <li>Bulk op or snapshot: N/A, one doc per Save.</li>
+  <li>Production data: untouched. The code doesn't repair anyone's past losses; that is Christie's Console check.</li>
+</ul>
+
+<h2>Completeness / interruption</h2>
+<p>The user-doc update is one transaction. The Tinker Ticker roster add after it is a separate, best-effort step, as today. If this work stops mid-way, the branch either has the red test commit (no behaviour change, safe to leave) or the fix. Nothing is deployed.</p>
+
+<h2>Resume instructions</h2>
+<ol>
+  <li><code>cd ~/studio-hub/.claude/worktrees/manage-team-appaccess &amp;&amp; git log --oneline origin/main..</code></li>
+  <li><code>npm test</code> (Java + firebase CLI; emulators only).</li>
+  <li>Read the Decisions log below, and the PR if one was opened.</li>
+</ol>
+
+<h2>Open questions for Christie</h2>
+<ul>
+  <li><strong>Q1:</strong> for the staff you granted Training on Sep 30, did any of them have Classbook admin (<code>classbook-admin</code>), <code>team</code> or <code>kpi</code> access before? If so, it needs re-adding in the Console.</li>
+  <li><strong>Q2:</strong> the KPI checkbox stores <code>kpi-dashboard</code>, but the rules check <code>kpi</code>. Should the checkbox store <code>kpi</code>? See the appendix for what the KPI app itself checks.</li>
+  <li><strong>Q3:</strong> should Manage Team get checkboxes for <code>classbook-admin</code> and <code>team</code>, so they're visible and editable instead of only preserved?</li>
+</ul>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li><strong>D1 (Oct 9):</strong> preserve rather than clear. For admin/manager Save, <code>appAccess</code> is left out of the update entirely. Clearing it buys nothing (the rules ignore it for manager+) and loses Prep Cycle access and any later demotion state.</li>
+  <li><strong>D2 (Oct 9):</strong> ids with no checkbox are always preserved, never inferred. Manage Team can only remove what it shows.</li>
+  <li><strong>D3 (Oct 9):</strong> <code>createTeamMember()</code> is left as is (fresh doc, nothing stored to lose).</li>
+  <li><strong>D5 (Oct 9):</strong> 'prep' is treated as a first-class role (a select option, staff-style checkboxes) rather than an "unrecognised" placeholder. It is live in two apps and the rules suite, so making Christie re-pick it on every save would be wrong.</li>
+  <li><strong>D6 (Oct 9, r1):</strong> delta against fresh data instead of a snapshot merge (both reviewers). This is what makes the goal ("only what she changed") literally true.</li>
+  <li><strong>D7 (Oct 9, r1):</strong> T1's Prep Cycle claim withdrawn; it was wrong (manager+ general curriculum rule).</li>
+  <li><strong>D8 (Oct 9, r1):</strong> hidden grants are shown read-only rather than silently preserved.</li>
+  <li><strong>D9 (Oct 9, r1):</strong> Prep is edit-only. The create form is unchanged; new prep people are made as Staff, then switched.</li>
+  <li><strong>D10 (Oct 9, r1):</strong> the roster add stays outside the transaction. It was non-atomic before; combining it is a Tinker Ticker-adjacent change and out of scope.</li>
+  <li><strong>D11 (Oct 9, r1):</strong> T5 (XSS) and the sort fix are in scope because they're in the same function and the XSS reaches admin.</li>
+  <li><strong>D12 (Oct 9, implementation review r1, Claude + Codex both APPROVE WITH NITS):</strong> two fixes. After a save the card's <code>data-initial</code> flags, its stored grants and <code>allTeamUsers</code> are refreshed, so a second save can't re-add a grant removed elsewhere. The placeholder label is escaped once, not twice. Both reviewers flagged that the Jest tests don't exercise the DOM, so I added <code>test-manage-team-browser.html</code>: it runs the real <code>renderUserCard</code>/<code>saveUser</code> against an in-memory fake, and 19/19 PASS in the browser pane.</li>
+  <li><strong>Status Oct 9:</strong> branch <code>claude/manage-team-appaccess</code>: 945734a (red: 21/30 fail), 53b6a91 (fix), e9cf046 (review fixes). <code>npm test</code> 769 Jest + 141 guard. PR Tinker-Art-Studio/studio-hub#9 is open, <strong>not merged or deployed</strong>. Deploy is <code>npm run deploy</code> after Christie's OK. No rules change.</li>
+  <li><strong>D4 (Oct 9):</strong> the decision logic moves into a pure helper so Jest can test it. The DOM wiring in app.js stays thin and is reviewed, not browser-tested (Studio Hub has no browser harness).</li>
+</ul>
+
+<h2>Research appendix</h2>
+<div id="research">
+<p>Code sweep, Oct 9 (read-only Explore agent; tinker-timeclock and my-clay-hub excluded).</p>
+<ul>
+<li><strong>Client gates a manager/admin with empty appAccess fails:</strong>
+  <ul>
+    <li>Summer Camp App <code>js/app.js:463</code>: the co-teacher picker requires <code>'classbook'</code> in appAccess and ignores role, so a wiped manager shows "(no Classbook access)". The Classbook's own picker (<code>js/app.js:11471</code>) accepts managers.</li>
+    <li>The Studio Hub <code>sops</code> tile (<code>roles:["admin"]</code>) is reachable by a manager only through a hand-set <code>'sops'</code> override.</li>
+    <li>Every other gate (Studio Hub, Recap, Schedule Viewer, Clay Inventory, Staff Directory, Roster Manager, Classbook, Summer Camp, Training Hub) also accepts manager/admin.</li>
+  </ul></li>
+<li><strong>Role values:</strong> admin, manager, staff, prep.
+  <ul>
+    <li><code>studio-hub/setup/migrate-roles.js</code> (gitignored) would map prep→staff. There's no record that it ever ran, and the rules suite still models prep.</li>
+  </ul></li>
+<li><strong>Other appAccess writers (out of scope here):</strong>
+  <ul>
+    <li><code>tinker-spring-curriculum/user-admin.html:561-570</code> overwrites appAccess with only its 8 checkboxes, so it is just as destructive. Not on the live site, since Classbook publishes <code>dist/</code> only, but it still works locally. Follow-up suggested.</li>
+    <li>Setup and one-off scripts: <code>create-auth-accounts.js</code>, <code>create-users.html</code>, <code>fix-user-docs.html</code>, and recap <code>fix-julia-uid.*</code> (which does a whole-doc <code>.set</code>).</li>
+  </ul></li>
+</ul>
+</div>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Training Hub email functions auth</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Training Hub email functions auth</h1>
+<p><strong>App:</strong> Training Hub (<code>~/Documents/New project</code>, site <code>tinker-training-hub</code>, Firebase <code>tinker-hq-apps</code>) &middot;
+<strong>Drafted:</strong> Oct 9 2026 (Christie away; <strong>plan only, nothing implemented</strong>) &middot; <strong>execution-ready: false</strong>, waiting on Christie's review and decisions A&ndash;C &middot;
+<strong>No rules change.</strong></p>
+
+<div class="status">
+  <strong>Goal:</strong> only a signed-in, active Training Hub <em>manager</em> (role <code>manager</code> or <code>admin</code>) can make Training Hub send an email. A request from anyone else gets a 401/403, and no mail goes out.
+  <br><strong>Why:</strong> today any request that reaches these endpoints sends mail from <code>training@tinkerartstudio.com</code> to any address, CC'ing Christie, and nothing checks who asked.
+</div>
+
+<h2>Current state (researched Oct 9 against origin/main <code>2e969a1</code>)</h2>
+<table>
+<tr><th>Function</th><th>Called from (all manager-only actions)</th><th>Extra exposure today</th></tr>
+<tr><td><code>send-assignment-email.ts</code></td><td><code>handleCreateAssignment</code> (App.tsx:369) and <code>handleCreateBulkAssignments</code> (:522)</td><td><strong>Worst of the three.</strong> <code>trainingUrl</code> is taken from the request and put into both the link and the HTML <em>unescaped</em>, so it relays a phishing link and allows HTML injection. <code>tempPassword</code> is also inserted raw. It can <em>schedule</em> a second (reminder) email via <code>scheduledAt</code>.</td></tr>
+<tr><td><code>send-observation-email.ts</code></td><td><code>handlePublishObservation</code> (:866)</td><td>The URL is pinned and the content escaped (Sep 28 mitigation). It accepts any recipient, and <code>observerEmail</code> is CC'd, so the CC goes to any address the caller chooses.</td></tr>
+<tr><td><code>send-observation-share-email.ts</code></td><td><code>handleShareObservation</code> (:989)</td><td>The URL is pinned, the content escaped and the strings bounded. It accepts any recipient.</td></tr>
+</table>
+<p>The client calls are plain <code>fetch(..., {headers:{'Content-Type':'application/json'}})</code> with no credential. The manager check in the client is <code>resolveTrainingSnapshotAccess</code>: role <code>admin</code>|<code>manager</code> → <code>'manager'</code> (<code>src/lib/trainingSnapshotAccess.ts:10</code>). <code>scripts/deploy.sh</code> runs <code>netlify deploy --dir=dist</code>, which also bundles <code>netlify/functions</code>, so the client and functions always ship together.</p>
+
+<h2>Approach: recommended option A (no new secrets)</h2>
+<p>One shared module, <code>netlify/functions/_lib/requireManager.ts</code>, is called <strong>first</strong> in each of the three handlers, before the body is parsed or the API key is read. Doing all three in one commit matters: fixing one leaves two open while the work looks finished.</p>
+<ol>
+  <li><strong>Verify the Firebase ID token</strong> from <code>Authorization: Bearer &lt;idToken&gt;</code> using <a href="https://github.com/panva/jose"><code>jose</code></a> (one small dependency with no sub-dependencies; it runs on Netlify's Node runtime).
+    <ul>
+      <li>The keys come from Google's public JWKS: <code>https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com</code> via <code>createRemoteJWKSet</code>, cached by jose.</li>
+      <li>Check <code>alg: RS256</code>, <code>iss = https://securetoken.google.com/tinker-hq-apps</code>, <code>aud = tinker-hq-apps</code>, <code>exp</code>/<code>iat</code> (jose does this), and a non-empty <code>sub</code>.</li>
+      <li>The project id is a <strong>constant in code</strong>, not an env var, so a mis-set variable can't point verification at another project.</li>
+    </ul></li>
+  <li><strong>Check the role against Firestore, rules-enforced.</strong>
+    <ul>
+      <li>The function makes a <code>GET https://firestore.googleapis.com/v1/projects/tinker-hq-apps/databases/(default)/documents/users/{sub}</code> carrying the <em>caller's own</em> ID token.</li>
+      <li>The existing self-read rule (<code>users</code>: <code>request.auth.uid == userId</code>) allows exactly that one doc. The function can therefore read nothing the signed-in user couldn't already read in the app, and it holds no credential of its own.</li>
+      <li>It requires <code>role ∈ {admin, manager}</code> and <code>active != false</code>, the same as the rules' <code>isManagerOrAbove()</code>.</li>
+      <li>A missing doc, a failed read or any other value returns 403.</li>
+    </ul></li>
+  <li><strong>Client:</strong> each of the four <code>fetch</code> calls adds <code>Authorization: Bearer ${await firebase.auth().currentUser.getIdToken()}</code> through one helper <code>authorizedFetch()</code>. On a 401/403 the manager sees "Email not sent — please reload and sign in again" (the publish and share paths already surface failures; the two assignment paths are fire-and-forget today and will log and show a notice).</li>
+  <li><strong>Close the per-function gaps in the same pass:</strong>
+    <ul>
+      <li><code>send-assignment-email</code>: pin <code>trainingUrl</code> as the other two do, and escape every interpolated value.</li>
+      <li><code>send-observation-email</code>: only CC <code>observerEmail</code> when it equals the verified token's <code>email</code>.</li>
+      <li>Recipient restriction: decision B.</li>
+    </ul></li>
+</ol>
+
+<h3>Why not <code>firebase-admin</code> (option B)</h3>
+<ul>
+  <li>It needs a <strong>service-account private key</strong> stored as a Netlify env var. That key bypasses every Firestore rule, for every staff app, and anyone holding it has full database access. Netlify also caps a function's env vars at 4 KB in total, and a service-account JSON is about 2.3 KB.</li>
+  <li>It adds a large dependency (about 30 MB installed) and slower cold starts.</li>
+  <li>It conflicts with the standing direction: no credential that skips rules (the <code>backup-js-uses-cli-token</code> and <code>firebase-agent-defense-hardening</code> notes).</li>
+  <li>The only thing it buys is <code>verifyIdToken(token, checkRevoked)</code>. Option A instead has up to a ~1 hour window in which a token stays valid after an account is disabled. Archiving (<code>active:false</code>) is still enforced immediately, because the role read goes through rules.</li>
+</ul>
+<div class="warn">
+  <strong>Note for Christie:</strong> step 2 is a raw Firestore REST call. The CLAUDE.md rule against raw REST calls is about the <em>Firebase CLI's cached token</em>, which bypasses rules. This call carries the <em>signed-in user's own</em> token and is rules-enforced, the same as the app's SDK reads. I believe it is within that rule, but it's your call (decision A).
+</div>
+
+<h2>Secrets / env vars on Netlify</h2>
+<table>
+<tr><th>Variable</th><th>Option A (recommended)</th><th>Option B</th></tr>
+<tr><td><code>RESEND_API_KEY</code></td><td>Already set, unchanged.</td><td>Unchanged.</td></tr>
+<tr><td>New secret</td><td><strong>None.</strong> The Google public keys are fetched at runtime and the project id is a code constant.</td><td><code>FIREBASE_SERVICE_ACCOUNT_JSON</code> (or base64), marked secret and scoped to Functions only. Christie would create the key in the Google Cloud Console and paste it into Netlify.</td></tr>
+<tr><td>Optional</td><td><code>EMAIL_DRY_RUN=1</code>, for <strong>local and test only</strong>: the function returns 200 "dry run" without calling Resend. It's fail-safe (it can only stop mail), and it must never be set on the production site.</td><td>Same.</td></tr>
+</table>
+
+<h2>Testing without production</h2>
+<ol>
+  <li><strong>Unit (Vitest, offline):</strong> <code>requireManager</code> takes an injectable key set and fetch.
+    <ul>
+      <li>Tests sign tokens with a locally generated RSA key (<code>jose.generateKeyPair</code> + <code>createLocalJWKSet</code>).</li>
+      <li>Cases: no header → 401; bad signature → 401; wrong <code>aud</code>/<code>iss</code> (another Firebase project's real-shaped token) → 401; expired → 401; <code>alg:none</code> → 401; valid token + role staff → 403; archived manager → 403; missing users doc → 403; Firestore 5xx → 403 (fails closed); valid manager → passes.</li>
+    </ul></li>
+  <li><strong>Handler tests (Vitest):</strong> each of the three handlers, with Resend mocked, returns 401/403 <em>and never constructs or calls Resend</em> when <code>requireManager</code> rejects. This is the test that proves all three are wired, not just one.</li>
+  <li><strong>Rules-path integration (Firestore emulator, studio-hub rules):</strong>
+    <ul>
+      <li>Start the Firestore emulator with <code>/Users/christiehubley/studio-hub/firestore.rules</code> (project <code>demo-tinker-training</code>) and seed manager, staff and archived users.</li>
+      <li>Point the REST base URL at <code>FIRESTORE_EMULATOR_HOST</code> and use the emulator's unsigned mock tokens, with only the signature step stubbed.</li>
+      <li>This proves the self-read rule allows the role read and refuses it for another uid.</li>
+      <li>The emulator base URL is chosen only from an explicit test-only constructor argument, never from an env var in production code.</li>
+    </ul></li>
+  <li><strong>Local end-to-end:</strong> run <code>netlify functions:serve</code> with <code>EMAIL_DRY_RUN=1</code> and a dev build. A signed-in emulator manager sees "Email sent (dry run)", and a curl with no token gets 401. No real mail is sent.</li>
+  <li><strong>After deploy (Christie):</strong>
+    <ul>
+      <li>One real publish to the test account (<code>test@tinkerartstudio.com</code>) succeeds.</li>
+      <li>A <code>curl -X POST https://tinker-training-hub.netlify.app/.netlify/functions/send-observation-email -d '{}'</code> returns 401 for each of the three functions.</li>
+    </ul></li>
+</ol>
+
+<div class="phase">
+<h3>Phase 1: shared guard and tests (execution-ready: false)</h3>
+<div class="bdd"><strong>Given</strong> a request with no or an invalid token <strong>when</strong> it hits any of the three functions <strong>then</strong> 401, and Resend is never called.</div>
+<div class="bdd"><strong>Given</strong> a valid token for a staff user <strong>then</strong> 403. <strong>Given</strong> a valid token for an active manager <strong>then</strong> the email is sent exactly as today.</div>
+<div class="bdd"><strong>Failure:</strong> Google's key endpoint or Firestore is unreachable → 403/503, no mail (fails closed).</div>
+</div>
+<div class="phase">
+<h3>Phase 2: client sends the token; per-function gaps closed (execution-ready: false)</h3>
+<div class="bdd"><strong>Given</strong> a manager publishes an observation <strong>then</strong> the email still goes out, and the CC includes them only if it's their own verified address.</div>
+<div class="bdd"><strong>Given</strong> a tab open since before the deploy (no token sent) <strong>when</strong> the manager publishes <strong>then</strong> they see "Email not sent — please reload", and the observation itself is still published.</div>
+</div>
+<div class="phase">
+<h3>Phase 3: review, then deploy with Christie</h3>
+<p>Claude and Codex implementation reviews; demo Playwright; <code>npm run deploy</code> only after "okay to deploy &lt;sha&gt;". Then the curl checks above.</p>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul><li>Rules: unchanged; this relies on the existing users self-read rule.</li><li>No Firestore writes added.</li><li>No credential that bypasses rules (option A).</li></ul>
+
+<h2>Completeness / interruption</h2>
+<p>Client and functions deploy together in one Netlify deploy. A half-done branch is never deployed. Rollback is the previous deploy (<code>2e969a1</code> or later) through Netlify's "Publish deploy", which restores the old open behaviour but loses no data.</p>
+
+<h2>Decisions needed from Christie</h2>
+<div class="decision-needed">
+<ul>
+  <li><strong>A.</strong> Option A (jose + rules-enforced role read with the user's own token; no new secret) or option B (firebase-admin + a service-account key on Netlify)? <strong>Recommended: A.</strong></li>
+  <li><strong>B.</strong> Should recipients also be restricted to people already in Training Hub (a users doc whose email matches)? It stops a compromised manager account mailing outsiders. The catch: the first-assignment email to a brand-new hire runs before their users doc may exist. Recommended: not now.</li>
+  <li><strong>C.</strong> Keep sending <code>tempPassword</code> in the first-assignment email at all? It's plaintext in an inbox; Studio Hub's "Add team member" already shows it to you to share.</li>
+</ul>
+</div>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li><strong>D1 (Oct 9):</strong> all three functions go through one shared guard in one commit (the "fixing one leaves two open" note).</li>
+  <li><strong>D2 (Oct 9):</strong> the project id is a code constant; the emulator URL is a constructor argument only, so production can never be pointed at an emulator by an env var.</li>
+</ul>
+</body>
+</html>

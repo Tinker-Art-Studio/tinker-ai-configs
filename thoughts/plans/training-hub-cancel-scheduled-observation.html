@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Training Hub cancel a scheduled observation</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Training Hub cancel a scheduled observation</h1>
+<p><strong>App:</strong> Training Hub (<code>~/Documents/New project</code>, project <code>tinker-hq-apps</code>) &middot;
+<strong>Branch:</strong> <code>claude/cancel-scheduled-observation</code> (worktree <code>.claude/worktrees/cancel-observation</code>, from origin/main <code>2e969a1</code>) &middot;
+<strong>Drafted:</strong> Oct 9 2026 (Christie away; autonomous session) &middot; <strong>v2</strong> after design review r1 (Claude agent: READY WITH CHANGES; Codex: NOT READY — all findings applied, D4–D10) &middot; <strong>execution-ready: true</strong> (branch only; Christie reviews before merge) &middot;
+<strong>No rules change, no deploy, no production data.</strong></p>
+
+<div class="status">
+  <strong>Goal:</strong> a manager who scheduled an observation that isn't going to happen can cancel it from the Observations tab, and it leaves the Upcoming list without deleting anything.
+</div>
+
+<h2>Current state (researched Oct 9 against <code>2e969a1</code>)</h2>
+<ul>
+  <li><code>handleCancelScheduledObservation(id)</code> (<code>src/App.tsx:1121</code>) writes <code>{status:'cancelled'}</code> through <code>updateScheduledObservation</code>. That's a merge write that only touches <code>status</code>. Then it patches local state. It is passed to <code>ObservationsWorkspace</code>, where <code>void onCancelScheduledObservation</code> (l.141) only silences an unused-prop warning. Nothing in the UI calls it. Its write is an <em>unconditional</em> merge-<code>set</code>.</li>
+  <li>The Upcoming card already hides anything except <code>upcoming</code>/<code>started</code> (l.210), so a cancelled entry disappears from it with no extra filtering needed.</li>
+  <li>Each Upcoming entry has an <strong>Edit</strong> button that opens <code>ScheduleObservationModal</code> in edit mode.</li>
+  <li>Collection <code>trainingObservationSchedule</code>: rules <code>allow read, write: if isManagerOrAbove()</code> (studio-hub <code>firestore.rules:400</code>). Managers can already write <code>status</code>. <strong>No rules change.</strong></li>
+  <li>For a <em>started</em> entry (a draft exists), deleting the draft tries to put the schedule back to <code>upcoming</code> and unlink it (<code>handleDeleteObservation</code>, App.tsx:807). That is best-effort: an unlink failure is logged. It also resets <em>every</em> linked schedule, whatever its status, so it would revive a cancelled one (r1).</li>
+  <li>Tests: Vitest for pure logic and the adapter (in-memory fake <code>testSupport/fakeFirebaseCompat.ts</code>: get/set/delete only, no update or transaction). There's no emulator harness in this repo, and no component tests (no jsdom/testing-library). The Playwright suite runs in demo mode, where <code>getScheduledObservations</code> returns <code>[]</code> and save/update throw, so there is no browser path to this card.</li>
+</ul>
+
+<h2>Design (v2)</h2>
+<ol>
+  <li><strong>Where:</strong> a "Remove from schedule…" button on the left of the <em>Edit</em> modal's footer. The modal already has two "Cancel" buttons that mean "close", so this one is not called Cancel (r1). The confirm reads "Remove <em>Name</em> · <em>Class</em> on <em>date</em> from the schedule? Press OK to remove it. The record is kept." OK is the destructive choice.</li>
+  <li><strong>Which entries:</strong> <code>upcoming</code> with no linked draft. For <code>started</code>, the modal says to delete the draft first, which returns the schedule to Upcoming. Helper: <code>canCancelScheduledObservation(s)</code>.</li>
+  <li><strong>Conditional write (D4).</strong> A new adapter method <code>cancelScheduledObservation(id)</code> runs a Firestore <em>transaction</em>. It reads the doc. If it doesn't exist, it throws "This observation no longer exists — reload". If its status isn't <code>upcoming</code> or it has an <code>observationId</code>, it throws "This observation has since been started — reload". Otherwise it calls <code>transaction.update({status:'cancelled', cancelledAt})</code>. Using <code>update</code> rather than merge-set means a missing doc is never recreated as a ghost.</li>
+  <li><strong>Draft delete no longer revives (D5, amended D11):</strong> <code>handleDeleteObservation</code> unlinks every linked schedule <em>except a cancelled one</em>. That is a pure helper <code>schedulesToUnlink(list, observationId)</code>, tested.</li>
+  <li><strong>Success handling (D6):</strong> on success the row is marked <code>cancelled</code> locally first and the modal closes, then the list is refetched as best-effort. On failure the modal stays open with "Couldn't remove: …".</li>
+  <li><strong>In-flight guard:</strong> Save and Remove share one <code>busy</code> state, and both are disabled while either runs.</li>
+  <li><strong>Upcoming filter:</strong> l.210 is changed to call the helper <code>activeScheduledObservations(list)</code> (filter and sort), so its test covers the code that actually renders.</li>
+  <li><strong>Soft cancel; no email</strong> (scheduling sends none).</li>
+</ol>
+
+<div class="phase">
+<h3>Phase 1: helpers and tests (execution-ready: false)</h3>
+<p><strong>Acceptance:</strong> the Vitest tests below fail before the helpers exist and pass after.</p>
+<div class="bdd"><strong>Happy:</strong> <strong>Given</strong> an <code>upcoming</code> schedule <strong>then</strong> <code>canCancelScheduledObservation</code> is true. <strong>Given</strong> it is then cancelled <strong>then</strong> <code>activeScheduledObservations</code> no longer contains it.</div>
+<div class="bdd"><strong>Edge:</strong> <code>started</code> → can't cancel, still listed. <code>completed</code>/<code>cancelled</code> → can't cancel, not listed. The sort is by <code>scheduledAt</code>.</div>
+<div class="bdd"><strong>Adapter:</strong> <code>cancelScheduledObservation</code> on an upcoming doc changes only <code>status</code>/<code>cancelledAt</code>; the other fields survive.</div>
+<div class="bdd"><strong>Adapter, refusal:</strong> on a doc that is now <code>started</code>, or has an <code>observationId</code>, it throws and the doc is unchanged. On a missing id it throws and <em>no doc is created</em>.</div>
+<div class="bdd"><strong>Helper:</strong> <code>schedulesToUnlink</code> returns started schedules linked to the draft and never cancelled ones.</div>
+<p>The fake gains <code>update</code> (throws on a missing doc, like Firestore) and <code>runTransaction</code>.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 2: UI wiring (execution-ready: false)</h3>
+<p><strong>Acceptance:</strong> in edit mode on an upcoming entry, a manager sees Remove from schedule…. Confirming closes the modal and the entry leaves Upcoming. Declining the confirm changes nothing. A failed write shows an error and keeps the modal open.</p>
+<div class="bdd"><strong>Failure:</strong> <strong>Given</strong> the write is rejected (offline or permission) <strong>when</strong> the manager confirms <strong>then</strong> the modal stays open with "Couldn't remove: &lt;message&gt;" and the entry is still listed.</div>
+<p><code>npm test</code>, <code>tsc -b</code>/<code>npm run build</code> and <code>npm run test:preview</code> (demo Playwright, which proves nothing else broke) all pass. The card itself is checked by code review, because demo mode has no schedules and the repo has no component tests (D2): confirm-declined, error shown and modal retained are review-only.</p>
+</div>
+
+<div class="phase">
+<h3>Phase 3: implementation review</h3>
+<p>An in-session Claude agent and <code>codex exec</code> review the diff. The branch is pushed and a PR opened, <strong>not merged and not deployed</strong>.</p>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+  <li>Rules: unchanged (manager+ write already).</li>
+  <li>Partial update: yes, a merge write of <code>status</code> only (adapter l.474). No <code>undefined</code> values; <code>withoutUndefined</code> is already applied.</li>
+  <li>Awaited: yes, and errors surface.</li>
+  <li>Bulk ops: none. Soft cancel, nothing deleted.</li>
+</ul>
+
+<h2>Completeness / interruption</h2>
+<p>One field, one write. If interrupted, the schedule is either still upcoming or cancelled. There's no partial state.</p>
+
+<h2>Resume instructions</h2>
+<p><code>cd "~/Documents/New project/.claude/worktrees/cancel-observation" &amp;&amp; git log --oneline origin/main..</code>, then <code>npm test</code>, then read the Decisions log.</p>
+
+<h2>Open questions for Christie</h2>
+<ul>
+  <li><strong>Q1:</strong> should cancelled observations be visible anywhere (e.g. a "Cancelled" line in history), or is "gone from Upcoming" enough? The plan does the latter; records are kept.</li>
+  <li><strong>Q2:</strong> should cancelling a <em>started</em> one be allowed directly, keeping the draft? The plan says no (delete the draft first).</li>
+</ul>
+
+<h2>Decisions log (append-only)</h2>
+<ul>
+  <li><strong>D1 (Oct 9):</strong> soft cancel through the existing handler; no hard delete. It matches how cancelled assignments are kept.</li>
+  <li><strong>D2 (Oct 9):</strong> no Playwright test for the card. Demo mode has no schedules, and adding demo schedule support is out of scope. Logic is covered by Vitest helpers and adapter tests, and the wiring by review.</li>
+  <li><strong>D4 (Oct 9, r1):</strong> a conditional transaction instead of the existing unconditional handler write (both reviewers). The old <code>handleCancelScheduledObservation</code> body is replaced.</li>
+  <li><strong>D5 (Oct 9, r1):</strong> draft delete unlinks only <code>started</code> schedules.</li>
+  <li><strong>D6 (Oct 9, r1):</strong> mark the row locally, then refetch best-effort.</li>
+  <li><strong>D7 (Oct 9, r1), accepted and not guarded:</strong> if another tab is <em>live-observing</em> that schedule and saves a draft or publishes after a cancel, it overwrites <code>cancelled</code> with <code>started</code>/<code>completed</code>. That reflects reality (the observation did happen), and no data is lost. Guarding the draft-link write is a wider change to a path that worked.</li>
+  <li><strong>D8 (Oct 9, r1):</strong> the existing <code>updateScheduledObservation</code> merge-<code>set</code> (the Edit path) is left alone, but noted as a follow-up: it should become <code>.update()</code> per AGENTS.md. Changing the Edit path is out of scope here.</li>
+  <li><strong>D9 (Oct 9, r1):</strong> emulator coverage. AGENTS.md asks for a failing emulator test first, but this repo has no emulator harness, and the rules for <code>trainingObservationSchedule</code> are unchanged and currently untested. Real-emulator rules tests (a manager can cancel; a staff user with <code>training</code> can't; the archived manager is denied) are added to the studio-hub rules suite on their own branch. App logic is tested against the fake.</li>
+  <li><strong>D10 (Oct 9, r1):</strong> no component-test framework is added (scope); modal behaviour is review-only.</li>
+  <li><strong>D11 (Oct 9, implementation review r1, Claude APPROVE WITH NITS / Codex APPROVE):</strong> <code>schedulesToUnlink</code> excludes only <code>cancelled</code> (not "started only"). Otherwise an upcoming schedule still carrying a link couldn't be unlinked, and so could never be removed. The closers (overlay, both Cancel buttons) are disabled while a save or remove is in flight, so its error can't land on a closed modal.</li>
+  <li><strong>Status Oct 9:</strong> built on <code>claude/cancel-scheduled-observation</code> (196ae09 red, d773bf8 feature, then review fixes). Vitest 201/201, demo Playwright 42/42. A PR is open; not merged or deployed. The real-manager browser check is owed after deploy, because demo mode has no schedules.</li>
+  <li><strong>D3 (Oct 9):</strong> upcoming only. Cancelling a started entry would leave a draft linked to a cancelled schedule.</li>
+</ul>
+</body>
+</html>
