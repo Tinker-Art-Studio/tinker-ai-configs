@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Remove Classbook one-off user setup pages</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; } td, th { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .warn { background: #fff8e6; border-left: 4px solid #c08a00; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+</style>
+</head>
+<body>
+<h1>Plan: Remove Classbook one-off user setup pages</h1>
+<p><strong>App:</strong> The Classbook (<code>~/tinker-spring-curriculum</code>) &middot; <strong>Branch:</strong> <code>claude/brave-khayyam-285438</code> (worktree <code>.claude/worktrees/frosty-bouman-965112</code>, from origin/main <code>5360e6d</code>) &middot;
+<strong>Drafted:</strong> Oct 9 2026 &middot; <strong>execution-ready: false</strong>. Waiting for Christie's go-ahead on the deletion. &middot; <strong>No Firestore writes, no rules change, no deploy, no merge.</strong></p>
+
+<div class="status"><strong>Goal:</strong> nobody can wipe a staff member's app access by opening an old setup page from the Classbook folder. Manage Team in Studio Hub becomes the only place users are edited.</div>
+
+<h2>Current state (research, Oct 9)</h2>
+<table>
+<tr><th>File</th><th>Last touched</th><th>What it does to production <code>users</code> in tinker-hq-apps</th><th>Referenced by</th></tr>
+<tr><td><code>user-admin.html</code></td><td>Mar 3 2026</td><td><code>saveUser</code> calls <code>update({name, role, appAccess, …})</code>, and <code>appAccess</code> holds only its 8 checkboxes, so every other grant is dropped (<code>classbook</code>, <code>classbook-admin</code>, <code>training</code>, <code>team</code>, <code>summer-camp</code>, <code>hiring</code>…). The role select offers only staff/manager/admin and falls back to <code>'staff'</code>, so saving a <code>prep</code> user demotes them. It also has a "create user" form and a hard-coded list of plaintext temp passwords.</td><td>only <code>check-live.sh</code> (asserts 404)</td></tr>
+<tr><td><code>fix-user-docs.html</code></td><td>Feb 26</td><td><strong>Deletes</strong> <code>users/{email}</code> docs, then overwrites matched docs with Feb 2026 <code>role</code> and <code>appAccess</code> (mostly <code>[]</code>). This one is worse than user-admin.</td><td>only <code>check-live.sh</code></td></tr>
+<tr><td><code>create-missing-user-docs.html</code></td><td>Mar 3</td><td>Creates <code>users</code> docs from a hard-coded Feb teacher list.</td><td>only <code>check-live.sh</code></td></tr>
+<tr><td><code>create-users.html</code></td><td>Feb 26</td><td>Writes <code>users</code> docs with Feb roles and access, and displays plaintext temp passwords.</td><td>only <code>check-live.sh</code></td></tr>
+<tr><td><code>create-auth-accounts.js</code></td><td>Feb 26</td><td>firebase-admin with application default credentials against <code>tinker-hq-apps</code>. It <code>set</code>s or <code>update</code>s <code>users</code> docs with Feb <code>appAccess</code> and <strong>bypasses rules</strong>.</td><td><code>package.json</code> <code>"main"</code> only (that field does nothing here)</td></tr>
+<tr><td><code>SETUP-USER-DOCS.md</code></td><td>Feb</td><td>Manual Console instructions for the same Feb setup. It's now stale and wrong (uses the old <code>curriculum-admin</code> key).</td><td>only <code>check-live.sh</code></td></tr>
+</table>
+<ul>
+  <li>None of these files is in <code>dist/</code> (<code>scripts/build-dist.sh</code> copies only index.html, assets, css and js), and <code>check-live.sh</code> asserts that all of them return 404 live. Nothing in <code>js/</code>, <code>index.html</code> or <code>e2e/</code> references them.</li>
+  <li><code>firebase-admin</code> stays a dependency because <code>e2e/emulators/seed.js</code> and <code>e2e/helpers/storage-move.js</code> use it.</li>
+  <li>Studio Hub Manage Team is the real editor, and its preserve-unknown-grants fix is in studio-hub PR #9 (<code>claude/manage-team-appaccess</code>).</li>
+</ul>
+
+<h2>Recommendation: delete, don't fix</h2>
+<ul>
+  <li><strong>Fixing user-admin.html would mean maintaining a second user editor</strong> that has to track every new app key and role, which is exactly the drift that caused this bug. Manage Team already does the job.</li>
+  <li>The other four are one-time Feb 2026 bootstrap tools with hard-coded rosters. Running any of them today would regress real users, and nothing can make them safe except deleting them.</li>
+  <li>Git history keeps them recoverable (<code>git show 5360e6d:user-admin.html</code>).</li>
+</ul>
+
+<div class="warn"><strong>Separate from the deletion, and Christie's call:</strong> several of these files contain plaintext temporary passwords for real staff accounts. They stay in git history (the repo is private) and were publicly served until Sep 25 2026. Deleting the files doesn't undo that. Recommended: in Firebase Console → Authentication, confirm that every account in those lists has changed its password since February, or send a reset. Rewriting git history isn't proposed (force-push to main is forbidden, and the Sep 25 exposure already happened).</div>
+
+<div class="phase">
+<h2>Phase 1: delete the setup tools (branch only)</h2>
+<p><strong>Changes:</strong> <code>git rm</code> the six files above. Change <code>package.json</code> <code>"main"</code> from <code>create-auth-accounts.js</code> to <code>index.html</code> (or remove it). <strong>Keep</strong> them in <code>check-live.sh</code>'s 404 list, so a stale Netlify deploy that still serves them is caught.</p>
+<p><strong>Acceptance:</strong> the Classbook folder has no page or script that writes to <code>users</code>. The app and the e2e suite behave exactly as before.</p>
+<div class="bdd"><strong>Happy:</strong> Given the branch, when <code>npm test</code> runs, then it passes with the same count as on main.</div>
+<div class="bdd"><strong>Edge:</strong> Given <code>npm run build:dist</code>, when it runs, then <code>dist/</code> is byte-identical to main's (none of these files were ever in it).</div>
+<div class="bdd"><strong>Failure:</strong> Given someone needs to know what the Feb setup did, when they look, then <code>git log --all -- user-admin.html</code> and <code>git show</code> recover it, and the commit message says where they went.</div>
+</div>
+
+<div class="phase">
+<h2>Phase 2: PR (no merge)</h2>
+<p>Push the branch and open a PR to <code>main</code> that links studio-hub PR #9 and this plan. Christie merges. No Netlify deploy is needed, because <code>dist/</code> doesn't change.</p>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<ul>
+  <li>Rules change: <strong>none</strong>. Firestore writes: <strong>none</strong> (the change only removes code that could write). Snapshot: not needed. updateDoc vs setDoc: n/a.</li>
+  <li>This is not "removing a data source". These pages read and write <code>users</code>, but they aren't a source of user data, and every user doc stays in Firestore.</li>
+</ul>
+
+<h2>Completeness / interruption</h2>
+<p>Phase 1 is a single commit. If it's interrupted before the commit, the branch is unchanged. If it's interrupted after the commit, the PR simply isn't opened yet. Nothing touches production at any point.</p>
+
+<h2>Resume</h2>
+<p>In the worktree, check <code>git log origin/main..HEAD</code>. If there's no "phase 1" commit, do Phase 1. If there is one but no PR, do Phase 2.</p>
+
+<h2>Decisions log</h2>
+<ol>
+  <li>Oct 9: recommend delete over fix (see above). Keep the 404 assertions in check-live.sh. Keep the firebase-admin dependency (e2e uses it). Include SETUP-USER-DOCS.md (stale companion doc). Pending Christie's approval.</li>
+</ol>
+</body>
+</html>
