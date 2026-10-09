@@ -22,8 +22,9 @@
 <p><strong>App:</strong> Tinker Ticker (<code>~/tinker-timeclock</code>, project <code>tinker-hq-apps</code>) &middot;
 <strong>Parent:</strong> Firebase Backend Resilience Plan, Step 4 (<code>firebase-backend-resilience-report.html</code>, plan_QTCn4wTWpk-h); proposal
 <code>~/Desktop/tinker-tools-not-deployed/app-data-loss-detection-report.md</code> §3 &middot;
-<strong>Drafted:</strong> Oct 9 2026 from <code>main</code> = <code>01c1b86</code> &middot; <strong>v1</strong> &middot;
-<strong>execution-ready: false</strong> (awaiting second-model plan review)</p>
+<strong>Drafted:</strong> Oct 9 2026 from <code>main</code> = <code>01c1b86</code> &middot;
+<strong>v2</strong> after plan review r1 (Claude: READY WITH CHANGES; Codex: NOT READY. Every finding was verified against the code; dispositions below) &middot;
+<strong>execution-ready: false</strong> (waiting on Christie's decision D3, then review r2)</p>
 
 <div class="status">
   <strong>Approval:</strong> Christie gave written approval in chat on Oct 9 2026 ("approved to start the Tinker Ticker step 4 work"; then
@@ -33,156 +34,199 @@
 </div>
 
 <div class="status">
-  <strong>Goal:</strong> once a pay period is locked, its hours can't be changed from Ticker until someone unlocks it, so the locked
-  totals payroll uses always match the punches underneath. And any manager or staff action whose save didn't reach the
-  database says so, instead of looking done.
+  <strong>Goal:</strong> once a pay period is locked, nothing <em>done through Ticker's screens</em> can change its clock hours until someone unlocks it,
+  so the locked totals payroll uses match the punches underneath. And any action whose save was refused says so, instead of looking done.
+  <br><strong>Scope of "locked":</strong> clock-entry hours only. Sick leave (HFWA) is deliberately NOT frozen (Christie, Sep 28: payroll re-reads
+  <code>timeclock_hfwa</code> live). Direct database access (SDK/console) is NOT covered; that's item E (rules).
 </div>
 
 <h2>Where the August proposal stands (checked against <code>01c1b86</code>, Oct 9)</h2>
 <table>
   <tr><th>Aug 14 item</th><th>Status now</th></tr>
-  <tr><td>1. The seven save functions don't really wait for the write</td><td>✅ <strong>Done.</strong> All seven <code>await</code> their write and return <code>false</code> on failure (Phase 5 of an earlier Ticker plan, pinned in <code>firebase-data.failure.test.js</code>). <strong>Left over:</strong> about 15 call sites still ignore that <code>false</code>. That's <strong>B</strong> below.</td></tr>
-  <tr><td>2. The lock is checked only in the two staff screens</td><td>Lock creation was fixed Sep 28–29 (read fresh → manager confirms the real numbers → a transaction that refuses a double lock).
-      <strong>Still open:</strong> admin edit/delete/add of an entry and approving a time correction never check the lock. That's <strong>A</strong> below.</td></tr>
-  <tr><td>3. <code>removeEmployee()</code></td><td>✅ Done (roster read before the splice; a failed roster save puts the person back; a failed schedule delete is named).</td></tr>
-  <tr><td>4. An unchangeable snapshot/export at lock time</td><td>The snapshot of totals is done (transaction, malformed-total guard). The raw-entries export is <strong>D</strong>, deferred to next session.</td></tr>
-  <tr><td>5. Sanity checks on staff edits</td><td><strong>C</strong>, deferred to next session.</td></tr>
-  <tr><td>6. The database rules enforce the lock</td><td><strong>E</strong>, deferred. It belongs with the parked <code>ticker-firestore-rules-hardening.html</code>, since it needs a rules release.</td></tr>
+  <tr><td>1. The seven save functions don't really wait</td><td>✅ Done (they <code>await</code> and return <code>false</code> on failure; <code>firebase-data.failure.test.js</code>). <strong>Left over:</strong> callers that ignore that result. That's <strong>B</strong>.</td></tr>
+  <tr><td>2. The lock is only checked in staff screens</td><td>Lock creation fixed Sep 28–29. <strong>Still open:</strong> admin edit/delete/add, approve/deny, and staff missing-punch reports never check the lock. That's <strong>A</strong>.</td></tr>
+  <tr><td>3. <code>removeEmployee()</code></td><td>✅ Done.</td></tr>
+  <tr><td>4. A snapshot/export at lock time</td><td>The totals snapshot is done. The raw export is <strong>D</strong> (next session).</td></tr>
+  <tr><td>5. Sanity checks on staff edits</td><td><strong>C</strong> (next session).</td></tr>
+  <tr><td>6. The rules enforce the lock</td><td><strong>E</strong> (next session, with <code>ticker-firestore-rules-hardening.html</code>).</td></tr>
 </table>
 
-<h2>Decisions already made (Christie, Oct 9)</h2>
+<h2>Decisions</h2>
 <ul>
-  <li><strong>The kiosk is out of scope.</strong> Its four clock writes already <code>await</code> directly, and changing the front-door flow is riskier than it's worth here. No in-flight display or double-tap guard is added there. (This settles the Aug §3.4 disagreement, part b.)</li>
-  <li><strong>Multi-step saves are listed one by one with their risk</strong> (the table under Phase 2), not rewritten as transactions. Only a sequence whose partial failure would leave payroll or the roster wrong gets a targeted fix. (This settles §3.4 part a.)</li>
-  <li><strong>Unlock → edit → relock is the way to change a locked period.</strong> Relock recomputes totals from the current entries. The Payroll Tool picks them up on the next "Pull from Timeclock" (which asks first, then discards manual Review adjustments). Explained to Christie in chat before she approved.</li>
+  <li><strong>D1 (Christie, Oct 9): the kiosk is out of scope.</strong> No in-flight display or double-tap guard there.</li>
+  <li><strong>D2 (Christie, Oct 9): multi-step saves are handled case by case</strong> (table under Phase 2), not rewritten as transactions wholesale.</li>
+  <li><strong>Unlock → edit → relock is the way to change a locked period</strong> (explained to Christie in chat). Relock recomputes totals, and the Payroll Tool picks them up on its next "Pull from Timeclock".</li>
 </ul>
+<div class="decision-needed">
+  <strong>D3 — NEEDS CHRISTIE: a single missing-punch report counts as paid hours immediately, even while pending and even after it's denied.</strong>
+  Found by plan review r1 and verified: <code>submitMissingPunch</code> (<code>js/app.js:1241</code>) saves a single missed clock-in or clock-out as an ordinary
+  <code>clock-in</code>/<code>clock-out</code> entry with a pending <code>changeRequest</code>. <code>calculateDayHours</code> (<code>js/app.js:1945</code>) and the Payroll Tool's own
+  calculation pair punches by <code>type</code> and never look at <code>changeRequest.status</code>. Only a whole missed shift waits for approval.
+  So pressing <em>Deny</em> on a single missing punch changes nothing about pay. That is a payroll bug in its own right, separate from the lock.
+  <br><strong>Options:</strong> (a) fix it next session with C, since it changes the hours calculation in BOTH Ticker and the Payroll Tool and needs its own plan; or (b) widen this plan.
+  <strong>Recommendation: (a).</strong> This plan already stops a missing punch from being added to a <em>locked</em> period (Phase 1). Changing what counts as hours is a bigger, two-app change that deserves its own review.
+  Until then, the workaround is that a manager <em>deletes</em> a wrong missing-punch entry in the entry editor instead of only denying it.
+</div>
 
 <h2>Current state (research, read-only)</h2>
 <ul>
-  <li><strong>Locks:</strong> <code>timeclock_settings/lockedPeriods</code>, one doc mapping <code>"YYYY-MM-DD_YYYY-MM-DD"</code> → <code>{lockedAt, lockedBy, employeeTotals}</code>.
-    <code>isDateInLockedPeriod(dateStr)</code> (<code>js/app.js:1869</code>) compares strings against an in-memory copy refreshed only when timesheets or the staff entry list render.</li>
-  <li><strong>Unchecked admin writes to hours:</strong>
-    <code>adminEditSaveEntry</code> (2512, <code>updateClockEntry</code>), <code>adminEditDeleteEntry</code> (2581, <code>deleteClockEntry</code>, and no double-click guard),
-    <code>adminEditAddEntry</code> (2600, <code>addClockEntry</code>, any date from the date picker), and <code>handleChangeRequest(…, 'approved')</code> (2711).
-    Approval changes hours: <code>calculateDayHours</code> counts an approved missed-shift's requested times, and a time correction rewrites <code>timestamp</code>.</li>
-  <li><strong>Writes to entries that don't change hours</strong> (unchanged here): change-request <em>denial</em>; staff <code>submitChangeRequest</code>/<code>submitMissingPunch</code> (pending, which counts for nothing until approved; the staff screens already block locked dates);
-    excuse paths (<code>excused</code>/<code>flaggedForReview</code>/<code>clock*StreakAfter</code>); kiosk punches (always "now", and a locked period is in the past).</li>
-  <li><strong>Rules:</strong> manager+ can write <code>timeclock_entries</code> and read <code>timeclock_settings</code>; nothing in the rules knows about locks (that's item E). This plan needs no rules change.</li>
-  <li><strong>Tests:</strong> <code>npm test</code> runs jest inside <code>firebase emulators:exec --only firestore</code>. Data functions are tested by running the real <code>js/firebase-data.js</code> in a <code>vm</code> sandbox
-    (against the emulator via the Admin SDK, see <code>pay-period-lock.emulator.test.js</code>, or against a fake db that can reject, see <code>firebase-data.failure.test.js</code>).
-    <code>js/app.js</code> callers are pinned by source-wiring tests in <code>schedule-editor-wiring.test.js</code>. This plan follows both conventions.</li>
-  <li><strong>Payroll Tool</strong> (<code>~/payroll-tool/index.html:2980</code> <code>pullFromTimeclock</code>) reads entries + <code>lockedPeriods[key].employeeTotals</code> on every pull. No field or format changes here, so no Payroll Tool change.</li>
+  <li><strong>Locks:</strong> <code>timeclock_settings/lockedPeriods</code>, one doc of <code>"YYYY-MM-DD_YYYY-MM-DD"</code> → <code>{lockedAt, lockedBy, employeeTotals}</code>.
+    <code>isDateInLockedPeriod</code> (<code>js/app.js:1869</code>) compares strings against an in-memory copy.</li>
+  <li><strong>What hours are made of</strong> (<code>calculateDayHours</code>, 1945; mirrored in the Payroll Tool around <code>index.html:3249</code>): <code>type</code>, <code>timestamp</code>, <code>date</code>, and for a <code>missed-shift</code>,
+    <code>changeRequest.status === 'approved'</code> + <code>requestedTimeIn/Out</code>. Plus attribution via the roster's <code>claimedBy</code> (<code>calcPeriodTotals</code>, 2030).</li>
+  <li><strong>Writes in Ticker's screens that change those fields, none lock-checked today:</strong>
+    <code>adminEditSaveEntry</code> (2512), <code>adminEditDeleteEntry</code> (2581), <code>adminEditAddEntry</code> (2600), <code>handleChangeRequest</code> approve AND deny (2711; deny matters because
+    turning an <em>approved</em> missed shift into denied removes its hours), and staff <code>submitMissingPunch</code> (1241). The kiosk is out of scope (D1).</li>
+  <li><strong>Writes that don't change hours:</strong> the excuse paths (<code>excused</code>, <code>flaggedForReview</code>, <code>clock*StreakAfter</code>); staff <code>submitChangeRequest</code> (1192) writes only <code>changeRequest.*</code> for a
+    clock event, and a correction only moves <code>timestamp</code> when a manager approves it.</li>
+  <li><strong>Rules:</strong> managers can write entries and read settings; staff can read <code>timeclock_settings</code> (<code>firestore.rules:508</code>) and create their own entries (467), so a staff
+    transaction that reads the lock doc and creates their entry is allowed. No rules change.</li>
+  <li><strong>Offline:</strong> persistence is on (<code>js/firebase-config.js:30</code>). A plain write made offline does NOT fail: it queues, its promise waits until reconnection, and the
+    cache shows it as done. A transaction offline fails (after Firestore's retries). So Phase 1's checked writes fail closed offline, while Phase 2's plain writes can only catch
+    <em>rejected</em> writes (rules, not ready). A hang while offline is a known, disclosed limit, not something this plan claims to fix.</li>
+  <li><strong>Tests:</strong> <code>npm test</code> = jest inside <code>firebase emulators:exec --only firestore</code>. Data functions run in a <code>vm</code> sandbox against the emulator via the Admin SDK
+    (<code>pay-period-lock.emulator.test.js</code>), or against a rejecting fake (<code>firebase-data.failure.test.js</code>). <code>app.js</code> callers are pinned by source-wiring tests (<code>schedule-editor-wiring.test.js</code>).</li>
 </ul>
 
 <!-- ═════════════════════════════════════════════ -->
 <div class="phase">
-<h2>Phase 1 — A: a locked period's hours can't be changed (execution-ready: false)</h2>
+<h2>Phase 1 — A: a locked period's clock hours can't be changed from Ticker (execution-ready: false)</h2>
 
 <h3>Acceptance criteria (user outcomes)</h3>
 <ol>
   <li>A manager who edits, deletes or adds a clock entry on a day inside a locked period gets
-      <em>"&lt;Day&gt; is in the locked pay period &lt;Sep 1 – Sep 15&gt; (locked by &lt;name&gt;). Nothing was changed. Unlock the period first, then lock it again after editing."</em>
+      <em>"&lt;Day&gt; is in the locked pay period &lt;Sep 1 – Sep 15&gt; (locked by &lt;name&gt;). Nothing was changed. Unlock the period first, then lock it again after editing."</em>,
       and the entry is unchanged in Firestore.</li>
-  <li>Approving a time correction or missed-punch request for a locked day is refused the same way, and the request stays pending.
-      <strong>Denying</strong> it still works, because a denial doesn't change hours.</li>
-  <li>The check runs against the database at the moment of the save, not against what the screen loaded. A period locked in another tab after the editor opened is still respected.</li>
-  <li>If the lock can't be confirmed (offline, read denied, any error), the save is refused with "Could not confirm whether this pay period is locked, so nothing was changed. Check your connection and try again." It fails closed.</li>
-  <li>The admin entry editor shows a "🔒 This day is in a locked pay period: read-only" note and disables Save/Delete/Add when the editor opens on a locked day.
-      That's a courtesy only. Criterion 1 is the real protection.</li>
-  <li>Nothing changes for an unlocked period: same toasts, same re-render.</li>
+  <li>A staff member who reports a missing punch for a locked day gets <em>"&lt;Day&gt; is in a pay period that's already been locked for payroll. Nothing was submitted. Please tell your manager directly."</em>, and nothing is saved.</li>
+  <li>Approving a correction or missing punch for a locked day is refused the same way, and the request stays pending.
+      Denying a <strong>pending</strong> request is still allowed in a locked period, because a pending request adds no approved hours.</li>
+  <li>Approve and Deny only act on a request that is <strong>still pending in the database</strong>. If someone else already reviewed it, the manager sees
+      <em>"This request was already &lt;approved/denied&gt; by &lt;name&gt;. Nothing was changed."</em> and the list refreshes. (No more approved→denied flips from a stale tab, and no second
+      approval overwriting <code>originalTimestamp</code>.)</li>
+  <li>The check happens in the database at the moment of the save. A period locked after the screen loaded is still respected.</li>
+  <li>If the lock can't be confirmed (offline, read denied, any error): <em>"Could not confirm whether this pay period is locked, so nothing was changed. Check your connection and try again."</em> It fails closed.</li>
+  <li>Save, Delete, Add, Approve, Deny and Submit are disabled while their save is in flight, so a double click can't send two.</li>
+  <li>When the entry editor opens on a locked day, it shows "🔒 This day is in a locked pay period" and disables Save and Delete on the listed entries.
+      Add is checked against the date chosen in its own date picker when pressed (it isn't disabled up front). The courtesy note is just a display; the database check in criterion 1 is what protects the data.</li>
+  <li>For an unlocked period everything works exactly as today.</li>
 </ol>
 
 <h3>Design</h3>
 <ul>
-  <li><strong>Pure helper</strong> <code>lockedPeriodForDate(lockedMap, dateStr)</code> in <code>js/schedule-helpers.js</code> (already shared with tests via <code>module.exports</code>).
-      It returns <code>{key, lockedBy, lockedAt}</code> or <code>null</code>, with inclusive start/end and a strict <code>YYYY-MM-DD</code> check on both the date and each key (a malformed key is skipped, never treated as locking everything).
-      <code>isDateInLockedPeriod</code> becomes a one-line call to it, so the screens and the write share one rule.</li>
-  <li><strong>Data layer</strong>, a new function in <code>js/firebase-data.js</code>:<br>
-      <code>writeClockEntryIfUnlocked({ op: 'update'|'delete'|'add', entryId, updates, entry })</code> → <code>{ ok, reason, id?, period? }</code>.<br>
-      It runs one <code>_db.runTransaction</code>:
-      <ol>
-        <li><code>tx.get(lockedPeriods)</code></li>
-        <li>for <code>update</code>/<code>delete</code>: <code>tx.get(entry)</code>. If it's missing → <code>{ok:false, reason:'not-found'}</code>. The date checked is the <strong>stored</strong> <code>date</code>, never the caller's copy.
-            For <code>update</code>, if <code>updates.date</code> is present and differs, both dates are checked (no admin path changes <code>date</code> today; this is defence against a future one).</li>
-        <li>for <code>add</code>: the date checked is <code>entry.date</code>. If it isn't a valid <code>YYYY-MM-DD</code> → <code>{ok:false, reason:'bad-date'}</code></li>
-        <li>if <code>lockedPeriodForDate</code> matches → <code>{ok:false, reason:'locked', period}</code> and nothing is written</li>
-        <li>otherwise <code>tx.update</code> / <code>tx.delete</code> / <code>tx.set(newRef, entry)</code> (a new id from <code>.doc()</code>, the same shape <code>addClockEntry</code> writes today)</li>
-      </ol>
-      Any thrown error → <code>{ok:false, reason:'error'}</code>, logged. A transaction can't commit without the server, so an offline device fails closed by construction.
-      A lock committed by another tab between our read and our commit makes Firestore retry the transaction, and the retry sees the lock.</li>
-  <li><strong>Callers</strong> in <code>js/app.js</code>: the three <code>adminEdit*</code> functions and the <code>status === 'approved'</code> branch of <code>handleChangeRequest</code> call the new function instead of
-      <code>updateClockEntry</code>/<code>deleteClockEntry</code>/<code>addClockEntry</code>. A shared <code>lockRefusalMessage(result)</code> turns <code>locked</code>/<code>error</code>/<code>not-found</code>/<code>bad-date</code> into the messages above.
-      On a <code>locked</code> refusal the caller also refreshes the in-memory <code>lockedPeriods</code> and re-renders, so the screen catches up with the truth.
-      The denial branch keeps <code>updateClockEntry</code>. <code>adminEditDeleteEntry</code> gains the same in-flight guard <code>adminEditSaveEntry</code> already has (<code>_aeeSaveInFlight</code>), and <code>adminEditAddEntry</code> disables its button while saving.</li>
-  <li><strong>Editor courtesy note:</strong> <code>openAdminEntryEditor</code> reads <code>getLockedPeriods()</code> fresh when it opens. If the day is locked, it shows the note and disables the three controls. If that read fails, the editor stays enabled, since the write still fails closed.</li>
+  <li><strong>Pure helper</strong> <code>lockedPeriodForDate(lockedMap, dateStr)</code> in <code>js/schedule-helpers.js</code> returns <code>{key, start, end, lockedBy, lockedAt}</code> or <code>null</code>.
+      Start and end are inclusive. The date and each key's two halves must pass the existing <code>isRealDate</code> (904); a malformed key is skipped, never treated as locking everything.
+      <code>isDateInLockedPeriod</code> becomes a one-line call to it. The helper is injected into every <code>vm</code> test context that loads <code>firebase-data.js</code>.</li>
+  <li><strong>Data layer</strong> (<code>js/firebase-data.js</code>), each returning <code>{ ok, reason, … }</code> and never throwing:
+    <ul>
+      <li><code>writeClockEntryIfUnlocked({ op, entryId, updates, entry, expectDate })</code> with <code>op</code> = <code>'update'|'delete'|'add'</code>.
+          For <code>add</code>, the new doc ref is allocated <strong>before</strong> the transaction (so a retry can't create a second one) and <code>entry.date</code> must pass <code>isRealDate</code> (<code>bad-date</code> otherwise).
+          Inside one <code>runTransaction</code>, all reads come before any write: <code>tx.get(lockedPeriods)</code>, plus for update/delete <code>tx.get(entry)</code>.
+          Missing → <code>not-found</code>. If <code>expectDate</code> is given and the stored <code>date</code> differs → <code>changed</code> (the caller built its timestamp for a date the entry no longer has).
+          The date checked is the stored one (plus <code>updates.date</code> if one is ever sent). Locked → <code>{reason:'locked', period}</code>. Otherwise the write.
+          The callback has no side effects besides <code>tx.*</code>, so a retry is safe.</li>
+      <li><code>reviewChangeRequest(entryId, decision, buildUpdates)</code> for <code>decision</code> = <code>'approved'|'denied'</code>. In one transaction it reads the lock doc and the entry.
+          Missing → <code>not-found</code>. <code>changeRequest.status !== 'pending'</code> → <code>{reason:'already-reviewed', status, reviewedBy}</code>.
+          For approve, a locked date → <code>locked</code>. Deny of a pending request is allowed even when locked.
+          <code>buildUpdates(storedEntry)</code> builds the updates from the copy read <strong>inside</strong> the transaction (not the earlier, possibly cached read) and may return
+          <code>{error:'bad-time'}</code> → <code>{reason:'bad-time'}</code> with nothing written.</li>
+    </ul>
+      Any thrown error → <code>{ok:false, reason:'error'}</code>, logged. A transaction can't commit offline, so this fails closed.</li>
+  <li><strong>Callers</strong> (<code>js/app.js</code>):
+    <ul>
+      <li>The three <code>adminEdit*</code> functions use <code>writeClockEntryIfUnlocked</code>. Save passes <code>expectDate: entry.date</code>.</li>
+      <li><code>handleChangeRequest</code> uses <code>reviewChangeRequest</code> for both decisions. Its update-building moves into the <code>buildUpdates</code> callback. An empty time box now returns <code>bad-time</code>
+          ("Enter a time before approving") instead of throwing with no message. The time conversion itself (browser-local <code>new Date(date+'T'+time)</code>) is left unchanged on purpose: it must match the Payroll Tool's identical parsing, and Ticker's managers are in Mountain Time. Recorded as a residual.</li>
+      <li><code>submitMissingPunch</code> (both the single punch and the whole-shift branch) uses <code>writeClockEntryIfUnlocked({op:'add'})</code>.</li>
+      <li>One <code>describeWriteRefusal(result, context)</code> turns each reason into the messages above. On <code>locked</code> or <code>already-reviewed</code> the caller refreshes <code>lockedPeriods</code> / the list and re-renders.</li>
+      <li>In-flight guards: Delete reuses <code>_aeeSaveInFlight</code>; Add, Approve/Deny (per entry id) and Submit disable their button until the result comes back.</li>
+    </ul></li>
+  <li><strong>Editor courtesy note:</strong> <code>openAdminEntryEditor</code> (2428) reads <code>getLockedPeriods()</code> when it opens. A failed read leaves controls enabled, since the write still fails closed.</li>
 </ul>
 
 <h3>BDD</h3>
-<div class="bdd"><strong>Happy:</strong> Given Sep 1–15 is unlocked, when a manager changes Kaitlyn's Sep 3 clock-out to 5:00 PM with a reason, then the entry's timestamp updates, the toast says "Saved", and the timesheet re-renders as today.</div>
-<div class="bdd"><strong>Locked edit:</strong> Given Sep 1–15 is locked by Anika, when a manager saves, deletes or adds an entry dated Sep 1, Sep 8 or Sep 15, then each is refused with the locked message naming Anika and the entry docs are byte-identical before and after.</div>
-<div class="bdd"><strong>Boundary:</strong> Given Sep 1–15 is locked, when a manager adds an entry dated Sep 16 (or Aug 31), then it saves.</div>
-<div class="bdd"><strong>Locked after opening:</strong> Given the editor was opened on an unlocked Sep 8, when another manager locks Sep 1–15 and this manager then presses Save, then it's refused (the transaction reads the lock at save time).</div>
-<div class="bdd"><strong>Stale date:</strong> Given the screen's copy of an entry says Sep 16 but the stored doc says Sep 15 (locked), when it's edited, then it's refused (the stored date decides).</div>
-<div class="bdd"><strong>Approval:</strong> Given a pending missed-shift request on a locked day, when a manager presses Approve, then it's refused, the request stays pending and no push is sent. When the manager presses Deny, the denial is saved and the push sent.</div>
-<div class="bdd"><strong>Failure:</strong> Given the device is offline or the lock read is denied, when a manager saves an edit on any day, then it's refused with "Could not confirm whether this pay period is locked…" and nothing is written. The editor's Save is usable again afterwards.</div>
-<div class="bdd"><strong>Gone:</strong> Given the entry was deleted elsewhere, when a manager saves an edit to it, then "That entry no longer exists — refresh" is shown and nothing is created.</div>
-<div class="bdd"><strong>Malformed lock key:</strong> Given <code>lockedPeriods</code> holds a key <code>"oops"</code> alongside a real one, then only the real period locks anything.</div>
-<div class="bdd"><strong>No lock doc:</strong> Given <code>timeclock_settings/lockedPeriods</code> doesn't exist (a fresh studio), then every edit saves (a missing doc means nothing is locked; it isn't an error).</div>
+<div class="bdd"><strong>Happy:</strong> Given Sep 1–15 is unlocked, when a manager changes Kaitlyn's Sep 3 clock-out to 5:00 PM with a reason, then the entry updates, "Saved" shows, and the timesheet re-renders as today.</div>
+<div class="bdd"><strong>Locked edit:</strong> Given Sep 1–15 is locked by Anika, when a manager saves, deletes or adds an entry dated Sep 1, Sep 8 or Sep 15, then each is refused naming Anika, and the docs are identical before and after.</div>
+<div class="bdd"><strong>Boundary:</strong> Given Sep 1–15 is locked, an add dated Sep 16 or Aug 31 saves.</div>
+<div class="bdd"><strong>Locked mid-save (concurrency):</strong> Given the entry transaction has read <code>lockedPeriods</code> (unlocked) and is paused, when a lock commits, then the transaction retries and refuses. (This is the one property a read-then-write would fail.)</div>
+<div class="bdd"><strong>Stale date:</strong> Given the screen's copy says Sep 16 but the stored doc says Sep 17, when Save is pressed, then it's refused with "This entry changed since you opened it — reopen the day", and nothing is written.</div>
+<div class="bdd"><strong>Staff missing punch:</strong> Given Sep 1–15 is locked, when a staff member reports a missing clock-out (or a whole missed shift) for Sep 10, then it's refused and nothing is saved. Sep 16 saves as today.</div>
+<div class="bdd"><strong>Approve locked:</strong> Given a pending correction on a locked day, when Approve is pressed, then it's refused, the request stays pending and no push is sent.</div>
+<div class="bdd"><strong>Deny pending, locked:</strong> Given a pending request on a locked day, when Deny is pressed, then the denial saves and the push is sent.</div>
+<div class="bdd"><strong>Stale tab:</strong> Given a missed shift was approved (and the period then locked), when a stale tab presses Deny (or Approve again), then "already approved by …" shows and the stored request, <code>timestamp</code> and <code>originalTimestamp</code> are unchanged.</div>
+<div class="bdd"><strong>Empty time:</strong> Given the correction's time box is cleared, when Approve is pressed, then "Enter a time before approving" shows and nothing is written.</div>
+<div class="bdd"><strong>Failure:</strong> Given the lock read fails or the device is offline, when any of these saves runs, then it's refused with "Could not confirm…" and nothing is written. The button is usable again.</div>
+<div class="bdd"><strong>Gone:</strong> Given the entry was deleted elsewhere, an edit or review shows "That entry no longer exists — refresh" and creates nothing.</div>
+<div class="bdd"><strong>Malformed key / no lock doc:</strong> A key <code>"oops"</code> or <code>"2026-02-30_2026-03-05"</code> locks nothing. A missing <code>lockedPeriods</code> doc means nothing is locked.</div>
+<div class="bdd"><strong>Double click:</strong> Given Delete (or Add, Approve) is pressed twice quickly, then one write happens.</div>
 
 <h3>Tests (written first, red before the fix)</h3>
 <ul>
-  <li><code>pay-period-lock-writes.emulator.test.js</code> (new, added to <code>npm test</code>): the real <code>firebase-data.js</code> in the <code>vm</code> harness against the emulator. It covers every BDD above at the data layer: update/delete/add × locked/unlocked/boundary; stored date wins; not-found; malformed key; missing doc; doc contents compared before/after a refusal.</li>
-  <li><code>firebase-data.failure.test.js</code>: a <code>runTransaction</code> that rejects → <code>{ok:false, reason:'error'}</code>, never a write.</li>
-  <li><code>schedule-helpers.test.js</code>: <code>lockedPeriodForDate</code> covers inclusive edges, a malformed key, a malformed date, and an empty or missing map.</li>
-  <li><code>schedule-editor-wiring.test.js</code>: the four call sites use <code>writeClockEntryIfUnlocked</code> and no longer call the old writers; the denial branch doesn't; <code>isDateInLockedPeriod</code> delegates to the helper; the delete in-flight guard exists.</li>
+  <li><code>pay-period-lock-writes.emulator.test.js</code> (new, added to <code>npm test</code>): the real <code>firebase-data.js</code> in the <code>vm</code> harness against the emulator, with the
+      helper injected. It covers every data-layer BDD above, comparing doc contents before and after each refusal.</li>
+  <li><strong>The concurrency BDD</strong> needs the web SDK's optimistic retry, which the Admin SDK (pessimistic locks in the emulator) doesn't exercise. The test therefore runs
+      <code>firebase-data.js</code> against the <strong>web compat SDK</strong> (<code>firebase</code> v12 is already a dependency, and <code>_lib/shift-reminder-firestore.js</code> already uses the web SDK against the emulator in tests) with a
+      <code>runTransaction</code> wrapper that pauses after the first <code>tx.get</code>, commits a lock with the Admin SDK, then resumes. If the web SDK can't be driven this way in jest, the fallback is a
+      fake-db test asserting the callback re-reads on retry, and the limit is recorded in the Decisions log. It is not silently dropped.</li>
+  <li><code>firebase-data.failure.test.js</code>: a rejecting <code>runTransaction</code> → <code>{ok:false, reason:'error'}</code> for both new functions; a denied read → refused.</li>
+  <li><code>schedule-helpers.test.js</code>: <code>lockedPeriodForDate</code> for inclusive edges, impossible dates, malformed keys, an empty/missing map.</li>
+  <li><code>schedule-editor-wiring.test.js</code>: each of the six call sites uses the new functions and no longer calls the old writers; <code>isDateInLockedPeriod</code> delegates; the in-flight guards exist;
+      Add checks the picker date; the editor note disables only Save/Delete.</li>
 </ul>
 </div>
 
 <!-- ═════════════════════════════════════════════ -->
 <div class="phase">
-<h2>Phase 2 — B: a failed save never looks done (execution-ready: false)</h2>
+<h2>Phase 2 — B: a refused save never looks done (execution-ready: false)</h2>
 
 <h3>Acceptance criteria</h3>
-<p>For every call site below: when the save fails, the person sees a plain message saying what did NOT happen, the screen keeps showing the real state (no local
-"success" update), and no follow-on step runs that assumes the save landed (a push, an email, a schedule migration). On success, behaviour is unchanged.</p>
+<p>For every row below: when the save is <strong>refused</strong> (rules, not ready, error), the person sees a plain message saying what did NOT happen, the screen keeps the real state
+(no local "success" update), and no follow-on step that assumes success runs (push, email, schedule move, timer, success alert). On success, nothing changes.
+(Offline plain writes queue and resolve later; that's the disclosed limit above, not covered here.)</p>
 
 <table>
-  <tr><th>#</th><th>Where (<code>js/app.js</code>)</th><th>What ignores the result today</th><th>Change</th></tr>
-  <tr><td>B1</td><td><code>completeTimeOff</code> 8784</td><td>Marks completed and reloads as if it worked</td><td>Check; on failure alert "Not marked complete — try again", no reload-as-success</td></tr>
-  <tr><td>B2</td><td><code>reopenTimeOff</code> 8862</td><td>Same</td><td>Same pattern ("Not reopened")</td></tr>
-  <tr><td>B3</td><td><code>autoCompletePassedTimeOff</code> 6950 (runs on load)</td><td>Sets <code>r.status='completed'</code> locally even if the write failed</td><td>Update local state only for writes that landed; failures are logged, with no alert (it retries on next load), and the request stays "approved" on screen</td></tr>
-  <tr><td>B4</td><td><code>addTimeOffComment</code> 7895</td><td>Sends push + email for a comment that may not exist</td><td>Check; on failure keep the typed text, alert, send nothing</td></tr>
-  <tr><td>B5</td><td><code>checkNameClaim</code> 5972–5973</td><td>Roster save and schedule migration both unchecked</td><td>Roster save fails → undo <code>claimedBy</code> locally, no migration, show the claim error. Migration fails → see table row M1</td></tr>
-  <tr><td>B6</td><td><code>handleClaimName</code> 6066</td><td>Migration result ignored (roster save already checked)</td><td>See M1</td></tr>
-  <tr><td>B7</td><td><code>mergeDuplicateRosterEntry</code> 6727</td><td>Shows "Merged" whether or not the roster saved</td><td>Check; on failure alert "Not merged — nothing changed", keep the old <code>employeeRoster</code></td></tr>
-  <tr><td>B8</td><td><code>confirmAssignUser</code> 6771–6772</td><td>Roster save + migration unchecked, shows "Assigned"</td><td>Roster fails → alert, no migration, no local change. Migration fails → M1</td></tr>
-  <tr><td>B9</td><td><code>excuseLateClockOut</code> / <code>excuseLateClockIn</code> 10577 / 10614</td><td>The entry's streak annotation (<code>clock*StreakAfter</code>) unchecked</td><td>Check; on failure a toast says the streak was restored but that entry's 🔥 number may show the old value. Low stakes, display only</td></tr>
-  <tr><td>B10</td><td><code>trackLateClockOut</code> 652 (self-service late clock-out, not the kiosk)</td><td>Streak save result ignored</td><td>Check and <code>console.error</code> only. The clock-out itself already saved; the streak is cosmetic and the staff member shouldn't get an alarming popup. Logged as accepted</td></tr>
+  <tr><th>#</th><th>Where (<code>js/app.js</code>)</th><th>Today</th><th>Change</th></tr>
+  <tr><td>B1</td><td><code>completeTimeOff</code> 8784</td><td>A failure shows no message (the list reload then shows the real state)</td><td>Check; alert "Not marked complete — try again"</td></tr>
+  <tr><td>B2</td><td><code>reopenTimeOff</code> 8862</td><td>Same</td><td>Same ("Not reopened")</td></tr>
+  <tr><td>B3</td><td><code>autoCompletePassedTimeOff</code> 6950 (on load)</td><td>Sets <code>r.status='completed'</code> locally even if the write failed</td><td>Update local state only for writes that landed; log failures, no alert (it retries on next load)</td></tr>
+  <tr><td>B4</td><td><code>addTimeOffComment</code> 7877</td><td>Rewrites the whole comments array (can lose a comment saved at the same moment) and sends push + email regardless</td><td>Write via the existing <code>appendTimeOffComment</code> (<code>arrayUnion</code>, returns its result). Push/email only on true; on failure keep the typed text and alert. The first read stays for routing only.</td></tr>
+  <tr><td>B5</td><td><code>checkNameClaim</code> 5970–5973</td><td>Roster save and schedule move both unchecked</td><td>Roster refused → undo <code>claimedBy</code> locally, no move, and the claim modal shows the error. Move refused → M1.</td></tr>
+  <tr><td>B6</td><td><code>handleClaimName</code> 6066</td><td>Move result ignored</td><td>M1</td></tr>
+  <tr><td>B7</td><td><code>mergeDuplicateRosterEntry</code> 6727</td><td>Shows "Merged" regardless</td><td>Check; alert "Not merged — nothing changed"; keep the old <code>employeeRoster</code></td></tr>
+  <tr><td>B8</td><td><code>confirmAssignUser</code> 6771–6772</td><td>Roster + move unchecked; shows "Assigned"</td><td>Roster refused → alert, no move, no local change. Move refused → M1</td></tr>
+  <tr><td>B9</td><td><code>excuseLateClockOut/In</code> 10577 / 10614</td><td>Entry annotation unchecked</td><td>Check; on failure a toast says the streak was restored but that entry's 🔥 number may show the old value</td></tr>
+  <tr><td>B10</td><td><code>submitLateClockOut</code> 579–587 → <code>trackLateClockOut</code> 652</td><td>Streak tracking runs even if <code>doClockOut</code> failed; the streak save is unchecked</td><td>Only track when the clock-out returned success; the streak save failure goes to <code>console.error</code> (cosmetic, no popup)</td></tr>
+  <tr><td>B11</td><td>Clock-in button 473–475</td><td>Starts the shift-end timer even if <code>doClockIn</code> failed</td><td>Start the timer only on success (doClockIn already shows its own failure message)</td></tr>
+  <tr><td>B12</td><td>Seed employees 6139–6155</td><td>After "Failed to seed", still alerts "Added N employee(s)"</td><td>The success alert only after a successful save</td></tr>
 </table>
-<p><em>Already fine, so no change:</em> 7872 <code>appendTimeOffComment</code> returns the result, and its callers check it. Every other site in the call-site sweep checks its result. Execution re-runs the sweep (<code>grep</code> for each writer) and adds any site found since <code>01c1b86</code> to this table before changing code.</p>
+<p><em>Execution re-runs the full sweep before changing code:</em> every writer in <code>firebase-data.js</code> (<code>addClockEntry</code>, <code>updateClockEntry</code>, <code>deleteClockEntry</code>, <code>saveSchedule</code>, <code>deleteSchedule</code>,
+<code>saveSettings</code>, <code>updateTimeOffRequest</code>, <code>saveStreakData</code>, <code>saveEmployeeRoster</code>, <code>migrateSchedule</code>, <code>appendTimeOffComment</code>, and the rest), every direct <code>getDb()/db.collection(…).set|update|delete|add</code> in <code>app.js</code>,
+and callers of the app-level wrappers that return success (<code>doClockIn</code>, <code>doClockOut</code>, …). Any new site is added to this table before code changes. Kiosk block = explicit allowlist (D1).</p>
 
-<h3>Multi-step saves: risk, case by case (Christie's decision 2)</h3>
+<h3>Multi-step saves: risk, case by case (D2)</h3>
 <table>
   <tr><th>#</th><th>Sequence</th><th>If it stops halfway</th><th>Decision</th></tr>
-  <tr><td>M1</td><td>Name claim / assign: roster <code>claimedBy</code> saved → then <code>migrateSchedule</code> copies <code>emp_*</code> schedule to the uid</td>
-      <td>The person is linked but their schedule stays under the old id. Kiosk hours still merge by <code>claimedBy</code> (payroll is safe). Their shifts may not show under their name.</td>
-      <td><strong>Targeted:</strong> check the result; on failure tell the manager/staff "Linked, but their schedule couldn't be moved. It still shows under the old entry; try Assign again or tell Christie." Retrying is safe: <code>migrateSchedule</code> returns true when there's nothing left to move.</td></tr>
-  <tr><td>M2</td><td><code>approveTimeOff</code>: request status → schedule overrides</td><td>Already handled by Phases 3a/3b/4 of the time-off plans (<code>reversalPending</code>, checked reversals)</td><td>No change; recorded</td></tr>
-  <tr><td>M3</td><td>Excuse: entry <code>excused</code> → streak doc → entry annotation</td><td>The streak is restored but the annotation is stale (display only); or the entry is excused but the streak isn't restored (it shows as a lost streak, fixable by excusing again)</td><td><strong>Accept + B9's message.</strong> No payroll effect</td></tr>
-  <tr><td>M4</td><td><code>removeEmployee</code>: roster → schedule deletes</td><td>Already handled (Phase 5): named failure, recoverable from All Schedules</td><td>No change</td></tr>
-  <tr><td>M5</td><td>Admin edit (Phase 1)</td><td>A single document per write, now in one transaction</td><td>n/a</td></tr>
+  <tr><td>M1</td><td>Claim / assign: roster <code>claimedBy</code> saved → <code>migrateSchedule</code> copies <code>emp_*</code> to the uid</td>
+      <td>Linked, but the schedule stays under the old id. Kiosk hours still merge via <code>claimedBy</code> (payroll safe). Today nothing offers a retry: Assign only shows for unclaimed entries, and Orphaned Schedules only lists an <code>emp_*</code> doc when a uid doc <em>also</em> exists (<code>renderOrphanedSchedules</code>, 6584).</td>
+      <td><strong>Targeted fix.</strong> On refusal, say "Linked, but their schedule couldn't be moved. It's listed under Roster → Schedules not moved yet." Add that case to <code>renderOrphanedSchedules</code>: a claimed roster entry whose <code>emp_*</code> schedule exists and whose uid schedule does NOT gets a <strong>Move schedule</strong> button that calls <code>migrateSchedule(empId, claimedBy)</code> (safe to repeat) and re-renders. Tested through that button's wiring, not only the helper.</td></tr>
+  <tr><td>M2</td><td><code>approveTimeOff</code>: request → schedule overrides</td><td>Handled by earlier phases (<code>reversalPending</code>, checked reversals)</td><td>No change</td></tr>
+  <tr><td>M3</td><td>Excuse: entry → streak doc → entry annotation</td><td>A display-only mismatch, fixable by excusing again</td><td>Accept + B9's message. No hours effect</td></tr>
+  <tr><td>M4</td><td><code>removeEmployee</code></td><td>Handled (Phase 5)</td><td>No change</td></tr>
+  <tr><td>M5</td><td>Phase 1 writes</td><td>One document per transaction</td><td>n/a</td></tr>
 </table>
 
 <h3>BDD</h3>
 <div class="bdd"><strong>Happy:</strong> Given a past approved time-off request, when a manager presses Mark Complete, then it shows Completed exactly as today.</div>
-<div class="bdd"><strong>Failure:</strong> Given the write is denied, when a manager presses Mark Complete / Undo Complete / Merge / Assign, or posts a comment, then they see what was NOT done, the screen still shows the old state, and no push or email is sent.</div>
-<div class="bdd"><strong>Edge:</strong> Given two passed requests on load and one write fails, then one shows Completed and the other stays Approved (not both Completed).</div>
-<div class="bdd"><strong>Partial (M1):</strong> Given the roster save works and <code>migrateSchedule</code> fails, when a manager assigns an account, then the "Linked, but…" message shows and pressing Assign again later completes the move.</div>
+<div class="bdd"><strong>Refused:</strong> Given the write is denied, when a manager presses Mark Complete / Undo Complete / Merge / Assign, or posts a comment, then they see what was NOT done, the screen shows the old state, and no push or email is sent.</div>
+<div class="bdd"><strong>Edge:</strong> Given two passed requests on load and one write fails, then one shows Completed and the other stays Approved.</div>
+<div class="bdd"><strong>Comments race:</strong> Given two people comment on the same request at the same moment, then both comments are kept.</div>
+<div class="bdd"><strong>Partial (M1):</strong> Given the roster save works and the schedule move fails, then the "Linked, but…" message shows, Roster lists the person under "Schedules not moved yet", and pressing Move schedule moves it and the row disappears.</div>
+<div class="bdd"><strong>Clock-out failed:</strong> Given <code>doClockOut</code> fails on a late clock-out, then no late-streak tracking runs.</div>
 
 <h3>Tests</h3>
 <ul>
-  <li><code>schedule-editor-wiring.test.js</code>, new describe block "Step 4 B: every save result is read": for each B-row, assert the call's result is bound and branched on, and that the success-only steps (push/email/<code>employeeRoster =</code>/<code>r.status =</code>/<code>migrateSchedule</code>) sit inside the success branch. This is the repo's convention for <code>app.js</code>.</li>
-  <li>A sweep test: every <code>await saveEmployeeRoster(</code> / <code>updateTimeOffRequest(</code> / <code>migrateSchedule(</code> / <code>saveStreakData(</code> / <code>updateClockEntry(</code> call in <code>app.js</code> outside the kiosk block has its result used, so a future bare <code>await x(…);</code> fails the suite. The kiosk lines (<code>void updateClockEntry</code> at 9953/10370) are an explicit allowlist with the reason.</li>
+  <li><code>schedule-editor-wiring.test.js</code>, describe "Step 4 B": for each row, the result is bound and branched on, and the success-only follow-ons sit inside the success branch.</li>
+  <li>Sweep test: for every writer and success-returning wrapper named above (any call form: <code>await</code>, bare, <code>.then</code>), a call in <code>app.js</code> whose result is discarded fails the suite, except an explicit allowlist (the kiosk lines, each with its reason). This is a guard against regressions, not a substitute for the per-row tests.</li>
+  <li>An emulator test that two <code>appendTimeOffComment</code> calls on one request both persist.</li>
 </ul>
 </div>
 
@@ -190,59 +234,85 @@
 <div class="phase">
 <h2>Phase 3 — Release (execution-ready: false)</h2>
 <ol>
-  <li>A second-model <strong>implementation</strong> review after each of Phases 1 and 2 (both write payroll-adjacent data), with findings fixed before moving on.</li>
-  <li>Bump the service-worker cache (<code>sw.js</code>) so open pages pick up the change.</li>
+  <li>A second-model <strong>implementation</strong> review (Claude + Codex) after each of Phases 1 and 2, with findings fixed before moving on.</li>
+  <li>Bump the service-worker cache (<code>sw.js</code>).</li>
   <li>Push to <code>origin/main</code>; <code>npm run deploy:check</code>; ask Christie with the printed sentence; <code>npm run deploy -- --approved &lt;sha&gt;</code> only after "okay to deploy tinker ticker &lt;full sha&gt;".</li>
-  <li>Live check with Christie, which can only be done in production: open a day in a <strong>locked</strong> period in the entry editor → read-only note; open an unlocked day → edit works as before. No real entry is changed for the check; she presses Save only on a test edit she chooses, or not at all.</li>
-  <li>Update the parent plan's Step 4 status, CLAUDE.md (a short "Pay-period lock enforcement" note) and memory.</li>
+  <li>Live check with Christie: open a day in a <strong>locked</strong> period in the entry editor → the lock note shows and Save/Delete are disabled; open an unlocked day → it works as before. No real entry is changed for the check.</li>
+  <li>Update the parent plan's Step 4 status, Ticker CLAUDE.md (a "Pay-period lock enforcement" note) and memory.</li>
 </ol>
 </div>
 
 <h2>Firebase safety checklist</h2>
 <ul>
-  <li>Rules change? <strong>No.</strong> Manager+ already writes <code>timeclock_entries</code> and reads <code>timeclock_settings</code>. New collection? <strong>No.</strong></li>
-  <li>Partial updates stay <code>update</code> (<code>tx.update</code>); the add is a new doc. No <code>set</code> without merge is introduced.</li>
-  <li>Empty fields: the add writes the same object <code>adminEditAddEntry</code> builds today (no empty strings). The edit writes the same <code>updates</code> as today.</li>
-  <li>Bulk delete/import? <strong>No.</strong> No snapshot needed.</li>
-  <li>Emulator tests first, red before green (Phase 1 data layer); wiring tests for <code>app.js</code>.</li>
-  <li>Payroll Tool: no field or format change. A refusal leaves raw entries unchanged, which is exactly what the Payroll Tool's discrepancy check assumes.</li>
-  <li>Console spot-check after release: one locked period's <code>lockedPeriods</code> entry unchanged, and one entry Christie tried to edit (if any) unchanged.</li>
+  <li>Rules change? <strong>No.</strong> New collection? <strong>No.</strong> (Staff can already read <code>timeclock_settings</code> and create their own entries; managers can do both.)</li>
+  <li>Partial updates stay <code>tx.update</code>; adds create a new doc with the same object the callers build today; no <code>set</code> without merge is introduced.</li>
+  <li>Empty fields: unchanged shapes. The new <code>bad-time</code> refusal stops an empty <code>requestedTimeIn/Out</code> from being written on approval.</li>
+  <li>Bulk delete/import? <strong>No.</strong></li>
+  <li>Emulator tests first, red before green; wiring tests for <code>app.js</code>.</li>
+  <li>Payroll Tool: no field or format change.</li>
+  <li>Console spot-check after release: one locked period's <code>lockedPeriods</code> entry unchanged.</li>
 </ul>
 
 <h2>Accepted residuals (disclosed, not fixed here)</h2>
 <ul>
-  <li><strong>Rules don't enforce the lock (E).</strong> Anyone with manager access could still change a locked day via the console or SDK. App-layer only, as the August proposal said.</li>
-  <li><strong>An edit that lands between the manager's lock read and their confirm</strong> isn't in the snapshot they confirm. That's pre-existing and rare (two managers acting within seconds), and the Payroll Tool flags the hour discrepancy. Closing it would need the lock to re-read entries inside its transaction; noted for E/D.</li>
-  <li><strong>Kiosk punches</strong> aren't lock-checked. They always write "now", and a period is locked only after it ends. If a manager locks the current period early, a later kiosk punch would land in it. Not something the app offers (the lock button is per past period), so this is noted rather than handled.</li>
-  <li><strong>Staff screens</strong> keep their existing in-memory lock check. Their requests count for nothing until a manager approves, and approval is now checked.</li>
+  <li><strong>HIGH: anyone can bypass this from the browser console until item E.</strong> The rules let any staff member with Ticker access create their own entries and change <em>any</em> field of
+      their own entries, and managers can write everything (<code>firestore.rules:462</code>). This plan protects Ticker's screens only.</li>
+  <li><strong>HIGH (separate bug, D3): a single missing punch counts as paid even while pending or after it's denied.</strong></li>
+  <li><strong>Sick leave (HFWA) isn't frozen by a lock.</strong> Christie's Sep 28 decision; payroll re-reads it live. Staff can still submit HFWA for a locked date.</li>
+  <li><strong>Roster changes after a lock change attribution.</strong> A claim, merge or assign changes which uid an <code>emp_*</code> kiosk entry's hours belong to, in both Ticker's <code>calcPeriodTotals</code> and the
+      Payroll Tool's pull (around <code>index.html:3046</code>). Recalculated totals can then differ from the locked ones, and the Payroll Tool's discrepancy warning shows. A lasting fix (freezing the mapping in the snapshot) belongs with D.</li>
+  <li><strong>Several roster writers save the whole roster from the page's in-memory copy</strong> (e.g. <code>setStaffPin</code>, 6469), so two managers editing the roster at once can undo each other.
+      Pre-existing; for the rules-hardening/roster follow-up.</li>
+  <li><strong>An edit that lands between a manager's lock read and their confirm</strong> isn't in the snapshot they confirm. Rare; the Payroll Tool flags the discrepancy.</li>
+  <li><strong>Kiosk punches aren't lock-checked</strong> (D1). Their <code>date</code> is today's, and a period is locked after it ends. Note that a late kiosk clock-out can carry a chosen earlier <em>time</em> (around 10346), but still on today's date.</li>
+  <li><strong>Approval times are parsed in the browser's local time zone</strong>, the same way the Payroll Tool parses them. Correct for managers in Mountain Time; not changed here so the two apps stay identical.</li>
+  <li><strong>Offline plain writes</strong> (Phase 2's rows) queue and resolve on reconnect, so offline they hang rather than show a message.</li>
 </ul>
 
 <h2>Completeness: if interrupted midway</h2>
 <ul>
-  <li>Each phase is one commit (or a few) on <code>main</code>, pushed. Nothing is deployed until Phase 3, so a half-done phase changes nothing for staff.</li>
-  <li>Phase 1 is safe to ship alone. Phase 2 doesn't depend on Phase 1.</li>
-  <li>No data migration and no data written by this plan's code except through the normal app actions.</li>
+  <li>Each phase is one commit or a few on <code>main</code>, pushed. Nothing is deployed until Phase 3, so a half-done phase changes nothing for staff.</li>
+  <li>Phase 1 can ship alone; Phase 2 doesn't depend on Phase 1.</li>
+  <li>No data migration. No data is written except by the normal app actions.</li>
 </ul>
 
 <h2>Resume instructions</h2>
 <ol>
-  <li>Read this file's Decisions log (bottom) and <code>git log --oneline -10</code> in <code>~/tinker-timeclock</code>. Commits are titled <code>step4 phase N: …</code>.</li>
-  <li>Christie's written Ticker approval (Oct 9) covers A and B only. C, D and E need a new plan and her approval.</li>
-  <li>Run <code>npm test</code> in <code>~/tinker-timeclock</code> (it starts the emulator itself). Check the printed count, not a hardcoded one.</li>
-  <li>Deploy only via <code>npm run deploy:check</code> → Christie's "okay to deploy tinker ticker &lt;full sha&gt;" → <code>npm run deploy -- --approved &lt;sha&gt;</code>.</li>
+  <li>Read the Decisions log (bottom) and <code>git log --oneline -10</code> in <code>~/tinker-timeclock</code>. Commits are titled <code>step4 phase N: …</code>.</li>
+  <li>Christie's written Ticker approval (Oct 9) covers A and B only. C, D, E and D3's fix need their own plan and her approval.</li>
+  <li><code>npm test</code> in <code>~/tinker-timeclock</code> starts the emulator itself. Check the printed count.</li>
+  <li>Deploy only via <code>npm run deploy:check</code> → "okay to deploy tinker ticker &lt;full sha&gt;" → <code>npm run deploy -- --approved &lt;sha&gt;</code>.</li>
+  <li>Review files: <code>~/tinker-ai-configs/thoughts/reviews/2026-10-09-plan-review-ticker-step4-*.md</code>.</li>
 </ol>
 
 <h2>Next session (deferred by Christie, Oct 9)</h2>
 <ul>
-  <li><strong>C</strong>: sanity checks on staff time corrections (out before in, absurd length, how far back).</li>
-  <li><strong>D</strong>: a raw-entries export at lock time; scope what's needed beyond <code>employeeTotals</code>.</li>
-  <li><strong>E</strong>: rules-layer lock enforcement; fold into <code>ticker-firestore-rules-hardening.html</code>.</li>
+  <li><strong>C</strong>: sanity checks on staff time corrections. <strong>D3's fix</strong> fits here: only approved missing punches count, in both apps.</li>
+  <li><strong>D</strong>: a raw-entries export at lock time, plus freezing the roster mapping in the snapshot.</li>
+  <li><strong>E</strong>: rules-layer lock enforcement plus field-level limits on staff entry updates; fold into <code>ticker-firestore-rules-hardening.html</code>.</li>
 </ul>
+
+<h2>Plan review r1: dispositions (Oct 9)</h2>
+<table>
+  <tr><th>Finding</th><th>Verified?</th><th>Disposition</th></tr>
+  <tr><td>Claude 1: <code>submitMissingPunch</code> skips the lock and its punch counts immediately</td><td>Yes (1241–1316; 1964–1972)</td><td>Added to Phase 1; the counting itself is D3</td></tr>
+  <tr><td>Claude 2: a denied single missing punch is still paid</td><td>Yes</td><td>D3: Christie decides; recommended for next session</td></tr>
+  <tr><td>Claude 3 / Codex 1: approve/deny don't check "still pending"; deny can remove locked hours; double approve overwrites <code>originalTimestamp</code>; no in-flight guard; cached pre-read</td><td>Yes (2717, 2726, 2753)</td><td><code>reviewChangeRequest</code> transaction; deny allowed when locked only if pending</td></tr>
+  <tr><td>Claude 4: stale screen date → wrong timestamp</td><td>Yes (2523)</td><td><code>expectDate</code> → <code>changed</code></td></tr>
+  <tr><td>Claude 5 / Codex 5, 7: sweep too narrow; B4 comment race; B1/B2 wording; seed alert; clock-in timer; late clock-out tracking</td><td>Yes (6139–6155, 473, 579–587, 7883–7895)</td><td>B4 uses <code>appendTimeOffComment</code>; B10–B12 added; sweep widened</td></tr>
+  <tr><td>Claude 6: offline plain writes hang, not fail</td><td>Yes (<code>firebase-config.js:30</code>)</td><td>Criteria say "refused"; disclosed; Phase 1 in-flight guards</td></tr>
+  <tr><td>Claude 7 / Codex 8: harness limits; concurrency test missing; add ref outside the callback; <code>isRealDate</code></td><td>Yes</td><td>Web compat SDK interleaving test (fallback recorded); design updated</td></tr>
+  <tr><td>Claude 8: editor courtesy checks the wrong date for Add</td><td>Yes (<code>index.html:1267</code>)</td><td>Disable only Save/Delete; Add checks its picker on press</td></tr>
+  <tr><td>Claude 9 / Codex 2, 3, 4: residuals understated (staff bypass, HFWA, roster attribution, whole-roster writes, kiosk backdated time)</td><td>Yes</td><td>All disclosed; HFWA is Christie's Sep 28 decision; roster/rules go to D/E</td></tr>
+  <tr><td>Claude 10: local-TZ parsing; empty time throws; <code>''</code> stored</td><td>Yes</td><td><code>bad-time</code> refusal fixes the last two; TZ kept identical to the Payroll Tool, disclosed</td></tr>
+  <tr><td>Codex 6: M1's "try Assign again" is unreachable</td><td>Yes (6531, 6584–6610)</td><td>"Schedules not moved yet" + Move schedule button</td></tr>
+</table>
 
 <h2>Decisions log (append-only)</h2>
 <ul>
   <li>Oct 9 2026: Christie: written approval for Ticker Step 4; scope A + B; C, D, E next session; kiosk out of scope; multi-step saves case by case.</li>
-  <li>Oct 9 2026: Design: lock check + write in ONE transaction in the data layer (not a pre-read in the caller), so a lock committed mid-edit is respected and offline fails closed.</li>
+  <li>Oct 9 2026: Design: lock check + write in ONE transaction in the data layer, so a lock committed mid-edit is respected and offline fails closed.</li>
+  <li>Oct 9 2026: Plan review r1 (Claude READY WITH CHANGES, Codex NOT READY); all findings verified and folded in (table above) → v2. D3 raised for Christie.</li>
 </ul>
 </body>
 </html>
