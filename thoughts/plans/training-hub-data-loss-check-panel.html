@@ -21,7 +21,7 @@
 <h1>Plan: Training Hub data-loss check panel</h1>
 <p><strong>App:</strong> Training Hub (<code>~/Documents/New project</code>, project <code>tinker-hq-apps</code>) &middot;
 <strong>Parent:</strong> Firebase Backend Resilience Plan, Step 4 (<code>firebase-backend-resilience-report.html</code>, plan_QTCn4wTWpk-h) &middot;
-<strong>Drafted:</strong> Oct 9 2026 &middot; <strong>v1</strong> &middot; <strong>execution-ready: false</strong> (awaiting Christie's review + D1/D2)</p>
+<strong>Drafted:</strong> Oct 9 2026 &middot; <strong>v2</strong> after design review r1 (in-session Claude agent: READY WITH CHANGES, all applied) &middot; <strong>execution-ready: true</strong> (Christie decided D1/D2 Oct 9 and said "let's get going")</p>
 
 <div class="status">
   <strong>Goal:</strong> a manager can open the Training Hub Dashboard and, in one click, see whether any of the four
@@ -34,7 +34,7 @@
 
 <h2>Current state (researched Oct 9)</h2>
 <ul>
-  <li><strong>Engine:</strong> <code>checkForDataLossIncident()</code> reads the four collections with <code>Promise.allSettled</code>, so a denied read
+  <li><strong>Engine:</strong> <code>checkForDataLossIncident()</code> reads the four collections with <code>Promise.allSettled</code> (plain <code>.get()</code>, which can silently answer from the offline cache), so a denied read
     shows up as its own anomaly instead of hiding the whole check. Thresholds: any drop at all in <code>onboardingChecklists</code>
     (no delete path exists for it); a drop of 25% or more in the other three. The baseline is stored as counts in this browser's
     <code>localStorage</code>; the record time isn't saved, and a failed save is silently ignored.</li>
@@ -42,7 +42,7 @@
     <code>isManagerOrAbove()</code>, so a manager can count all four. <strong>No rules change, no new collection.</strong></li>
   <li><strong>UI:</strong> the Dashboard (<code>src/components/training/Dashboard.tsx</code>) already has a manager-only card (Canonical Sync), so a
     second manager-only card fits beside it. <code>canManageTraining</code> is also true in demo mode, so the new card must also require <code>firebaseConfigured</code>.</li>
-  <li><strong>Tests:</strong> vitest, 144/144 at <code>7de92fe</code>. 13 of those are the engine's own tests, run against the in-memory fake (<code>testSupport/fakeFirebaseCompat.ts</code>).
+  <li><strong>Tests:</strong> vitest, 144/144 at <code>7de92fe</code>. 16 of those are the engine's own tests (two assert today's merge-on-record and void-return behaviour and will change deliberately in Phase 1), run against the in-memory fake (<code>testSupport/fakeFirebaseCompat.ts</code>).
     There's no Firestore emulator setup in this repo. That's acceptable here because <strong>nothing in this plan writes to Firestore</strong>.</li>
   <li><strong>Read cost:</strong> one check reads every document in the four collections once. Today that's tens to low hundreds of
     documents, and the Dashboard already loads all assignments for managers.</li>
@@ -50,7 +50,7 @@
 
 <h2>Decisions for Christie</h2>
 <div class="decision-needed">
-  <strong>D1 — Where the baseline lives. Recommended: this browser (as built).</strong> The baseline is "how many records were here at a
+  <strong>D1 — Where the baseline lives. DECIDED Oct 9 (Christie): this browser.</strong> The baseline is "how many records were here at a
   moment I trusted". Keeping it in the browser means no new collection, no rules change and no guard deploy. Downside: it exists only
   in the browser where it was recorded. A different computer or a cleared browser shows "No baseline yet" until someone presses
   Record baseline there. The panel says this in plain words and shows when and where the baseline was recorded.
@@ -58,7 +58,7 @@
   it's a reasonable later upgrade if one browser turns out to be too limiting.
 </div>
 <div class="decision-needed">
-  <strong>D2 — Manual only, or also check automatically? Recommended: also automatic, quietly.</strong> If the check runs only when someone
+  <strong>D2 — Manual only, or also check automatically? DECIDED Oct 9 (Christie): also automatic, quietly.</strong> If the check runs only when someone
   clicks it, nobody will click it until data already looks missing. Recommended: when a manager opens the Dashboard <em>and this browser has
   a baseline</em>, run the check once per page load. Stay silent when everything looks fine; show a red banner at the top of the card when
   something has dropped or can't be read. Cost is one extra read of the four collections per Dashboard open, by managers only.
@@ -72,14 +72,25 @@
 <p><strong>Acceptance (user terms):</strong> the engine can tell the panel when a baseline was recorded, refuse to record one from a check
 with a failed read, list which collections a new baseline would lower, and report whether the baseline actually saved.</p>
 <ul>
-  <li>Save <code>recordedAt</code> with the counts. Older stored baselines without it still load, with the date shown as "unknown".</li>
-  <li><code>recordDataLossBaseline</code> returns whether it saved, so a blocked browser storage says so instead of failing silently.</li>
+  <li><strong>Server reads only:</strong> read with <code>.get({ source: 'server' })</code> so an offline device can't report cached or empty
+    counts as a drop (review r1 #1). The test fake learns to accept the option and to simulate an offline failure.</li>
+  <li><strong>Why a read failed:</strong> keep the Firestore <code>error.code</code> next to <code>readError</code>. <code>permission-denied</code> is "rules";
+    <code>unavailable</code> and anything else is "couldn't reach Firebase" (review r1 #1).</li>
+  <li>Save <code>recordedAt</code> with the counts. A new <code>loadDataLossBaselineInfo()</code> returns <code>{counts, recordedAt}</code> (review r1 #5). Older stored
+    baselines without the date still load, with <code>recordedAt</code> null.</li>
+  <li>Recording <strong>replaces</strong> the baseline (all four counts plus the date) instead of merging, which could keep one stale count (review r1 #4).
+    It returns whether it saved, so blocked browser storage says so instead of failing silently.</li>
+  <li><strong>Ratchet up:</strong> after a check where every read succeeded and nothing is anomalous, raise each stored count to <code>max(baseline, now)</code>.
+    Without this, a baseline of 100 that grew to 200 would miss a loss of 120 records (review r1 #3). The ratchet never lowers a count; lowering
+    needs Record baseline with confirmation. <code>recordedAt</code> stays the manual record date, and a separate <code>raisedAt</code> notes the last automatic raise.</li>
   <li>New pure helpers: <code>baselineFromCheck(result)</code> returns counts only when every read succeeded, otherwise null.
     <code>collectionsLoweredBy(result)</code> lists collections whose current count is below the stored baseline.</li>
-  <li>Unit tests for each; the existing 13 engine tests stay green unchanged.</li>
+  <li>Unit tests for each. The merge test and the "doesn't throw" test are rewritten on purpose (replace semantics; returns false); the other 14 stay as they are.</li>
 </ul>
 <div class="bdd"><strong>Happy:</strong> Given a check where all four reads succeed, when a baseline is built from it, then it holds all four counts plus a timestamp, and loading it back returns the same.</div>
 <div class="bdd"><strong>Edge:</strong> Given a baseline stored by the Sep 10 code (counts only), when it is loaded, then the counts come back and recordedAt is null.</div>
+<div class="bdd"><strong>Edge:</strong> Given baseline observations 100 and a clean check reads 200, then the stored baseline becomes 200. A later check reading 80 is flagged Dropped.</div>
+<div class="bdd"><strong>Failure (offline):</strong> Given the device is offline, when the check runs, then every read is a "couldn't reach Firebase" failure, not a count of 0. Nothing is ratcheted and nothing can be recorded.</div>
 <div class="bdd"><strong>Failure:</strong> Given a check where <code>onboardingChecklists</code> was denied, when a baseline is built from it, then the result is null (nothing to record). Given localStorage throws on write, when recording, then it returns false.</div>
 </div>
 
@@ -89,18 +100,21 @@ with a failed read, list which collections a new baseline would lower, and repor
 showing the baseline count, the count now, and a status: OK, Dropped, Couldn't read, or No baseline. Non-managers and demo mode never see the card.</p>
 <ul>
   <li>Plain names: Onboarding checklists · Observations · Training assignments · Onboarding people.</li>
-  <li><strong>Couldn't read</strong> wording: "Training Hub couldn't read this, which usually means a permissions (rules) change, not deleted data.
-    Don't change or re-enter anything. Tell Christie." <strong>Dropped</strong> wording: "Fewer records than the baseline. Don't re-enter anything yet. Tell Christie."</li>
+  <li><strong>Couldn't read</strong> wording, chosen by error code. <code>permission-denied</code>: "Training Hub couldn't read this, which usually means a permissions (rules)
+    change, not deleted data. Don't change or re-enter anything. Tell Christie." Anything else: "Couldn't reach Firebase. Check the connection and press Check now again." <strong>Dropped</strong> wording: "Fewer records than the baseline. Don't re-enter anything yet. Tell Christie."</li>
   <li><strong>Record baseline</strong> runs a fresh check first. If any read failed, it refuses and says why. If any count is lower than the current
     baseline, it asks for confirmation and names those sets ("This accepts the lower counts as the new normal"), because recording a baseline
     after a loss would hide that loss.</li>
   <li>Footer line: "Baseline recorded <date> in this browser only." Or: "No baseline in this browser yet. Press Record baseline when you know the data is right."</li>
-  <li>If D2 = automatic: on page load with a baseline present, run once and show the banner only on an anomaly.</li>
+  <li><strong>Automatic check (D2):</strong> runs at most once per page load per signed-in user, with a baseline present. The run-once guard and the
+    last result live <em>outside</em> Dashboard, because Dashboard unmounts on every view switch (App.tsx renders it conditionally) and StrictMode
+    double-runs effects in dev (review r1 #2). A result that arrives after sign-out or a viewer change is dropped. The banner shows only on an anomaly.</li>
   <li>Read-only: the card performs <strong>no Firestore writes</strong>.</li>
   <li>Tests: unit-test the pure row/status/message builder; <code>tsc</code> + vitest green. The live click-through is Christie's (Claude can't sign in as her).</li>
 </ul>
 <div class="bdd"><strong>Happy:</strong> Given a manager whose browser has a baseline and unchanged data, when they press Check now, then four rows show OK and the counts match the baseline.</div>
 <div class="bdd"><strong>Edge:</strong> Given a browser with no baseline, when the manager opens the Dashboard, then no automatic check runs, every row reads "No baseline", and the card explains how to record one.</div>
+<div class="bdd"><strong>Edge:</strong> Given the automatic check ran, when the manager goes Dashboard → Library → Dashboard, then no second set of reads happens and the last result is still shown.</div>
 <div class="bdd"><strong>Failure:</strong> Given a rules regression denying <code>trainingObservations</code>, when the check runs, then that row reads Couldn't read with the rules wording, the banner is red, and Record baseline refuses.</div>
 <div class="bdd"><strong>Failure:</strong> Given <code>onboardingChecklists</code> went from 40 to 39, when the check runs, then that row reads Dropped (any drop counts for checklists), while observations going 100→90 stays OK (under 25%).</div>
 </div>
@@ -135,6 +149,10 @@ numbers match reality; the Training Hub's deploy names the commit it shipped.</p
 
 <h2>Completeness: what if this is interrupted?</h2>
 <ul>
+  <li>Accepted (review r1 #6): the baseline is studio-wide headcounts, not personal data, so another manager on the same browser using it is fine.
+    Anyone using that browser could see four document counts in localStorage. That's acceptable; nothing is cleared on sign-out.</li>
+  <li>Known LOW (review r1): an admin user doc with <code>active: false</code> passes the app's manager check but not the rules, so they'd see "Couldn't read".
+    Their whole Dashboard load would already fail before that, so nothing extra is done for it.</li>
   <li>Work is on branch <code>claude/step4-data-loss-panel</code>, one commit per phase. An unfinished branch changes nothing live.</li>
   <li>Phase 1 alone is harmless (engine only, still unwired). Phase 2 merged but not deployed is harmless. Nothing reaches users before Phase 3's deploy.</li>
   <li>If deployed but no baseline is recorded yet, the card shows "No baseline". That's harmless, and the next manager visit can record one.</li>
@@ -151,6 +169,10 @@ numbers match reality; the Training Hub's deploy names the commit it shipped.</p
 <h2>Decisions Log (append-only)</h2>
 <ul>
   <li><strong>Oct 9 2026 — plan drafted.</strong> Scope fixed by the parent plan: "a manager-only Record-baseline / Check-now control plus a Console spot-check". D1, D2 awaiting Christie.</li>
+  <li><strong>Oct 9 2026 — D1 = this browser, D2 = automatic on Dashboard (Christie).</strong></li>
+  <li><strong>Oct 9 2026 — design review r1</strong> (in-session Claude agent; the <code>claude --print</code> CLI login is still unreliable): READY WITH CHANGES. Applied all of it:
+    server-only reads + error codes (#1), run-once guard outside Dashboard (#2), ratchet-up baseline (#3), replace-not-merge + corrected test count (#4), new loader for <code>recordedAt</code> (#5),
+    shared-device note (#6). Verified #4/#5 and the fake's ignored get options against the code before applying. Confirmed: the app's manager = rules' <code>['admin','manager']</code> (<code>trainingSnapshotAccess.ts:10</code>). v2 marked execution-ready.</li>
 </ul>
 </body>
 </html>
