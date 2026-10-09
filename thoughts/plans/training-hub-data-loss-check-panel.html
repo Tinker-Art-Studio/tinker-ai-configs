@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: Training Hub data-loss check panel</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 20px; color: #222; line-height: 1.5; }
+  h1 { font-size: 24px; } h2 { font-size: 19px; margin-top: 32px; border-bottom: 1px solid #ddd; padding-bottom: 4px; } h3 { font-size: 16px; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .status { background: #eef5ff; border-left: 4px solid #2b6cb0; padding: 10px 14px; margin: 12px 0; }
+  .bdd { background: #f9f9f9; border-left: 4px solid #999; padding: 8px 12px; margin: 8px 0; font-size: 14px; }
+  .phase { border: 1px solid #ddd; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+  .decision-needed { background: #eafaf3; border: 1px solid #4EBFB3; border-radius: 8px; padding: 10px 14px; margin: 14px 0; font-size: 14px; }
+  .warn { background: #fef9e7; border-left: 4px solid #e0b93a; padding: 10px 14px; margin: 12px 0; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f7; }
+</style>
+</head>
+<body>
+<h1>Plan: Training Hub data-loss check panel</h1>
+<p><strong>App:</strong> Training Hub (<code>~/Documents/New project</code>, project <code>tinker-hq-apps</code>) &middot;
+<strong>Parent:</strong> Firebase Backend Resilience Plan, Step 4 (<code>firebase-backend-resilience-report.html</code>, plan_QTCn4wTWpk-h) &middot;
+<strong>Drafted:</strong> Oct 9 2026 &middot; <strong>v1</strong> &middot; <strong>execution-ready: false</strong> (awaiting Christie's review + D1/D2)</p>
+
+<div class="status">
+  <strong>Goal:</strong> a manager can open the Training Hub Dashboard and, in one click, see whether any of the four
+  irreplaceable record sets (onboarding checklists, observations, training assignments, onboarding people) has
+  shrunk sharply or become unreadable since a known-good moment, and so tell "data was lost" apart from "a rules
+  change hid it" before anyone panics or "fixes" anything.
+  <br><strong>Why:</strong> the tripwire engine (<code>src/lib/dataLossIncidentCheck.ts</code>, committed Sep 10 in <code>6db527b</code>)
+  is built and unit-tested but nothing calls it, so it monitors nothing. This is the last Training Hub item in Step 4.
+</div>
+
+<h2>Current state (researched Oct 9)</h2>
+<ul>
+  <li><strong>Engine:</strong> <code>checkForDataLossIncident()</code> reads the four collections with <code>Promise.allSettled</code>, so a denied read
+    shows up as its own anomaly instead of hiding the whole check. Thresholds: any drop at all in <code>onboardingChecklists</code>
+    (no delete path exists for it); a drop of 25% or more in the other three. The baseline is stored as counts in this browser's
+    <code>localStorage</code>; the record time isn't saved, and a failed save is silently ignored.</li>
+  <li><strong>Rules (origin/main <code>studio-hub/firestore.rules</code>):</strong> all four collections allow <code>read</code> for
+    <code>isManagerOrAbove()</code>, so a manager can count all four. <strong>No rules change, no new collection.</strong></li>
+  <li><strong>UI:</strong> the Dashboard (<code>src/components/training/Dashboard.tsx</code>) already has a manager-only card (Canonical Sync), so a
+    second manager-only card fits beside it. <code>canManageTraining</code> is also true in demo mode, so the new card must also require <code>firebaseConfigured</code>.</li>
+  <li><strong>Tests:</strong> vitest, 144/144 at <code>7de92fe</code>. 13 of those are the engine's own tests, run against the in-memory fake (<code>testSupport/fakeFirebaseCompat.ts</code>).
+    There's no Firestore emulator setup in this repo. That's acceptable here because <strong>nothing in this plan writes to Firestore</strong>.</li>
+  <li><strong>Read cost:</strong> one check reads every document in the four collections once. Today that's tens to low hundreds of
+    documents, and the Dashboard already loads all assignments for managers.</li>
+</ul>
+
+<h2>Decisions for Christie</h2>
+<div class="decision-needed">
+  <strong>D1 — Where the baseline lives. Recommended: this browser (as built).</strong> The baseline is "how many records were here at a
+  moment I trusted". Keeping it in the browser means no new collection, no rules change and no guard deploy. Downside: it exists only
+  in the browser where it was recorded. A different computer or a cleared browser shows "No baseline yet" until someone presses
+  Record baseline there. The panel says this in plain words and shows when and where the baseline was recorded.
+  <em>Alternative:</em> one shared Firestore doc that every manager sees. That needs a new rule and a sha-approved rules release, so
+  it's a reasonable later upgrade if one browser turns out to be too limiting.
+</div>
+<div class="decision-needed">
+  <strong>D2 — Manual only, or also check automatically? Recommended: also automatic, quietly.</strong> If the check runs only when someone
+  clicks it, nobody will click it until data already looks missing. Recommended: when a manager opens the Dashboard <em>and this browser has
+  a baseline</em>, run the check once per page load. Stay silent when everything looks fine; show a red banner at the top of the card when
+  something has dropped or can't be read. Cost is one extra read of the four collections per Dashboard open, by managers only.
+  <em>Alternative:</em> button only (the parent plan's minimum).
+</div>
+
+<h2>Phases</h2>
+
+<div class="phase">
+<h3>Phase 1 — Engine fit-out (no UI)</h3>
+<p><strong>Acceptance (user terms):</strong> the engine can tell the panel when a baseline was recorded, refuse to record one from a check
+with a failed read, list which collections a new baseline would lower, and report whether the baseline actually saved.</p>
+<ul>
+  <li>Save <code>recordedAt</code> with the counts. Older stored baselines without it still load, with the date shown as "unknown".</li>
+  <li><code>recordDataLossBaseline</code> returns whether it saved, so a blocked browser storage says so instead of failing silently.</li>
+  <li>New pure helpers: <code>baselineFromCheck(result)</code> returns counts only when every read succeeded, otherwise null.
+    <code>collectionsLoweredBy(result)</code> lists collections whose current count is below the stored baseline.</li>
+  <li>Unit tests for each; the existing 13 engine tests stay green unchanged.</li>
+</ul>
+<div class="bdd"><strong>Happy:</strong> Given a check where all four reads succeed, when a baseline is built from it, then it holds all four counts plus a timestamp, and loading it back returns the same.</div>
+<div class="bdd"><strong>Edge:</strong> Given a baseline stored by the Sep 10 code (counts only), when it is loaded, then the counts come back and recordedAt is null.</div>
+<div class="bdd"><strong>Failure:</strong> Given a check where <code>onboardingChecklists</code> was denied, when a baseline is built from it, then the result is null (nothing to record). Given localStorage throws on write, when recording, then it returns false.</div>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — Manager-only "Data safety check" card on the Dashboard</h3>
+<p><strong>Acceptance (user terms):</strong> a manager sees a card with <em>Check now</em> and <em>Record baseline</em>, plus one row per record set
+showing the baseline count, the count now, and a status: OK, Dropped, Couldn't read, or No baseline. Non-managers and demo mode never see the card.</p>
+<ul>
+  <li>Plain names: Onboarding checklists · Observations · Training assignments · Onboarding people.</li>
+  <li><strong>Couldn't read</strong> wording: "Training Hub couldn't read this, which usually means a permissions (rules) change, not deleted data.
+    Don't change or re-enter anything. Tell Christie." <strong>Dropped</strong> wording: "Fewer records than the baseline. Don't re-enter anything yet. Tell Christie."</li>
+  <li><strong>Record baseline</strong> runs a fresh check first. If any read failed, it refuses and says why. If any count is lower than the current
+    baseline, it asks for confirmation and names those sets ("This accepts the lower counts as the new normal"), because recording a baseline
+    after a loss would hide that loss.</li>
+  <li>Footer line: "Baseline recorded <date> in this browser only." Or: "No baseline in this browser yet. Press Record baseline when you know the data is right."</li>
+  <li>If D2 = automatic: on page load with a baseline present, run once and show the banner only on an anomaly.</li>
+  <li>Read-only: the card performs <strong>no Firestore writes</strong>.</li>
+  <li>Tests: unit-test the pure row/status/message builder; <code>tsc</code> + vitest green. The live click-through is Christie's (Claude can't sign in as her).</li>
+</ul>
+<div class="bdd"><strong>Happy:</strong> Given a manager whose browser has a baseline and unchanged data, when they press Check now, then four rows show OK and the counts match the baseline.</div>
+<div class="bdd"><strong>Edge:</strong> Given a browser with no baseline, when the manager opens the Dashboard, then no automatic check runs, every row reads "No baseline", and the card explains how to record one.</div>
+<div class="bdd"><strong>Failure:</strong> Given a rules regression denying <code>trainingObservations</code>, when the check runs, then that row reads Couldn't read with the rules wording, the banner is red, and Record baseline refuses.</div>
+<div class="bdd"><strong>Failure:</strong> Given <code>onboardingChecklists</code> went from 40 to 39, when the check runs, then that row reads Dropped (any drop counts for checklists), while observations going 100→90 stays OK (under 25%).</div>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — Review, ship, prove it live</h3>
+<p><strong>Acceptance (user terms):</strong> the card is live; Christie has recorded a baseline and confirmed in the Firebase Console that the
+numbers match reality; the Training Hub's deploy names the commit it shipped.</p>
+<ul>
+  <li>Second-model implementation review of the diff (Codex + an in-session Claude agent). Fix findings, re-run tests.</li>
+  <li>Deploy hygiene (the repo is behind the global Netlify rule): <code>npm run deploy</code> gains the clean-tree + pushed checks and
+    <code>--message "$(git rev-parse HEAD)"</code>. Also fix the two stale lines in the repo's <code>CLAUDE.md</code>: the raw Firebase
+    rules-deploy command, which the hook now denies, and the deploy command that passes no sha.</li>
+  <li>Merge to <code>main</code>, push, then ask: "Ready to deploy Training Hub &lt;sha&gt; to Netlify?" Deploy once after a yes.</li>
+  <li><strong>Christie, live:</strong> hard-refresh → Dashboard → Check now → Record baseline. Then the Console spot-check: Firebase Console →
+    <code>tinker-hq-apps</code> → Firestore → <code>onboardingChecklists</code>, count the documents (Query builder → Count). It should match the card. Ideally do the same for one more collection.</li>
+  <li>Update the parent plan's Step 4 status: Training Hub item done; Tinker Ticker remains (approval-gated).</li>
+</ul>
+<div class="bdd"><strong>Happy:</strong> Given the deploy is live, when Christie records a baseline and counts <code>onboardingChecklists</code> in the Console, then the two numbers agree.</div>
+<div class="bdd"><strong>Failure:</strong> Given the counts disagree, then stop. Don't record anything further, and investigate (probably a query/rules mismatch) before calling Step 4 done.</div>
+</div>
+
+<h2>Firebase safety checklist</h2>
+<table>
+  <tr><th>Item</th><th>Answer</th></tr>
+  <tr><td>Rules change / new collection?</td><td>No. All four collections are already readable by manager+ on origin/main. Nothing new is stored in Firestore (D1 = browser).</td></tr>
+  <tr><td>Firestore writes?</td><td>None. Reads only.</td></tr>
+  <tr><td>Snapshot before bulk ops?</td><td>N/A: no bulk ops.</td></tr>
+  <tr><td><code>updateDoc</code> / strip empty fields / await writes?</td><td>N/A: no writes.</td></tr>
+  <tr><td>Netlify credits</td><td>One deploy in Phase 3, after Christie's yes, sha as the message.</td></tr>
+</table>
+
+<h2>Completeness: what if this is interrupted?</h2>
+<ul>
+  <li>Work is on branch <code>claude/step4-data-loss-panel</code>, one commit per phase. An unfinished branch changes nothing live.</li>
+  <li>Phase 1 alone is harmless (engine only, still unwired). Phase 2 merged but not deployed is harmless. Nothing reaches users before Phase 3's deploy.</li>
+  <li>If deployed but no baseline is recorded yet, the card shows "No baseline". That's harmless, and the next manager visit can record one.</li>
+</ul>
+
+<h2 id="resume">Resume instructions</h2>
+<ol>
+  <li>Read this plan's Status line and Decisions Log, then the parent plan's Step 4 status block.</li>
+  <li><code>cd "~/Documents/New project"</code>, then <code>git fetch</code>. Check out <code>claude/step4-data-loss-panel</code> if it exists, and <code>git log --oneline main..</code> to see which phases are committed.</li>
+  <li><code>npm test</code> (vitest; 144 at <code>7de92fe</code> plus whatever this plan added) and <code>npx tsc -b</code>.</li>
+  <li>Continue at the first phase without a commit. Phase 3's deploy needs Christie's yes in that session.</li>
+</ol>
+
+<h2>Decisions Log (append-only)</h2>
+<ul>
+  <li><strong>Oct 9 2026 — plan drafted.</strong> Scope fixed by the parent plan: "a manager-only Record-baseline / Check-now control plus a Console spot-check". D1, D2 awaiting Christie.</li>
+</ul>
+</body>
+</html>
